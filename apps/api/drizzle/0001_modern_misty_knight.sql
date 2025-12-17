@@ -1,0 +1,1 @@
+ALTER TABLE "opportunities" ADD COLUMN "categories" text[];
