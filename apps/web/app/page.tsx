@@ -1,15 +1,9 @@
 "use client"
 
-import { useEffect, useState } from "react"
 import Link from "next/link"
 import { Header } from "@/components/ui/header"
-import { StatCard } from "@/components/ui/stat-card"
-import { SkeletonStatCard } from "@/components/ui/skeleton-card"
-import { fetchCrossPlatform, fetchNearResolution, fetchStats } from "@/lib/api"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@workspace/ui/components/card"
-import { Badge } from "@workspace/ui/components/badge"
 import {
-  TrendingUp,
   Clock,
   Repeat2,
   ArrowRight,
@@ -19,48 +13,9 @@ import {
 } from "lucide-react"
 
 export default function HomePage() {
-  const [loading, setLoading] = useState(true)
-  const [stats, setStats] = useState({
-    crossPlatformTotal: 0,
-    crossPlatformArbs: 0,
-    nearResolution: 0,
-    polyArbitrage: 0,
-  })
-  const [lastUpdated, setLastUpdated] = useState<string | null>(null)
-
-  useEffect(() => {
-    const loadStats = async () => {
-      try {
-        const [crossRes, nearRes, polyStats] = await Promise.all([
-          fetchCrossPlatform(0, undefined, "profit"),
-          fetchNearResolution({ maxHours: 24, minOdds: 95, sort: "time" }),
-          fetchStats().catch(() => null),
-        ])
-
-        setStats({
-          crossPlatformTotal: crossRes.opportunities?.length ?? 0,
-          crossPlatformArbs: crossRes.opportunities?.filter(o => o.arbitrage.type !== "none").length ?? 0,
-          nearResolution: nearRes.opportunities?.length ?? 0,
-          polyArbitrage: polyStats?.opportunities?.active ?? 0,
-        })
-        setLastUpdated(crossRes.lastUpdated ?? nearRes.lastUpdated ?? null)
-      } catch {
-        // Ignore errors
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    void loadStats()
-    const interval = setInterval(loadStats, 30000)
-    return () => clearInterval(interval)
-  }, [])
-
-  const totalOpportunities = stats.crossPlatformArbs + stats.nearResolution + stats.polyArbitrage
-
   return (
     <>
-      <Header activeOpportunities={totalOpportunities} />
+      <Header />
 
       <main className="flex-1">
         <div className="mx-auto max-w-7xl px-4 py-8 md:px-8">
@@ -79,49 +34,6 @@ export default function HomePage() {
             </p>
           </div>
 
-          {/* Stats Grid */}
-          <div className="mb-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {loading ? (
-              <>
-                <SkeletonStatCard />
-                <SkeletonStatCard />
-                <SkeletonStatCard />
-                <SkeletonStatCard />
-              </>
-            ) : (
-              <>
-                <StatCard
-                  title="Cross-Platform Arbs"
-                  value={stats.crossPlatformArbs}
-                  icon={TrendingUp}
-                  variant="profit"
-                  subtitle={stats.crossPlatformArbs > 0 ? "Active now" : undefined}
-                />
-                <StatCard
-                  title="Near Resolution"
-                  value={stats.nearResolution}
-                  icon={Clock}
-                  variant="kalshi"
-                  subtitle="High confidence"
-                />
-                <StatCard
-                  title="Market Matches"
-                  value={stats.crossPlatformTotal}
-                  icon={Repeat2}
-                  variant="polymarket"
-                  subtitle="Poly ↔ Kalshi"
-                />
-                <StatCard
-                  title="Poly Arbitrage"
-                  value={stats.polyArbitrage}
-                  icon={Target}
-                  variant="default"
-                  subtitle="Same-market"
-                />
-              </>
-            )}
-          </div>
-
           {/* Quick Actions */}
           <div className="grid gap-6 md:grid-cols-2">
             {/* Cross-Platform Card */}
@@ -132,11 +44,6 @@ export default function HomePage() {
                     <div className="rounded-lg bg-polymarket/10 p-2 text-polymarket">
                       <Repeat2 className="h-6 w-6" />
                     </div>
-                    {stats.crossPlatformArbs > 0 && (
-                      <Badge className="bg-profit text-profit-foreground">
-                        {stats.crossPlatformArbs} arb{stats.crossPlatformArbs !== 1 ? "s" : ""}
-                      </Badge>
-                    )}
                   </div>
                   <CardTitle className="flex items-center gap-2">
                     Cross-Platform Arbitrage
@@ -171,11 +78,6 @@ export default function HomePage() {
                     <div className="rounded-lg bg-kalshi/10 p-2 text-kalshi">
                       <Clock className="h-6 w-6" />
                     </div>
-                    {stats.nearResolution > 0 && (
-                      <Badge variant="secondary">
-                        {stats.nearResolution} market{stats.nearResolution !== 1 ? "s" : ""}
-                      </Badge>
-                    )}
                   </div>
                   <CardTitle className="flex items-center gap-2">
                     Near Resolution

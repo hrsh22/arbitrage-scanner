@@ -51,7 +51,7 @@ export const env = {
     OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? null,
 
     // AI match verification
-    AI_MATCH_DAILY_LIMIT: numberFromEnv("AI_MATCH_DAILY_LIMIT", 200),
+    AI_MATCH_DAILY_LIMIT: numberFromEnv("AI_MATCH_DAILY_LIMIT", 1000),
 } as const
 
 export type Env = typeof env
