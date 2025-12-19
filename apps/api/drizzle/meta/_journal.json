@@ -78,6 +78,13 @@
       "when": 1766061330306,
       "tag": "0010_loud_satana",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1766131884639,
+      "tag": "0011_funny_scrambler",
+      "breakpoints": true
     }
   ]
 }
