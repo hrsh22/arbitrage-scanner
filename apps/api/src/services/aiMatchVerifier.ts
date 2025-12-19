@@ -116,39 +116,134 @@ async function cacheResult(
 /**
  * Call GPT-4o-mini to verify if two market questions are asking the exact same thing
  */
-async function callAI(polyQuestion: string, kalshiTitle: string): Promise<{ isExactMatch: boolean; reason: string }> {
+async function callAI(
+    polyQuestion: string,
+    kalshiTitle: string,
+    polyEndDate?: string,
+    kalshiEndDate?: string,
+    polyResolutionRules?: string,
+    kalshiResolutionRules?: string
+): Promise<{ isExactMatch: boolean; reason: string }> {
     if (!env.OPENAI_API_KEY) {
         throw new Error("OPENAI_API_KEY not configured")
     }
 
-    const { object } = await generateObject({
-        model: openai("gpt-4o-mini"),
-        schema: z.object({
-            isExactMatch: z.boolean().describe("Whether the two questions are asking about the exact same event/outcome"),
-            reason: z.string().describe("Brief explanation of why they match or don't match"),
-        }),
-        prompt: `You are comparing two prediction market questions to determine if they are asking about the EXACT same thing.
+    // Format dates for display
+    const polyDateStr = polyEndDate ? new Date(polyEndDate).toLocaleDateString() : "Not specified"
+    const kalshiDateStr = kalshiEndDate ? new Date(kalshiEndDate).toLocaleDateString() : "Not specified"
 
-Question 1 (Polymarket): "${polyQuestion}"
-Question 2 (Kalshi): "${kalshiTitle}"
+    // Format resolution rules
+    const polyRulesStr = polyResolutionRules?.trim() || "Not provided"
+    const kalshiRulesStr = kalshiResolutionRules?.trim() || "Not provided"
 
-Two questions are an EXACT match only if:
-1. They are about the same event/person/topic
-2. They ask about the same outcome (e.g., "announce" vs "nominate" are DIFFERENT actions)
-3. They have the same time frame (if specified)
-4. They have the same conditions
-
-Questions that are merely "related" or "similar" are NOT exact matches.
-
-Examples of NON-exact matches:
-- "Will Trump announce X" vs "Will Trump nominate X" (different verbs)
-- "Will Fed cut rates in January" vs "Will Fed cut-pause-pause over 3 meetings" (different scope)
-- "Will X happen" vs "Will X not happen" (opposite outcomes)
-
-Determine if these two questions are asking about the EXACT same thing.`,
+    logger.info("aiMatchVerifier::callAI::AI Prompt => ", {
+        polyQuestion,
+        kalshiTitle,
+        polyDateStr,
+        kalshiDateStr,
+        polyRulesStr,
+        kalshiRulesStr,
     })
 
-    return object
+    const { object } = await generateObject({
+        model: openai("gpt-5-nano"),
+        schema: z.object({
+            isExactMatch: z.boolean().describe("Whether the two questions are asking about the exact same event/outcome (either directly or inversely)"),
+            matchType: z.enum(["DIRECT", "INVERSE", "NONE"]).describe("DIRECT = Same question. INVERSE = Opposite questions (Yes=No). NONE = Not a match."),
+            reason: z.string().describe("Brief explanation of the match type and why it qualifies"),
+        }),
+        prompt: `You are evaluating two prediction markets for DELTA-NEUTRAL ARBITRAGE.
+
+DELTA-NEUTRAL means: For ANY possible real-world outcome, the combined position always results in the same guaranteed profit (or zero loss). There must be NO scenario where positions diverge.
+
+MARKET 1 (Polymarket):
+- Question: "${polyQuestion}"
+- Resolution Date: ${polyDateStr}
+- Resolution Rules: ${polyRulesStr}
+
+MARKET 2 (Kalshi):
+- Question: "${kalshiTitle}"
+- Resolution Date: ${kalshiDateStr}
+- Resolution Rules: ${kalshiRulesStr}
+
+=== CRITICAL REQUIREMENTS (Must pass ALL steps) ===
+
+STEP 1: EVENT CHECK (The most common failure point)
+- Are they asking about the EXACT SAME real-world outcome?
+- "Musk announces run" != "Musk becomes trillionaire" (REJECT immediately)
+- "Xi removed" != "IPO happens" (REJECT immediately)
+- "Earthquake" != "IPO" (REJECT immediately)
+-> If events differ, STOP and return false.
+
+STEP 2: TIMEFRAME CHECK
+- Do they resolve at effectively the same moment?
+- "by Dec 31, 2026" = "before Jan 1, 2027" (PASS)
+- "2025" vs "2029" (FAIL - one ends early, creating risk)
+-> If timeframes differ, STOP and return false.
+
+STEP 3: RESOLUTION & DELTA NEUTRALITY
+- Can you construct a guaranteed profit/no-loss hedge?
+- DIRECT: Yes/Yes match. Both resolve YES together.
+- INVERSE: Yes/No match. One resolves YES exactly when the other resolves NO.
+- IMPLICATION FAILURES: "Win election" matches "Win election", NOT "Be on ballot" (Winning implies ballot, but ballot doesn't imply winning -> Divergence risk!)
+
+=== MATCH TYPES ===
+
+**DIRECT MATCH**: Same question, same timeframe, same resolution logic.
+Example: "Will aliens be confirmed before 2027?" on both platforms with equivalent dates.
+
+**INVERSE MATCH**: Opposite questions with same timeframe.
+Example: "Will NO ONE leave Cabinet before 2027?" vs "Will ANYONE leave Cabinet before 2027?"
+- If someone leaves: Market1=NO, Market2=YES
+- If no one leaves: Market1=YES, Market2=NO
+- Buy YES on one, NO on other = guaranteed $1 payout
+
+=== REJECTION CRITERIA ===
+
+REJECT if ANY of these apply:
+
+1. **DIFFERENT TIMEFRAMES**: One market ends in 2025, other in 2029 - NOT delta neutral!
+   - Event could happen in 2026: Market1 already resolved NO, Market2 resolves YES later
+   - This creates divergence risk
+
+2. **DIFFERENT EVENTS**: Same person but different actions (e.g., "announce run" vs "be arrested")
+
+3. **IMPLICATION ≠ EQUIVALENCE**: "Win election" implies "on ballot" but NOT vice versa
+   - Can be on ballot and lose → divergence
+
+4. **DIFFERENT THRESHOLDS**: "$700M at 4PM" vs "$500M at 10AM" - different triggers
+
+5. **DIFFERENT SUBJECTS**: "Nylander wins trophy" vs "McDavid wins trophy" - different players
+
+=== EXAMPLES ===
+
+✅ MATCH: "US confirms aliens by Dec 31, 2026" vs "US confirms aliens before Jan 1, 2027"
+   → Same event, same deadline (date equivalence), direct match.
+
+✅ MATCH (INVERSE): "Will no one leave Cabinet before 2027?" vs "Will anyone leave before 2027?"
+   → Perfect inverse with same timeframe. Delta neutral.
+
+❌ REJECT: "Leave Cabinet in 2025?" vs "Leave Cabinet by 2029?"
+   → Different timeframes. Event in 2026 causes divergence.
+
+❌ REJECT: "Win election?" vs "On ballot?"
+   → Implication, not equivalence. Can be on ballot but lose.
+
+❌ REJECT: "Announce presidential run?" vs "Be arrested?"
+   → Completely different events despite same person.
+
+Return:
+- isExactMatch = true ONLY if delta-neutral arbitrage is guaranteed safe
+- reason = which requirement fails, or which match type applies
+`,
+    })
+
+    // Prepend match type to reason for downstream parsing
+    const finalReason = object.isExactMatch
+        ? `[TYPE:${object.matchType}] ${object.reason}`
+        : object.reason
+
+    return { isExactMatch: object.isExactMatch, reason: finalReason }
 }
 
 /**
@@ -159,7 +254,11 @@ Determine if these two questions are asking about the EXACT same thing.`,
  */
 export async function verifyMatch(
     polyQuestion: string,
-    kalshiTitle: string
+    kalshiTitle: string,
+    polyEndDate?: string,
+    kalshiEndDate?: string,
+    polyResolutionRules?: string,
+    kalshiResolutionRules?: string
 ): Promise<AIMatchResult> {
     const matchHash = generateMatchHash(polyQuestion, kalshiTitle)
 
@@ -174,8 +273,8 @@ export async function verifyMatch(
     const { allowed, current, limit } = await checkDailyLimit()
     if (!allowed) {
         logger.warn("AI match daily limit reached", { current, limit })
-        // Return optimistic match when limit reached (let text similarity decide)
-        return { isExactMatch: true, reason: "Daily AI limit reached, using text similarity", fromCache: false }
+        // Return CONSERVATIVE rejection when limit reached - don't show untested pairs
+        return { isExactMatch: false, reason: "Daily AI limit reached - rejected for safety", fromCache: false }
     }
 
     // Call AI
@@ -185,7 +284,7 @@ export async function verifyMatch(
             kalshi: kalshiTitle.substring(0, 50)
         })
 
-        const result = await callAI(polyQuestion, kalshiTitle)
+        const result = await callAI(polyQuestion, kalshiTitle, polyEndDate, kalshiEndDate, polyResolutionRules, kalshiResolutionRules)
 
         // Increment counter
         await incrementDailyCount()

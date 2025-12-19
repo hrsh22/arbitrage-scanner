@@ -5,9 +5,10 @@ import { OpportunityStore } from "./services/opportunityStore.js"
 import { PolymarketClient } from "./clients/polymarketClient.js"
 import { KalshiClient } from "./clients/kalshiClient.js"
 import { OpportunityRepository } from "./db/repositories/opportunityRepository.js"
+import { CrossPlatformRepository } from "./db/repositories/crossPlatformRepository.js"
 import { MarketPoller } from "./services/marketPoller.js"
+import { CrossPlatformPoller } from "./services/crossPlatformPoller.js"
 import { buildOpportunitiesRouter } from "./routes/opportunities.js"
-import { detectCrossPlatformArbitrage, type CrossPlatformOpportunity } from "./services/crossPlatformDetector.js"
 import { logger } from "./logger.js"
 
 const app = express()
@@ -24,13 +25,11 @@ app.use(express.json())
 
 const store = new OpportunityStore()
 const repository = new OpportunityRepository()
+const crossPlatformRepository = new CrossPlatformRepository()
 const polyClient = new PolymarketClient()
 const kalshiClient = new KalshiClient()
 const poller = new MarketPoller(polyClient, store, repository)
-
-// Cache for cross-platform opportunities
-let crossPlatformCache: CrossPlatformOpportunity[] = []
-let crossPlatformLastUpdated: string | null = null
+const crossPlatformPoller = new CrossPlatformPoller(polyClient, kalshiClient, crossPlatformRepository)
 
 // Health check
 app.get("/health", (_req, res) => {
@@ -54,44 +53,33 @@ app.get("/health/db", async (_req, res) => {
 // Opportunities API (Polymarket single-market)
 app.use("/opportunities", buildOpportunitiesRouter(store, repository))
 
-// Cross-platform arbitrage API
-app.get("/cross-platform", async (_req, res) => {
+// Cross-platform arbitrage API (reads from DB, populated by background poller)
+app.get("/cross-platform", async (req, res) => {
   try {
-    // Get markets from both platforms
-    logger.info("Cross-platform: Starting fetch...")
+    const limit = Number(req.query.limit) || 100
 
-    const [polyMarkets, kalshiMarkets] = await Promise.all([
-      polyClient.getNormalizedMarkets(),
-      kalshiClient.getMarkets(),
-    ])
-
-    logger.info("Cross-platform: Markets fetched", {
-      polymarketCount: polyMarkets.length,
-      kalshiCount: kalshiMarkets.length,
-    })
-
-    // Detect cross-platform opportunities (includes AI verification)
-    const opportunities = await detectCrossPlatformArbitrage(polyMarkets, kalshiMarkets)
-
-    crossPlatformCache = opportunities
-    crossPlatformLastUpdated = new Date().toISOString()
+    // Read from database (fast)
+    const nearResolutionHours = Number((req.query as { nearResolutionHours?: string }).nearResolutionHours) || undefined
+    const sortBy = ((req.query as { sortBy?: string }).sortBy === "endDate" ? "endDate" : "profit") as "profit" | "endDate"
+    const opportunities = await crossPlatformRepository.getActive(limit, nearResolutionHours, sortBy)
+    const stats = await crossPlatformRepository.getStats()
 
     // Filter by confidence if requested
-    const minConfidence = Number((_req.query as { minConfidence?: string }).minConfidence) || 0
-
-    const filtered = opportunities.filter((o) => o.matchConfidence >= minConfidence)
-    const arbCount = opportunities.filter((o) => o.arbitrage.type !== "none").length
-
-    logger.info("Cross-platform: Complete", {
-      totalMatches: opportunities.length,
-      withArbitrage: arbCount,
-    })
+    const minConfidence = Number((req.query as { minConfidence?: string }).minConfidence) || 0
+    const filtered = opportunities.filter((o) => (o.matchConfidence ?? 0) >= minConfidence)
+    const arbCount = opportunities.filter((o) => (o.arbitrage?.profit ?? 0) > 0).length
 
     res.json({
       opportunities: filtered,
-      total: opportunities.length,
+      total: stats.active,
       withArbitrage: arbCount,
-      lastUpdated: crossPlatformLastUpdated,
+      lastUpdated: stats.lastUpdatedAt,
+      pagination: {
+        offset: 0,
+        limit,
+        total: stats.active,
+        hasMore: false,
+      },
     })
   } catch (error) {
     logger.error("Cross-platform fetch failed", { error: (error as Error).message })
@@ -152,14 +140,102 @@ app.get("/opportunities/near-resolution", async (req, res) => {
 })
 
 
+// ============================================
+// Cross-Platform History & Stats API
+// ============================================
+
+// Get history of all opportunities (including expired)
+app.get("/cross-platform/history", async (req, res) => {
+  try {
+    const limit = Number(req.query.limit) || 100
+    const includeExpired = req.query.includeExpired !== "false"
+
+    const history = await crossPlatformRepository.getHistory(limit, includeExpired)
+
+    res.json({
+      opportunities: history,
+      total: history.length,
+      lastUpdated: new Date().toISOString(),
+    })
+  } catch (error) {
+    logger.error("Cross-platform history fetch failed", { error: (error as Error).message })
+    res.status(500).json({ error: (error as Error).message })
+  }
+})
+
+// Get aggregate statistics for dashboard
+app.get("/cross-platform/stats", async (_req, res) => {
+  try {
+    const stats = await crossPlatformRepository.getHistoryStats()
+
+    res.json({
+      ...stats,
+      lastUpdated: new Date().toISOString(),
+    })
+  } catch (error) {
+    logger.error("Cross-platform stats fetch failed", { error: (error as Error).message })
+    res.status(500).json({ error: (error as Error).message })
+  }
+})
+
+// Get opportunity detail by ID
+app.get("/cross-platform/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (isNaN(id)) {
+      res.status(400).json({ error: "Invalid ID" })
+      return
+    }
+
+    const opportunity = await crossPlatformRepository.getById(id)
+    if (!opportunity) {
+      res.status(404).json({ error: "Opportunity not found" })
+      return
+    }
+
+    res.json({ opportunity })
+  } catch (error) {
+    logger.error("Cross-platform detail fetch failed", { error: (error as Error).message })
+    res.status(500).json({ error: (error as Error).message })
+  }
+})
+
+// Get profit snapshots for a specific opportunity (for charts)
+app.get("/cross-platform/:id/snapshots", async (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (isNaN(id)) {
+      res.status(400).json({ error: "Invalid ID" })
+      return
+    }
+
+    const snapshots = await crossPlatformRepository.getSnapshots(id)
+    const opportunity = await crossPlatformRepository.getById(id)
+
+    res.json({
+      opportunity,
+      snapshots,
+      count: snapshots.length,
+      lastUpdated: new Date().toISOString(),
+    })
+  } catch (error) {
+    logger.error("Cross-platform snapshots fetch failed", { error: (error as Error).message })
+    res.status(500).json({ error: (error as Error).message })
+  }
+})
+
 const port = config.port
 const host = config.host
 
 const start = async () => {
-  await poller.start()
+  // Start API server first so it's immediately responsive
   app.listen(port, host, () => {
     logger.info("API listening", { host, port })
   })
+
+  // Then start background pollers
+  await poller.start()
+  await crossPlatformPoller.start()
 }
 
 void start()
@@ -167,6 +243,7 @@ void start()
 const shutdown = async () => {
   logger.info("shutting down")
   await poller.stop()
+  await crossPlatformPoller.stop()
   await pool.end()
   process.exit(0)
 }

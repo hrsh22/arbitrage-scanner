@@ -1,4 +1,4 @@
-import { OpportunityFilter, OpportunitiesResponse, OpportunityStats, HistoryResponse, NearResolutionFilter, NearResolutionResponse, CrossPlatformResponse } from "./types"
+import { OpportunityFilter, OpportunitiesResponse, OpportunityStats, HistoryResponse, NearResolutionFilter, NearResolutionResponse, CrossPlatformResponse, CrossPlatformHistoryResponse, CrossPlatformStats, CrossPlatformSnapshotsResponse } from "./types"
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? ""
 
@@ -90,12 +90,57 @@ export async function postAction(key: string, action: "executed" | "missed"): Pr
 
 export async function fetchCrossPlatform(
   minConfidence = 0,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  sortBy: "profit" | "endDate" = "profit"
 ): Promise<CrossPlatformResponse> {
-  const qs = minConfidence > 0 ? `minConfidence=${minConfidence}` : ""
+  const params = new URLSearchParams()
+  if (minConfidence > 0) params.set("minConfidence", minConfidence.toString())
+  if (sortBy !== "profit") params.set("sortBy", sortBy)
+  const qs = params.toString()
   const res = await fetch(makeUrl("/cross-platform", qs), { signal, cache: "no-store" })
   if (!res.ok) {
     throw new Error(`Failed to load cross-platform opportunities (${res.status})`)
+  }
+  return res.json()
+}
+
+// ============================================
+// Cross-Platform History & Stats API
+// ============================================
+
+export async function fetchCrossPlatformHistory(
+  limit = 100,
+  includeExpired = true,
+  signal?: AbortSignal
+): Promise<CrossPlatformHistoryResponse> {
+  const params = new URLSearchParams()
+  params.set("limit", limit.toString())
+  params.set("includeExpired", includeExpired.toString())
+
+  const res = await fetch(makeUrl("/cross-platform/history", params.toString()), { signal, cache: "no-store" })
+  if (!res.ok) {
+    throw new Error(`Failed to load cross-platform history (${res.status})`)
+  }
+  return res.json()
+}
+
+export async function fetchCrossPlatformStats(
+  signal?: AbortSignal
+): Promise<CrossPlatformStats> {
+  const res = await fetch(makeUrl("/cross-platform/stats"), { signal, cache: "no-store" })
+  if (!res.ok) {
+    throw new Error(`Failed to load cross-platform stats (${res.status})`)
+  }
+  return res.json()
+}
+
+export async function fetchCrossPlatformSnapshots(
+  opportunityId: number,
+  signal?: AbortSignal
+): Promise<CrossPlatformSnapshotsResponse> {
+  const res = await fetch(makeUrl(`/cross-platform/${opportunityId}/snapshots`), { signal, cache: "no-store" })
+  if (!res.ok) {
+    throw new Error(`Failed to load snapshots (${res.status})`)
   }
   return res.json()
 }

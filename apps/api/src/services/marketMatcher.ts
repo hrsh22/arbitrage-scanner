@@ -10,185 +10,204 @@ export type MarketMatch = {
     matchType: "high" | "medium" | "low"
 }
 
+// Common stopwords to exclude from matching
+const STOPWORDS = new Set([
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "as", "is", "was", "are", "were", "been",
+    "be", "have", "has", "had", "do", "does", "did", "will", "would",
+    "could", "should", "may", "might", "must", "shall", "can", "need",
+    "this", "that", "these", "those", "it", "its", "they", "them", "their",
+    "who", "what", "which", "when", "where", "why", "how", "all", "each",
+    "every", "both", "few", "more", "most", "other", "some", "such",
+    "than", "too", "very", "just", "also", "any", "no", "not", "only", "yes"
+])
+
 /**
- * Normalize a market title for comparison
+ * Normalize text for comparison
  */
-function normalizeTitle(title: string): string {
-    return title
+function normalizeText(text: string): string {
+    return text
         .toLowerCase()
-        .replace(/[?!.,'\"]/g, "")
+        .replace(/[?!.,;:'"()[\]{}]/g, " ")
         .replace(/\s+/g, " ")
         .trim()
-        .replace(/federal reserve/g, "fed")
-        .replace(/interest rate/g, "rate")
-        .replace(/basis points?/g, "bps")
-        .replace(/percentage points?/g, "bps")
 }
 
 /**
- * Extract date clues from text
+ * Extract significant words (excluding stopwords)
  */
-function extractDateClues(text: string): { month?: string; year?: string; quarter?: string } {
-    const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
-    const monthsFull = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
-
-    const lower = text.toLowerCase()
-
-    let month: string | undefined
-    for (let i = 0; i < months.length; i++) {
-        const m = months[i]
-        const mf = monthsFull[i]
-        if (m && mf && (lower.includes(m) || lower.includes(mf))) {
-            month = m
-            break
-        }
-    }
-
-    const yearMatch = text.match(/20(2[4-9]|30)/)
-    const year = yearMatch ? yearMatch[0] : undefined
-
-    const quarterMatch = text.match(/q[1-4]/i)
-    const quarter = quarterMatch ? quarterMatch[0].toLowerCase() : undefined
-
-    return { month, year, quarter }
+function extractWords(text: string): Set<string> {
+    const normalized = normalizeText(text)
+    const words = normalized.split(" ").filter(w =>
+        w.length >= 3 && !STOPWORDS.has(w)
+    )
+    return new Set(words)
 }
 
 /**
- * Extract key terms for matching
+ * Extract key matching words for indexing (most informative words)
+ * Returns words that are likely to be unique identifiers
  */
-function extractKeyTerms(text: string): Set<string> {
-    const normalized = normalizeTitle(text)
-    const terms = new Set<string>()
+function extractKeyWords(text: string): Set<string> {
+    const normalized = normalizeText(text)
+    const words = normalized.split(" ").filter(w =>
+        w.length >= 4 && !STOPWORDS.has(w)
+    )
+    return new Set(words)
+}
 
-    if (normalized.includes("fed") || normalized.includes("fomc") || normalized.includes("federal")) {
-        terms.add("fed")
-    }
+/**
+ * Parse close date from market (handles both Date objects and date strings)
+ */
+function parseCloseDate(dateInput: Date | string | null | undefined): Date | null {
+    if (!dateInput) return null
 
-    if (normalized.includes("rate") || normalized.includes("bps") || normalized.includes("cut") || normalized.includes("hike")) {
-        terms.add("rate")
-    }
-
-    const bpsMatch = normalized.match(/(\d+)\s*bps/)
-    if (bpsMatch) {
-        terms.add(`${bpsMatch[1]}bps`)
-    }
-
-    const rateMatch = normalized.match(/(\d+\.?\d*)\s*%/)
-    if (rateMatch) {
-        terms.add(`${rateMatch[1]}%`)
+    // If already a Date, return it (or null if invalid)
+    if (dateInput instanceof Date) {
+        return isNaN(dateInput.getTime()) ? null : dateInput
     }
 
-    if (normalized.includes("decrease") || normalized.includes("cut") || normalized.includes("lower")) {
-        terms.add("cut")
+    // Parse string to Date
+    try {
+        const date = new Date(dateInput)
+        return isNaN(date.getTime()) ? null : date
+    } catch {
+        return null
     }
-    if (normalized.includes("increase") || normalized.includes("hike") || normalized.includes("raise")) {
-        terms.add("hike")
-    }
-    if (normalized.includes("no change") || normalized.includes("unchanged") || normalized.includes("hold")) {
-        terms.add("hold")
-    }
+}
 
-    return terms
+/**
+ * Calculate days between two dates
+ */
+function daysBetween(date1: Date, date2: Date): number {
+    const msPerDay = 1000 * 60 * 60 * 24
+    return Math.abs(date1.getTime() - date2.getTime()) / msPerDay
 }
 
 /**
  * Calculate Jaccard similarity between two sets
  */
 function jaccardSimilarity(set1: Set<string>, set2: Set<string>): number {
-    if (set1.size === 0 && set2.size === 0) return 0
+    if (set1.size === 0 || set2.size === 0) return 0
 
-    const intersection = new Set([...set1].filter((x) => set2.has(x)))
-    const union = new Set([...set1, ...set2])
+    let intersection = 0
+    for (const item of set1) {
+        if (set2.has(item)) intersection++
+    }
 
-    return intersection.size / union.size
-}
-
-/**
- * Simple word overlap similarity
- */
-function wordOverlapSimilarity(text1: string, text2: string): number {
-    const words1 = new Set(normalizeTitle(text1).split(" ").filter((w) => w.length > 2))
-    const words2 = new Set(normalizeTitle(text2).split(" ").filter((w) => w.length > 2))
-
-    return jaccardSimilarity(words1, words2)
+    const union = set1.size + set2.size - intersection
+    return intersection / union
 }
 
 /**
  * Match markets between Polymarket and Kalshi
- * Fast text-only matching - no AI calls
- * Returns all matches >= 70% confidence for further processing
+ * 
+ * OPTIMIZATION: Uses inverted index to avoid O(n*m) full comparison
+ * 1. Build index: keyword -> list of kalshi markets
+ * 2. For each polymarket, only compare with kalshi markets that share keywords
  */
 export function matchMarkets(
     polymarkets: NormalizedMarket[],
     kalshiMarkets: KalshiMarket[]
 ): MarketMatch[] {
-    const matches: MarketMatch[] = []
+    const startTime = Date.now()
 
-    for (const poly of polymarkets) {
-        const polyTitle = poly.question || poly.eventTitle || ""
-        const polyTerms = extractKeyTerms(polyTitle)
-        const polyDates = extractDateClues(polyTitle)
+    // Limit markets to top by liquidity (already sorted by API)
+    const maxMarkets = 10000
+    const polyToMatch = polymarkets.slice(0, maxMarkets)
+    const kalshiToMatch = kalshiMarkets.slice(0, maxMarkets)
 
-        if (polyTerms.size === 0) continue
+    // Build inverted index: keyword -> kalshi market indices
+    const kalshiIndex = new Map<string, number[]>()
+    const kalshiData: { words: Set<string>; closeDate: Date | null }[] = []
 
-        for (const kalshi of kalshiMarkets) {
-            const kalshiTitle = kalshi.title
-            const kalshiTerms = extractKeyTerms(kalshiTitle)
-            const kalshiDates = extractDateClues(kalshiTitle)
+    for (let i = 0; i < kalshiToMatch.length; i++) {
+        const kalshi = kalshiToMatch[i]!
+        const words = extractKeyWords(kalshi.title)
+        const closeDate = parseCloseDate(kalshi.closeTime)
+        kalshiData.push({ words, closeDate })
 
-            if (kalshiTerms.size === 0) continue
-
-            // Calculate term similarity
-            const termSimilarity = jaccardSimilarity(polyTerms, kalshiTerms)
-            const wordSimilarity = wordOverlapSimilarity(polyTitle, kalshiTitle)
-
-            // FILTER: If both have years but they're different, skip (e.g., 2026 vs 2027)
-            if (polyDates.year && kalshiDates.year && polyDates.year !== kalshiDates.year) {
-                continue
+        // Add to index
+        for (const word of words) {
+            if (!kalshiIndex.has(word)) {
+                kalshiIndex.set(word, [])
             }
+            kalshiIndex.get(word)!.push(i)
+        }
+    }
 
-            // FILTER: If both have months but they're different (and no year to disambiguate)
-            if (polyDates.month && kalshiDates.month && polyDates.month !== kalshiDates.month) {
-                // Only skip if no years specified (can't tell if same occurrence)
-                if (!polyDates.year && !kalshiDates.year) {
-                    continue
+    logger.info("Market matcher: Index built", {
+        polyCount: polyToMatch.length,
+        kalshiCount: kalshiToMatch.length,
+        indexSize: kalshiIndex.size,
+    })
+
+    const matches: MarketMatch[] = []
+    let comparisons = 0
+
+    for (const poly of polyToMatch) {
+        const polyTitle = poly.question || poly.eventTitle || ""
+        if (polyTitle.length < 10) continue
+
+        const polyWords = extractWords(polyTitle)
+        const polyKeyWords = extractKeyWords(polyTitle)
+        const polyCloseDate = parseCloseDate(poly.endsAt)
+
+        // Find candidate kalshi markets that share at least one keyword
+        const candidateIndices = new Set<number>()
+        for (const word of polyKeyWords) {
+            const indices = kalshiIndex.get(word)
+            if (indices) {
+                for (const idx of indices) {
+                    candidateIndices.add(idx)
                 }
             }
+        }
 
-            // Date match bonus (after filter)
+        // Only compare with candidates (not all markets)
+        for (const idx of candidateIndices) {
+            comparisons++
+            const kalshi = kalshiToMatch[idx]!
+            const { words: kalshiWords, closeDate: kalshiCloseDate } = kalshiData[idx]!
+
+            // Date filtering and bonus
+            // Only skip if BOTH have dates and they differ by more than 7 days
             let dateBonus = 0
-            if (polyDates.year && polyDates.year === kalshiDates.year) {
-                dateBonus += 0.15
-            }
-            if (polyDates.month && polyDates.month === kalshiDates.month) {
-                dateBonus += 0.15
-            }
-            if (polyDates.quarter && polyDates.quarter === kalshiDates.quarter) {
-                dateBonus += 0.1
-            }
+            if (polyCloseDate && kalshiCloseDate) {
+                const days = daysBetween(polyCloseDate, kalshiCloseDate)
+                if (days > 7) continue // Skip - different resolution dates
 
-            // Both must be Fed-related for bonus
-            const bothFed = polyTerms.has("fed") && kalshiTerms.has("fed")
-            const fedBonus = bothFed ? 0.2 : 0
+                // Date bonus for close dates
+                if (days <= 1) dateBonus = 0.2
+                else if (days <= 7) dateBonus = 0.1
+            }
+            // Note: If one has date and other doesn't, we still allow the match
+            // but give no date bonus - let the AI decide if they're the same
+
+            // Calculate word similarity
+            const wordSimilarity = jaccardSimilarity(polyWords, kalshiWords)
 
             // Calculate final confidence
-            const rawConfidence = (termSimilarity * 0.4) + (wordSimilarity * 0.3) + dateBonus + fedBonus
-            const confidence = Math.min(1, Math.max(0, rawConfidence))
+            const confidence = Math.min(1, (wordSimilarity * 0.8) + dateBonus)
 
-            // Only include if confidence >= 70%
-            if (confidence >= 0.7) {
+            // Include if confidence >= 50% (let AI verify borderline cases)
+            if (confidence >= 0.5) {
                 const reasons: string[] = []
-                if (bothFed) reasons.push("Both Fed-related")
-                if (polyDates.year === kalshiDates.year && polyDates.year) reasons.push(`Same year (${polyDates.year})`)
-                if (polyDates.month === kalshiDates.month && polyDates.month) reasons.push(`Same month (${polyDates.month})`)
-                if (termSimilarity > 0.5) reasons.push("Similar terms")
+                reasons.push(`Words: ${(wordSimilarity * 100).toFixed(0)}%`)
+                if (dateBonus > 0 && polyCloseDate && kalshiCloseDate) {
+                    const days = Math.round(daysBetween(polyCloseDate, kalshiCloseDate))
+                    reasons.push(`Dates: ${days}d apart`)
+                }
+
+                const matchType = confidence >= 0.75 ? "high" :
+                    confidence >= 0.65 ? "medium" : "low"
 
                 matches.push({
                     polymarket: poly,
                     kalshi,
                     confidence,
-                    matchReason: reasons.join(", ") || "Word similarity",
-                    matchType: "high",
+                    matchReason: reasons.join(", "),
+                    matchType,
                 })
             }
         }
@@ -210,9 +229,12 @@ export function matchMarkets(
         }
     }
 
+    const elapsed = Date.now() - startTime
     logger.info("Text similarity matching complete", {
+        comparisons,
         total: matches.length,
-        deduplicated: deduped.length
+        deduplicated: deduped.length,
+        ms: elapsed
     })
 
     return deduped

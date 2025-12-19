@@ -14,16 +14,44 @@ function getMatchBadgeColor(matchType: CrossPlatformOpportunity["matchType"]): s
     }
 }
 
+function formatNumber(num: number | undefined | null): string {
+    if (num == null) return "-"
+    if (num >= 1000000) return `$${(num / 1000000).toFixed(1)}M`
+    if (num >= 1000) return `$${(num / 1000).toFixed(1)}k`
+    return `$${num.toFixed(0)}`
+}
+
+function getTimeUntil(dateStr: string | null | undefined): string | null {
+    if (!dateStr) return null
+    const date = new Date(dateStr)
+    const now = new Date()
+    const diffMs = date.getTime() - now.getTime()
+    if (diffMs < 0) return "Ended"
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+    const diffHours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
+    if (diffDays > 30) return date.toLocaleDateString()
+    if (diffDays > 0) return `${diffDays}d ${diffHours}h`
+    return `${diffHours}h`
+}
+
 export function CrossPlatformCard({ opportunity }: Props) {
     const hasArbitrage = opportunity.arbitrage.type !== "none"
     const profitPct = opportunity.arbitrage.profitPct
 
+    // Use earliest end date between the two platforms
+    const polyEndDate = opportunity.polymarket.endsAt
+    const kalshiEndDate = opportunity.kalshi.closeTime
+    const earliestEndDate = polyEndDate && kalshiEndDate
+        ? new Date(polyEndDate) < new Date(kalshiEndDate) ? polyEndDate : kalshiEndDate
+        : polyEndDate || kalshiEndDate
+    const timeUntil = getTimeUntil(earliestEndDate)
+
     return (
-        <div className={`flex flex-col gap-4 rounded-xl border p-4 shadow-sm transition hover:shadow-md ${hasArbitrage
-                ? "border-emerald-300 bg-emerald-50/60 dark:border-emerald-900/50 dark:bg-emerald-950/40"
-                : "border-slate-200 bg-white/60 dark:border-slate-800 dark:bg-slate-900/40"
+        <div className={`flex flex-col gap-3 rounded-xl border p-4 shadow-sm transition hover:shadow-md ${hasArbitrage
+            ? "border-emerald-300 bg-emerald-50/60 dark:border-emerald-900/50 dark:bg-emerald-950/40"
+            : "border-slate-200 bg-white/60 dark:border-slate-800 dark:bg-slate-900/40"
             }`}>
-            {/* Header */}
+            {/* Header with common info */}
             <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="space-y-1 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -32,8 +60,13 @@ export function CrossPlatformCard({ opportunity }: Props) {
                             {hasArbitrage ? "🔥 Arbitrage Found" : "🔗 Matched Markets"}
                         </span>
                         <span className={`text-xs px-2 py-0.5 rounded-full ${getMatchBadgeColor(opportunity.matchType)}`}>
-                            {opportunity.matchType} match ({(opportunity.matchConfidence * 100).toFixed(0)}%)
+                            {opportunity.matchType} ({(opportunity.matchConfidence * 100).toFixed(0)}%)
                         </span>
+                        {timeUntil && (
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">
+                                ⏰ {timeUntil}
+                            </span>
+                        )}
                     </div>
                     {hasArbitrage && (
                         <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
@@ -47,14 +80,16 @@ export function CrossPlatformCard({ opportunity }: Props) {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {/* Polymarket */}
                 <div className="rounded-lg border border-purple-200 bg-purple-50/50 p-3 dark:border-purple-900/50 dark:bg-purple-950/30">
-                    <div className="flex items-center gap-2 mb-2">
-                        <span className="text-lg">🟣</span>
-                        <span className="font-semibold text-purple-700 dark:text-purple-300">Polymarket</span>
+                    <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                            <span className="text-lg">🟣</span>
+                            <span className="font-semibold text-purple-700 dark:text-purple-300">Polymarket</span>
+                        </div>
                     </div>
                     <div className="text-sm text-slate-700 dark:text-slate-300 line-clamp-2 mb-2">
                         {opportunity.polymarket.question}
                     </div>
-                    <div className="flex gap-4 text-sm">
+                    <div className="flex flex-wrap gap-3 text-sm">
                         <div>
                             <span className="text-slate-500 dark:text-slate-400">YES: </span>
                             <span className="font-medium">{(opportunity.polymarket.yesBestAsk * 100).toFixed(1)}¢</span>
@@ -64,18 +99,24 @@ export function CrossPlatformCard({ opportunity }: Props) {
                             <span className="font-medium">{(opportunity.polymarket.noBestAsk * 100).toFixed(1)}¢</span>
                         </div>
                     </div>
+                    <div className="flex gap-3 text-xs text-slate-500 dark:text-slate-400 mt-2 border-t border-purple-200/50 dark:border-purple-800/50 pt-2">
+                        <div title="Liquidity">💰 {formatNumber(opportunity.polymarket.liquidity)}</div>
+                        <div title="Volume">📊 {formatNumber(opportunity.polymarket.volume)}</div>
+                    </div>
                 </div>
 
                 {/* Kalshi */}
                 <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-3 dark:border-blue-900/50 dark:bg-blue-950/30">
-                    <div className="flex items-center gap-2 mb-2">
-                        <span className="text-lg">🔵</span>
-                        <span className="font-semibold text-blue-700 dark:text-blue-300">Kalshi</span>
+                    <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                            <span className="text-lg">🔵</span>
+                            <span className="font-semibold text-blue-700 dark:text-blue-300">Kalshi</span>
+                        </div>
                     </div>
                     <div className="text-sm text-slate-700 dark:text-slate-300 line-clamp-2 mb-2">
                         {opportunity.kalshi.title}
                     </div>
-                    <div className="flex gap-4 text-sm">
+                    <div className="flex flex-wrap gap-3 text-sm">
                         <div>
                             <span className="text-slate-500 dark:text-slate-400">YES: </span>
                             <span className="font-medium">{(opportunity.kalshi.yesAsk * 100).toFixed(1)}¢</span>
@@ -84,6 +125,10 @@ export function CrossPlatformCard({ opportunity }: Props) {
                             <span className="text-slate-500 dark:text-slate-400">NO: </span>
                             <span className="font-medium">{(opportunity.kalshi.noAsk * 100).toFixed(1)}¢</span>
                         </div>
+                    </div>
+                    <div className="flex gap-3 text-xs text-slate-500 dark:text-slate-400 mt-2 border-t border-blue-200/50 dark:border-blue-800/50 pt-2">
+                        <div title="Liquidity">💰 {formatNumber(opportunity.kalshi.liquidity)}</div>
+                        <div title="Volume">📊 {formatNumber(opportunity.kalshi.volume)}</div>
                     </div>
                 </div>
             </div>
@@ -104,11 +149,6 @@ export function CrossPlatformCard({ opportunity }: Props) {
                     </div>
                 </div>
             )}
-
-            {/* Match reason */}
-            <div className="text-xs text-slate-500 dark:text-slate-400">
-                Match reason: {opportunity.matchReason}
-            </div>
 
             {/* Actions */}
             <div className="flex gap-2 flex-wrap">

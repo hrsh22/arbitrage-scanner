@@ -6,10 +6,13 @@ type GammaMarket = {
   id?: string
   slug?: string
   question?: string
+  description?: string  // Resolution rules
   endDate?: string
   outcomes?: string
   outcomePrices?: string
   clobTokenIds?: string
+  liquidity?: string
+  volume?: string
 }
 
 type GammaEvent = {
@@ -128,11 +131,11 @@ export class PolymarketClient {
   }
 
   /**
-   * Fetch 500 events in parallel (5 batches of 100) sorted by liquidity
+   * Fetch 2000 events in parallel (20 batches of 100) sorted by liquidity
    * PLUS fetch 100 events closing soon to ensure near-resolution coverage
    */
   private async fetchTopEvents(): Promise<GammaEvent[]> {
-    const batchOffsets = [0, 100, 200, 300, 400]
+    const batchOffsets = [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900]
 
     // Fetch top liquidity batches
     const liquidityPromise = Promise.all(
@@ -255,6 +258,7 @@ export class PolymarketClient {
       id: market.id,
       slug: market.slug ?? event.slug,
       question: market.question ?? event.title ?? "",
+      description: market.description,  // Resolution rules
       status: "active",
       eventId: event.id,
       eventSlug: event.slug,
@@ -357,5 +361,141 @@ export class PolymarketClient {
     })
 
     return allMarkets
+  }
+
+  /**
+   * Get markets with basic pricing (mid-prices only, no order books)
+   * This is fast and suitable for initial text matching.
+   * Use enrichMarketsWithOrderBooks() after matching to get order book data.
+   */
+  async getMarketsBasic(): Promise<NormalizedMarket[]> {
+    const startTime = Date.now()
+
+    // Fetch events
+    const events = await this.fetchTopEvents()
+
+    // Collect all binary markets with basic pricing
+    const markets: NormalizedMarket[] = []
+
+    for (const event of events) {
+      if (!event.markets) continue
+
+      for (const market of event.markets) {
+        if (!market.id) continue
+
+        const outcomeNames = parseJsonArray(market.outcomes)
+        const tokenIds = parseJsonArray(market.clobTokenIds)
+        const outcomePrices = parseJsonArray(market.outcomePrices)
+
+        // Only binary markets
+        if (outcomeNames.length !== 2 || tokenIds.length !== 2) continue
+
+        const yesMidPrice = toNumber(outcomePrices[0])
+        const noMidPrice = toNumber(outcomePrices[1])
+
+        // Skip markets with no pricing
+        if (yesMidPrice === null && noMidPrice === null) continue
+
+        const outcomes: NormalizedOutcome[] = [
+          {
+            id: tokenIds[0] || "yes",
+            name: outcomeNames[0] || "Yes",
+            midPrice: yesMidPrice,
+            bestBid: yesMidPrice ? yesMidPrice - 0.01 : null, // Estimate
+            bestAsk: yesMidPrice ? yesMidPrice + 0.01 : null,
+            availableLiquidity: 0,
+          },
+          {
+            id: tokenIds[1] || "no",
+            name: outcomeNames[1] || "No",
+            midPrice: noMidPrice,
+            bestBid: noMidPrice ? noMidPrice - 0.01 : null,
+            bestAsk: noMidPrice ? noMidPrice + 0.01 : null,
+            availableLiquidity: 0,
+          },
+        ]
+
+        markets.push({
+          id: market.id,
+          slug: market.slug ?? event.slug,
+          question: market.question ?? event.title ?? "",
+          description: market.description,
+          status: "active",
+          eventId: event.id,
+          eventSlug: event.slug,
+          eventTitle: event.title,
+          eventStartDate: event.startDate ? new Date(event.startDate) : null,
+          eventEndDate: event.endDate ? new Date(event.endDate) : null,
+          endsAt: market.endDate ? new Date(market.endDate) : null,
+          outcomes,
+          liquidity: toNumber(market.liquidity) ?? undefined,
+          volume: toNumber(market.volume) ?? undefined,
+          _tokenIds: tokenIds, // Keep for later order book fetch
+        })
+      }
+    }
+
+    const totalTime = Date.now() - startTime
+    logger.info("Fetched markets (basic pricing)", {
+      markets: markets.length,
+      totalTimeMs: totalTime,
+    })
+
+    return markets
+  }
+
+  /**
+   * Enrich specific markets with order book data.
+   * Call this after matching to get accurate bid/ask prices.
+   */
+  async enrichMarketsWithOrderBooks(markets: NormalizedMarket[]): Promise<NormalizedMarket[]> {
+    const startTime = Date.now()
+    const enriched: NormalizedMarket[] = []
+
+    // Batch fetch order books
+    const batchSize = 20
+    for (let i = 0; i < markets.length; i += batchSize) {
+      const batch = markets.slice(i, i + batchSize)
+
+      const results = await Promise.all(
+        batch.map(async (market) => {
+          const tokenIds = (market as NormalizedMarket & { _tokenIds?: string[] })._tokenIds
+          if (!tokenIds || tokenIds.length !== 2) return market
+
+          const [yesBook, noBook] = await Promise.all([
+            this.fetchOrderBook(tokenIds[0]!),
+            this.fetchOrderBook(tokenIds[1]!),
+          ])
+
+          return {
+            ...market,
+            outcomes: [
+              {
+                ...market.outcomes[0]!,
+                bestBid: yesBook.bestBid,
+                bestAsk: yesBook.bestAsk,
+                availableLiquidity: yesBook.liquidity,
+              },
+              {
+                ...market.outcomes[1]!,
+                bestBid: noBook.bestBid,
+                bestAsk: noBook.bestAsk,
+                availableLiquidity: noBook.liquidity,
+              },
+            ],
+          }
+        })
+      )
+
+      enriched.push(...results)
+    }
+
+    const totalTime = Date.now() - startTime
+    logger.info("Enriched markets with order books", {
+      markets: enriched.length,
+      totalTimeMs: totalTime,
+    })
+
+    return enriched
   }
 }

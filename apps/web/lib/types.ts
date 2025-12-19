@@ -123,6 +123,9 @@ export type CrossPlatformOpportunity = {
     url: string
     yesBestAsk: number
     noBestAsk: number
+    endsAt?: string | null
+    liquidity?: number | null
+    volume?: number | null
   }
 
   kalshi: {
@@ -131,6 +134,9 @@ export type CrossPlatformOpportunity = {
     url: string
     yesAsk: number
     noAsk: number
+    closeTime?: string | null
+    volume?: number | null
+    liquidity?: number | null
   }
 
   arbitrage: {
@@ -148,5 +154,67 @@ export type CrossPlatformResponse = {
   opportunities: CrossPlatformOpportunity[]
   total: number
   withArbitrage: number
+  lastUpdated: string
+}
+
+// History item with duration and profit stats
+export type CrossPlatformHistoryItem = {
+  id: number
+  polymarketQuestion: string
+  kalshiTitle: string
+  peakProfitPct: number
+  minProfitPct: number
+  avgProfitPct: number
+  durationMinutes: number
+  snapshotCount: number
+  detectedAt: string
+  expiredAt?: string
+  isActive: boolean
+}
+
+// Snapshot for chart data
+export type CrossPlatformSnapshot = {
+  snapshotAt: string
+  profitPct: number
+  spread: number
+  polyYesAsk: number
+  polyNoAsk: number
+  kalshiYesAsk: number
+  kalshiNoAsk: number
+}
+
+// Aggregate stats for dashboard
+export type CrossPlatformStats = {
+  totalOpportunities: number
+  activeCount: number
+  expiredCount: number
+  avgDurationMinutes: number
+  maxProfitPct: number
+  avgProfitPct: number
+  totalSnapshots: number
+  lastUpdated: string
+}
+
+// History API response
+export type CrossPlatformHistoryResponse = {
+  opportunities: CrossPlatformHistoryItem[]
+  total: number
+  lastUpdated: string
+}
+
+// Snapshots API response (for charts)
+export type CrossPlatformSnapshotsResponse = {
+  opportunity: {
+    id: number
+    polymarketQuestion: string
+    polymarketUrl: string
+    kalshiTitle: string
+    kalshiUrl: string
+    isActive: boolean
+    detectedAt: string
+    expiredAt?: string
+  } | null
+  snapshots: CrossPlatformSnapshot[]
+  count: number
   lastUpdated: string
 }

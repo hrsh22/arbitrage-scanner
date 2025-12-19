@@ -104,3 +104,70 @@ export const aiCallLog = pgTable("ai_call_log", {
 }, (table) => ({
   dateIdx: index("ai_call_log_date_idx").on(table.callDate),
 }))
+
+// Cross-Platform Opportunities - stores detected Polymarket vs Kalshi arbitrage
+export const crossPlatformOpportunities = pgTable("cross_platform_opportunities", {
+  id: serial("id").primaryKey(),
+  // Polymarket side
+  polymarketId: text("polymarket_id").notNull(),
+  polymarketQuestion: text("polymarket_question").notNull(),
+  polymarketSlug: text("polymarket_slug"),
+  polyYesBid: numeric("poly_yes_bid", { precision: 10, scale: 4 }),
+  polyYesAsk: numeric("poly_yes_ask", { precision: 10, scale: 4 }),
+  polyNoBid: numeric("poly_no_bid", { precision: 10, scale: 4 }),
+  polyNoAsk: numeric("poly_no_ask", { precision: 10, scale: 4 }),
+  polyEndsAt: timestamp("poly_ends_at", { withTimezone: true }),
+  polyLiquidity: numeric("poly_liquidity", { precision: 18, scale: 2 }),
+  polyVolume: numeric("poly_volume", { precision: 18, scale: 2 }),
+  // Kalshi side
+  kalshiTicker: text("kalshi_ticker").notNull(),
+  kalshiEventTicker: text("kalshi_event_ticker"),  // Event ticker for URL building
+  kalshiTitle: text("kalshi_title").notNull(),
+  kalshiYesBid: numeric("kalshi_yes_bid", { precision: 10, scale: 4 }),
+  kalshiYesAsk: numeric("kalshi_yes_ask", { precision: 10, scale: 4 }),
+  kalshiNoBid: numeric("kalshi_no_bid", { precision: 10, scale: 4 }),
+  kalshiNoAsk: numeric("kalshi_no_ask", { precision: 10, scale: 4 }),
+  kalshiEndsAt: timestamp("kalshi_ends_at", { withTimezone: true }),
+  kalshiVolume: numeric("kalshi_volume", { precision: 18, scale: 2 }),
+  kalshiLiquidity: numeric("kalshi_liquidity", { precision: 18, scale: 2 }),
+  // Arbitrage info
+  arbitrageType: text("arbitrage_type"),  // poly-yes-kalshi-no, poly-no-kalshi-yes, none
+  arbitrageInstruction: text("arbitrage_instruction"),
+  spread: numeric("spread", { precision: 10, scale: 4 }),
+  potentialProfit: numeric("potential_profit", { precision: 10, scale: 4 }),
+  // Match info
+  matchConfidence: numeric("match_confidence", { precision: 5, scale: 4 }),
+  matchReason: text("match_reason"),
+  aiVerified: boolean("ai_verified").default(false),
+  aiReason: text("ai_reason"),
+  // Status
+  isActive: boolean("is_active").default(true),
+  expiredAt: timestamp("expired_at", { withTimezone: true }),  // When opportunity became inactive
+  detectedAt: timestamp("detected_at", { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  activeIdx: index("cp_opp_active_idx").on(table.isActive),
+  detectedIdx: index("cp_opp_detected_idx").on(table.detectedAt),
+  polymarketIdx: index("cp_opp_polymarket_idx").on(table.polymarketId),
+  kalshiIdx: index("cp_opp_kalshi_idx").on(table.kalshiTicker),
+}))
+
+// Cross-Platform Snapshots - tracks profit percentage changes over time
+export const crossPlatformSnapshots = pgTable("cross_platform_snapshots", {
+  id: serial("id").primaryKey(),
+  opportunityId: integer("opportunity_id").notNull()
+    .references(() => crossPlatformOpportunities.id, { onDelete: "cascade" }),
+  profitPct: numeric("profit_pct", { precision: 10, scale: 4 }),
+  spread: numeric("spread", { precision: 10, scale: 4 }),
+  polyYesAsk: numeric("poly_yes_ask", { precision: 10, scale: 4 }),
+  polyNoAsk: numeric("poly_no_ask", { precision: 10, scale: 4 }),
+  kalshiYesAsk: numeric("kalshi_yes_ask", { precision: 10, scale: 4 }),
+  kalshiNoAsk: numeric("kalshi_no_ask", { precision: 10, scale: 4 }),
+  snapshotAt: timestamp("snapshot_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  opportunityIdx: index("cp_snapshot_opp_idx").on(table.opportunityId),
+  snapshotIdx: index("cp_snapshot_time_idx").on(table.snapshotAt),
+}))
+

@@ -5,6 +5,7 @@ export type KalshiMarket = {
     ticker: string
     title: string
     subtitle: string
+    rulesPrimary: string  // Resolution rules
     status: string
     eventTicker: string
     eventTitle?: string
@@ -15,6 +16,7 @@ export type KalshiMarket = {
     noAsk: number
     lastPrice: number
     volume: number
+    liquidity: number
     closeTime: string
     expirationTime: string
 }
@@ -23,6 +25,7 @@ type KalshiApiMarket = {
     ticker: string
     title: string
     subtitle?: string
+    rules_primary?: string  // Resolution rules
     status: string
     event_ticker: string
     yes_bid: number
@@ -31,6 +34,7 @@ type KalshiApiMarket = {
     no_ask: number
     last_price: number
     volume: number
+    liquidity?: number  // In cents
     close_time: string
     expiration_time: string
 }
@@ -51,7 +55,8 @@ export class KalshiClient {
     private async fetchJson<T>(url: string): Promise<T> {
         for (let attempt = 0; attempt <= config.requestRetries; attempt++) {
             const controller = new AbortController()
-            const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs)
+            // Use longer timeout for Kalshi API (60 seconds)
+            const timeout = setTimeout(() => controller.abort(), 60000)
             try {
                 const response = await fetch(url, {
                     signal: controller.signal,
@@ -82,6 +87,7 @@ export class KalshiClient {
             ticker: m.ticker,
             title: m.title,
             subtitle: m.subtitle ?? "",
+            rulesPrimary: m.rules_primary ?? "",  // Resolution rules
             status: m.status,
             eventTicker: m.event_ticker,
             yesBid: this.centsToDecimal(m.yes_bid ?? 0),
@@ -90,6 +96,7 @@ export class KalshiClient {
             noAsk: this.centsToDecimal(m.no_ask ?? 0),
             lastPrice: this.centsToDecimal(m.last_price ?? 0),
             volume: m.volume ?? 0,
+            liquidity: (m.liquidity ?? 0) / 100,  // Convert cents to dollars
             closeTime: m.close_time,
             expirationTime: m.expiration_time,
         }
@@ -155,7 +162,7 @@ export class KalshiClient {
     private async fetchMarketsInternal(): Promise<KalshiMarket[]> {
         const startTime = Date.now()
 
-        const allMarkets = await this.fetchAllMarkets(3000)
+        const allMarkets = await this.fetchAllMarkets(10000)
 
         this.cachedMarkets = allMarkets
         this.lastFetchedAt = Date.now()

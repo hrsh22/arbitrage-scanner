@@ -1,6 +1,7 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, useRef, useCallback } from "react"
+import { useSearchParams, useRouter } from "next/navigation"
 import { Filters } from "@/components/filters"
 import { OpportunityCard } from "@/components/opportunity-card"
 import { NearResolutionCard } from "@/components/near-resolution-card"
@@ -20,10 +21,13 @@ const defaultNearResolutionFilter: NearResolutionFilter = {
   sort: "time",
 }
 
-type TabType = "near-resolution" | "cross-platform" | "live" | "history"
+type TabType = "cross-platform" | "near-resolution" | "live" | "history"
 
 export default function Page() {
-  const [tab, setTab] = useState<TabType>("near-resolution")
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const tabFromUrl = searchParams.get("tab") as TabType | null
+  const [tab, setTab] = useState<TabType>(tabFromUrl || "cross-platform")
   const [filter, setFilter] = useState<OpportunityFilter>(defaultFilter)
   const [nearResFilter, setNearResFilter] = useState<NearResolutionFilter>(defaultNearResolutionFilter)
   const [refreshMs, setRefreshMs] = useState<number>(10000)
@@ -36,7 +40,18 @@ export default function Page() {
   const [stats, setStats] = useState<OpportunityStats | null>(null)
   const [historyStats, setHistoryStats] = useState<{ total: number; active: number; expired: number } | null>(null)
   const [crossPlatformOpportunities, setCrossPlatformOpportunities] = useState<CrossPlatformOpportunity[]>([])
-  const [polyArbitrageEnabled, setPolyArbitrageEnabled] = useState<boolean>(true)
+  const [crossPlatformLastUpdated, setCrossPlatformLastUpdated] = useState<string | null>(null)
+  const [crossPlatformSort, setCrossPlatformSort] = useState<"profit" | "endDate">("profit")
+  const [polyArbitrageEnabled, setPolyArbitrageEnabled] = useState<boolean>(false)
+  const isCrossPlatformFetching = useRef(false)
+
+  // Update URL when tab changes
+  const handleTabChange = useCallback((newTab: TabType) => {
+    setTab(newTab)
+    const params = new URLSearchParams(searchParams.toString())
+    params.set("tab", newTab)
+    router.replace(`?${params.toString()}`, { scroll: false })
+  }, [router, searchParams])
 
   // Fetch live opportunities
   useEffect(() => {
@@ -85,43 +100,31 @@ export default function Page() {
     }
   }, [filter, refreshMs, tab])
 
-  // Fetch near-resolution opportunities
+  // Fetch near-resolution opportunities (on-demand, no polling)
+  const [nearResLoading, setNearResLoading] = useState(false)
+
+  const refreshNearResolution = useCallback(async () => {
+    setNearResLoading(true)
+    try {
+      const res = await fetchNearResolution(nearResFilter)
+      setNearResOpportunities(res.opportunities ?? [])
+      setLastUpdated(res.lastUpdated ?? null)
+      setError(null)
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setNearResLoading(false)
+    }
+  }, [nearResFilter])
+
+  // Load near-resolution when tab is first opened
   useEffect(() => {
     if (tab !== "near-resolution") return
-
-    let isMounted = true
-    let interval: NodeJS.Timeout | null = null
-
-    const load = async (signal?: AbortSignal) => {
-      try {
-        setLoading(true)
-        const res = await fetchNearResolution(nearResFilter, signal)
-        if (!isMounted) return
-        setNearResOpportunities(res.opportunities ?? [])
-        setLastUpdated(res.lastUpdated ?? null)
-        setError(null)
-      } catch (err) {
-        if (!isMounted) return
-        setError((err as Error).message)
-      } finally {
-        if (isMounted) setLoading(false)
-      }
+    // Only load if no data yet
+    if (nearResOpportunities.length === 0) {
+      void refreshNearResolution()
     }
-
-    const controller = new AbortController()
-    void load(controller.signal)
-
-    interval = setInterval(() => {
-      const tickController = new AbortController()
-      void load(tickController.signal)
-    }, refreshMs)
-
-    return () => {
-      isMounted = false
-      controller.abort()
-      if (interval) clearInterval(interval)
-    }
-  }, [nearResFilter, refreshMs, tab])
+  }, [tab]) // Intentionally not including refreshNearResolution to avoid re-fetching on filter change
 
   // Fetch history
   useEffect(() => {
@@ -161,32 +164,40 @@ export default function Page() {
     let isMounted = true
     const controller = new AbortController()
 
-    const loadCrossPlatform = async () => {
+    const loadCrossPlatform = async (isRefresh = false) => {
+      // Skip if already fetching
+      if (isCrossPlatformFetching.current) return
+
+      isCrossPlatformFetching.current = true
       try {
-        setLoading(true)
-        const res = await fetchCrossPlatform(0, controller.signal)
+        // Only show loading if no existing data (first load or after error)
+        // Only show loading if no existing data AND not a background refresh
+        if (!isRefresh && crossPlatformOpportunities.length === 0) setLoading(true)
+        const res = await fetchCrossPlatform(0, controller.signal, crossPlatformSort)
         if (!isMounted) return
         setCrossPlatformOpportunities(res.opportunities ?? [])
+        if (res.lastUpdated) setCrossPlatformLastUpdated(res.lastUpdated)
         setError(null)
       } catch (err) {
         if (!isMounted) return
         setError((err as Error).message)
       } finally {
-        if (isMounted) setLoading(false)
+        isCrossPlatformFetching.current = false
+        if (isMounted && !isRefresh) setLoading(false)
       }
     }
 
-    void loadCrossPlatform()
+    void loadCrossPlatform(false)
 
-    // Refresh every 30s (slower to avoid Kalshi rate limits)
-    const interval = setInterval(() => void loadCrossPlatform(), 30000)
+    // Refresh every 10s silently
+    const interval = setInterval(() => void loadCrossPlatform(true), 10000)
 
     return () => {
       isMounted = false
       controller.abort()
       clearInterval(interval)
     }
-  }, [tab])
+  }, [tab, crossPlatformSort])
 
   // Fetch stats
   useEffect(() => {
@@ -210,9 +221,28 @@ export default function Page() {
     }
   }, [])
 
-  // Check if Polymarket arbitrage feature is enabled on initial load
+  // Initial data fetch on page load - pre-fetch all sections
   useEffect(() => {
-    const checkFeature = async () => {
+    const loadInitialData = async () => {
+      // Fetch Near Resolution data
+      try {
+        const nearRes = await fetchNearResolution(defaultNearResolutionFilter)
+        setNearResOpportunities(nearRes.opportunities ?? [])
+        setLastUpdated(nearRes.lastUpdated ?? null)
+      } catch {
+        // Ignore errors on initial load
+      }
+
+      // Fetch Cross-Platform data
+      try {
+        const crossRes = await fetchCrossPlatform(0, undefined, "profit")
+        setCrossPlatformOpportunities(crossRes.opportunities ?? [])
+        if (crossRes.lastUpdated) setCrossPlatformLastUpdated(crossRes.lastUpdated)
+      } catch {
+        // Ignore errors on initial load
+      }
+
+      // Check if Polymarket arbitrage is enabled
       try {
         const res = await fetchOpportunities(defaultFilter, undefined)
         setPolyArbitrageEnabled(res.enabled !== false)
@@ -220,12 +250,29 @@ export default function Page() {
         // On error, assume enabled
       }
     }
-    void checkFeature()
+
+    void loadInitialData()
   }, [])
 
   const lastUpdatedText = lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : "—"
   const displayOpportunities = tab === "live" ? opportunities : tab === "history" ? historyOpportunities : []
   const totalProfit = displayOpportunities.reduce((sum, o) => sum + o.profitAbsolute, 0)
+
+  // Sort cross-platform: arbitrage opportunities first, then apply selected sort within each group
+  const sortedCrossPlatformOpportunities = [...crossPlatformOpportunities].sort((a, b) => {
+    const aHasArb = a.arbitrage.type !== "none" ? 1 : 0
+    const bHasArb = b.arbitrage.type !== "none" ? 1 : 0
+    // Arbitrage opportunities first
+    if (aHasArb !== bHasArb) return bHasArb - aHasArb
+    // Within same group, apply selected sort
+    if (crossPlatformSort === "endDate") {
+      const aEnd = a.polymarket.endsAt ? new Date(a.polymarket.endsAt).getTime() : Infinity
+      const bEnd = b.polymarket.endsAt ? new Date(b.polymarket.endsAt).getTime() : Infinity
+      return aEnd - bEnd
+    }
+    // Default: sort by profit descending
+    return b.arbitrage.profitPct - a.arbitrage.profitPct
+  })
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-6 md:px-8">
@@ -238,6 +285,21 @@ export default function Page() {
             Find guaranteed profit opportunities where total outcome prices &lt; $1
           </p>
         </div>
+        {tab === "cross-platform" && crossPlatformLastUpdated && (
+          <div className="flex items-center gap-4">
+            <div className="text-sm text-slate-600 dark:text-slate-300">
+              Last updated: <span className="font-semibold">{new Date(crossPlatformLastUpdated).toLocaleTimeString()}</span>
+            </div>
+            <select
+              value={crossPlatformSort}
+              onChange={(e) => setCrossPlatformSort(e.target.value as "profit" | "endDate")}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 shadow-sm hover:border-slate-400 focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
+            >
+              <option value="profit">Sort: Highest Profit</option>
+              <option value="endDate">Sort: Ending Soon</option>
+            </select>
+          </div>
+        )}
         {(tab === "live" || tab === "near-resolution") && (
           <div className="text-sm text-slate-600 dark:text-slate-300">
             Last updated: <span className="font-semibold">{lastUpdatedText}</span>
@@ -248,16 +310,7 @@ export default function Page() {
       {/* Tab Navigation */}
       <div className="flex gap-2 border-b border-slate-200 dark:border-slate-700">
         <button
-          onClick={() => setTab("near-resolution")}
-          className={`px-4 py-2 text-sm font-medium transition ${tab === "near-resolution"
-            ? "border-b-2 border-blue-500 text-blue-600 dark:text-blue-400"
-            : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
-            }`}
-        >
-          ⏰ Near Resolution ({nearResOpportunities.length})
-        </button>
-        <button
-          onClick={() => setTab("cross-platform")}
+          onClick={() => handleTabChange("cross-platform")}
           className={`px-4 py-2 text-sm font-medium transition ${tab === "cross-platform"
             ? "border-b-2 border-purple-500 text-purple-600 dark:text-purple-400"
             : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
@@ -265,9 +318,18 @@ export default function Page() {
         >
           🔄 Poly↔Kalshi ({crossPlatformOpportunities.length})
         </button>
+        <button
+          onClick={() => handleTabChange("near-resolution")}
+          className={`px-4 py-2 text-sm font-medium transition ${tab === "near-resolution"
+            ? "border-b-2 border-blue-500 text-blue-600 dark:text-blue-400"
+            : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+            }`}
+        >
+          ⏰ Near Resolution ({nearResOpportunities.length})
+        </button>
         {polyArbitrageEnabled && (
           <button
-            onClick={() => setTab("live")}
+            onClick={() => handleTabChange("live")}
             className={`px-4 py-2 text-sm font-medium transition ${tab === "live"
               ? "border-b-2 border-emerald-500 text-emerald-600 dark:text-emerald-400"
               : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
@@ -278,7 +340,7 @@ export default function Page() {
         )}
         {polyArbitrageEnabled && (
           <button
-            onClick={() => setTab("history")}
+            onClick={() => handleTabChange("history")}
             className={`px-4 py-2 text-sm font-medium transition ${tab === "history"
               ? "border-b-2 border-emerald-500 text-emerald-600 dark:text-emerald-400"
               : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
@@ -290,34 +352,34 @@ export default function Page() {
       </div>
 
       {/* Stats Summary */}
-      {stats && (
-        <div className="grid grid-cols-2 gap-4 rounded-lg bg-slate-100 p-4 text-sm dark:bg-slate-800 sm:grid-cols-4">
+      <div className={`grid gap-4 rounded-lg bg-slate-100 p-4 text-sm dark:bg-slate-800 ${polyArbitrageEnabled && stats ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'}`}>
+        <div>
+          <div className="font-semibold text-blue-600 dark:text-blue-400 text-lg">
+            {nearResOpportunities.length}
+          </div>
+          <div className="text-slate-600 dark:text-slate-400">⏰ Near Resolution</div>
+        </div>
+        <div>
+          <div className="font-semibold text-purple-600 dark:text-purple-400 text-lg">
+            {crossPlatformOpportunities.filter(o => o.arbitrage.type !== "none").length}
+          </div>
+          <div className="text-slate-600 dark:text-slate-400">🔄 Cross-Platform Arbs</div>
+        </div>
+        <div>
+          <div className="font-semibold text-slate-600 dark:text-slate-300 text-lg">
+            {crossPlatformOpportunities.length}
+          </div>
+          <div className="text-slate-600 dark:text-slate-400">📊 Market Matches</div>
+        </div>
+        {polyArbitrageEnabled && stats && (
           <div>
-            <div className="font-semibold text-emerald-600 dark:text-emerald-400">
+            <div className="font-semibold text-emerald-600 dark:text-emerald-400 text-lg">
               {stats.opportunities.active}
             </div>
-            <div className="text-slate-600 dark:text-slate-400">Active Arb</div>
+            <div className="text-slate-600 dark:text-slate-400">🔴 Poly Arb</div>
           </div>
-          <div>
-            <div className="font-semibold text-blue-600 dark:text-blue-400">
-              {nearResOpportunities.length}
-            </div>
-            <div className="text-slate-600 dark:text-slate-400">Near Resolution</div>
-          </div>
-          <div>
-            <div className="font-semibold text-emerald-600 dark:text-emerald-400">
-              {stats.actions.executed}
-            </div>
-            <div className="text-slate-600 dark:text-slate-400">Executed</div>
-          </div>
-          <div>
-            <div className="font-semibold text-slate-700 dark:text-slate-200">
-              ${stats.actions.actualProfit.toFixed(2)}
-            </div>
-            <div className="text-slate-600 dark:text-slate-400">Total Profit</div>
-          </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Filters for Live tab */}
       {tab === "live" && (
@@ -395,12 +457,29 @@ export default function Page() {
                 📈 Highest Odds
               </button>
             </div>
+
+            {/* Refresh Button */}
+            <button
+              onClick={() => void refreshNearResolution()}
+              disabled={nearResLoading}
+              className="ml-auto flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-500 dark:hover:bg-blue-600"
+            >
+              {nearResLoading ? (
+                <>
+                  <span className="animate-spin">⏳</span> Refreshing...
+                </>
+              ) : (
+                <>
+                  🔄 Refresh
+                </>
+              )}
+            </button>
           </div>
         </div>
       )}
 
       {/* Loading / Error / Empty states */}
-      {loading && (tab === "live" ? opportunities : tab === "near-resolution" ? nearResOpportunities : historyOpportunities).length === 0 && (
+      {loading && tab !== "cross-platform" && (tab === "live" ? opportunities : tab === "near-resolution" ? nearResOpportunities : historyOpportunities).length === 0 && (
         <div className="flex items-center justify-center py-12 text-slate-500 dark:text-slate-400">
           <div className="flex flex-col items-center gap-2">
             <div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent"></div>
@@ -492,8 +571,14 @@ export default function Page() {
                 </span>
               )}
             </span>
+            <a
+              href="/cross-platform/history"
+              className="flex items-center gap-1.5 rounded-lg bg-purple-100 px-3 py-1.5 text-sm font-medium text-purple-700 transition hover:bg-purple-200 dark:bg-purple-900/50 dark:text-purple-300 dark:hover:bg-purple-800/50"
+            >
+              📊 History & Stats
+            </a>
           </div>
-          {crossPlatformOpportunities.map((opportunity) => (
+          {sortedCrossPlatformOpportunities.map((opportunity) => (
             <CrossPlatformCard
               key={opportunity.id}
               opportunity={opportunity}

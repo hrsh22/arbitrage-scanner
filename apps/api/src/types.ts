@@ -12,6 +12,7 @@ export type NormalizedOutcome = {
 export type NormalizedMarket = {
   id: string
   question: string
+  description?: string  // Resolution rules
   slug?: string
   status: string
   eventId?: string
@@ -21,6 +22,9 @@ export type NormalizedMarket = {
   eventEndDate?: Date | null
   endsAt?: Date | null
   outcomes: NormalizedOutcome[]
+  liquidity?: number   // Market-level liquidity from Gamma API
+  volume?: number      // Market-level volume from Gamma API
+  _tokenIds?: string[]  // Internal: used for order book enrichment
 }
 
 export type OutcomePrice = {
