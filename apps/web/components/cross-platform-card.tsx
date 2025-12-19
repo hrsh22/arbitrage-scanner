@@ -1,17 +1,15 @@
 "use client"
 
 import { CrossPlatformOpportunity } from "@/lib/types"
+import { Card, CardContent } from "@workspace/ui/components/card"
+import { Badge } from "@workspace/ui/components/badge"
+import { Button } from "@workspace/ui/components/button"
+import { Separator } from "@workspace/ui/components/separator"
+import { ExternalLink, Clock, TrendingUp, DollarSign, BarChart3 } from "lucide-react"
+import { cn } from "@workspace/ui/lib/utils"
 
 type Props = {
     opportunity: CrossPlatformOpportunity
-}
-
-function getMatchBadgeColor(matchType: CrossPlatformOpportunity["matchType"]): string {
-    switch (matchType) {
-        case "high": return "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
-        case "medium": return "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300"
-        case "low": return "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
-    }
 }
 
 function formatNumber(num: number | undefined | null): string {
@@ -21,154 +19,185 @@ function formatNumber(num: number | undefined | null): string {
     return `$${num.toFixed(0)}`
 }
 
-function getTimeUntil(dateStr: string | null | undefined): string | null {
+function formatDate(dateStr: string | null | undefined): string | null {
     if (!dateStr) return null
     const date = new Date(dateStr)
     const now = new Date()
     const diffMs = date.getTime() - now.getTime()
+
     if (diffMs < 0) return "Ended"
+
     const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
     const diffHours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
-    if (diffDays > 30) return date.toLocaleDateString()
+
+    // For dates more than 7 days away, show "Jan 15, 2025" format
+    if (diffDays > 7) {
+        return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+    }
+    // For dates within a week, show "5d 12h" format
     if (diffDays > 0) return `${diffDays}d ${diffHours}h`
-    return `${diffHours}h`
+    // For same day, show hours
+    if (diffHours > 0) return `${diffHours}h`
+    // Less than an hour
+    const diffMins = Math.floor(diffMs / (1000 * 60))
+    return `${diffMins}m`
 }
 
 export function CrossPlatformCard({ opportunity }: Props) {
     const hasArbitrage = opportunity.arbitrage.type !== "none"
     const profitPct = opportunity.arbitrage.profitPct
 
-    // Use earliest end date between the two platforms
     const polyEndDate = opportunity.polymarket.endsAt
     const kalshiEndDate = opportunity.kalshi.closeTime
     const earliestEndDate = polyEndDate && kalshiEndDate
         ? new Date(polyEndDate) < new Date(kalshiEndDate) ? polyEndDate : kalshiEndDate
         : polyEndDate || kalshiEndDate
-    const timeUntil = getTimeUntil(earliestEndDate)
+    const timeUntil = formatDate(earliestEndDate)
 
     return (
-        <div className={`flex flex-col gap-3 rounded-xl border p-4 shadow-sm transition hover:shadow-md ${hasArbitrage
-            ? "border-emerald-300 bg-emerald-50/60 dark:border-emerald-900/50 dark:bg-emerald-950/40"
-            : "border-slate-200 bg-white/60 dark:border-slate-800 dark:bg-slate-900/40"
-            }`}>
-            {/* Header with common info */}
-            <div className="flex flex-wrap items-start justify-between gap-2">
-                <div className="space-y-1 flex-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                        <span className={`text-xs font-semibold uppercase tracking-wide ${hasArbitrage ? "text-emerald-700 dark:text-emerald-300" : "text-slate-600 dark:text-slate-400"
-                            }`}>
-                            {hasArbitrage ? "🔥 Arbitrage Found" : "🔗 Matched Markets"}
-                        </span>
-                        <span className={`text-xs px-2 py-0.5 rounded-full ${getMatchBadgeColor(opportunity.matchType)}`}>
+        <Card className={cn(
+            "overflow-hidden transition-shadow hover:shadow-md",
+            hasArbitrage && "border-profit/50 bg-gradient-to-r from-profit/5 to-transparent"
+        )}>
+            <CardContent className="p-4">
+                {/* Header Row */}
+                <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                        {hasArbitrage ? (
+                            <Badge className="bg-profit text-profit-foreground">
+                                <TrendingUp className="mr-1 h-3 w-3" />
+                                +{profitPct.toFixed(2)}% Profit
+                            </Badge>
+                        ) : (
+                            <Badge variant="secondary">Matched Markets</Badge>
+                        )}
+                        <Badge variant="outline" className="text-xs">
                             {opportunity.matchType} ({(opportunity.matchConfidence * 100).toFixed(0)}%)
-                        </span>
+                        </Badge>
                         {timeUntil && (
-                            <span className="text-xs px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">
-                                ⏰ {timeUntil}
-                            </span>
+                            <Badge variant="outline" className="text-warning border-warning/50">
+                                <Clock className="mr-1 h-3 w-3" />
+                                {timeUntil}
+                            </Badge>
                         )}
                     </div>
-                    {hasArbitrage && (
-                        <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
-                            +{profitPct.toFixed(2)}% profit
-                        </div>
-                    )}
-                </div>
-            </div>
-
-            {/* Markets comparison */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {/* Polymarket */}
-                <div className="rounded-lg border border-purple-200 bg-purple-50/50 p-3 dark:border-purple-900/50 dark:bg-purple-950/30">
-                    <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                            <span className="text-lg">🟣</span>
-                            <span className="font-semibold text-purple-700 dark:text-purple-300">Polymarket</span>
-                        </div>
-                    </div>
-                    <div className="text-sm text-slate-700 dark:text-slate-300 line-clamp-2 mb-2">
-                        {opportunity.polymarket.question}
-                    </div>
-                    <div className="flex flex-wrap gap-3 text-sm">
-                        <div>
-                            <span className="text-slate-500 dark:text-slate-400">YES: </span>
-                            <span className="font-medium">{(opportunity.polymarket.yesBestAsk * 100).toFixed(1)}¢</span>
-                        </div>
-                        <div>
-                            <span className="text-slate-500 dark:text-slate-400">NO: </span>
-                            <span className="font-medium">{(opportunity.polymarket.noBestAsk * 100).toFixed(1)}¢</span>
-                        </div>
-                    </div>
-                    <div className="flex gap-3 text-xs text-slate-500 dark:text-slate-400 mt-2 border-t border-purple-200/50 dark:border-purple-800/50 pt-2">
-                        <div title="Liquidity">💰 {formatNumber(opportunity.polymarket.liquidity)}</div>
-                        <div title="Volume">📊 {formatNumber(opportunity.polymarket.volume)}</div>
-                    </div>
                 </div>
 
-                {/* Kalshi */}
-                <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-3 dark:border-blue-900/50 dark:bg-blue-950/30">
-                    <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                            <span className="text-lg">🔵</span>
-                            <span className="font-semibold text-blue-700 dark:text-blue-300">Kalshi</span>
+                {/* Markets Comparison - Compact */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+                    {/* Polymarket */}
+                    <div className="rounded-lg border border-polymarket/20 bg-polymarket/5 p-3">
+                        <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                                <div className="h-2 w-2 rounded-full bg-polymarket" />
+                                <span className="text-sm font-medium text-polymarket">Polymarket</span>
+                            </div>
+                            {opportunity.polymarket.endsAt && (
+                                <span className="text-xs text-muted-foreground">
+                                    {new Date(opportunity.polymarket.endsAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                                </span>
+                            )}
+                        </div>
+                        <p className="text-sm text-foreground line-clamp-2 mb-3">
+                            {opportunity.polymarket.question}
+                        </p>
+                        {/* Prices */}
+                        <div className="flex items-center gap-4 text-xs mb-2">
+                            <span>
+                                YES: <span className="font-semibold text-profit">{(opportunity.polymarket.yesBestAsk * 100).toFixed(1)}¢</span>
+                            </span>
+                            <span>
+                                NO: <span className="font-semibold text-destructive">{(opportunity.polymarket.noBestAsk * 100).toFixed(1)}¢</span>
+                            </span>
+                        </div>
+                        {/* Volume & Liquidity */}
+                        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                            <span className="flex items-center gap-1">
+                                <BarChart3 className="h-3 w-3" />
+                                Vol: {formatNumber(opportunity.polymarket.volume)}
+                            </span>
+                            <Separator orientation="vertical" className="h-3" />
+                            <span className="flex items-center gap-1">
+                                <DollarSign className="h-3 w-3" />
+                                Liq: {formatNumber(opportunity.polymarket.liquidity)}
+                            </span>
                         </div>
                     </div>
-                    <div className="text-sm text-slate-700 dark:text-slate-300 line-clamp-2 mb-2">
-                        {opportunity.kalshi.title}
-                    </div>
-                    <div className="flex flex-wrap gap-3 text-sm">
-                        <div>
-                            <span className="text-slate-500 dark:text-slate-400">YES: </span>
-                            <span className="font-medium">{(opportunity.kalshi.yesAsk * 100).toFixed(1)}¢</span>
+
+                    {/* Kalshi */}
+                    <div className="rounded-lg border border-kalshi/20 bg-kalshi/5 p-3">
+                        <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                                <div className="h-2 w-2 rounded-full bg-kalshi" />
+                                <span className="text-sm font-medium text-kalshi">Kalshi</span>
+                            </div>
+                            {opportunity.kalshi.closeTime && (
+                                <span className="text-xs text-muted-foreground">
+                                    {new Date(opportunity.kalshi.closeTime).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                                </span>
+                            )}
                         </div>
-                        <div>
-                            <span className="text-slate-500 dark:text-slate-400">NO: </span>
-                            <span className="font-medium">{(opportunity.kalshi.noAsk * 100).toFixed(1)}¢</span>
+                        <p className="text-sm text-foreground line-clamp-2 mb-3">
+                            {opportunity.kalshi.title}
+                        </p>
+                        {/* Prices */}
+                        <div className="flex items-center gap-4 text-xs mb-2">
+                            <span>
+                                YES: <span className="font-semibold text-profit">{(opportunity.kalshi.yesAsk * 100).toFixed(1)}¢</span>
+                            </span>
+                            <span>
+                                NO: <span className="font-semibold text-destructive">{(opportunity.kalshi.noAsk * 100).toFixed(1)}¢</span>
+                            </span>
                         </div>
-                    </div>
-                    <div className="flex gap-3 text-xs text-slate-500 dark:text-slate-400 mt-2 border-t border-blue-200/50 dark:border-blue-800/50 pt-2">
-                        <div title="Liquidity">💰 {formatNumber(opportunity.kalshi.liquidity)}</div>
-                        <div title="Volume">📊 {formatNumber(opportunity.kalshi.volume)}</div>
+                        {/* Volume & Liquidity */}
+                        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                            <span className="flex items-center gap-1">
+                                <BarChart3 className="h-3 w-3" />
+                                Vol: {formatNumber(opportunity.kalshi.volume)}
+                            </span>
+                            <Separator orientation="vertical" className="h-3" />
+                            <span className="flex items-center gap-1">
+                                <DollarSign className="h-3 w-3" />
+                                Liq: {formatNumber(opportunity.kalshi.liquidity)}
+                            </span>
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            {/* Arbitrage instruction */}
-            {hasArbitrage && (
-                <div className="rounded-lg border border-emerald-200 bg-emerald-100/50 p-3 dark:border-emerald-800 dark:bg-emerald-900/30">
-                    <div className="text-sm font-medium text-emerald-800 dark:text-emerald-200 mb-1">
-                        💡 Strategy
+                {/* Arbitrage Strategy - Only show if arbitrage exists */}
+                {hasArbitrage && (
+                    <div className="rounded-lg bg-profit/10 border border-profit/20 p-3 mb-4">
+                        <div className="flex items-center justify-between mb-2">
+                            <span className="text-sm font-medium text-profit">💡 Strategy</span>
+                            <span className="text-sm font-bold text-profit">
+                                {(opportunity.arbitrage.profit * 100).toFixed(1)}¢ profit
+                            </span>
+                        </div>
+                        <p className="text-sm text-profit/80">
+                            {opportunity.arbitrage.instruction}
+                        </p>
+                        <p className="mt-1 text-xs text-profit/60">
+                            Cost: {(opportunity.arbitrage.totalCost * 100).toFixed(1)}¢ → Payout: 100¢
+                        </p>
                     </div>
-                    <div className="text-sm text-emerald-700 dark:text-emerald-300">
-                        {opportunity.arbitrage.instruction}
-                    </div>
-                    <div className="mt-2 text-sm text-emerald-600 dark:text-emerald-400">
-                        Total cost: {(opportunity.arbitrage.totalCost * 100).toFixed(1)}¢ →
-                        Guaranteed payout: 100¢ →
-                        <span className="font-semibold"> Profit: {(opportunity.arbitrage.profit * 100).toFixed(1)}¢</span>
-                    </div>
+                )}
+
+                {/* Actions */}
+                <div className="flex gap-2">
+                    <Button asChild size="sm" className="bg-polymarket hover:bg-polymarket/90">
+                        <a href={opportunity.polymarket.url} target="_blank" rel="noreferrer">
+                            Polymarket
+                            <ExternalLink className="ml-1 h-3 w-3" />
+                        </a>
+                    </Button>
+                    <Button asChild size="sm" className="bg-kalshi hover:bg-kalshi/90">
+                        <a href={opportunity.kalshi.url} target="_blank" rel="noreferrer">
+                            Kalshi
+                            <ExternalLink className="ml-1 h-3 w-3" />
+                        </a>
+                    </Button>
                 </div>
-            )}
-
-            {/* Actions */}
-            <div className="flex gap-2 flex-wrap">
-                <a
-                    href={opportunity.polymarket.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center justify-center rounded-lg bg-purple-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-purple-700"
-                >
-                    Polymarket →
-                </a>
-                <a
-                    href={opportunity.kalshi.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-700"
-                >
-                    Kalshi →
-                </a>
-            </div>
-        </div>
+            </CardContent>
+        </Card>
     )
 }

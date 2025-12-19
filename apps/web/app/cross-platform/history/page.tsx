@@ -1,16 +1,22 @@
 "use client"
 
 import { useEffect, useState, useCallback } from "react"
-import Link from "next/link"
+import { Header } from "@/components/ui/header"
+import { StatCard } from "@/components/ui/stat-card"
+import { SkeletonStatCard, SkeletonCard } from "@/components/ui/skeleton-card"
+import { EmptyState } from "@/components/ui/empty-state"
+import { Card, CardContent, CardHeader, CardTitle } from "@workspace/ui/components/card"
+import { Badge } from "@workspace/ui/components/badge"
+import { Button } from "@workspace/ui/components/button"
+import { Skeleton } from "@workspace/ui/components/skeleton"
 import {
-    ArrowLeft,
     TrendingUp,
     Clock,
     Activity,
     BarChart3,
     ChevronDown,
     ChevronUp,
-    ExternalLink,
+    History,
 } from "lucide-react"
 import {
     LineChart,
@@ -32,6 +38,7 @@ import type {
     CrossPlatformStats,
     CrossPlatformSnapshot,
 } from "@/lib/types"
+import { cn } from "@workspace/ui/lib/utils"
 
 // Format duration in human readable format
 function formatDuration(minutes: number): string {
@@ -44,7 +51,7 @@ function formatDuration(minutes: number): string {
     return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`
 }
 
-// Format percentage (API returns values like 2.56 for 2.56%)
+// Format percentage
 function formatPct(pct: number): string {
     return `${pct.toFixed(2)}%`
 }
@@ -59,34 +66,6 @@ function formatTime(dateStr: string): string {
     })
 }
 
-// Stats Card component
-function StatCard({
-    title,
-    value,
-    subtitle,
-    icon: Icon,
-    color,
-}: {
-    title: string
-    value: string | number
-    subtitle?: string
-    icon: React.ElementType
-    color: string
-}) {
-    return (
-        <div className="rounded-xl border border-white/10 bg-gradient-to-br from-white/5 to-white/[0.02] p-5 backdrop-blur-sm">
-            <div className="flex items-center gap-3 mb-3">
-                <div className={`p-2 rounded-lg ${color}`}>
-                    <Icon className="w-5 h-5" />
-                </div>
-                <span className="text-sm text-white/60">{title}</span>
-            </div>
-            <div className="text-2xl font-bold text-white">{value}</div>
-            {subtitle && <div className="text-sm text-white/40 mt-1">{subtitle}</div>}
-        </div>
-    )
-}
-
 // Profit Chart component
 function ProfitChart({
     snapshots,
@@ -97,49 +76,50 @@ function ProfitChart({
 }) {
     if (isLoading) {
         return (
-            <div className="h-[300px] flex items-center justify-center text-white/40">
-                Loading chart...
+            <div className="h-[250px] flex items-center justify-center text-muted-foreground">
+                <div className="flex flex-col items-center gap-2">
+                    <div className="h-6 w-6 animate-spin rounded-full border-2 border-profit border-t-transparent" />
+                    <span>Loading chart...</span>
+                </div>
             </div>
         )
     }
 
     if (snapshots.length === 0) {
         return (
-            <div className="h-[300px] flex items-center justify-center text-white/40">
-                No snapshot data available yet. Check back after a few poll cycles.
+            <div className="h-[250px] flex items-center justify-center text-muted-foreground">
+                No snapshot data available yet.
             </div>
         )
     }
 
-    // Transform data for chart (API returns values like 2.56 for 2.56%)
     const chartData = snapshots.map((s) => ({
         time: new Date(s.snapshotAt).toLocaleTimeString("en-US", {
             hour: "2-digit",
             minute: "2-digit",
         }),
-        profitPct: s.profitPct,  // Already in percentage format
+        profitPct: s.profitPct,
         fullTime: s.snapshotAt,
     }))
 
     const maxProfit = Math.max(...chartData.map((d) => d.profitPct))
     const minProfit = Math.min(...chartData.map((d) => d.profitPct))
-    const avgProfit =
-        chartData.reduce((sum, d) => sum + d.profitPct, 0) / chartData.length
+    const avgProfit = chartData.reduce((sum, d) => sum + d.profitPct, 0) / chartData.length
 
     return (
-        <div className="h-[300px]">
+        <div className="h-[250px]">
             <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chartData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" strokeOpacity={0.5} />
                     <XAxis
                         dataKey="time"
-                        stroke="#666"
-                        tick={{ fontSize: 12 }}
+                        stroke="#9ca3af"
+                        tick={{ fontSize: 11, fill: "#9ca3af" }}
                         interval="preserveStartEnd"
                     />
                     <YAxis
-                        stroke="#666"
-                        tick={{ fontSize: 12 }}
+                        stroke="#9ca3af"
+                        tick={{ fontSize: 11, fill: "#9ca3af" }}
                         tickFormatter={(v) => `${v.toFixed(1)}%`}
                         domain={[
                             Math.max(0, minProfit - 1),
@@ -148,12 +128,15 @@ function ProfitChart({
                     />
                     <Tooltip
                         contentStyle={{
-                            background: "#1a1a1a",
-                            border: "1px solid #333",
+                            background: "#ffffff",
+                            border: "1px solid #e5e7eb",
                             borderRadius: "8px",
                         }}
-                        labelStyle={{ color: "#fff" }}
-                        formatter={(value: number) => [`${value.toFixed(2)}%`, "Profit"]}
+                        labelStyle={{ color: "#111827" }}
+                        formatter={(value) => {
+                            const num = typeof value === 'number' ? value : 0
+                            return [`${num.toFixed(2)}%`, "Profit"]
+                        }}
                     />
                     <ReferenceLine
                         y={avgProfit}
@@ -168,10 +151,10 @@ function ProfitChart({
                     <Line
                         type="monotone"
                         dataKey="profitPct"
-                        stroke="#4ade80"
+                        stroke="#10b981"
                         strokeWidth={2}
                         dot={snapshots.length < 30}
-                        activeDot={{ r: 6, fill: "#4ade80" }}
+                        activeDot={{ r: 6, fill: "#10b981" }}
                     />
                 </LineChart>
             </ResponsiveContainer>
@@ -203,72 +186,68 @@ function HistoryRow({
     }, [isExpanded, item.id, snapshots.length])
 
     return (
-        <div className="border-b border-white/10 last:border-b-0">
+        <div className="border-b border-border last:border-b-0">
             {/* Main row */}
             <div
-                className="p-4 hover:bg-white/5 cursor-pointer flex items-center gap-4"
+                className="p-4 hover:bg-accent/50 cursor-pointer flex items-center gap-4 transition-colors"
                 onClick={onToggle}
             >
                 {/* Expand button */}
-                <button className="text-white/40 hover:text-white/60">
-                    {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-                </button>
+                <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
+                    {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                </Button>
 
                 {/* Status badge */}
-                <span
-                    className={`px-2 py-1 text-xs rounded ${item.isActive
-                        ? "bg-green-500/20 text-green-400"
-                        : "bg-white/10 text-white/50"
-                        }`}
-                >
+                <Badge variant={item.isActive ? "default" : "secondary"} className={cn(
+                    item.isActive && "bg-profit text-profit-foreground"
+                )}>
                     {item.isActive ? "Active" : "Expired"}
-                </span>
+                </Badge>
 
                 {/* Market info */}
                 <div className="flex-1 min-w-0">
-                    <div className="text-sm text-white font-medium truncate">
+                    <div className="text-sm font-medium truncate">
                         {item.polymarketQuestion}
                     </div>
-                    <div className="text-xs text-white/50 truncate mt-0.5">
+                    <div className="text-xs text-muted-foreground truncate mt-0.5">
                         ↔ {item.kalshiTitle}
                     </div>
                 </div>
 
                 {/* Stats */}
-                <div className="flex items-center gap-6 text-sm">
+                <div className="hidden sm:flex items-center gap-6 text-sm">
                     <div className="text-center">
-                        <div className="text-green-400 font-semibold">
+                        <div className="text-profit font-semibold">
                             {formatPct(item.peakProfitPct)}
                         </div>
-                        <div className="text-[10px] text-white/40">Peak</div>
+                        <div className="text-[10px] text-muted-foreground">Peak</div>
                     </div>
                     <div className="text-center">
-                        <div className="text-cyan-400 font-medium">
+                        <div className="text-kalshi font-medium">
                             {formatPct(item.avgProfitPct)}
                         </div>
-                        <div className="text-[10px] text-white/40">Avg</div>
+                        <div className="text-[10px] text-muted-foreground">Avg</div>
                     </div>
                     <div className="text-center">
-                        <div className="text-white/80">{formatDuration(item.durationMinutes)}</div>
-                        <div className="text-[10px] text-white/40">Duration</div>
+                        <div className="text-foreground/80">{formatDuration(item.durationMinutes)}</div>
+                        <div className="text-[10px] text-muted-foreground">Duration</div>
                     </div>
                     <div className="text-center">
-                        <div className="text-white/60">{item.snapshotCount}</div>
-                        <div className="text-[10px] text-white/40">Snapshots</div>
+                        <div className="text-foreground/60">{item.snapshotCount}</div>
+                        <div className="text-[10px] text-muted-foreground">Snapshots</div>
                     </div>
                 </div>
             </div>
 
             {/* Expanded chart section */}
             {isExpanded && (
-                <div className="px-4 pb-4 pt-2 bg-white/[0.02]">
+                <div className="px-4 pb-4 pt-2 bg-muted/30">
                     <div className="flex items-center justify-between mb-3">
-                        <h4 className="text-sm font-medium text-white/70">
+                        <h4 className="text-sm font-medium">
                             Profit History
                         </h4>
-                        <div className="text-xs text-white/40">
-                            {formatTime(item.detectedAt)} -{" "}
-                            {item.expiredAt ? formatTime(item.expiredAt) : "Now"}
+                        <div className="text-xs text-muted-foreground">
+                            {formatTime(item.detectedAt)} — {item.expiredAt ? formatTime(item.expiredAt) : "Now"}
                         </div>
                     </div>
                     <ProfitChart snapshots={snapshots} isLoading={isLoadingSnapshots} />
@@ -276,10 +255,10 @@ function HistoryRow({
                     {/* Min/Max labels */}
                     {snapshots.length > 0 && (
                         <div className="flex justify-center gap-6 mt-3 text-xs">
-                            <span className="text-red-400">
+                            <span className="text-destructive">
                                 Min: {formatPct(Math.min(...snapshots.map((s) => s.profitPct)))}
                             </span>
-                            <span className="text-green-400">
+                            <span className="text-profit">
                                 Max: {formatPct(Math.max(...snapshots.map((s) => s.profitPct)))}
                             </span>
                         </div>
@@ -315,104 +294,119 @@ export default function CrossPlatformHistoryPage() {
 
     useEffect(() => {
         loadData()
-        // Refresh every 30 seconds
         const interval = setInterval(loadData, 30000)
         return () => clearInterval(interval)
     }, [loadData])
 
     return (
-        <main className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950 text-white">
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                {/* Header */}
-                <div className="flex items-center gap-4 mb-8">
-                    <Link
-                        href="/"
-                        className="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
-                    >
-                        <ArrowLeft className="w-5 h-5" />
-                    </Link>
-                    <div>
-                        <h1 className="text-2xl font-bold">Arbitrage History & Stats</h1>
-                        <p className="text-white/50 text-sm mt-1">
+        <>
+            <Header activeOpportunities={stats?.activeCount} />
+
+            <main className="flex-1">
+                <div className="mx-auto max-w-7xl px-4 py-6 md:px-8">
+                    {/* Page Header */}
+                    <div className="mb-6">
+                        <h1 className="text-2xl font-bold tracking-tight">Arbitrage History & Stats</h1>
+                        <p className="text-muted-foreground">
                             Cross-platform opportunity analytics and profit tracking
                         </p>
                     </div>
-                </div>
 
-                {/* Stats Cards */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-                    <StatCard
-                        title="Total Opportunities"
-                        value={stats?.totalOpportunities ?? "-"}
-                        icon={BarChart3}
-                        color="bg-purple-500/20 text-purple-400"
-                    />
-                    <StatCard
-                        title="Currently Active"
-                        value={stats?.activeCount ?? "-"}
-                        icon={Activity}
-                        color="bg-green-500/20 text-green-400"
-                    />
-                    <StatCard
-                        title="Max Profit Seen"
-                        value={stats ? formatPct(stats.maxProfitPct) : "-"}
-                        subtitle={stats ? `Avg: ${formatPct(stats.avgProfitPct)}` : undefined}
-                        icon={TrendingUp}
-                        color="bg-cyan-500/20 text-cyan-400"
-                    />
-                    <StatCard
-                        title="Avg Duration"
-                        value={stats ? formatDuration(stats.avgDurationMinutes) : "-"}
-                        subtitle={stats ? `${stats.totalSnapshots} snapshots` : undefined}
-                        icon={Clock}
-                        color="bg-orange-500/20 text-orange-400"
-                    />
-                </div>
-
-                {/* History Table */}
-                <div className="rounded-xl border border-white/10 bg-gradient-to-br from-white/5 to-white/[0.02] backdrop-blur-sm overflow-hidden">
-                    {/* Table header */}
-                    <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
-                        <h2 className="font-semibold">Opportunity History</h2>
-                        <label className="flex items-center gap-2 text-sm cursor-pointer">
-                            <input
-                                type="checkbox"
-                                checked={showExpired}
-                                onChange={(e) => setShowExpired(e.target.checked)}
-                                className="rounded border-white/20 bg-white/10"
-                            />
-                            <span className="text-white/60">Show Expired</span>
-                        </label>
+                    {/* Stats Cards */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+                        {isLoading ? (
+                            <>
+                                <SkeletonStatCard />
+                                <SkeletonStatCard />
+                                <SkeletonStatCard />
+                                <SkeletonStatCard />
+                            </>
+                        ) : (
+                            <>
+                                <StatCard
+                                    title="Total Opportunities"
+                                    value={stats?.totalOpportunities ?? 0}
+                                    icon={BarChart3}
+                                    variant="polymarket"
+                                />
+                                <StatCard
+                                    title="Currently Active"
+                                    value={stats?.activeCount ?? 0}
+                                    icon={Activity}
+                                    variant="profit"
+                                />
+                                <StatCard
+                                    title="Max Profit Seen"
+                                    value={stats ? formatPct(stats.maxProfitPct) : "-"}
+                                    subtitle={stats ? `Avg: ${formatPct(stats.avgProfitPct)}` : undefined}
+                                    icon={TrendingUp}
+                                    variant="kalshi"
+                                />
+                                <StatCard
+                                    title="Avg Duration"
+                                    value={stats ? formatDuration(stats.avgDurationMinutes) : "-"}
+                                    subtitle={stats ? `${stats.totalSnapshots} snapshots` : undefined}
+                                    icon={Clock}
+                                    variant="warning"
+                                />
+                            </>
+                        )}
                     </div>
 
-                    {/* Table body */}
-                    {isLoading ? (
-                        <div className="p-8 text-center text-white/40">Loading history...</div>
-                    ) : history.length === 0 ? (
-                        <div className="p-8 text-center text-white/40">
-                            No opportunities found. Check back later after the poller runs.
-                        </div>
-                    ) : (
-                        <div>
-                            {history.map((item) => (
-                                <HistoryRow
-                                    key={item.id}
-                                    item={item}
-                                    isExpanded={expandedId === item.id}
-                                    onToggle={() =>
-                                        setExpandedId(expandedId === item.id ? null : item.id)
-                                    }
+                    {/* History Table */}
+                    <Card>
+                        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
+                            <CardTitle>Opportunity History</CardTitle>
+                            <label className="flex items-center gap-2 text-sm cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={showExpired}
+                                    onChange={(e) => setShowExpired(e.target.checked)}
+                                    className="rounded border-input"
                                 />
-                            ))}
-                        </div>
-                    )}
-                </div>
+                                <span className="text-muted-foreground">Show Expired</span>
+                            </label>
+                        </CardHeader>
+                        <CardContent className="p-0">
+                            {isLoading ? (
+                                <div className="p-8 text-center text-muted-foreground">
+                                    <div className="flex flex-col items-center gap-2">
+                                        <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                                        <span>Loading history...</span>
+                                    </div>
+                                </div>
+                            ) : history.length === 0 ? (
+                                <div className="p-4">
+                                    <EmptyState
+                                        icon={History}
+                                        title="No opportunities found"
+                                        description="Check back later after the poller runs and detects arbitrage opportunities."
+                                        variant="default"
+                                    />
+                                </div>
+                            ) : (
+                                <div>
+                                    {history.map((item) => (
+                                        <HistoryRow
+                                            key={item.id}
+                                            item={item}
+                                            isExpanded={expandedId === item.id}
+                                            onToggle={() =>
+                                                setExpandedId(expandedId === item.id ? null : item.id)
+                                            }
+                                        />
+                                    ))}
+                                </div>
+                            )}
+                        </CardContent>
+                    </Card>
 
-                {/* Footer */}
-                <div className="mt-4 text-center text-xs text-white/30">
-                    Data refreshes every 30 seconds. Snapshots are recorded every poll cycle (~30s).
+                    {/* Footer */}
+                    <div className="mt-4 text-center text-xs text-muted-foreground">
+                        Data refreshes every 30 seconds. Snapshots are recorded every poll cycle (~30s).
+                    </div>
                 </div>
-            </div>
-        </main>
+            </main>
+        </>
     )
 }
