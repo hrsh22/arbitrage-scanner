@@ -56,6 +56,7 @@ function extractKeyWords(text: string): Set<string> {
     return new Set(words)
 }
 
+
 /**
  * Parse close date from market (handles both Date objects and date strings)
  */

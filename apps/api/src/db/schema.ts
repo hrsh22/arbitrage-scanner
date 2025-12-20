@@ -89,6 +89,11 @@ export const aiMatchCache = pgTable("ai_match_cache", {
   kalshiTitle: text("kalshi_title").notNull(),
   isExactMatch: boolean("is_exact_match").notNull(),
   reason: text("reason"),
+  // Context fields (optional, controlled by STORE_AI_MATCH_CONTEXT env var)
+  polyEndDate: timestamp("poly_end_date", { withTimezone: true }),
+  kalshiEndDate: timestamp("kalshi_end_date", { withTimezone: true }),
+  polyResolutionRules: text("poly_resolution_rules"),
+  kalshiResolutionRules: text("kalshi_resolution_rules"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   hashIdx: index("ai_match_cache_hash_idx").on(table.matchHash),

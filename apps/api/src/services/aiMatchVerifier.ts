@@ -99,17 +99,41 @@ async function cacheResult(
     polyQuestion: string,
     kalshiTitle: string,
     isExactMatch: boolean,
-    reason: string
+    reason: string,
+    context?: {
+        polyEndDate?: string
+        kalshiEndDate?: string
+        polyResolutionRules?: string
+        kalshiResolutionRules?: string
+    }
 ): Promise<void> {
+    const values: Record<string, unknown> = {
+        matchHash,
+        polyQuestion,
+        kalshiTitle,
+        isExactMatch,
+        reason,
+    }
+
+    // Conditionally add context fields if enabled
+    if (env.STORE_AI_MATCH_CONTEXT && context) {
+        if (context.polyEndDate) {
+            values.polyEndDate = new Date(context.polyEndDate)
+        }
+        if (context.kalshiEndDate) {
+            values.kalshiEndDate = new Date(context.kalshiEndDate)
+        }
+        if (context.polyResolutionRules) {
+            values.polyResolutionRules = context.polyResolutionRules
+        }
+        if (context.kalshiResolutionRules) {
+            values.kalshiResolutionRules = context.kalshiResolutionRules
+        }
+    }
+
     await db
         .insert(aiMatchCache)
-        .values({
-            matchHash,
-            polyQuestion,
-            kalshiTitle,
-            isExactMatch,
-            reason,
-        })
+        .values(values as typeof aiMatchCache.$inferInsert)
         .onConflictDoNothing()
 }
 
@@ -166,14 +190,27 @@ MARKET 2 (Kalshi):
 - Resolution Date: ${kalshiDateStr}
 - Resolution Rules: ${kalshiRulesStr}
 
+=== STEP 0: SUBJECT EXTRACTION (Critical for multi-outcome markets) ===
+
+BEFORE comparing, extract the TRUE SUBJECT from each market:
+
+For Polymarket: The subject is usually in the question itself.
+- "Will Connor Hellebuyck win Hart Trophy?" → Subject = "Connor Hellebuyck"
+
+For Kalshi: If the title is generic (e.g., "Who will win X?"), check the RESOLUTION RULES for the specific subject.
+- Title: "Who will win Hart Memorial Trophy?"
+- Rules: "Resolves YES if Connor Hellebuyck wins..." → Subject = "Connor Hellebuyck"
+
+⚠️ IMPORTANT: A generic Kalshi title like "Who will win X?" paired with resolution rules mentioning a specific person IS A MATCH for a Polymarket question asking about that same person!
+
 === CRITICAL REQUIREMENTS (Must pass ALL steps) ===
 
-STEP 1: EVENT CHECK (The most common failure point)
-- Are they asking about the EXACT SAME real-world outcome?
-- "Musk announces run" != "Musk becomes trillionaire" (REJECT immediately)
-- "Xi removed" != "IPO happens" (REJECT immediately)
-- "Earthquake" != "IPO" (REJECT immediately)
--> If events differ, STOP and return false.
+STEP 1: EVENT CHECK (Using EXTRACTED subjects)
+- Are they asking about the EXACT SAME real-world outcome for the SAME SUBJECT?
+- Compare the EXTRACTED subjects, not just the titles!
+- If Poly asks "Will Connor Hellebuyck win Hart?" and Kalshi rules say "Resolves if Connor Hellebuyck wins" → SAME SUBJECT, likely a MATCH
+- "Musk announces run" != "Musk becomes trillionaire" (REJECT - different events)
+-> If subjects differ, STOP and return false.
 
 STEP 2: TIMEFRAME CHECK
 - Do they resolve at effectively the same moment?
@@ -185,52 +222,48 @@ STEP 3: RESOLUTION & DELTA NEUTRALITY
 - Can you construct a guaranteed profit/no-loss hedge?
 - DIRECT: Yes/Yes match. Both resolve YES together.
 - INVERSE: Yes/No match. One resolves YES exactly when the other resolves NO.
-- IMPLICATION FAILURES: "Win election" matches "Win election", NOT "Be on ballot" (Winning implies ballot, but ballot doesn't imply winning -> Divergence risk!)
+- IMPLICATION FAILURES: "Win election" matches "Win election", NOT "Be on ballot"
 
 === MATCH TYPES ===
 
 **DIRECT MATCH**: Same question, same timeframe, same resolution logic.
-Example: "Will aliens be confirmed before 2027?" on both platforms with equivalent dates.
+Example 1: "Will aliens be confirmed before 2027?" on both platforms.
+Example 2: "Will Connor Hellebuyck win Hart?" + Kalshi's "Who will win Hart?" with rules "if Hellebuyck wins..."
 
 **INVERSE MATCH**: Opposite questions with same timeframe.
 Example: "Will NO ONE leave Cabinet before 2027?" vs "Will ANYONE leave Cabinet before 2027?"
-- If someone leaves: Market1=NO, Market2=YES
-- If no one leaves: Market1=YES, Market2=NO
-- Buy YES on one, NO on other = guaranteed $1 payout
 
 === REJECTION CRITERIA ===
 
 REJECT if ANY of these apply:
 
-1. **DIFFERENT TIMEFRAMES**: One market ends in 2025, other in 2029 - NOT delta neutral!
-   - Event could happen in 2026: Market1 already resolved NO, Market2 resolves YES later
-   - This creates divergence risk
+1. **DIFFERENT TIMEFRAMES**: One market ends in 2025, other in 2029
 
 2. **DIFFERENT EVENTS**: Same person but different actions (e.g., "announce run" vs "be arrested")
 
 3. **IMPLICATION ≠ EQUIVALENCE**: "Win election" implies "on ballot" but NOT vice versa
-   - Can be on ballot and lose → divergence
 
 4. **DIFFERENT THRESHOLDS**: "$700M at 4PM" vs "$500M at 10AM" - different triggers
 
 5. **DIFFERENT SUBJECTS**: "Nylander wins trophy" vs "McDavid wins trophy" - different players
+   ⚠️ BUT: If Kalshi title is "Who will win trophy?" and rules say "if Nylander wins" → Subject IS Nylander!
 
 === EXAMPLES ===
 
+✅ MATCH: "Will Connor Hellebuyck win Hart Trophy?" (Poly) vs "Who will win Hart?" (Kalshi, rules: "if Hellebuyck wins")
+   → Same subject extracted from rules, same event, DIRECT match.
+
 ✅ MATCH: "US confirms aliens by Dec 31, 2026" vs "US confirms aliens before Jan 1, 2027"
-   → Same event, same deadline (date equivalence), direct match.
+   → Same event, same deadline, direct match.
 
 ✅ MATCH (INVERSE): "Will no one leave Cabinet before 2027?" vs "Will anyone leave before 2027?"
-   → Perfect inverse with same timeframe. Delta neutral.
+   → Perfect inverse with same timeframe.
 
-❌ REJECT: "Leave Cabinet in 2025?" vs "Leave Cabinet by 2029?"
-   → Different timeframes. Event in 2026 causes divergence.
+❌ REJECT: "Will Nylander win Hart?" (Poly) vs "Who will win Hart?" (Kalshi, rules: "if McDavid wins")
+   → Different subjects (Nylander vs McDavid from rules).
 
 ❌ REJECT: "Win election?" vs "On ballot?"
-   → Implication, not equivalence. Can be on ballot but lose.
-
-❌ REJECT: "Announce presidential run?" vs "Be arrested?"
-   → Completely different events despite same person.
+   → Implication, not equivalence.
 
 Return:
 - isExactMatch = true ONLY if delta-neutral arbitrage is guaranteed safe
@@ -289,8 +322,13 @@ export async function verifyMatch(
         // Increment counter
         await incrementDailyCount()
 
-        // Cache result
-        await cacheResult(matchHash, polyQuestion, kalshiTitle, result.isExactMatch, result.reason)
+        // Cache result with context
+        await cacheResult(matchHash, polyQuestion, kalshiTitle, result.isExactMatch, result.reason, {
+            polyEndDate,
+            kalshiEndDate,
+            polyResolutionRules,
+            kalshiResolutionRules,
+        })
 
         logger.info("AI match result", {
             isExactMatch: result.isExactMatch,

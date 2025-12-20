@@ -52,6 +52,7 @@ export const env = {
 
     // AI match verification
     AI_MATCH_DAILY_LIMIT: numberFromEnv("AI_MATCH_DAILY_LIMIT", 1000),
+    STORE_AI_MATCH_CONTEXT: boolFromEnv("STORE_AI_MATCH_CONTEXT", true), // Store resolution rules in cache
 } as const
 
 export type Env = typeof env
