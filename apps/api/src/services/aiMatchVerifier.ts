@@ -266,9 +266,10 @@ REJECT if ANY of these apply:
    → Implication, not equivalence.
 
 Return:
-- isExactMatch = true ONLY if delta-neutral arbitrage is guaranteed safe
+- isExactMatch = true if DIRECT match (same question) OR INVERSE match (opposite questions)
+- isExactMatch = false ONLY if they are NOT about the same event/subject/timeframe
 - matchType = "DIRECT", "INVERSE", or "NONE"
-- reason = which requirement fails, or which match type applies
+- reason = brief explanation with [TYPE:DIRECT] or [TYPE:INVERSE] prefix for matches
 `,
     })
 
