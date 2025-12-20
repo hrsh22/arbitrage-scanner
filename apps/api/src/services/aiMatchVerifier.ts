@@ -178,6 +178,8 @@ async function callAI(
         }),
         prompt: `You are evaluating two prediction markets for DELTA-NEUTRAL ARBITRAGE.
 
+CURRENT DATE: ${new Date().toISOString()} (Use this to understand relative timeframes)
+
 DELTA-NEUTRAL means: For ANY possible real-world outcome, the combined position always results in the same guaranteed profit (or zero loss). There must be NO scenario where positions diverge.
 
 MARKET 1 (Polymarket):
