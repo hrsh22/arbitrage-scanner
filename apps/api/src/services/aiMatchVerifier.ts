@@ -176,11 +176,13 @@ async function callAI(
             matchType: z.enum(["DIRECT", "INVERSE", "NONE"]).describe("DIRECT = Same question. INVERSE = Opposite questions (Yes=No). NONE = Not a match."),
             reason: z.string().describe("Brief explanation of the match type and why it qualifies"),
         }),
-        prompt: `You are evaluating two prediction markets for DELTA-NEUTRAL ARBITRAGE.
+        prompt: `You are evaluating if two prediction markets are asking about THE SAME EVENT.
 
 CURRENT DATE: ${new Date().toISOString()} (Use this to understand relative timeframes)
 
-DELTA-NEUTRAL means: For ANY possible real-world outcome, the combined position always results in the same guaranteed profit (or zero loss). There must be NO scenario where positions diverge.
+YOUR ONLY JOB: Determine if these markets refer to the same real-world outcome.
+- Do NOT consider prices, liquidity, or profitability - we handle that separately.
+- Focus ONLY on: Are these the same event? Same timeframe? Same subject?
 
 MARKET 1 (Polymarket):
 - Question: "${polyQuestion}"
@@ -194,37 +196,29 @@ MARKET 2 (Kalshi):
 
 === STEP 0: SUBJECT EXTRACTION (Critical for multi-outcome markets) ===
 
-BEFORE comparing, extract the TRUE SUBJECT from each market:
+Extract the TRUE SUBJECT from each market:
+- Polymarket: Subject is usually in the question ("Will Connor Hellebuyck win?" → Subject = Connor Hellebuyck)
+- Kalshi: If title is generic ("Who will win X?"), check RESOLUTION RULES for the subject
 
-For Polymarket: The subject is usually in the question itself.
-- "Will Connor Hellebuyck win Hart Trophy?" → Subject = "Connor Hellebuyck"
+⚠️ A generic Kalshi title + resolution rules mentioning a specific person IS A MATCH for Polymarket asking about that person!
 
-For Kalshi: If the title is generic (e.g., "Who will win X?"), check the RESOLUTION RULES for the specific subject.
-- Title: "Who will win Hart Memorial Trophy?"
-- Rules: "Resolves YES if Connor Hellebuyck wins..." → Subject = "Connor Hellebuyck"
-
-⚠️ IMPORTANT: A generic Kalshi title like "Who will win X?" paired with resolution rules mentioning a specific person IS A MATCH for a Polymarket question asking about that same person!
-
-=== CRITICAL REQUIREMENTS (Must pass ALL steps) ===
-
-STEP 1: EVENT CHECK (Using EXTRACTED subjects)
+=== STEP 1: EVENT CHECK ===
 - Are they asking about the EXACT SAME real-world outcome for the SAME SUBJECT?
-- Compare the EXTRACTED subjects, not just the titles!
-- If Poly asks "Will Connor Hellebuyck win Hart?" and Kalshi rules say "Resolves if Connor Hellebuyck wins" → SAME SUBJECT, likely a MATCH
-- "Musk announces run" != "Musk becomes trillionaire" (REJECT - different events)
--> If subjects differ, STOP and return false.
+- Compare EXTRACTED subjects, not just titles!
+- "Musk announces run" ≠ "Musk becomes trillionaire" (DIFFERENT events)
+→ If subjects or events differ, return false.
 
-STEP 2: TIMEFRAME CHECK
-- Do they resolve at effectively the same moment?
-- "by Dec 31, 2026" = "before Jan 1, 2027" (PASS)
-- "2025" vs "2029" (FAIL - one ends early, creating risk)
--> If timeframes differ, STOP and return false.
+=== STEP 2: TIMEFRAME CHECK ===
+- Do they resolve at effectively the same time?
+- "by Dec 31, 2026" = "before Jan 1, 2027" (SAME)
+- "2025" vs "2029" (DIFFERENT - reject!)
+→ If timeframes differ significantly, return false.
 
-STEP 3: RESOLUTION & DELTA NEUTRALITY
-- Can you construct a guaranteed profit/no-loss hedge?
-- DIRECT: Yes/Yes match. Both resolve YES together.
-- INVERSE: Yes/No match. One resolves YES exactly when the other resolves NO.
-- IMPLICATION FAILURES: "Win election" matches "Win election", NOT "Be on ballot"
+=== STEP 3: MATCH TYPE ===
+- DIRECT: Same question, both resolve YES/NO together
+- INVERSE: Opposite questions - one resolves YES exactly when other resolves NO
+  Example: "Will NO ONE leave?" vs "Will ANYONE leave?" = INVERSE (perfectly opposite)
+- "Win election" ≠ "Be on ballot" (implication, not equivalence)
 
 === MATCH TYPES ===
 
@@ -234,6 +228,10 @@ Example 2: "Will Connor Hellebuyck win Hart?" + Kalshi's "Who will win Hart?" wi
 
 **INVERSE MATCH**: Opposite questions with same timeframe.
 Example: "Will NO ONE leave Cabinet before 2027?" vs "Will ANYONE leave Cabinet before 2027?"
+- Delta-neutral hedge: Buy YES on BOTH markets
+- If no one leaves: Poly YES=$1, Kalshi YES=$0 → Total $1
+- If someone leaves: Poly YES=$0, Kalshi YES=$1 → Total $1
+- This IS delta-neutral: guaranteed $1 payout regardless of outcome!
 
 === REJECTION CRITERIA ===
 
@@ -269,6 +267,7 @@ REJECT if ANY of these apply:
 
 Return:
 - isExactMatch = true ONLY if delta-neutral arbitrage is guaranteed safe
+- matchType = "DIRECT", "INVERSE", or "NONE"
 - reason = which requirement fails, or which match type applies
 `,
     })
