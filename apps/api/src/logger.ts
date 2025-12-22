@@ -1,21 +1,29 @@
-type LogLevel = "info" | "warn" | "error"
+import winston from "winston"
 
-const log = (level: LogLevel, message: string, meta?: Record<string, unknown>) => {
-  const payload = {
-    level,
-    message,
-    timestamp: new Date().toISOString(),
-    ...(meta ?? {}),
-  }
-  console.log(JSON.stringify(payload))
-}
+const { LOG_LEVEL } = process.env
 
+const winstonLogger = winston.createLogger({
+  level: LOG_LEVEL || "info",
+  format: winston.format.combine(
+    winston.format.colorize(),
+    winston.format.timestamp(),
+    winston.format.simple()
+  ),
+  defaultMeta: { service: "polymarket-mvp-api" },
+  transports: [new winston.transports.Console()],
+  exceptionHandlers: [new winston.transports.Console()],
+})
+
+// Wrapper to maintain existing API compatibility
 export const logger = {
-  info: (message: string, meta?: Record<string, unknown>) => log("info", message, meta),
-  warn: (message: string, meta?: Record<string, unknown>) => log("warn", message, meta),
-  error: (message: string, meta?: Record<string, unknown>) => log("error", message, meta),
+  debug: (message: string, meta?: Record<string, unknown>) =>
+    winstonLogger.debug(message, meta),
+  info: (message: string, meta?: Record<string, unknown>) =>
+    winstonLogger.info(message, meta),
+  warn: (message: string, meta?: Record<string, unknown>) =>
+    winstonLogger.warn(message, meta),
+  error: (message: string, meta?: Record<string, unknown>) =>
+    winstonLogger.error(message, meta),
 }
 
-
-
-
+export default winstonLogger

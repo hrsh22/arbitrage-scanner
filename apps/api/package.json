@@ -9,15 +9,20 @@
     "start": "node dist/index.js",
     "lint": "eslint . --ext .ts",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "cron:run-trading-bot": "tsx src/cron/runTradingBot.ts",
+    "cron:check-bot-resolutions": "tsx src/cron/checkResolutions.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^2.0.86",
+    "@polymarket/clob-client": "^5.1.2",
     "ai": "^5.0.113",
     "dotenv": "^16.4.7",
     "drizzle-orm": "^0.38.1",
+    "ethers": "^5",
     "express": "^4.21.2",
     "pg": "^8.13.1",
+    "winston": "^3.19.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {

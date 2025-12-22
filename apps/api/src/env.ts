@@ -53,6 +53,10 @@ export const env = {
     // AI match verification
     AI_MATCH_DAILY_LIMIT: numberFromEnv("AI_MATCH_DAILY_LIMIT", 1000),
     STORE_AI_MATCH_CONTEXT: boolFromEnv("STORE_AI_MATCH_CONTEXT", true), // Store resolution rules in cache
+
+    // Trading Bot
+    POLYMARKET_PRIVATE_KEY: process.env.POLYMARKET_PRIVATE_KEY ?? null,
+    BOT_MODE: stringFromEnv("BOT_MODE", "simulation") as "simulation" | "live",
 } as const
 
 export type Env = typeof env

@@ -9,6 +9,7 @@ import { CrossPlatformRepository } from "./db/repositories/crossPlatformReposito
 import { MarketPoller } from "./services/marketPoller.js"
 import { CrossPlatformPoller } from "./services/crossPlatformPoller.js"
 import { buildOpportunitiesRouter } from "./routes/opportunities.js"
+import { buildBotRouter } from "./bot/index.js"
 import { logger } from "./logger.js"
 
 const app = express()
@@ -52,6 +53,9 @@ app.get("/health/db", async (_req, res) => {
 
 // Opportunities API (Polymarket single-market)
 app.use("/opportunities", buildOpportunitiesRouter(store, repository))
+
+// Trading Bot API
+app.use("/bot", buildBotRouter())
 
 // Cross-platform arbitrage API (reads from DB, populated by background poller)
 app.get("/cross-platform", async (req, res) => {
@@ -233,7 +237,11 @@ const start = async () => {
     logger.info("API listening", { host, port })
   })
 
-  // Then start background pollers
+  // Note: Trading bot and resolution checker are now run via cron jobs:
+  // - pnpm cron:scan (trading bot scan cycle)
+  // - pnpm cron:check-resolutions (resolution checker)
+
+  // Start background pollers for market data
   await poller.start()
   await crossPlatformPoller.start()
 }
@@ -242,6 +250,7 @@ void start()
 
 const shutdown = async () => {
   logger.info("shutting down")
+
   await poller.stop()
   await crossPlatformPoller.stop()
   await pool.end()
