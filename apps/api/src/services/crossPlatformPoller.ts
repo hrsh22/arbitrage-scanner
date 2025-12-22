@@ -2,7 +2,7 @@ import { logger } from "../logger.js"
 import { PolymarketClient } from "../clients/polymarketClient.js"
 import { KalshiClient } from "../clients/kalshiClient.js"
 import { CrossPlatformRepository } from "../db/repositories/crossPlatformRepository.js"
-import { detectCrossPlatformArbitrage } from "./crossPlatformDetector.js"
+import { detectCrossPlatformArbitrage, type CrossPlatformOpportunity } from "./crossPlatformDetector.js"
 
 const POLL_INTERVAL_MS = 30 * 1000 // 30 seconds
 
@@ -19,6 +19,58 @@ export class CrossPlatformPoller {
         private readonly kalshiClient: KalshiClient,
         private readonly repository: CrossPlatformRepository,
     ) { }
+
+    /**
+     * Recalculate arbitrage instruction with updated order book prices
+     * Called after enriching with real order book data
+     */
+    private recalculateArbitrage(opp: CrossPlatformOpportunity): void {
+        const polyYesAsk = opp.polymarket.yesBestAsk
+        const polyNoAsk = opp.polymarket.noBestAsk
+        const kalshiYesAsk = opp.kalshi.yesAsk
+        const kalshiNoAsk = opp.kalshi.noAsk
+
+        // Determine which strategy was originally selected based on type
+        switch (opp.arbitrage.type) {
+            case "poly-yes-kalshi-no": {
+                const cost = polyYesAsk + kalshiNoAsk
+                const profit = 1 - cost
+                opp.arbitrage.totalCost = cost
+                opp.arbitrage.profit = profit
+                opp.arbitrage.profitPct = cost > 0 && cost < 1 ? (profit / cost) * 100 : 0
+                opp.arbitrage.instruction = `Buy YES on Polymarket @ ${(polyYesAsk * 100).toFixed(1)}¢ + Buy NO on Kalshi @ ${(kalshiNoAsk * 100).toFixed(1)}¢`
+                break
+            }
+            case "poly-no-kalshi-yes": {
+                const cost = polyNoAsk + kalshiYesAsk
+                const profit = 1 - cost
+                opp.arbitrage.totalCost = cost
+                opp.arbitrage.profit = profit
+                opp.arbitrage.profitPct = cost > 0 && cost < 1 ? (profit / cost) * 100 : 0
+                opp.arbitrage.instruction = `Buy NO on Polymarket @ ${(polyNoAsk * 100).toFixed(1)}¢ + Buy YES on Kalshi @ ${(kalshiYesAsk * 100).toFixed(1)}¢`
+                break
+            }
+            case "poly-yes-kalshi-yes": {
+                const cost = polyYesAsk + kalshiYesAsk
+                const profit = 1 - cost
+                opp.arbitrage.totalCost = cost
+                opp.arbitrage.profit = profit
+                opp.arbitrage.profitPct = cost > 0 && cost < 1 ? (profit / cost) * 100 : 0
+                opp.arbitrage.instruction = `Buy YES on Polymarket @ ${(polyYesAsk * 100).toFixed(1)}¢ + Buy YES on Kalshi @ ${(kalshiYesAsk * 100).toFixed(1)}¢`
+                break
+            }
+            case "poly-no-kalshi-no": {
+                const cost = polyNoAsk + kalshiNoAsk
+                const profit = 1 - cost
+                opp.arbitrage.totalCost = cost
+                opp.arbitrage.profit = profit
+                opp.arbitrage.profitPct = cost > 0 && cost < 1 ? (profit / cost) * 100 : 0
+                opp.arbitrage.instruction = `Buy NO on Polymarket @ ${(polyNoAsk * 100).toFixed(1)}¢ + Buy NO on Kalshi @ ${(kalshiNoAsk * 100).toFixed(1)}¢`
+                break
+            }
+            // type "none" - no recalculation needed
+        }
+    }
 
     /**
      * Start the poller
@@ -104,7 +156,7 @@ export class CrossPlatformPoller {
                 })
                 const enriched = await this.polymarketClient.enrichMarketsWithOrderBooks(matchedPolyMarkets)
 
-                // Update opportunities with accurate order book prices
+                // Update opportunities with accurate order book prices AND recalculate arbitrage
                 const enrichedById = new Map(enriched.map(m => [m.id, m]))
                 for (const opp of opportunities) {
                     const enrichedMarket = enrichedById.get(opp.polymarket.id)
@@ -119,6 +171,9 @@ export class CrossPlatformPoller {
                             opp.polymarket.noBestBid = noOutcome.bestBid ?? opp.polymarket.noBestBid
                             opp.polymarket.noBestAsk = noOutcome.bestAsk ?? opp.polymarket.noBestAsk
                         }
+
+                        // Recalculate arbitrage instruction with updated prices
+                        this.recalculateArbitrage(opp)
                     }
                 }
             }
