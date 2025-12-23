@@ -20,6 +20,7 @@ export class TradingBot {
     private mode: BotMode = BOT_CONFIG.DEFAULT_MODE
     private scanInterval: NodeJS.Timeout | null = null
     private lastScanAt: Date | null = null
+    private circuitBreakerTripped = false
 
     private tradingClient: TradingClient
     private strategyEngine: StrategyEngine
@@ -230,14 +231,8 @@ export class TradingBot {
             // 6. Get top opportunities and place bets
             const topOpps = this.strategyEngine.getTopOpportunities(scoredOpps, maxBets)
 
-            for (let i = 0; i < topOpps.length; i++) {
-                const opp = topOpps[i]!
+            for (const opp of topOpps) {
                 await this.placeBet(opp)
-
-                // Add delay between trades to avoid rate limiting (except for last one)
-                if (i < topOpps.length - 1) {
-                    await new Promise(resolve => setTimeout(resolve, 500))
-                }
             }
 
             this.lastScanAt = new Date()
@@ -264,6 +259,13 @@ export class TradingBot {
      * Check safety conditions before trading
      */
     private async checkSafetyConditions(): Promise<{ canTrade: boolean; reason?: string }> {
+        if (this.circuitBreakerTripped) {
+            return {
+                canTrade: false,
+                reason: "Circuit breaker tripped - manual restart required",
+            };
+        }
+
         // Check daily loss limit
         const todayStats = await this.repository.getTodayStats(this.mode === "simulation")
         if (todayStats.netPnL < -BOT_CONFIG.MAX_DAILY_LOSS) {
@@ -351,24 +353,20 @@ export class TradingBot {
                         message: `Trade failed: ${result.error}`,
                         metadata: { marketId: opportunity.marketId, outcome: opportunity.outcome },
                     })
+                    throw new Error(result.error)
                 }
             }
         } catch (error) {
-            const errorMsg = (error as Error).message
             logger.error("TradingBot: Failed to place bet", {
-                error: errorMsg,
+                error: (error as Error).message,
             })
             await this.repository.logEvent({
                 eventType: "error",
                 eventName: "bet_error",
-                message: `Failed to place bet: ${errorMsg}`,
+                message: `Failed to place bet: ${(error as Error).message}`,
                 metadata: { marketId: opportunity.marketId },
             })
-
-            // Rethrow rate limit/block errors to stop all further trading
-            if (errorMsg.includes("rate limited") || errorMsg.includes("blocked") || errorMsg.includes("403") || errorMsg.includes("429")) {
-                throw error
-            }
+            throw error;
         }
     }
 

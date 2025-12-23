@@ -11,12 +11,14 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "cron:run-trading-bot": "tsx src/cron/runTradingBot.ts",
-    "cron:check-bot-resolutions": "tsx src/cron/checkResolutions.ts"
+    "cron:check-bot-resolutions": "tsx src/cron/checkResolutions.ts",
+    "approve-allowance": "tsx src/approveAllowance.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^2.0.86",
     "@polymarket/clob-client": "^5.1.2",
     "ai": "^5.0.113",
+    "axios": "^1.13.2",
     "dotenv": "^16.4.7",
     "drizzle-orm": "^0.38.1",
     "ethers": "^5",

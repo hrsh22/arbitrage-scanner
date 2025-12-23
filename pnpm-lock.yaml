@@ -35,6 +35,9 @@ importers:
       ai:
         specifier: ^5.0.113
         version: 5.0.113(zod@3.25.76)
+      axios:
+        specifier: ^1.13.2
+        version: 1.13.2
       dotenv:
         specifier: ^16.4.7
         version: 16.6.1
