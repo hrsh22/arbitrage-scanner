@@ -353,15 +353,21 @@ export class TradingBot {
                 }
             }
         } catch (error) {
+            const errorMsg = (error as Error).message
             logger.error("TradingBot: Failed to place bet", {
-                error: (error as Error).message,
+                error: errorMsg,
             })
             await this.repository.logEvent({
                 eventType: "error",
                 eventName: "bet_error",
-                message: `Failed to place bet: ${(error as Error).message}`,
+                message: `Failed to place bet: ${errorMsg}`,
                 metadata: { marketId: opportunity.marketId },
             })
+
+            // Rethrow rate limit/block errors to stop all further trading
+            if (errorMsg.includes("rate limited") || errorMsg.includes("blocked") || errorMsg.includes("403") || errorMsg.includes("429")) {
+                throw error
+            }
         }
     }
 

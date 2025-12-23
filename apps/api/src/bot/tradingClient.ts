@@ -41,14 +41,11 @@ export class TradingClient {
             })
 
             // Create initial client without API creds (for deriving them)
-            // For EOA (signature type 0), funder address = wallet address
+            // For EOA, just pass host, chainId, and wallet - no extra params needed
             this.client = new ClobClient(
                 CLOB_HOST,
                 CHAIN_ID,
-                this.wallet,
-                undefined, // No API creds yet
-                0, // EOA signature type
-                walletAddress // funderAddress - where USDC is held
+                this.wallet
             )
 
             // Derive or create API credentials from the private key
@@ -69,9 +66,7 @@ export class TradingClient {
                 CLOB_HOST,
                 CHAIN_ID,
                 this.wallet,
-                apiCreds,
-                0, // EOA signature type
-                walletAddress // funderAddress - where USDC is held
+                apiCreds
             )
 
             this.initialized = true
