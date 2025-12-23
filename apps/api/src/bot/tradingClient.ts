@@ -34,18 +34,21 @@ export class TradingClient {
         try {
             // Create wallet from private key
             this.wallet = new Wallet(privateKey)
+            const walletAddress = this.wallet.address
 
             logger.info("TradingClient: Initializing with wallet", {
-                address: this.wallet.address,
+                address: walletAddress,
             })
 
             // Create initial client without API creds (for deriving them)
+            // For EOA (signature type 0), funder address = wallet address
             this.client = new ClobClient(
                 CLOB_HOST,
                 CHAIN_ID,
                 this.wallet,
                 undefined, // No API creds yet
-                0 // EOA signature type
+                0, // EOA signature type
+                walletAddress // funderAddress - where USDC is held
             )
 
             // Derive API credentials from the private key
@@ -61,7 +64,8 @@ export class TradingClient {
                 CHAIN_ID,
                 this.wallet,
                 apiCreds,
-                0 // EOA signature type
+                0, // EOA signature type
+                walletAddress // funderAddress - where USDC is held
             )
 
             this.initialized = true
@@ -151,12 +155,23 @@ export class TradingClient {
             const balanceAllowance = await this.client!.getBalanceAllowance({
                 asset_type: AssetType.COLLATERAL,
             })
-            return parseFloat(balanceAllowance.balance ?? "0") / 1e6
+
+            // Handle various response formats
+            const balanceStr = balanceAllowance?.balance
+            if (!balanceStr) {
+                logger.warn("TradingClient: Balance response is empty", { balanceAllowance })
+                return 0
+            }
+
+            // Balance is in wei (6 decimals for USDC)
+            const balance = parseFloat(String(balanceStr)) / 1e6
+            return isNaN(balance) ? 0 : balance
         } catch (error) {
             logger.error("TradingClient: Failed to get balance", {
                 error: (error as Error).message,
             })
-            throw error
+            // Return 0 instead of throwing - balance check is informational
+            return 0
         }
     }
 
