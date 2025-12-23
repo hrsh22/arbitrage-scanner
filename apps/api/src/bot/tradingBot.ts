@@ -34,11 +34,11 @@ export class TradingBot {
     }
 
     /**
-     * Initialize the bot (load mode from DB, init trading client if needed)
+     * Initialize the bot (load mode from env, init trading client if needed)
      */
     async initialize(): Promise<void> {
-        // Load mode from database
-        this.mode = await this.repository.getMode()
+        // Load mode from environment variable
+        this.mode = env.BOT_MODE
 
         logger.info("TradingBot: Initialized", { mode: this.mode })
 
@@ -135,6 +135,8 @@ export class TradingBot {
 
     /**
      * Switch between simulation and live mode
+     * Note: This only changes the mode for the current process.
+     * To persist, update BOT_MODE in .env
      */
     async setMode(newMode: BotMode): Promise<void> {
         if (newMode === this.mode) {
@@ -143,7 +145,6 @@ export class TradingBot {
 
         const oldMode = this.mode
         this.mode = newMode
-        await this.repository.setMode(newMode)
 
         // Initialize trading client if switching to live
         if (newMode === "live" && !this.tradingClient.isInitialized()) {

@@ -7,7 +7,6 @@ import {
     botPositions,
     botDailyStats,
     botEventLog,
-    botConfig
 } from "../db/botSchema.js"
 import { eq, desc, and, sql, gte } from "drizzle-orm"
 import type { Position, DailyStats, OverallStats, BotEvent } from "./types.js"
@@ -179,21 +178,7 @@ export class BotRepository {
     async getTodayStats(isSimulated: boolean): Promise<DailyStats> {
         const today = getTodayDate()
 
-        // First, try to insert a new record (ON CONFLICT DO NOTHING)
-        // This ensures the record exists without race conditions
-        await db.insert(botDailyStats)
-            .values({
-                date: today,
-                isSimulated,
-                betsPlaced: 0,
-                amountDeployed: "0",
-                betsWon: 0,
-                betsLost: 0,
-                netPnL: "0",
-            })
-            .onConflictDoNothing()
-
-        // Now select the record (it definitely exists)
+        // Try to get existing record first
         const existing = await db.select()
             .from(botDailyStats)
             .where(and(
@@ -202,7 +187,41 @@ export class BotRepository {
             ))
             .limit(1)
 
-        return this.mapDailyStats(existing[0]!)
+        if (existing.length > 0) {
+            return this.mapDailyStats(existing[0]!)
+        }
+
+        // Create new record for today
+        try {
+            const result = await db.insert(botDailyStats)
+                .values({
+                    date: today,
+                    isSimulated,
+                    betsPlaced: 0,
+                    amountDeployed: "0",
+                    betsWon: 0,
+                    betsLost: 0,
+                    netPnL: "0",
+                })
+                .returning()
+
+            return this.mapDailyStats(result[0]!)
+        } catch (error) {
+            // If insert failed due to race condition, try to select again
+            const retrySelect = await db.select()
+                .from(botDailyStats)
+                .where(and(
+                    eq(botDailyStats.date, today),
+                    eq(botDailyStats.isSimulated, isSimulated)
+                ))
+                .limit(1)
+
+            if (retrySelect.length > 0) {
+                return this.mapDailyStats(retrySelect[0]!)
+            }
+
+            throw error
+        }
     }
 
     /**
@@ -404,49 +423,6 @@ export class BotRepository {
             metadata: row.metadata as Record<string, unknown> | undefined,
             createdAt: row.createdAt,
         }))
-    }
-
-    // ==========================================
-    // CONFIG
-    // ==========================================
-
-    /**
-     * Get config value
-     */
-    async getConfig(key: string): Promise<string | null> {
-        const result = await db.select()
-            .from(botConfig)
-            .where(eq(botConfig.key, key))
-            .limit(1)
-
-        return result[0]?.value ?? null
-    }
-
-    /**
-     * Set config value
-     */
-    async setConfig(key: string, value: string): Promise<void> {
-        await db.insert(botConfig)
-            .values({ key, value })
-            .onConflictDoUpdate({
-                target: botConfig.key,
-                set: { value, updatedAt: new Date() },
-            })
-    }
-
-    /**
-     * Get bot mode from config
-     */
-    async getMode(): Promise<"simulation" | "live"> {
-        const mode = await this.getConfig("mode")
-        return (mode === "live" ? "live" : "simulation")
-    }
-
-    /**
-     * Set bot mode
-     */
-    async setMode(mode: "simulation" | "live"): Promise<void> {
-        await this.setConfig("mode", mode)
     }
 }
 
