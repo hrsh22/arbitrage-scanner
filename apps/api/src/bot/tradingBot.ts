@@ -256,6 +256,7 @@ export class TradingBot {
                 eventName: "scan_cycle_failed",
                 message: `Scan cycle failed: ${(error as Error).message}`,
             })
+            throw error
         }
     }
 
