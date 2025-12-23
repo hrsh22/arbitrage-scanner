@@ -11,7 +11,9 @@
 
 import "dotenv/config"
 import { getTradingBot } from "../bot/tradingBot.js"
+import { getBotRepository } from "../bot/repository.js"
 import { BOT_CONFIG } from "../bot/config.js"
+import { env } from "../env.js"
 import { logger } from "../logger.js"
 
 async function main() {
@@ -30,6 +32,12 @@ async function main() {
 
     try {
         const bot = getTradingBot()
+        const repository = getBotRepository()
+
+        // Step 0: Sync mode from environment variable
+        const envMode = env.BOT_MODE
+        logger.info("Setting bot mode from environment", { BOT_MODE: envMode })
+        await repository.setMode(envMode)
 
         // Step 1: Initialize bot
         logger.info("Step 1: Initializing trading bot")
