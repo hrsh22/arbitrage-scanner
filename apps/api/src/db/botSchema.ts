@@ -13,7 +13,8 @@ import {
     pgTable,
     serial,
     text,
-    timestamp
+    timestamp,
+    uniqueIndex
 } from "drizzle-orm/pg-core"
 
 /**
@@ -62,7 +63,7 @@ export const botPositions = pgTable("bot_positions", {
  */
 export const botDailyStats = pgTable("bot_daily_stats", {
     id: serial("id").primaryKey(),
-    date: text("date").notNull().unique(),           // YYYY-MM-DD in UTC
+    date: text("date").notNull(),                    // YYYY-MM-DD in UTC
 
     // Deployment stats
     betsPlaced: integer("bets_placed").notNull().default(0),
@@ -79,13 +80,16 @@ export const botDailyStats = pgTable("bot_daily_stats", {
     netPnL: numeric("net_pnl", { precision: 14, scale: 4 }).default("0"),
 
     // Mode tracking
-    isSimulated: boolean("is_simulated").default(true),
+    isSimulated: boolean("is_simulated").notNull().default(true),
 
     // Timestamps
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
     dateIdx: index("bot_daily_stats_date_idx").on(table.date),
+    // Composite unique: one row per date per mode (simulated vs live)
+    dateSimulatedUnique: uniqueIndex("bot_daily_stats_date_simulated_unique")
+        .on(table.date, table.isSimulated),
 }))
 
 /**
@@ -103,20 +107,9 @@ export const botEventLog = pgTable("bot_event_log", {
     // Details
     message: text("message").notNull(),
     metadata: jsonb("metadata"),                     // Additional structured data
-
     // Timestamp
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
     typeIdx: index("bot_event_log_type_idx").on(table.eventType),
     createdIdx: index("bot_event_log_created_idx").on(table.createdAt),
 }))
-
-/**
- * Bot Config - runtime configuration (stored in DB for persistence)
- */
-export const botConfig = pgTable("bot_config", {
-    id: serial("id").primaryKey(),
-    key: text("key").notNull().unique(),
-    value: text("value").notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-})
