@@ -331,8 +331,8 @@ export class TradingBot {
                     return
                 }
 
-                // Calculate max price with slippage, but cap at 0.999 (API limit)
-                const maxPrice = Math.min(opportunity.buyPrice * 1.02, 0.999)
+                // Calculate max price with slippage, but cap at 0.995 (API limit)
+                const maxPrice = Math.min(opportunity.buyPrice * 1.02, 0.995)
 
                 const result = await this.tradingClient.placeBet(
                     opportunity.tokenId,
@@ -353,7 +353,6 @@ export class TradingBot {
                         message: `Trade failed: ${result.error}`,
                         metadata: { marketId: opportunity.marketId, outcome: opportunity.outcome },
                     })
-                    throw new Error(result.error)
                 }
             }
         } catch (error) {
@@ -366,7 +365,6 @@ export class TradingBot {
                 message: `Failed to place bet: ${(error as Error).message}`,
                 metadata: { marketId: opportunity.marketId },
             })
-            throw error;
         }
     }
 
