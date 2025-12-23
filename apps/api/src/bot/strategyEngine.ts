@@ -249,7 +249,29 @@ export class StrategyEngine {
         // to calculate slippage for our $1 bet
         const buyPrice = likelyOutcome.bestAsk
 
-        // Skip if buy price would give no profit
+        // Skip if buy price is below minimum (95c)
+        if (buyPrice < BOT_CONFIG.MIN_ODDS) {
+            const maxStats = calculateMaxInvestmentStats(buyPrice, likelyOutcome.liquidity)
+            return {
+                marketId,
+                marketQuestion: question,
+                marketSlug: opp.marketSlug,
+                tokenId: likelyOutcome.tokenId,
+                outcome: likelyOutcome.name,
+                probability,
+                buyPrice,
+                hoursUntilClose,
+                closesAt,
+                liquidity: likelyOutcome.liquidity,
+                pphScore: 0,
+                expectedProfit: 0,
+                canBet: false,
+                skipReason: `Buy price ${(buyPrice * 100).toFixed(1)}¢ below min ${(BOT_CONFIG.MIN_ODDS * 100).toFixed(0)}¢`,
+                ...maxStats,
+            }
+        }
+
+        // Skip if buy price would give no profit (above 99.5c)
         if (buyPrice >= BOT_CONFIG.MAX_ODDS) {
             const maxStats = calculateMaxInvestmentStats(buyPrice, likelyOutcome.liquidity)
             return {
@@ -266,7 +288,7 @@ export class StrategyEngine {
                 pphScore: 0,
                 expectedProfit: 0,
                 canBet: false,
-                skipReason: `Buy price ${(buyPrice * 100).toFixed(1)}¢ too high`,
+                skipReason: `Buy price ${(buyPrice * 100).toFixed(1)}¢ above max ${(BOT_CONFIG.MAX_ODDS * 100).toFixed(1)}¢`,
                 ...maxStats,
             }
         }
@@ -340,13 +362,24 @@ export class StrategyEngine {
 
     /**
      * Get the top opportunities to bet on, given budget constraints.
+     * Ensures we never bet on the same market twice.
      */
     getTopOpportunities(
         scoredOpportunities: ScoredOpportunity[],
         maxBets: number
     ): ScoredOpportunity[] {
-        return scoredOpportunities
-            .filter(opp => opp.canBet)
-            .slice(0, maxBets)
+        const bettable = scoredOpportunities.filter(opp => opp.canBet)
+
+        // Deduplicate by marketId - keep only the first (highest PPH) opportunity per market
+        const seenMarkets = new Set<string>()
+        const deduplicated = bettable.filter(opp => {
+            if (seenMarkets.has(opp.marketId)) {
+                return false
+            }
+            seenMarkets.add(opp.marketId)
+            return true
+        })
+
+        return deduplicated.slice(0, maxBets)
     }
 }
