@@ -288,6 +288,7 @@ export class TradingClient {
                 }
             }
 
+            // Reject if market price is already above our max tolerance
             if (effectivePrice > maxPrice) {
                 return {
                     success: false,
@@ -295,19 +296,24 @@ export class TradingClient {
                 }
             }
 
+            // Use effective price + 0.1% buffer for the limit order
+            // This ensures we don't pay more than current market + tiny buffer
+            const limitPrice = Math.min(effectivePrice * 1.001, 0.999)
+
             logger.info("TradingClient: Placing market buy order", {
                 tokenId,
                 usdcAmount,
                 maxPrice,
                 effectivePrice,
+                limitPrice,
                 tokensReceived,
             })
 
             // Create and place the order
-            // Using a limit order at maxPrice as a "market" order with slippage protection
+            // Using a limit order at the effective price (plus tiny buffer)
             const order = await this.client!.createOrder({
                 tokenID: tokenId,
-                price: maxPrice,
+                price: limitPrice,
                 size: tokensReceived,
                 side: Side.BUY,
             })

@@ -322,10 +322,13 @@ export class TradingBot {
                     return
                 }
 
+                // Calculate max price with slippage, but cap at 0.999 (API limit)
+                const maxPrice = Math.min(opportunity.buyPrice * 1.02, 0.999)
+
                 const result = await this.tradingClient.placeBet(
                     opportunity.tokenId,
                     BOT_CONFIG.BET_SIZE,
-                    opportunity.buyPrice * 1.02 // 2% slippage tolerance
+                    maxPrice
                 )
 
                 if (result.success) {
