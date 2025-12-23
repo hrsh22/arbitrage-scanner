@@ -230,8 +230,14 @@ export class TradingBot {
             // 6. Get top opportunities and place bets
             const topOpps = this.strategyEngine.getTopOpportunities(scoredOpps, maxBets)
 
-            for (const opp of topOpps) {
+            for (let i = 0; i < topOpps.length; i++) {
+                const opp = topOpps[i]!
                 await this.placeBet(opp)
+
+                // Add delay between trades to avoid rate limiting (except for last one)
+                if (i < topOpps.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 500))
+                }
             }
 
             this.lastScanAt = new Date()

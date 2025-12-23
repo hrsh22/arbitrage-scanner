@@ -51,11 +51,17 @@ export class TradingClient {
                 walletAddress // funderAddress - where USDC is held
             )
 
-            // Derive API credentials from the private key
-            const apiCreds = await this.client.deriveApiKey()
+            // Derive or create API credentials from the private key
+            // createOrDeriveApiKey will create a new key if none exists, or derive existing one
+            const apiCreds = await this.client.createOrDeriveApiKey()
 
-            logger.info("TradingClient: Derived API credentials", {
-                hasApiKey: !!apiCreds,
+            if (!apiCreds?.key || !apiCreds?.secret || !apiCreds?.passphrase) {
+                throw new Error("Failed to obtain valid API credentials from Polymarket")
+            }
+
+            logger.info("TradingClient: Obtained API credentials", {
+                hasApiKey: !!apiCreds.key,
+                hasSecret: !!apiCreds.secret,
             })
 
             // Recreate client with API credentials
