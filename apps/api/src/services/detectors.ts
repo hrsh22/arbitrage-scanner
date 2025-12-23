@@ -208,6 +208,7 @@ export const detectNearResolution = (
             question: market.question,
             likelyOutcome: {
                 name: likelyName,
+                tokenId: likelyOutcome.id,  // Token ID from NormalizedOutcome
                 probability: likelyOdds,
                 bestBid: likelyOutcome.bestBid ?? 0,
                 bestAsk: buyPrice,

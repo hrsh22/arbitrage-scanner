@@ -66,6 +66,7 @@ export type NearResolutionOpportunity = {
   // The likely outcome (Yes or No with highest odds)
   likelyOutcome: {
     name: string
+    tokenId: string           // Token ID for placing orders on CLOB
     probability: number     // 0.95 = 95% chance
     bestBid: number         // Price you can sell at
     bestAsk: number         // Price you need to buy at
