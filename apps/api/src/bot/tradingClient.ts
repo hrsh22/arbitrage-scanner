@@ -331,6 +331,12 @@ export class TradingClient {
                 status: result.status,
             })
 
+            // Check for rate limit or block errors
+            if (result.status === 403 || result.status === 429) {
+                logger.error("TradingClient: API blocked or rate limited", result);
+                throw new Error(`API blocked or rate limited (status ${result.status})`)
+            }
+
             return {
                 success: result.success ?? false,
                 orderId: result.orderID,
