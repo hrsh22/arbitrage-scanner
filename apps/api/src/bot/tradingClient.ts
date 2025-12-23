@@ -408,7 +408,7 @@ export class TradingClient {
 
       // Use effective price + 0.1% buffer for the limit order
       // This ensures we don't pay more than current market + tiny buffer
-      const limitPrice = Math.min(effectivePrice * 1.001, 0.999);
+      const limitPrice = Math.min(effectivePrice * 1.001, 0.995);
 
       logger.info("TradingClient: Placing market buy order", {
         tokenId,
