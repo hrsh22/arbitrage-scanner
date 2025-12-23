@@ -16,14 +16,14 @@ export const BOT_CONFIG = {
   MAX_HOURS_GENERAL: 24, // Default: <24 hours to resolution
   MAX_HOURS_FOR_HIGH_ODDS: 6, // 99-99.5¢ only if resolving within 6 hours
   HIGH_ODDS_THRESHOLD: 0.99, // Above this, use MAX_HOURS_FOR_HIGH_ODDS
-  MIN_LIQUIDITY: 0, // $10 minimum liquidity
+  MIN_LIQUIDITY: 10, // $10 minimum liquidity
 
   // Scanning
   SCAN_INTERVAL_MS: 5 * 60 * 1000, // Every 5 minutes
   RESOLUTION_CHECK_INTERVAL_MS: 10 * 60 * 1000, // Check resolutions every 10 minutes
 
   // Safety (disabled - no limits)
-  MIN_WALLET_RESERVE: 0, // No minimum wallet reserve
+  MIN_WALLET_RESERVE: 10, // $10 minimum wallet reserve
   MAX_DAILY_LOSS: Infinity, // No daily loss limit
 
   // Default mode (always simulation until explicitly switched)

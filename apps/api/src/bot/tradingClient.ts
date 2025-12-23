@@ -10,9 +10,6 @@ import { Wallet, ethers } from "ethers";
 import { BOT_CONFIG } from "./config.js";
 import type { OrderBook, TradeResult, WalletStatus } from "./types.js";
 import { logger } from "../logger.js";
-import { setupAxiosInterceptors } from "./axiosSetup.js";
-
-setupAxiosInterceptors();
 
 // Polygon mainnet chain ID
 const CHAIN_ID = 137;
