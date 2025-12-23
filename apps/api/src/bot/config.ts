@@ -14,7 +14,7 @@ export const BOT_CONFIG = {
   MIN_ODDS: 0.95, // 95¢ minimum probability
   MAX_ODDS: 0.995, // 99.5¢ maximum (skip above)
   MAX_HOURS_GENERAL: 24, // Default: <24 hours to resolution
-  MAX_HOURS_FOR_HIGH_ODDS: 6, // 99-99.5¢ only if resolving within 6 hours
+  MAX_HOURS_FOR_HIGH_ODDS: 2, // 99-99.5¢ only if resolving within 2 hours
   HIGH_ODDS_THRESHOLD: 0.99, // Above this, use MAX_HOURS_FOR_HIGH_ODDS
   MIN_LIQUIDITY: 10, // $10 minimum liquidity
 
