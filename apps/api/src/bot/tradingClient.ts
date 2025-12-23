@@ -338,13 +338,20 @@ export class TradingClient {
                 fillSize: tokensReceived,
             }
         } catch (error) {
+            const errorMsg = (error as Error).message
             logger.error("TradingClient: Order placement failed", {
                 tokenId,
-                error: (error as Error).message,
+                error: errorMsg,
             })
+
+            // Rethrow rate limit/block errors to stop further requests
+            if (errorMsg.includes("403") || errorMsg.includes("429") || errorMsg.includes("blocked")) {
+                throw new Error(`API blocked or rate limited: ${errorMsg}`)
+            }
+
             return {
                 success: false,
-                error: (error as Error).message,
+                error: errorMsg,
             }
         }
     }
