@@ -63,24 +63,30 @@ export class BotRepository {
     /**
      * Get all open positions (includes "in_review" since they still need resolution checks)
      */
-    async getOpenPositions(): Promise<Position[]> {
-        const rows = await db.select()
+    async getOpenPositions(isSimulated?: boolean): Promise<Position[]> {
+        let query = db.select()
             .from(botPositions)
             .where(sql`${botPositions.status} IN ('open', 'in_review')`)
-            .orderBy(desc(botPositions.createdAt))
+            .$dynamic()
 
+        if (isSimulated !== undefined) {
+            query = query.where(eq(botPositions.isSimulated, isSimulated))
+        }
+
+        const rows = await query.orderBy(desc(botPositions.createdAt))
         return rows.map(this.mapPosition)
     }
 
     /**
-     * Check if we have a position in a market
+     * Check if we have a position in a market (for the same mode)
      */
-    async hasPositionInMarket(marketId: string): Promise<boolean> {
+    async hasPositionInMarket(marketId: string, isSimulated: boolean): Promise<boolean> {
         const result = await db.select({ id: botPositions.id })
             .from(botPositions)
             .where(and(
                 eq(botPositions.marketId, marketId),
-                eq(botPositions.status, "open")
+                eq(botPositions.isSimulated, isSimulated),
+                sql`${botPositions.status} IN ('open', 'in_review')`
             ))
             .limit(1)
 
@@ -88,12 +94,15 @@ export class BotRepository {
     }
 
     /**
-     * Get all market IDs we have open positions in
+     * Get all market IDs we have open positions in (for the same mode)
      */
-    async getOpenPositionMarketIds(): Promise<Set<string>> {
+    async getOpenPositionMarketIds(isSimulated: boolean): Promise<Set<string>> {
         const rows = await db.select({ marketId: botPositions.marketId })
             .from(botPositions)
-            .where(eq(botPositions.status, "open"))
+            .where(and(
+                eq(botPositions.isSimulated, isSimulated),
+                sql`${botPositions.status} IN ('open', 'in_review')`
+            ))
 
         return new Set(rows.map(r => r.marketId))
     }
@@ -170,21 +179,9 @@ export class BotRepository {
     async getTodayStats(isSimulated: boolean): Promise<DailyStats> {
         const today = getTodayDate()
 
-        // Try to get existing record
-        const existing = await db.select()
-            .from(botDailyStats)
-            .where(and(
-                eq(botDailyStats.date, today),
-                eq(botDailyStats.isSimulated, isSimulated)
-            ))
-            .limit(1)
-
-        if (existing.length > 0) {
-            return this.mapDailyStats(existing[0]!)
-        }
-
-        // Create new record for today
-        const result = await db.insert(botDailyStats)
+        // First, try to insert a new record (ON CONFLICT DO NOTHING)
+        // This ensures the record exists without race conditions
+        await db.insert(botDailyStats)
             .values({
                 date: today,
                 isSimulated,
@@ -194,9 +191,18 @@ export class BotRepository {
                 betsLost: 0,
                 netPnL: "0",
             })
-            .returning()
+            .onConflictDoNothing()
 
-        return this.mapDailyStats(result[0]!)
+        // Now select the record (it definitely exists)
+        const existing = await db.select()
+            .from(botDailyStats)
+            .where(and(
+                eq(botDailyStats.date, today),
+                eq(botDailyStats.isSimulated, isSimulated)
+            ))
+            .limit(1)
+
+        return this.mapDailyStats(existing[0]!)
     }
 
     /**
@@ -309,9 +315,16 @@ export class BotRepository {
     /**
      * Get daily stats history
      */
-    async getDailyStatsHistory(limit: number = 30): Promise<DailyStats[]> {
-        const rows = await db.select()
+    async getDailyStatsHistory(limit: number = 30, isSimulated?: boolean): Promise<DailyStats[]> {
+        let query = db.select()
             .from(botDailyStats)
+            .$dynamic()
+
+        if (isSimulated !== undefined) {
+            query = query.where(eq(botDailyStats.isSimulated, isSimulated))
+        }
+
+        const rows = await query
             .orderBy(desc(botDailyStats.date))
             .limit(limit)
 

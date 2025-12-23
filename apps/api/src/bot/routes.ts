@@ -120,14 +120,25 @@ export function buildBotRouter(): Router {
     /**
      * GET /bot/positions/open
      * Get only open positions
+     * Query params: ?simulated=true|false (optional, returns all if not specified)
      */
-    router.get("/positions/open", async (_req, res) => {
+    router.get("/positions/open", async (req, res) => {
         try {
-            const positions = await repository.getOpenPositions()
+            const simulatedParam = req.query.simulated as string | undefined
+            let isSimulated: boolean | undefined
+
+            if (simulatedParam === "true") {
+                isSimulated = true
+            } else if (simulatedParam === "false") {
+                isSimulated = false
+            }
+
+            const positions = await repository.getOpenPositions(isSimulated)
 
             res.json({
                 positions,
                 total: positions.length,
+                filter: isSimulated !== undefined ? { simulated: isSimulated } : "all",
             })
         } catch (error) {
             logger.error("Bot API: Failed to get open positions", { error: (error as Error).message })
@@ -163,15 +174,26 @@ export function buildBotRouter(): Router {
     /**
      * GET /bot/stats/daily
      * Get daily stats history
+     * Query params: ?mode=simulation|live (optional), ?limit=30 (optional)
      */
     router.get("/stats/daily", async (req, res) => {
         try {
             const limit = Number(req.query.limit) || 30
-            const history = await repository.getDailyStatsHistory(limit)
+            const modeParam = req.query.mode as string | undefined
+            let isSimulated: boolean | undefined
+
+            if (modeParam === "simulation") {
+                isSimulated = true
+            } else if (modeParam === "live") {
+                isSimulated = false
+            }
+
+            const history = await repository.getDailyStatsHistory(limit, isSimulated)
 
             res.json({
                 days: history,
                 total: history.length,
+                filter: modeParam || "all",
             })
         } catch (error) {
             logger.error("Bot API: Failed to get daily stats", { error: (error as Error).message })

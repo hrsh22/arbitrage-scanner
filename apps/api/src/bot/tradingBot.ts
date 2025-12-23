@@ -192,8 +192,9 @@ export class TradingBot {
                 return
             }
 
-            // 3. Get existing positions to avoid duplicates
-            const existingMarketIds = await this.repository.getOpenPositionMarketIds()
+            // 3. Get existing positions to avoid duplicates (only for same mode)
+            const isSimulated = this.mode === "simulation"
+            const existingMarketIds = await this.repository.getOpenPositionMarketIds(isSimulated)
 
             // 4. Evaluate opportunities with strategy engine
             const scoredOpps = await this.strategyEngine.evaluateOpportunities(
@@ -403,7 +404,7 @@ export class TradingBot {
     async getStatus(): Promise<BotStatus> {
         const isSimulated = this.mode === "simulation"
         const todayStats = await this.repository.getTodayStats(isSimulated)
-        const openPositions = await this.repository.getOpenPositions()
+        const openPositions = await this.repository.getOpenPositions(isSimulated)
         const remainingBudget = await this.repository.getRemainingBudget(
             BOT_CONFIG.DAILY_BUDGET,
             isSimulated
@@ -442,7 +443,8 @@ export class TradingBot {
                 minOdds: BOT_CONFIG.MIN_ODDS * 100,
             })
 
-            const existingMarketIds = await this.repository.getOpenPositionMarketIds()
+            const isSimulated = this.mode === "simulation"
+            const existingMarketIds = await this.repository.getOpenPositionMarketIds(isSimulated)
             return await this.strategyEngine.evaluateOpportunities(nearResolutionOpps, existingMarketIds)
         } catch (error) {
             logger.error("TradingBot: Failed to get opportunities", {
