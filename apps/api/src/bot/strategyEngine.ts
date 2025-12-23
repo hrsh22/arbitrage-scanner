@@ -271,6 +271,28 @@ export class StrategyEngine {
             }
         }
 
+        // Additional check: if buyPrice is >= 99c, must close within MAX_HOURS_FOR_HIGH_ODDS
+        if (buyPrice >= BOT_CONFIG.HIGH_ODDS_THRESHOLD && hoursUntilClose > BOT_CONFIG.MAX_HOURS_FOR_HIGH_ODDS) {
+            const maxStats = calculateMaxInvestmentStats(buyPrice, likelyOutcome.liquidity)
+            return {
+                marketId,
+                marketQuestion: question,
+                marketSlug: opp.marketSlug,
+                tokenId: likelyOutcome.tokenId,
+                outcome: likelyOutcome.name,
+                probability,
+                buyPrice,
+                hoursUntilClose,
+                closesAt,
+                liquidity: likelyOutcome.liquidity,
+                pphScore: 0,
+                expectedProfit: 0,
+                canBet: false,
+                skipReason: `Buy price ${(buyPrice * 100).toFixed(1)}¢ ≥99¢ needs to close within ${BOT_CONFIG.MAX_HOURS_FOR_HIGH_ODDS}h`,
+                ...maxStats,
+            }
+        }
+
         // Calculate scores
         const pphScore = calculatePPH(probability, buyPrice, hoursUntilClose)
         const expectedProfit = calculateExpectedProfit(probability, buyPrice)
