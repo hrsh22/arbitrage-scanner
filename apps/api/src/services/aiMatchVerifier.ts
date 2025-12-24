@@ -1,182 +1,192 @@
-import { createHash } from "crypto"
-import { eq, sql } from "drizzle-orm"
-import { openai } from "@ai-sdk/openai"
-import { generateObject } from "ai"
-import { z } from "zod"
-import { db } from "../db/client.js"
-import { aiMatchCache, aiCallLog } from "../db/schema.js"
-import { env } from "../env.js"
-import { logger } from "../logger.js"
+import { createHash } from "crypto";
+import { eq, sql } from "drizzle-orm";
+import { openai } from "@ai-sdk/openai";
+import { generateObject } from "ai";
+import { z } from "zod";
+import { db } from "../db/client.js";
+import { aiMatchCache, aiCallLog } from "../db/schema.js";
+import { env } from "../env.js";
+import { logger } from "../logger.js";
 
 /**
  * Result of AI match verification
  */
 export type AIMatchResult = {
-    isExactMatch: boolean
-    reason: string
-    fromCache: boolean
-}
+  isExactMatch: boolean;
+  reason: string;
+  fromCache: boolean;
+};
 
 /**
  * Generate a hash for the match pair (for cache lookup)
  */
 function generateMatchHash(polyQuestion: string, kalshiTitle: string): string {
-    const combined = `${polyQuestion.trim().toLowerCase()}|${kalshiTitle.trim().toLowerCase()}`
-    return createHash("md5").update(combined).digest("hex")
+  const combined = `${polyQuestion.trim().toLowerCase()}|${kalshiTitle.trim().toLowerCase()}`;
+  return createHash("md5").update(combined).digest("hex");
 }
 
 /**
  * Get today's date in UTC as YYYY-MM-DD
  */
 function getTodayUTC(): string {
-    return new Date().toISOString().split("T")[0]!
+  return new Date().toISOString().split("T")[0]!;
 }
 
 /**
  * Check if we're within the daily AI call limit
  */
 async function checkDailyLimit(): Promise<{ allowed: boolean; current: number; limit: number }> {
-    const today = getTodayUTC()
-    const limit = env.AI_MATCH_DAILY_LIMIT
+  const today = getTodayUTC();
+  const limit = env.AI_MATCH_DAILY_LIMIT;
 
-    const [row] = await db
-        .select({ callCount: aiCallLog.callCount })
-        .from(aiCallLog)
-        .where(eq(aiCallLog.callDate, today))
-        .limit(1)
+  const [row] = await db
+    .select({ callCount: aiCallLog.callCount })
+    .from(aiCallLog)
+    .where(eq(aiCallLog.callDate, today))
+    .limit(1);
 
-    const current = row?.callCount ?? 0
-    return { allowed: current < limit, current, limit }
+  const current = row?.callCount ?? 0;
+  return { allowed: current < limit, current, limit };
 }
 
 /**
  * Increment the daily call count
  */
 async function incrementDailyCount(): Promise<void> {
-    const today = getTodayUTC()
+  const today = getTodayUTC();
 
-    await db
-        .insert(aiCallLog)
-        .values({ callDate: today, callCount: 1 })
-        .onConflictDoUpdate({
-            target: aiCallLog.callDate,
-            set: {
-                callCount: sql`${aiCallLog.callCount} + 1`,
-                updatedAt: sql`now()`,
-            },
-        })
+  await db
+    .insert(aiCallLog)
+    .values({ callDate: today, callCount: 1 })
+    .onConflictDoUpdate({
+      target: aiCallLog.callDate,
+      set: {
+        callCount: sql`${aiCallLog.callCount} + 1`,
+        updatedAt: sql`now()`,
+      },
+    });
 }
 
 /**
  * Check cache for existing match result
  */
 async function checkCache(matchHash: string): Promise<AIMatchResult | null> {
-    const [cached] = await db
-        .select({
-            isExactMatch: aiMatchCache.isExactMatch,
-            reason: aiMatchCache.reason,
-        })
-        .from(aiMatchCache)
-        .where(eq(aiMatchCache.matchHash, matchHash))
-        .limit(1)
+  const [cached] = await db
+    .select({
+      isExactMatch: aiMatchCache.isExactMatch,
+      reason: aiMatchCache.reason,
+    })
+    .from(aiMatchCache)
+    .where(eq(aiMatchCache.matchHash, matchHash))
+    .limit(1);
 
-    if (cached) {
-        return {
-            isExactMatch: cached.isExactMatch,
-            reason: cached.reason ?? "",
-            fromCache: true,
-        }
-    }
+  if (cached) {
+    return {
+      isExactMatch: cached.isExactMatch,
+      reason: cached.reason ?? "",
+      fromCache: true,
+    };
+  }
 
-    return null
+  return null;
 }
 
 /**
  * Store result in cache
  */
 async function cacheResult(
-    matchHash: string,
-    polyQuestion: string,
-    kalshiTitle: string,
-    isExactMatch: boolean,
-    reason: string,
-    context?: {
-        polyEndDate?: string
-        kalshiEndDate?: string
-        polyResolutionRules?: string
-        kalshiResolutionRules?: string
-    }
+  matchHash: string,
+  polyQuestion: string,
+  kalshiTitle: string,
+  isExactMatch: boolean,
+  reason: string,
+  context?: {
+    polyEndDate?: string;
+    kalshiEndDate?: string;
+    polyResolutionRules?: string;
+    kalshiResolutionRules?: string;
+  },
 ): Promise<void> {
-    const values: Record<string, unknown> = {
-        matchHash,
-        polyQuestion,
-        kalshiTitle,
-        isExactMatch,
-        reason,
-    }
+  const values: Record<string, unknown> = {
+    matchHash,
+    polyQuestion,
+    kalshiTitle,
+    isExactMatch,
+    reason,
+  };
 
-    // Conditionally add context fields if enabled
-    if (env.STORE_AI_MATCH_CONTEXT && context) {
-        if (context.polyEndDate) {
-            values.polyEndDate = new Date(context.polyEndDate)
-        }
-        if (context.kalshiEndDate) {
-            values.kalshiEndDate = new Date(context.kalshiEndDate)
-        }
-        if (context.polyResolutionRules) {
-            values.polyResolutionRules = context.polyResolutionRules
-        }
-        if (context.kalshiResolutionRules) {
-            values.kalshiResolutionRules = context.kalshiResolutionRules
-        }
+  // Conditionally add context fields if enabled
+  if (env.STORE_AI_MATCH_CONTEXT && context) {
+    if (context.polyEndDate) {
+      values.polyEndDate = new Date(context.polyEndDate);
     }
+    if (context.kalshiEndDate) {
+      values.kalshiEndDate = new Date(context.kalshiEndDate);
+    }
+    if (context.polyResolutionRules) {
+      values.polyResolutionRules = context.polyResolutionRules;
+    }
+    if (context.kalshiResolutionRules) {
+      values.kalshiResolutionRules = context.kalshiResolutionRules;
+    }
+  }
 
-    await db
-        .insert(aiMatchCache)
-        .values(values as typeof aiMatchCache.$inferInsert)
-        .onConflictDoNothing()
+  await db
+    .insert(aiMatchCache)
+    .values(values as typeof aiMatchCache.$inferInsert)
+    .onConflictDoNothing();
 }
 
 /**
  * Call GPT-4o-mini to verify if two market questions are asking the exact same thing
  */
 async function callAI(
-    polyQuestion: string,
-    kalshiTitle: string,
-    polyEndDate?: string,
-    kalshiEndDate?: string,
-    polyResolutionRules?: string,
-    kalshiResolutionRules?: string
+  polyQuestion: string,
+  kalshiTitle: string,
+  polyEndDate?: string,
+  kalshiEndDate?: string,
+  polyResolutionRules?: string,
+  kalshiResolutionRules?: string,
 ): Promise<{ isExactMatch: boolean; reason: string }> {
-    if (!env.OPENAI_API_KEY) {
-        throw new Error("OPENAI_API_KEY not configured")
-    }
+  if (!env.OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY not configured");
+  }
 
-    // Format dates for display
-    const polyDateStr = polyEndDate ? new Date(polyEndDate).toLocaleDateString() : "Not specified"
-    const kalshiDateStr = kalshiEndDate ? new Date(kalshiEndDate).toLocaleDateString() : "Not specified"
+  // Format dates for display
+  const polyDateStr = polyEndDate ? new Date(polyEndDate).toLocaleDateString() : "Not specified";
+  const kalshiDateStr = kalshiEndDate
+    ? new Date(kalshiEndDate).toLocaleDateString()
+    : "Not specified";
 
-    // Format resolution rules
-    const polyRulesStr = polyResolutionRules?.trim() || "Not provided"
-    const kalshiRulesStr = kalshiResolutionRules?.trim() || "Not provided"
+  // Format resolution rules
+  const polyRulesStr = polyResolutionRules?.trim() || "Not provided";
+  const kalshiRulesStr = kalshiResolutionRules?.trim() || "Not provided";
 
-    logger.info("aiMatchVerifier::callAI::AI Prompt => ", {
-        polyQuestion,
-        kalshiTitle,
-        polyDateStr,
-        kalshiDateStr,
-        polyRulesStr,
-        kalshiRulesStr,
-    })
+  logger.info("aiMatchVerifier::callAI::AI Prompt => ", {
+    polyQuestion,
+    kalshiTitle,
+    polyDateStr,
+    kalshiDateStr,
+    polyRulesStr,
+    kalshiRulesStr,
+  });
 
-    const { object } = await generateObject({
-        model: openai("gpt-5-nano"),
-        schema: z.object({
-            isExactMatch: z.boolean().describe("Whether the two questions are asking about the exact same event/outcome (either directly or inversely)"),
-            matchType: z.enum(["DIRECT", "INVERSE", "NONE"]).describe("DIRECT = Same question. INVERSE = Opposite questions (Yes=No). NONE = Not a match."),
-            reason: z.string().describe("Brief explanation of the match type and why it qualifies"),
-        }),
-        prompt: `You are evaluating if two prediction markets are asking about THE SAME EVENT.
+  const { object } = await generateObject({
+    model: openai("gpt-5-nano"),
+    schema: z.object({
+      isExactMatch: z
+        .boolean()
+        .describe(
+          "Whether the two questions are asking about the exact same event/outcome (either directly or inversely)",
+        ),
+      matchType: z
+        .enum(["DIRECT", "INVERSE", "NONE"])
+        .describe(
+          "DIRECT = Same question. INVERSE = Opposite questions (Yes=No). NONE = Not a match.",
+        ),
+      reason: z.string().describe("Brief explanation of the match type and why it qualifies"),
+    }),
+    prompt: `You are evaluating if two prediction markets are asking about THE SAME EVENT.
 
 CURRENT DATE: ${new Date().toISOString()} (Use this to understand relative timeframes)
 
@@ -271,14 +281,14 @@ Return:
 - matchType = "DIRECT", "INVERSE", or "NONE"
 - reason = brief explanation with [TYPE:DIRECT] or [TYPE:INVERSE] prefix for matches
 `,
-    })
+  });
 
-    // Prepend match type to reason for downstream parsing
-    const finalReason = object.isExactMatch
-        ? `[TYPE:${object.matchType}] ${object.reason}`
-        : object.reason
+  // Prepend match type to reason for downstream parsing
+  const finalReason = object.isExactMatch
+    ? `[TYPE:${object.matchType}] ${object.reason}`
+    : object.reason;
 
-    return { isExactMatch: object.isExactMatch, reason: finalReason }
+  return { isExactMatch: object.isExactMatch, reason: finalReason };
 }
 
 /**
@@ -288,67 +298,82 @@ Return:
  * - Finally calls AI if needed
  */
 export async function verifyMatch(
-    polyQuestion: string,
-    kalshiTitle: string,
-    polyEndDate?: string,
-    kalshiEndDate?: string,
-    polyResolutionRules?: string,
-    kalshiResolutionRules?: string
+  polyQuestion: string,
+  kalshiTitle: string,
+  polyEndDate?: string,
+  kalshiEndDate?: string,
+  polyResolutionRules?: string,
+  kalshiResolutionRules?: string,
 ): Promise<AIMatchResult> {
-    const matchHash = generateMatchHash(polyQuestion, kalshiTitle)
+  const matchHash = generateMatchHash(polyQuestion, kalshiTitle);
 
-    // Check cache first
-    const cached = await checkCache(matchHash)
-    if (cached) {
-        logger.info("AI match cache hit", { matchHash, isExactMatch: cached.isExactMatch })
-        return cached
-    }
+  // Check cache first
+  const cached = await checkCache(matchHash);
+  if (cached) {
+    logger.info("AI match cache hit", { matchHash, isExactMatch: cached.isExactMatch });
+    return cached;
+  }
 
-    // Check daily limit
-    const { allowed, current, limit } = await checkDailyLimit()
-    if (!allowed) {
-        logger.warn("AI match daily limit reached", { current, limit })
-        // Return CONSERVATIVE rejection when limit reached - don't show untested pairs
-        return { isExactMatch: false, reason: "Daily AI limit reached - rejected for safety", fromCache: false }
-    }
+  // Check daily limit
+  const { allowed, current, limit } = await checkDailyLimit();
+  if (!allowed) {
+    logger.warn("AI match daily limit reached", { current, limit });
+    // Return CONSERVATIVE rejection when limit reached - don't show untested pairs
+    return {
+      isExactMatch: false,
+      reason: "Daily AI limit reached - rejected for safety",
+      fromCache: false,
+    };
+  }
 
-    // Call AI
-    try {
-        logger.info("Calling AI for match verification", {
-            poly: polyQuestion.substring(0, 50),
-            kalshi: kalshiTitle.substring(0, 50)
-        })
+  // Call AI
+  try {
+    logger.info("Calling AI for match verification", {
+      poly: polyQuestion.substring(0, 50),
+      kalshi: kalshiTitle.substring(0, 50),
+    });
 
-        const result = await callAI(polyQuestion, kalshiTitle, polyEndDate, kalshiEndDate, polyResolutionRules, kalshiResolutionRules)
+    const result = await callAI(
+      polyQuestion,
+      kalshiTitle,
+      polyEndDate,
+      kalshiEndDate,
+      polyResolutionRules,
+      kalshiResolutionRules,
+    );
 
-        // Increment counter
-        await incrementDailyCount()
+    // Increment counter
+    await incrementDailyCount();
 
-        // Cache result with context
-        await cacheResult(matchHash, polyQuestion, kalshiTitle, result.isExactMatch, result.reason, {
-            polyEndDate,
-            kalshiEndDate,
-            polyResolutionRules,
-            kalshiResolutionRules,
-        })
+    // Cache result with context
+    await cacheResult(matchHash, polyQuestion, kalshiTitle, result.isExactMatch, result.reason, {
+      polyEndDate,
+      kalshiEndDate,
+      polyResolutionRules,
+      kalshiResolutionRules,
+    });
 
-        logger.info("AI match result", {
-            isExactMatch: result.isExactMatch,
-            reason: result.reason.substring(0, 100)
-        })
+    logger.info("AI match result", {
+      isExactMatch: result.isExactMatch,
+      reason: result.reason.substring(0, 100),
+    });
 
-        return { ...result, fromCache: false }
-    } catch (error) {
-        logger.error("AI match verification failed", { error: (error as Error).message })
-        // On error, return optimistic match
-        return { isExactMatch: true, reason: "AI verification failed, using text similarity", fromCache: false }
-    }
+    return { ...result, fromCache: false };
+  } catch (error) {
+    logger.error("AI match verification failed", { error: (error as Error).message });
+    // On error, return optimistic match
+    return {
+      isExactMatch: true,
+      reason: "AI verification failed, using text similarity",
+      fromCache: false,
+    };
+  }
 }
 
 /**
  * Get current daily usage stats
  */
 export async function getAIUsageStats(): Promise<{ today: number; limit: number }> {
-    const { current, limit } = await checkDailyLimit()
-    return { today: current, limit }
+  const { current, limit } = await checkDailyLimit();
+  return { today: current, limit };
 }

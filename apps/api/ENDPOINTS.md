@@ -19,6 +19,7 @@ Base URL defaults to `http://localhost:8080`.
   - `sort`: `score | profit | liquidity | newest` (default: score)
 
   Response:
+
   ```json
   {
     "opportunities": [
@@ -60,6 +61,7 @@ Base URL defaults to `http://localhost:8080`.
 ## Configuration
 
 Environment variables (see `.env.example`):
+
 - `MAX_EVENTS`: Top N most liquid events to scan (default: 500)
 - `POLL_INTERVAL_MS`: Polling interval (default: 7000ms)
 - `MIN_LIQUIDITY_USD`: Minimum liquidity filter (default: 50)

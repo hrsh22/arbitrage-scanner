@@ -27,16 +27,16 @@ polymarket-mvp/
 
 ### Key Components
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| Trading Bot | `apps/api/src/bot/` | Autonomous betting engine with PPH strategy |
-| Strategy Engine | `apps/api/src/bot/strategyEngine.ts` | PPH scoring and opportunity evaluation |
-| Trading Client | `apps/api/src/bot/tradingClient.ts` | Polymarket CLOB order placement |
-| Market Poller | `apps/api/src/services/marketPoller.ts` | Background market data fetching |
-| Cross-Platform Detector | `apps/api/src/services/crossPlatformDetector.ts` | Polymarket ↔ Kalshi arbitrage |
-| AI Match Verifier | `apps/api/src/services/aiMatchVerifier.ts` | AI-powered market matching verification |
-| API Routes | `apps/api/src/routes/` | REST API endpoints |
-| Dashboard | `apps/web/` | Web UI for monitoring |
+| Component               | Location                                         | Purpose                                     |
+| ----------------------- | ------------------------------------------------ | ------------------------------------------- |
+| Trading Bot             | `apps/api/src/bot/`                              | Autonomous betting engine with PPH strategy |
+| Strategy Engine         | `apps/api/src/bot/strategyEngine.ts`             | PPH scoring and opportunity evaluation      |
+| Trading Client          | `apps/api/src/bot/tradingClient.ts`              | Polymarket CLOB order placement             |
+| Market Poller           | `apps/api/src/services/marketPoller.ts`          | Background market data fetching             |
+| Cross-Platform Detector | `apps/api/src/services/crossPlatformDetector.ts` | Polymarket ↔ Kalshi arbitrage               |
+| AI Match Verifier       | `apps/api/src/services/aiMatchVerifier.ts`       | AI-powered market matching verification     |
+| API Routes              | `apps/api/src/routes/`                           | REST API endpoints                          |
+| Dashboard               | `apps/web/`                                      | Web UI for monitoring                       |
 
 ---
 
@@ -76,13 +76,13 @@ cd apps/api && pnpm db:generate && pnpm db:migrate
 
 ### Naming Conventions
 
-| Type | Convention | Example |
-|------|------------|---------|
-| Files | camelCase | `tradingBot.ts`, `marketPoller.ts` |
-| Classes | PascalCase | `TradingBot`, `StrategyEngine` |
-| Functions | camelCase | `calculatePPH`, `evaluateOpportunities` |
-| Constants | UPPER_SNAKE_CASE | `BOT_CONFIG`, `DEFAULT_MODE` |
-| Types/Interfaces | PascalCase | `ScoredOpportunity`, `BotStatus` |
+| Type             | Convention       | Example                                 |
+| ---------------- | ---------------- | --------------------------------------- |
+| Files            | camelCase        | `tradingBot.ts`, `marketPoller.ts`      |
+| Classes          | PascalCase       | `TradingBot`, `StrategyEngine`          |
+| Functions        | camelCase        | `calculatePPH`, `evaluateOpportunities` |
+| Constants        | UPPER_SNAKE_CASE | `BOT_CONFIG`, `DEFAULT_MODE`            |
+| Types/Interfaces | PascalCase       | `ScoredOpportunity`, `BotStatus`        |
 
 ### Code Organization
 
@@ -110,11 +110,13 @@ PPH = (Profit if Win) / (Hours Until Close)
 ```
 
 **Rules:**
+
 - 95-99¢ odds: Allowed if resolving within 24 hours
 - 99-99.5¢ odds: Allowed only if resolving within 6 hours
 - Above 99.5¢: Skip (too close to $1, no meaningful profit)
 
 **Hard-coded Safety Limits (in `bot/config.ts`):**
+
 - `BET_SIZE: 1.00` - Fixed $1 per bet
 - `DAILY_BUDGET: 150` - $150/day max deployment
 - `MIN_WALLET_RESERVE: 10` - Always keep $10 in wallet
@@ -122,11 +124,11 @@ PPH = (Profit if Win) / (Hours Until Close)
 
 ### API Clients
 
-| Client | Base URL | Purpose |
-|--------|----------|---------|
-| Polymarket Gamma | `https://gamma-api.polymarket.com` | Market data, probabilities |
-| Polymarket CLOB | `https://clob.polymarket.com` | Order book, trade execution |
-| Kalshi | Kalshi API | Competitor market data for arbitrage |
+| Client           | Base URL                           | Purpose                              |
+| ---------------- | ---------------------------------- | ------------------------------------ |
+| Polymarket Gamma | `https://gamma-api.polymarket.com` | Market data, probabilities           |
+| Polymarket CLOB  | `https://clob.polymarket.com`      | Order book, trade execution          |
+| Kalshi           | Kalshi API                         | Competitor market data for arbitrage |
 
 ### Database
 
@@ -164,15 +166,15 @@ curl http://localhost:8080/bot/status
 
 ### Key API Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Server health check |
-| `/cross-platform` | GET | Active arbitrage opportunities |
-| `/opportunities/near-resolution` | GET | High-confidence near-resolution markets |
-| `/bot/status` | GET | Trading bot status |
-| `/bot/start` | POST | Start the trading bot |
-| `/bot/stop` | POST | Stop the trading bot |
-| `/bot/mode` | POST | Switch simulation/live mode |
+| Endpoint                         | Method | Description                             |
+| -------------------------------- | ------ | --------------------------------------- |
+| `/health`                        | GET    | Server health check                     |
+| `/cross-platform`                | GET    | Active arbitrage opportunities          |
+| `/opportunities/near-resolution` | GET    | High-confidence near-resolution markets |
+| `/bot/status`                    | GET    | Trading bot status                      |
+| `/bot/start`                     | POST   | Start the trading bot                   |
+| `/bot/stop`                      | POST   | Stop the trading bot                    |
+| `/bot/mode`                      | POST   | Switch simulation/live mode             |
 
 ---
 
@@ -200,13 +202,13 @@ curl http://localhost:8080/bot/status
 
 <!-- This section should be updated after each significant change -->
 
-| Date | Change | Files Affected |
-|------|--------|----------------|
-| 2024-12-22 | Added cron-friendly endpoints `/bot/scan` and `/bot/check-resolutions` | `bot/routes.ts`, `bot/tradingBot.ts`, `bot/resolutionChecker.ts` |
-| 2024-12-22 | Added resolution checker to track position outcomes and calculate USD P/L | `bot/resolutionChecker.ts`, `clients/polymarketClient.ts`, `index.ts` |
-| 2024-12-22 | Relaxed 99¢+ time threshold from 3h to 6h | `bot/config.ts` |
-| 2024-12-22 | Added max investment stats (maxInvestment, maxProfitPercent, maxProfitAbsolute) | `bot/types.ts`, `bot/strategyEngine.ts` |
-| 2024-12-22 | Initial AGENTS.md creation | `AGENTS.md` |
+| Date       | Change                                                                          | Files Affected                                                        |
+| ---------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| 2024-12-22 | Added cron-friendly endpoints `/bot/scan` and `/bot/check-resolutions`          | `bot/routes.ts`, `bot/tradingBot.ts`, `bot/resolutionChecker.ts`      |
+| 2024-12-22 | Added resolution checker to track position outcomes and calculate USD P/L       | `bot/resolutionChecker.ts`, `clients/polymarketClient.ts`, `index.ts` |
+| 2024-12-22 | Relaxed 99¢+ time threshold from 3h to 6h                                       | `bot/config.ts`                                                       |
+| 2024-12-22 | Added max investment stats (maxInvestment, maxProfitPercent, maxProfitAbsolute) | `bot/types.ts`, `bot/strategyEngine.ts`                               |
+| 2024-12-22 | Initial AGENTS.md creation                                                      | `AGENTS.md`                                                           |
 
 ---
 
@@ -217,48 +219,48 @@ flowchart TB
     subgraph Frontend
         Web[Next.js Dashboard]
     end
-    
+
     subgraph Backend[Express API]
         Router[API Routes]
         Bot[Trading Bot]
         Strategy[Strategy Engine]
         TradingClient[Trading Client]
-        
+
         subgraph Pollers
             MP[Market Poller]
             CPP[Cross-Platform Poller]
         end
-        
+
         subgraph Services
             Detector[Opportunity Detector]
             Matcher[Market Matcher]
             AIVerifier[AI Match Verifier]
         end
     end
-    
+
     subgraph External
         PolyGamma[Polymarket Gamma API]
         PolyCLOB[Polymarket CLOB]
         Kalshi[Kalshi API]
     end
-    
+
     subgraph Database
         PG[(PostgreSQL)]
     end
-    
+
     Web --> Router
     Router --> Bot
     Bot --> Strategy
     Bot --> TradingClient
     TradingClient --> PolyCLOB
-    
+
     MP --> PolyGamma
     CPP --> PolyGamma
     CPP --> Kalshi
     CPP --> Detector
     Detector --> Matcher
     Matcher --> AIVerifier
-    
+
     Bot --> PG
     CPP --> PG
     MP --> PG

@@ -44,8 +44,7 @@ export class TradingClient {
       // Create wallet from private key
       this.wallet = new Wallet(privateKey);
       const walletAddress = this.wallet.address;
-      this.funderAddress =
-        funderAddress || process.env.POLYMARKET_FUNDER_ADDRESS || null;
+      this.funderAddress = funderAddress || process.env.POLYMARKET_FUNDER_ADDRESS || null;
 
       logger.info("TradingClient: Initializing with wallet", {
         address: walletAddress,
@@ -69,9 +68,7 @@ export class TradingClient {
       const apiCreds = await this.client.createOrDeriveApiKey();
 
       if (!apiCreds?.key || !apiCreds?.secret || !apiCreds?.passphrase) {
-        throw new Error(
-          "Failed to obtain valid API credentials from Polymarket",
-        );
+        throw new Error("Failed to obtain valid API credentials from Polymarket");
       }
 
       logger.info("TradingClient: Obtained API credentials", {
@@ -196,16 +193,10 @@ export class TradingClient {
       ];
 
       // Connect wallet to a provider for broadcasting transactions
-      const provider = new ethers.providers.JsonRpcProvider(
-        "https://1rpc.io/matic",
-      );
+      const provider = new ethers.providers.JsonRpcProvider("https://1rpc.io/matic");
       const walletWithProvider = this.wallet!.connect(provider);
 
-      const usdcContract = new ethers.Contract(
-        USDC_ADDRESS,
-        erc20Abi,
-        walletWithProvider,
-      );
+      const usdcContract = new ethers.Contract(USDC_ADDRESS, erc20Abi, walletWithProvider);
 
       // Approve() first exchange contract (typically) active one)
       const exchangeAddress = exchangeAddresses[0];
@@ -374,11 +365,7 @@ export class TradingClient {
    * @param usdcAmount - Amount of USDC to spend
    * @param maxPrice - Maximum price to pay (for slippage protection)
    */
-  async placeBet(
-    tokenId: string,
-    usdcAmount: number,
-    maxPrice: number,
-  ): Promise<TradeResult> {
+  async placeBet(tokenId: string, usdcAmount: number, maxPrice: number): Promise<TradeResult> {
     if (!this.isInitialized()) {
       return { success: false, error: "Trading client not initialized" };
     }
@@ -388,8 +375,10 @@ export class TradingClient {
       const orderBook = await this.getOrderBook(tokenId);
 
       // Calculate effective price
-      const { effectivePrice, canFill, tokensReceived } =
-        this.calculateEffectivePrice(orderBook.asks, usdcAmount);
+      const { effectivePrice, canFill, tokensReceived } = this.calculateEffectivePrice(
+        orderBook.asks,
+        usdcAmount,
+      );
 
       if (!canFill) {
         return {

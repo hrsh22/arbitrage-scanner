@@ -58,10 +58,7 @@ export class PolymarketClient {
   private async fetchJson<T>(url: string): Promise<T> {
     for (let attempt = 0; attempt <= config.requestRetries; attempt++) {
       const controller = new AbortController();
-      const timeout = setTimeout(
-        () => controller.abort(),
-        config.requestTimeoutMs,
-      );
+      const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
       try {
         const response = await fetch(url, { signal: controller.signal });
         if (!response.ok) {
@@ -95,24 +92,18 @@ export class PolymarketClient {
 
       let bestBid: number | null = null;
       if (book.bids && book.bids.length > 0) {
-        const bidPrices = book.bids
-          .map((b) => Number(b.price))
-          .filter((p) => Number.isFinite(p));
+        const bidPrices = book.bids.map((b) => Number(b.price)).filter((p) => Number.isFinite(p));
         bestBid = bidPrices.length > 0 ? Math.max(...bidPrices) : null;
       }
 
       let bestAsk: number | null = null;
       let liquidity = 0;
       if (book.asks && book.asks.length > 0) {
-        const askPrices = book.asks
-          .map((a) => Number(a.price))
-          .filter((p) => Number.isFinite(p));
+        const askPrices = book.asks.map((a) => Number(a.price)).filter((p) => Number.isFinite(p));
         bestAsk = askPrices.length > 0 ? Math.min(...askPrices) : null;
 
         if (bestAsk !== null) {
-          const bestAskEntry = book.asks.find(
-            (a) => Number(a.price) === bestAsk,
-          );
+          const bestAskEntry = book.asks.find((a) => Number(a.price) === bestAsk);
           if (bestAskEntry) {
             liquidity = Number(bestAskEntry.size) * bestAsk;
           }
@@ -153,8 +144,8 @@ export class PolymarketClient {
    */
   private async fetchTopEvents(): Promise<GammaEvent[]> {
     const batchOffsets = [
-      0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300,
-      1400, 1500, 1600, 1700, 1800, 1900,
+      0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400, 1500, 1600,
+      1700, 1800, 1900,
     ];
 
     // Fetch top liquidity batches
@@ -179,10 +170,7 @@ export class PolymarketClient {
       return [];
     });
 
-    const [liquidityBatches, soonEvents] = await Promise.all([
-      liquidityPromise,
-      soonPromise,
-    ]);
+    const [liquidityBatches, soonEvents] = await Promise.all([liquidityPromise, soonPromise]);
 
     // Combine results
     const allEvents: GammaEvent[] = [];
@@ -304,10 +292,7 @@ export class PolymarketClient {
     const now = Date.now();
 
     // Use cache if still fresh
-    if (
-      this.cachedMarkets.length &&
-      now - this.lastFetchedAt < config.pollIntervalMs
-    ) {
+    if (this.cachedMarkets.length && now - this.lastFetchedAt < config.pollIntervalMs) {
       return this.cachedMarkets;
     }
 
@@ -369,9 +354,7 @@ export class PolymarketClient {
     for (let i = 0; i < candidateMarkets.length; i += batchSize) {
       const batch = candidateMarkets.slice(i, i + batchSize);
       const results = await Promise.all(
-        batch.map(({ event, market }) =>
-          this.enrichWithOrderBook(event, market),
-        ),
+        batch.map(({ event, market }) => this.enrichWithOrderBook(event, market)),
       );
 
       for (const m of results) {
@@ -479,9 +462,7 @@ export class PolymarketClient {
    * Enrich specific markets with order book data.
    * Call this after matching to get accurate bid/ask prices.
    */
-  async enrichMarketsWithOrderBooks(
-    markets: NormalizedMarket[],
-  ): Promise<NormalizedMarket[]> {
+  async enrichMarketsWithOrderBooks(markets: NormalizedMarket[]): Promise<NormalizedMarket[]> {
     const startTime = Date.now();
     const enriched: NormalizedMarket[] = [];
 
@@ -492,9 +473,7 @@ export class PolymarketClient {
 
       const results = await Promise.all(
         batch.map(async (market) => {
-          const tokenIds = (
-            market as NormalizedMarket & { _tokenIds?: string[] }
-          )._tokenIds;
+          const tokenIds = (market as NormalizedMarket & { _tokenIds?: string[] })._tokenIds;
           if (!tokenIds || tokenIds.length !== 2) return market;
 
           const [yesBook, noBook] = await Promise.all([
@@ -600,10 +579,8 @@ export class PolymarketClient {
         acceptingOrders,
         resolved,
         winningOutcome,
-        resolvedAt:
-          resolved && market.updatedAt ? new Date(market.updatedAt) : undefined,
-        outcomePrices:
-          price0 !== null && price1 !== null ? [price0, price1] : null,
+        resolvedAt: resolved && market.updatedAt ? new Date(market.updatedAt) : undefined,
+        outcomePrices: price0 !== null && price1 !== null ? [price0, price1] : null,
       };
     } catch (error) {
       logger.error("Failed to fetch market by ID", {

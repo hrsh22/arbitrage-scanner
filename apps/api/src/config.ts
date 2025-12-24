@@ -1,4 +1,4 @@
-import { env } from "./env.js"
+import { env } from "./env.js";
 
 /**
  * Application configuration derived from environment variables.
@@ -24,6 +24,6 @@ export const config = {
   // Arbitrage detection thresholds
   minLiquidityUsd: env.MIN_LIQUIDITY_USD,
   minProfitPct: env.MIN_PROFIT_PCT,
-} as const
+} as const;
 
-export type AppConfig = typeof config
+export type AppConfig = typeof config;

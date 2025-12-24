@@ -1,16 +1,15 @@
-"use client"
+"use client";
 
-import Link from "next/link"
-import { Header } from "@/components/ui/header"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@workspace/ui/components/card"
+import Link from "next/link";
+import { Header } from "@/components/ui/header";
 import {
-  Clock,
-  Repeat2,
-  ArrowRight,
-  Zap,
-  Target,
-  BarChart3,
-} from "lucide-react"
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@workspace/ui/components/card";
+import { Clock, Repeat2, ArrowRight, Zap, Target, BarChart3 } from "lucide-react";
 
 export default function HomePage() {
   return (
@@ -29,8 +28,8 @@ export default function HomePage() {
               Find Guaranteed Profits
             </h1>
             <p className="mx-auto mt-4 max-w-2xl text-lg text-muted-foreground">
-              Scan Polymarket and Kalshi for price discrepancies and high-confidence
-              opportunities to execute risk-free trades.
+              Scan Polymarket and Kalshi for price discrepancies and high-confidence opportunities
+              to execute risk-free trades.
             </p>
           </div>
 
@@ -84,8 +83,8 @@ export default function HomePage() {
                     <ArrowRight className="h-4 w-4 opacity-0 transition-opacity group-hover:opacity-100" />
                   </CardTitle>
                   <CardDescription>
-                    Find high-confidence markets where the outcome is nearly certain but
-                    hasn't resolved yet. Lower risk, steady returns.
+                    Find high-confidence markets where the outcome is nearly certain but hasn't
+                    resolved yet. Lower risk, steady returns.
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -129,5 +128,5 @@ export default function HomePage() {
         </div>
       </main>
     </>
-  )
+  );
 }
