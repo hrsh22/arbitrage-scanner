@@ -8,7 +8,7 @@
 export const BOT_CONFIG = {
   // Betting
   BET_SIZE: 5.0, // Fixed $5 per bet (Polymarket min order is $1)
-  DAILY_BUDGET: 150, // $150/day max deployment
+  DAILY_BUDGET: 200, // $200/day max deployment
 
   // Market selection
   MIN_ODDS: 0.95, // 95¢ minimum probability

@@ -142,18 +142,66 @@ export const detectNearResolution = (
   const now = new Date();
   const opportunities: NearResolutionOpportunity[] = [];
 
+  // Track rejection reasons for summary logging
+  const rejections = {
+    noCloseDate: 0,
+    alreadyClosed: 0,
+    tooFarOut: 0,
+    not2Outcomes: 0,
+    noValidPrices: 0,
+    oddsBelowMin: 0,
+    oddsAboveMax: 0,
+    buyPriceInvalid: 0,
+    buyPriceTooHigh: 0,
+  };
+
   for (const market of markets) {
     // Must have close date
-    if (!market.endsAt) continue;
+    if (!market.endsAt) {
+      rejections.noCloseDate++;
+      logger.debug("Market rejected: no close date", {
+        marketId: market.id,
+        question: market.question?.slice(0, 50),
+      });
+      continue;
+    }
 
     const closeDate = new Date(market.endsAt);
     const hoursUntilClose = (closeDate.getTime() - now.getTime()) / (1000 * 60 * 60);
 
-    // Skip if not closing soon (or already closed)
-    if (hoursUntilClose <= 0 || hoursUntilClose > maxHours) continue;
+    // Skip if already closed
+    if (hoursUntilClose <= 0) {
+      rejections.alreadyClosed++;
+      logger.debug("Market rejected: already closed", {
+        marketId: market.id,
+        question: market.question?.slice(0, 50),
+        hoursUntilClose: hoursUntilClose.toFixed(1),
+      });
+      continue;
+    }
+
+    // Skip if not closing soon
+    if (hoursUntilClose > maxHours) {
+      rejections.tooFarOut++;
+      logger.debug("Market rejected: closes too far out", {
+        marketId: market.id,
+        question: market.question?.slice(0, 50),
+        hoursUntilClose: hoursUntilClose.toFixed(1),
+        maxHours,
+      });
+      continue;
+    }
 
     // Must have exactly 2 outcomes
-    if (market.outcomes.length !== 2) continue;
+    if (market.outcomes.length !== 2) {
+      rejections.not2Outcomes++;
+      logger.debug("Market rejected: not binary market", {
+        marketId: market.id,
+        question: market.question?.slice(0, 50),
+        outcomeCount: market.outcomes.length,
+      });
+      continue;
+    }
 
     const yes = market.outcomes[0];
     const no = market.outcomes[1];
@@ -164,7 +212,16 @@ export const detectNearResolution = (
     const noPrice = no.midPrice ?? no.bestAsk ?? no.bestBid ?? 0;
 
     // Skip if no valid prices
-    if (yesPrice <= 0 && noPrice <= 0) continue;
+    if (yesPrice <= 0 && noPrice <= 0) {
+      rejections.noValidPrices++;
+      logger.debug("Market rejected: no valid prices", {
+        marketId: market.id,
+        question: market.question?.slice(0, 50),
+        yesPrice,
+        noPrice,
+      });
+      continue;
+    }
 
     // Find the likely outcome (highest odds)
     const likelyIsYes = yesPrice >= noPrice;
@@ -173,18 +230,55 @@ export const detectNearResolution = (
     const likelyOdds = likelyIsYes ? yesPrice : noPrice;
 
     // Skip if odds below threshold
-    if (likelyOdds < minOdds) continue;
+    if (likelyOdds < minOdds) {
+      rejections.oddsBelowMin++;
+      logger.debug("Market rejected: odds below minimum", {
+        marketId: market.id,
+        question: market.question?.slice(0, 50),
+        likelyOutcome: likelyName,
+        odds: (likelyOdds * 100).toFixed(1) + "¢",
+        minOdds: (minOdds * 100).toFixed(0) + "¢",
+      });
+      continue;
+    }
 
     // Skip if odds are essentially 100% (no profit possible)
     // Using 0.995 (99.5 cents) to catch values that would round to 100 in display
-    if (likelyOdds >= 0.995) continue;
+    if (likelyOdds >= 0.995) {
+      rejections.oddsAboveMax++;
+      logger.debug("Market rejected: odds too high (no profit)", {
+        marketId: market.id,
+        question: market.question?.slice(0, 50),
+        likelyOutcome: likelyName,
+        odds: (likelyOdds * 100).toFixed(1) + "¢",
+      });
+      continue;
+    }
 
     // Calculate buy price (what you'd pay)
     const buyPrice = likelyOutcome.bestAsk ?? likelyOutcome.midPrice ?? likelyOdds;
-    if (buyPrice <= 0) continue;
+    if (buyPrice <= 0) {
+      rejections.buyPriceInvalid++;
+      logger.debug("Market rejected: invalid buy price", {
+        marketId: market.id,
+        question: market.question?.slice(0, 50),
+        buyPrice,
+        bestAsk: likelyOutcome.bestAsk,
+        midPrice: likelyOutcome.midPrice,
+      });
+      continue;
+    }
 
     // Skip if buy price is essentially $1 (no profit)
-    if (buyPrice >= 0.995) continue;
+    if (buyPrice >= 0.995) {
+      rejections.buyPriceTooHigh++;
+      logger.debug("Market rejected: buy price too high (no profit)", {
+        marketId: market.id,
+        question: market.question?.slice(0, 50),
+        buyPrice: (buyPrice * 100).toFixed(1) + "¢",
+      });
+      continue;
+    }
 
     // Liquidity (for display only, no filtering)
     const liquidity = likelyOutcome.availableLiquidity ?? 0;
@@ -228,6 +322,27 @@ export const detectNearResolution = (
       expectedValue,
       score,
       detectedAt: new Date(),
+    });
+  }
+
+  // Log rejection summary
+  const totalRejected =
+    rejections.noCloseDate +
+    rejections.alreadyClosed +
+    rejections.tooFarOut +
+    rejections.not2Outcomes +
+    rejections.noValidPrices +
+    rejections.oddsBelowMin +
+    rejections.oddsAboveMax +
+    rejections.buyPriceInvalid +
+    rejections.buyPriceTooHigh;
+
+  if (totalRejected > 0) {
+    logger.info("Near-resolution detection summary", {
+      totalMarkets: markets.length,
+      passed: opportunities.length,
+      rejected: totalRejected,
+      rejectionBreakdown: rejections,
     });
   }
 
