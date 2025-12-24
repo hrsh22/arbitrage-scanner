@@ -423,6 +423,59 @@ export class BotRepository {
       createdAt: row.createdAt,
     }));
   }
+
+  // ==========================================
+  // POSITION SYNC (for API-first approach)
+  // ==========================================
+
+  /**
+   * Find a position by tokenId
+   */
+  async findPositionByTokenId(tokenId: string): Promise<Position | null> {
+    const rows = await db
+      .select()
+      .from(botPositions)
+      .where(eq(botPositions.tokenId, tokenId))
+      .limit(1);
+
+    if (rows.length === 0) {
+      return null;
+    }
+
+    return this.mapPosition(rows[0]!);
+  }
+
+  /**
+   * Create a position that was sold (for positions not originally tracked in our DB)
+   * This is used when we sell via API and need to record it.
+   */
+  async createSoldPosition(data: {
+    tokenId: string;
+    outcome: string;
+    entryPrice: number;
+    cost: number;
+    profitLoss: number;
+    marketSlug?: string;
+  }): Promise<number> {
+    const result = await db
+      .insert(botPositions)
+      .values({
+        marketId: `api-${data.tokenId.slice(0, 16)}`, // Generate a placeholder marketId
+        marketQuestion: data.marketSlug || `Position ${data.tokenId.slice(0, 8)}...`,
+        marketSlug: data.marketSlug,
+        tokenId: data.tokenId,
+        outcome: data.outcome,
+        entryPrice: data.entryPrice.toString(),
+        cost: data.cost.toString(),
+        isSimulated: false,
+        status: "won",
+        profitLoss: data.profitLoss.toString(),
+        resolvedAt: new Date(),
+      })
+      .returning({ id: botPositions.id });
+
+    return result[0]!.id;
+  }
 }
 
 // Singleton instance

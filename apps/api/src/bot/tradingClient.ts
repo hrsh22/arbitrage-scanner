@@ -527,6 +527,66 @@ export class TradingClient {
   }
 
   /**
+   * Get all positions with shares > 0 from Polymarket API.
+   * This is the source of truth for what we actually own.
+   */
+  async getAllPositions(): Promise<
+    Array<{
+      tokenId: string;
+      size: number;
+      avgPrice: number;
+      curPrice: number;
+      outcome: string;
+      marketSlug?: string;
+      conditionId?: string;
+    }>
+  > {
+    try {
+      const walletAddress = this.funderAddress || this.wallet?.address;
+      if (!walletAddress) {
+        logger.warn("TradingClient: No wallet address for getAllPositions");
+        return [];
+      }
+
+      const response = await fetch(
+        `https://data-api.polymarket.com/positions?user=${walletAddress}`,
+      );
+
+      if (!response.ok) {
+        throw new Error(`Data API returned ${response.status}`);
+      }
+
+      const positions = (await response.json()) as Array<{
+        asset: string;
+        size: number;
+        avgPrice: number;
+        curPrice: number;
+        outcome: string;
+        slug?: string;
+        conditionId?: string;
+      }>;
+
+      // Filter to positions with shares > 0
+      return positions
+        .filter((p) => p.size > 0)
+        .map((p) => ({
+          tokenId: p.asset,
+          size: p.size,
+          avgPrice: p.avgPrice,
+          curPrice: p.curPrice,
+          outcome: p.outcome,
+          marketSlug: p.slug,
+          conditionId: p.conditionId,
+        }));
+    } catch (error) {
+      logger.error("TradingClient: Failed to get all positions", {
+        error: (error as Error).message,
+      });
+      return [];
+    }
+  }
+
+  /**
    * Sell shares of a token at market price.
    *
    * @param tokenId - The token ID to sell

@@ -125,7 +125,8 @@ export class ResolutionChecker {
   }
 
   /**
-   * Check a single position for resolution or early exit opportunity
+   * Check a single position for resolution (market closed/resolved).
+   * Early exit is now handled by sellEligibleFromAPI() instead.
    */
   private async checkPosition(position: {
     id: number;
@@ -137,14 +138,6 @@ export class ResolutionChecker {
     isSimulated: boolean;
     status: string;
   }): Promise<{ resolved: boolean; status?: "won" | "lost" | "expired"; statusChanged?: boolean }> {
-    // First, check if we can exit early (sell at >= 99.95¢)
-    if (BOT_CONFIG.ENABLE_EARLY_EXIT && position.tokenId) {
-      const earlyExitResult = await this.tryEarlyExit(position);
-      if (earlyExitResult.sold) {
-        return { resolved: true, status: "won" };
-      }
-    }
-
     const marketStatus = await this.polyClient.getMarketById(position.marketId);
 
     if (!marketStatus) {
@@ -273,131 +266,196 @@ export class ResolutionChecker {
   }
 
   /**
-   * Try to exit a position early by selling when price hits threshold.
-   * Works for both simulated and live positions.
+   * Sell eligible positions using Polymarket API as source of truth.
+   * This is the primary method for early exits - queries actual positions from API.
    */
-  private async tryEarlyExit(position: {
-    id: number;
-    tokenId: string;
-    outcome: string;
-    entryPrice: number;
-    cost: number;
-    isSimulated: boolean;
-  }): Promise<{ sold: boolean; sellPrice?: number; profitLoss?: number }> {
+  async sellEligibleFromAPI(): Promise<{
+    checked: number;
+    sold: number;
+    totalProfit: number;
+    errors: number;
+  }> {
+    if (!BOT_CONFIG.ENABLE_EARLY_EXIT) {
+      logger.info("ResolutionChecker: Early exit disabled");
+      return { checked: 0, sold: 0, totalProfit: 0, errors: 0 };
+    }
+
+    if (!this.tradingClient.isInitialized()) {
+      logger.warn("ResolutionChecker: Trading client not initialized, skipping API-based sells");
+      return { checked: 0, sold: 0, totalProfit: 0, errors: 0 };
+    }
+
     try {
-      // Get current sell price from CLOB API
-      const sellPrice = await this.tradingClient.getSellPrice(position.tokenId);
+      // Get all positions from Polymarket API (source of truth)
+      const positions = await this.tradingClient.getAllPositions();
 
-      // Only exit if price meets our threshold (99.95¢)
-      if (sellPrice < BOT_CONFIG.EARLY_EXIT_MIN_PRICE) {
-        logger.debug("ResolutionChecker: Sell price below threshold", {
-          positionId: position.id,
-          sellPrice: sellPrice.toFixed(4),
-          threshold: BOT_CONFIG.EARLY_EXIT_MIN_PRICE,
-        });
-        return { sold: false };
+      if (positions.length === 0) {
+        logger.info("ResolutionChecker: No positions found from API");
+        return { checked: 0, sold: 0, totalProfit: 0, errors: 0 };
       }
 
-      // Get actual share balance from Polymarket (not calculated, to avoid rounding issues)
-      // Only query for live positions - simulated positions don't exist on-chain
-      let shares: number;
-      const rawShares = position.cost / position.entryPrice;
+      logger.info("ResolutionChecker: Checking positions from API", {
+        count: positions.length,
+      });
 
-      if (!position.isSimulated && this.tradingClient.isInitialized()) {
-        const actualShares = await this.tradingClient.getTokenBalance(position.tokenId);
-        // Use actual balance if available, otherwise fall back to calculated (rounded down)
-        shares = actualShares > 0 ? actualShares : Math.floor(rawShares * 100) / 100;
+      let sold = 0;
+      let totalProfit = 0;
+      let errors = 0;
+
+      for (const pos of positions) {
+        try {
+          // Get current sell price
+          const sellPrice = await this.tradingClient.getSellPrice(pos.tokenId);
+
+          // Skip if below threshold
+          if (sellPrice < BOT_CONFIG.EARLY_EXIT_MIN_PRICE) {
+            logger.debug("ResolutionChecker: Sell price below threshold", {
+              tokenId: pos.tokenId.slice(0, 16) + "...",
+              outcome: pos.outcome,
+              sellPrice: sellPrice.toFixed(4),
+              threshold: BOT_CONFIG.EARLY_EXIT_MIN_PRICE,
+            });
+            continue;
+          }
+
+          // Calculate P/L using API's avgPrice as entry price
+          const proceeds = pos.size * sellPrice;
+          const cost = pos.size * pos.avgPrice;
+          const profitLoss = Math.round((proceeds - cost) * 10000) / 10000;
+
+          logger.info("ResolutionChecker: Selling position from API", {
+            tokenId: pos.tokenId.slice(0, 16) + "...",
+            outcome: pos.outcome,
+            shares: pos.size.toFixed(4),
+            avgPrice: pos.avgPrice.toFixed(4),
+            sellPrice: sellPrice.toFixed(4),
+            profitLoss: profitLoss.toFixed(4),
+          });
+
+          // Sell it
+          const result = await this.tradingClient.sellPosition(
+            pos.tokenId,
+            pos.size,
+            BOT_CONFIG.EARLY_EXIT_MIN_PRICE,
+          );
+
+          if (!result.success) {
+            logger.error("ResolutionChecker: Sell failed", {
+              tokenId: pos.tokenId.slice(0, 16) + "...",
+              error: result.error,
+            });
+            errors++;
+            continue;
+          }
+
+          // Sync to DB
+          await this.syncPositionToDb(pos, sellPrice, profitLoss);
+
+          sold++;
+          totalProfit += profitLoss;
+
+          logger.info("ResolutionChecker: Position sold via API", {
+            tokenId: pos.tokenId.slice(0, 16) + "...",
+            outcome: pos.outcome,
+            profitLoss: profitLoss.toFixed(4),
+          });
+
+          // Small delay to avoid rate limiting
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        } catch (error) {
+          logger.error("ResolutionChecker: Error processing position", {
+            tokenId: pos.tokenId.slice(0, 16) + "...",
+            error: (error as Error).message,
+          });
+          errors++;
+        }
+      }
+
+      logger.info("ResolutionChecker: API-based sell complete", {
+        checked: positions.length,
+        sold,
+        totalProfit: totalProfit.toFixed(4),
+        errors,
+      });
+
+      return { checked: positions.length, sold, totalProfit, errors };
+    } catch (error) {
+      logger.error("ResolutionChecker: sellEligibleFromAPI failed", {
+        error: (error as Error).message,
+      });
+      return { checked: 0, sold: 0, totalProfit: 0, errors: 1 };
+    }
+  }
+
+  /**
+   * Sync a sold position to the database.
+   * Finds existing record by tokenId or creates a new one.
+   */
+  private async syncPositionToDb(
+    apiPosition: {
+      tokenId: string;
+      size: number;
+      avgPrice: number;
+      outcome: string;
+      marketSlug?: string;
+    },
+    sellPrice: number,
+    profitLoss: number,
+  ): Promise<void> {
+    try {
+      // Try to find existing position
+      const existing = await this.repository.findPositionByTokenId(apiPosition.tokenId);
+
+      if (existing) {
+        // Update existing position
+        await this.repository.resolvePosition(existing.id, {
+          status: "won",
+          profitLoss,
+        });
+        await this.repository.recordWin(profitLoss, existing.isSimulated);
+
+        logger.debug("ResolutionChecker: Updated existing DB position", {
+          positionId: existing.id,
+          tokenId: apiPosition.tokenId.slice(0, 16) + "...",
+        });
       } else {
-        // For simulated positions, use calculated shares
-        shares = rawShares;
-      }
-
-      if (shares <= 0) {
-        logger.warn("ResolutionChecker: No shares to sell", {
-          positionId: position.id,
-          shares,
-          calculatedShares: rawShares,
+        // Create new position record
+        const cost = apiPosition.size * apiPosition.avgPrice;
+        const positionId = await this.repository.createSoldPosition({
+          tokenId: apiPosition.tokenId,
+          outcome: apiPosition.outcome,
+          entryPrice: apiPosition.avgPrice,
+          cost,
+          profitLoss,
+          marketSlug: apiPosition.marketSlug,
         });
-        return { sold: false };
+        await this.repository.recordWin(profitLoss, false);
+
+        logger.debug("ResolutionChecker: Created new DB position", {
+          positionId,
+          tokenId: apiPosition.tokenId.slice(0, 16) + "...",
+        });
       }
 
-      const proceeds = shares * sellPrice;
-      const profitLoss = Math.round((proceeds - position.cost) * 10000) / 10000;
-
-      logger.info("ResolutionChecker: Early exit opportunity found", {
-        positionId: position.id,
-        outcome: position.outcome,
-        entryPrice: position.entryPrice,
-        sellPrice,
-        shares: shares.toFixed(4),
-        proceeds: proceeds.toFixed(4),
-        profitLoss: profitLoss.toFixed(4),
-        isSimulated: position.isSimulated,
-      });
-
-      // For live positions, actually sell
-      if (!position.isSimulated) {
-        if (!this.tradingClient.isInitialized()) {
-          // Trading client not initialized - can't sell live positions
-          logger.debug("ResolutionChecker: Skipping early exit - trading client not initialized", {
-            positionId: position.id,
-          });
-          return { sold: false };
-        }
-
-        const result = await this.tradingClient.sellPosition(
-          position.tokenId,
-          shares,
-          BOT_CONFIG.EARLY_EXIT_MIN_PRICE,
-        );
-
-        if (!result.success) {
-          logger.error("ResolutionChecker: Early exit sell failed", {
-            positionId: position.id,
-            error: result.error,
-          });
-          return { sold: false };
-        }
-      }
-
-      // Update position as won/sold
-      await this.repository.resolvePosition(position.id, {
-        status: "won",
-        profitLoss,
-      });
-
-      // Update daily stats
-      await this.repository.recordWin(profitLoss, position.isSimulated);
-
-      // Log the early exit
+      // Log the event
       await this.repository.logEvent({
         eventType: "trade",
         eventName: "position_sold_early",
-        message: `${position.isSimulated ? "[SIM] " : ""}Position sold early: ${position.outcome} @ ${(sellPrice * 100).toFixed(2)}¢ → P/L: $${profitLoss.toFixed(4)}`,
+        message: `Position sold via API: ${apiPosition.outcome} @ ${(sellPrice * 100).toFixed(2)}¢ → P/L: $${profitLoss.toFixed(4)}`,
         metadata: {
-          positionId: position.id,
-          outcome: position.outcome,
-          entryPrice: position.entryPrice,
+          tokenId: apiPosition.tokenId,
+          outcome: apiPosition.outcome,
+          entryPrice: apiPosition.avgPrice,
           sellPrice,
           profitLoss,
-          isSimulated: position.isSimulated,
+          shares: apiPosition.size,
         },
       });
-
-      logger.info("ResolutionChecker: Position sold early", {
-        positionId: position.id,
-        sellPrice,
-        profitLoss,
-        isSimulated: position.isSimulated,
-      });
-
-      return { sold: true, sellPrice, profitLoss };
     } catch (error) {
-      logger.error("ResolutionChecker: Early exit check failed", {
-        positionId: position.id,
+      logger.error("ResolutionChecker: Failed to sync position to DB", {
+        tokenId: apiPosition.tokenId.slice(0, 16) + "...",
         error: (error as Error).message,
       });
-      return { sold: false };
     }
   }
 }
