@@ -7,8 +7,8 @@
 
 export const BOT_CONFIG = {
   // Betting
-  BET_SIZE: 2.0, // Fixed $2 per bet (Polymarket min order is $1)
-  DAILY_BUDGET: 150, // $50/day max deployment
+  BET_SIZE: 5.0, // Fixed $5 per bet (Polymarket min order is $1)
+  DAILY_BUDGET: 150, // $150/day max deployment
 
   // Market selection
   MIN_ODDS: 0.95, // 95¢ minimum probability
@@ -16,7 +16,7 @@ export const BOT_CONFIG = {
   MAX_HOURS_GENERAL: 24, // Default: <24 hours to resolution
   MAX_HOURS_FOR_HIGH_ODDS: 2, // 99-99.5¢ only if resolving within 2 hours
   HIGH_ODDS_THRESHOLD: 0.99, // Above this, use MAX_HOURS_FOR_HIGH_ODDS
-  MIN_LIQUIDITY: 10, // $10 minimum liquidity
+  MIN_LIQUIDITY: 50, // $50 minimum liquidity
 
   // Scanning
   SCAN_INTERVAL_MS: 5 * 60 * 1000, // Every 5 minutes
