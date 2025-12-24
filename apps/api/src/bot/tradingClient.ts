@@ -462,6 +462,159 @@ export class TradingClient {
       return [];
     }
   }
+
+  /**
+   * Get the current sell price for a token.
+   * Uses the CLOB price API which considers market maker liquidity.
+   *
+   * @param tokenId - The token ID to get sell price for
+   * @returns The price you would get when selling (0-1 range)
+   */
+  async getSellPrice(tokenId: string): Promise<number> {
+    try {
+      const response = await fetch(`${CLOB_HOST}/price?token_id=${tokenId}&side=sell`);
+
+      if (!response.ok) {
+        throw new Error(`Price API returned ${response.status}`);
+      }
+
+      const data = (await response.json()) as { price?: string };
+      const price = parseFloat(data.price ?? "0");
+
+      return isNaN(price) ? 0 : price;
+    } catch (error) {
+      logger.error("TradingClient: Failed to get sell price", {
+        tokenId,
+        error: (error as Error).message,
+      });
+      return 0;
+    }
+  }
+
+  /**
+   * Get the actual token balance for this wallet.
+   * Queries the Data API to get real share count.
+   *
+   * @param tokenId - The token ID to check balance for
+   * @returns The actual number of shares held
+   */
+  async getTokenBalance(tokenId: string): Promise<number> {
+    try {
+      const walletAddress = this.funderAddress || this.wallet?.address;
+      if (!walletAddress) {
+        return 0;
+      }
+
+      const response = await fetch(
+        `https://data-api.polymarket.com/positions?user=${walletAddress}`,
+      );
+
+      if (!response.ok) {
+        throw new Error(`Data API returned ${response.status}`);
+      }
+
+      const positions = (await response.json()) as Array<{ asset: string; size: number }>;
+      const position = positions.find((p) => p.asset === tokenId);
+
+      return position?.size ?? 0;
+    } catch (error) {
+      logger.error("TradingClient: Failed to get token balance", {
+        tokenId,
+        error: (error as Error).message,
+      });
+      return 0;
+    }
+  }
+
+  /**
+   * Sell shares of a token at market price.
+   *
+   * @param tokenId - The token ID to sell
+   * @param shares - Number of shares to sell
+   * @param minPrice - Minimum acceptable sell price (slippage protection)
+   * @returns Trade result with success status and details
+   */
+  async sellPosition(
+    tokenId: string,
+    shares: number,
+    minPrice: number = 0.99,
+  ): Promise<TradeResult> {
+    if (!this.isInitialized()) {
+      return { success: false, error: "Trading client not initialized" };
+    }
+
+    try {
+      // Get current sell price
+      const sellPrice = await this.getSellPrice(tokenId);
+
+      if (sellPrice < minPrice) {
+        return {
+          success: false,
+          error: `Sell price (${sellPrice.toFixed(4)}) below minimum (${minPrice})`,
+        };
+      }
+
+      logger.info("TradingClient: Placing market sell order", {
+        tokenId,
+        shares,
+        sellPrice,
+        minPrice,
+      });
+
+      // Create sell order at 0.999 (max CLOB allows)
+      // We only call this when sellPrice >= 0.9995, so 0.999 is always acceptable
+      const orderPrice = 0.999;
+
+      const order = await this.client!.createOrder({
+        tokenID: tokenId,
+        price: orderPrice,
+        size: shares,
+        side: Side.SELL,
+      });
+
+      const result = await this.client!.postOrder(order);
+
+      // Check if order was successful - handle various response formats
+      const isSuccess =
+        result.success === true || result.status === "matched" || result.status === "delayed";
+
+      if (!isSuccess) {
+        logger.error("TradingClient: Sell order rejected", {
+          tokenId,
+          shares,
+          result,
+        });
+        return {
+          success: false,
+          error: `Order rejected: ${result.status || "unknown"}`,
+        };
+      }
+
+      logger.info("TradingClient: Sell order placed", {
+        orderId: result.orderID,
+        status: result.status,
+      });
+
+      return {
+        success: true,
+        orderId: result.orderID,
+        fillPrice: sellPrice,
+        fillSize: shares,
+      };
+    } catch (error) {
+      const errorMsg = (error as Error).message;
+      logger.error("TradingClient: Sell order failed", {
+        tokenId,
+        shares,
+        error: errorMsg,
+      });
+
+      return {
+        success: false,
+        error: errorMsg,
+      };
+    }
+  }
 }
 
 // Singleton instance

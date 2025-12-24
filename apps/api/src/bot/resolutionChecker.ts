@@ -3,10 +3,13 @@
  *
  * Periodically checks Polymarket API to see if markets have resolved,
  * then updates positions with win/loss status and USD profit/loss.
+ *
+ * Also handles early exit (selling) when positions reach target price.
  */
 
 import { BOT_CONFIG } from "./config.js";
 import { getBotRepository, BotRepository } from "./repository.js";
+import { getTradingClient, TradingClient } from "./tradingClient.js";
 import { PolymarketClient } from "../clients/polymarketClient.js";
 import { logger } from "../logger.js";
 
@@ -15,10 +18,12 @@ export class ResolutionChecker {
   private checkInterval: NodeJS.Timeout | null = null;
   private repository: BotRepository;
   private polyClient: PolymarketClient;
+  private tradingClient: TradingClient;
 
   constructor() {
     this.repository = getBotRepository();
     this.polyClient = new PolymarketClient();
+    this.tradingClient = getTradingClient();
   }
 
   /**
@@ -120,17 +125,26 @@ export class ResolutionChecker {
   }
 
   /**
-   * Check a single position for resolution
+   * Check a single position for resolution or early exit opportunity
    */
   private async checkPosition(position: {
     id: number;
     marketId: string;
+    tokenId: string;
     outcome: string;
     entryPrice: number;
     cost: number;
     isSimulated: boolean;
     status: string;
   }): Promise<{ resolved: boolean; status?: "won" | "lost" | "expired"; statusChanged?: boolean }> {
+    // First, check if we can exit early (sell at >= 99.95¢)
+    if (BOT_CONFIG.ENABLE_EARLY_EXIT && position.tokenId) {
+      const earlyExitResult = await this.tryEarlyExit(position);
+      if (earlyExitResult.sold) {
+        return { resolved: true, status: "won" };
+      }
+    }
+
     const marketStatus = await this.polyClient.getMarketById(position.marketId);
 
     if (!marketStatus) {
@@ -256,6 +270,135 @@ export class ResolutionChecker {
     });
 
     return { resolved: true, status };
+  }
+
+  /**
+   * Try to exit a position early by selling when price hits threshold.
+   * Works for both simulated and live positions.
+   */
+  private async tryEarlyExit(position: {
+    id: number;
+    tokenId: string;
+    outcome: string;
+    entryPrice: number;
+    cost: number;
+    isSimulated: boolean;
+  }): Promise<{ sold: boolean; sellPrice?: number; profitLoss?: number }> {
+    try {
+      // Get current sell price from CLOB API
+      const sellPrice = await this.tradingClient.getSellPrice(position.tokenId);
+
+      // Only exit if price meets our threshold (99.95¢)
+      if (sellPrice < BOT_CONFIG.EARLY_EXIT_MIN_PRICE) {
+        logger.debug("ResolutionChecker: Sell price below threshold", {
+          positionId: position.id,
+          sellPrice: sellPrice.toFixed(4),
+          threshold: BOT_CONFIG.EARLY_EXIT_MIN_PRICE,
+        });
+        return { sold: false };
+      }
+
+      // Get actual share balance from Polymarket (not calculated, to avoid rounding issues)
+      // Only query for live positions - simulated positions don't exist on-chain
+      let shares: number;
+      const rawShares = position.cost / position.entryPrice;
+
+      if (!position.isSimulated && this.tradingClient.isInitialized()) {
+        const actualShares = await this.tradingClient.getTokenBalance(position.tokenId);
+        // Use actual balance if available, otherwise fall back to calculated (rounded down)
+        shares = actualShares > 0 ? actualShares : Math.floor(rawShares * 100) / 100;
+      } else {
+        // For simulated positions, use calculated shares
+        shares = rawShares;
+      }
+
+      if (shares <= 0) {
+        logger.warn("ResolutionChecker: No shares to sell", {
+          positionId: position.id,
+          shares,
+          calculatedShares: rawShares,
+        });
+        return { sold: false };
+      }
+
+      const proceeds = shares * sellPrice;
+      const profitLoss = Math.round((proceeds - position.cost) * 10000) / 10000;
+
+      logger.info("ResolutionChecker: Early exit opportunity found", {
+        positionId: position.id,
+        outcome: position.outcome,
+        entryPrice: position.entryPrice,
+        sellPrice,
+        shares: shares.toFixed(4),
+        proceeds: proceeds.toFixed(4),
+        profitLoss: profitLoss.toFixed(4),
+        isSimulated: position.isSimulated,
+      });
+
+      // For live positions, actually sell
+      if (!position.isSimulated) {
+        if (!this.tradingClient.isInitialized()) {
+          // Trading client not initialized - can't sell live positions
+          logger.debug("ResolutionChecker: Skipping early exit - trading client not initialized", {
+            positionId: position.id,
+          });
+          return { sold: false };
+        }
+
+        const result = await this.tradingClient.sellPosition(
+          position.tokenId,
+          shares,
+          BOT_CONFIG.EARLY_EXIT_MIN_PRICE,
+        );
+
+        if (!result.success) {
+          logger.error("ResolutionChecker: Early exit sell failed", {
+            positionId: position.id,
+            error: result.error,
+          });
+          return { sold: false };
+        }
+      }
+
+      // Update position as won/sold
+      await this.repository.resolvePosition(position.id, {
+        status: "won",
+        profitLoss,
+      });
+
+      // Update daily stats
+      await this.repository.recordWin(profitLoss, position.isSimulated);
+
+      // Log the early exit
+      await this.repository.logEvent({
+        eventType: "trade",
+        eventName: "position_sold_early",
+        message: `${position.isSimulated ? "[SIM] " : ""}Position sold early: ${position.outcome} @ ${(sellPrice * 100).toFixed(2)}¢ → P/L: $${profitLoss.toFixed(4)}`,
+        metadata: {
+          positionId: position.id,
+          outcome: position.outcome,
+          entryPrice: position.entryPrice,
+          sellPrice,
+          profitLoss,
+          isSimulated: position.isSimulated,
+        },
+      });
+
+      logger.info("ResolutionChecker: Position sold early", {
+        positionId: position.id,
+        sellPrice,
+        profitLoss,
+        isSimulated: position.isSimulated,
+      });
+
+      return { sold: true, sellPrice, profitLoss };
+    } catch (error) {
+      logger.error("ResolutionChecker: Early exit check failed", {
+        positionId: position.id,
+        error: (error as Error).message,
+      });
+      return { sold: false };
+    }
   }
 }
 

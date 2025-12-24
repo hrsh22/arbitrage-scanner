@@ -8,7 +8,7 @@
 export const BOT_CONFIG = {
   // Betting
   BET_SIZE: 5.0, // Fixed $5 per bet (Polymarket min order is $1)
-  DAILY_BUDGET: 200, // $200/day max deployment
+  DAILY_BUDGET: Infinity, // No daily budget max deployment
 
   // Market selection
   MIN_ODDS: 0.95, // 95¢ minimum probability
@@ -25,6 +25,13 @@ export const BOT_CONFIG = {
   // Safety (disabled - no limits)
   MIN_WALLET_RESERVE: 10, // $10 minimum wallet reserve
   MAX_DAILY_LOSS: Infinity, // No daily loss limit
+
+  // Early exit (sell at market when price hits threshold)
+  ENABLE_EARLY_EXIT: true, // Enable selling positions when price hits threshold
+  EARLY_EXIT_MIN_PRICE: 0.9995, // Sell when price >= 99.95¢ (matches max possible)
+
+  // Wallet tracking
+  WALLET_SNAPSHOT_RETENTION_DAYS: 30, // Days to keep wallet snapshots
 
   // Default mode (always simulation until explicitly switched)
   DEFAULT_MODE: "simulation" as const,

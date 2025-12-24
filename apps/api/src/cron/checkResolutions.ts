@@ -12,7 +12,9 @@
 import "dotenv/config";
 import { getResolutionChecker } from "../bot/resolutionChecker.js";
 import { getBotRepository } from "../bot/repository.js";
+import { getTradingClient } from "../bot/tradingClient.js";
 import { logger } from "../logger.js";
+import { env } from "../env.js";
 
 async function main() {
   const startTime = Date.now();
@@ -22,6 +24,22 @@ async function main() {
   try {
     const repository = getBotRepository();
     const checker = getResolutionChecker();
+
+    // Initialize trading client for early exits (if private key is set)
+    const privateKey = env.POLYMARKET_PRIVATE_KEY;
+    if (privateKey) {
+      try {
+        const tradingClient = getTradingClient();
+        await tradingClient.initialize(privateKey);
+        logger.info("Trading client initialized for early exits");
+      } catch (error) {
+        logger.warn("Failed to initialize trading client, early exits disabled", {
+          error: (error as Error).message,
+        });
+      }
+    } else {
+      logger.info("No private key configured, early exits disabled");
+    }
 
     // Step 1: Get open positions
     logger.info("Step 1: Fetching open positions");
