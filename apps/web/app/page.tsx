@@ -83,7 +83,7 @@ export default function HomePage() {
                     <ArrowRight className="h-4 w-4 opacity-0 transition-opacity group-hover:opacity-100" />
                   </CardTitle>
                   <CardDescription>
-                    Find high-confidence markets where the outcome is nearly certain but hasn't
+                    Find high-confidence markets where the outcome is nearly certain but hasn&apos;t
                     resolved yet. Lower risk, steady returns.
                   </CardDescription>
                 </CardHeader>

@@ -6,7 +6,7 @@
  */
 
 import { BOT_CONFIG } from "./config.js";
-import type { ScoredOpportunity, OrderBook } from "./types.js";
+import type { ScoredOpportunity } from "./types.js";
 import type { NearResolutionOpportunity } from "../types.js";
 import { logger } from "../logger.js";
 import { TradingClient } from "./tradingClient.js";

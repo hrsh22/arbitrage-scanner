@@ -1,4 +1,4 @@
-import { eq, sql, and, desc, asc, isNull } from "drizzle-orm";
+import { eq, sql, and, desc, asc } from "drizzle-orm";
 import { db as defaultDb } from "../client.js";
 import { crossPlatformOpportunities, crossPlatformSnapshots } from "../schema.js";
 import type { CrossPlatformOpportunity } from "../../services/crossPlatformDetector.js";

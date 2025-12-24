@@ -3,12 +3,11 @@
 import { useEffect, useState, useCallback } from "react";
 import { Header } from "@/components/ui/header";
 import { StatCard } from "@/components/ui/stat-card";
-import { SkeletonStatCard, SkeletonCard } from "@/components/ui/skeleton-card";
+import { SkeletonStatCard } from "@/components/ui/skeleton-card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Card, CardContent, CardHeader, CardTitle } from "@workspace/ui/components/card";
 import { Badge } from "@workspace/ui/components/badge";
 import { Button } from "@workspace/ui/components/button";
-import { Skeleton } from "@workspace/ui/components/skeleton";
 import {
   TrendingUp,
   Clock,

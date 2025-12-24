@@ -1,7 +1,17 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "ui": "tui",
-  "globalEnv": ["PORT", "HOST", "DATABASE_URL", "DATABASE_SSL"],
+  "globalEnv": [
+    "PORT",
+    "HOST",
+    "DATABASE_URL",
+    "DATABASE_SSL",
+    "OPENAI_API_KEY",
+    "POLYMARKET_PRIVATE_KEY",
+    "POLYMARKET_FUNDER_ADDRESS",
+    "LOG_LEVEL",
+    "NEXT_PUBLIC_API_BASE"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
@@ -9,7 +19,7 @@
       "outputs": [".next/**", "!.next/cache/**", "dist/**"]
     },
     "lint": {
-      "dependsOn": ["^lint"]
+      "inputs": ["$TURBO_DEFAULT$", ".env*"]
     },
     "check-types": {
       "dependsOn": ["^check-types"]

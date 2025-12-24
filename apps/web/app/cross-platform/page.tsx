@@ -4,7 +4,6 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { Header } from "@/components/ui/header";
 import { CrossPlatformCard } from "@/components/cross-platform-card";
 import { EmptyState } from "@/components/ui/empty-state";
-import { SkeletonCard } from "@/components/ui/skeleton-card";
 import { fetchCrossPlatform } from "@/lib/api";
 import { CrossPlatformOpportunity } from "@/lib/types";
 import { Repeat2, ArrowUpDown } from "lucide-react";
@@ -20,7 +19,6 @@ import Link from "next/link";
 
 export default function CrossPlatformPage() {
   const [opportunities, setOpportunities] = useState<CrossPlatformOpportunity[]>([]);
-  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [sort, setSort] = useState<"profit" | "endDate">("profit");
@@ -35,7 +33,6 @@ export default function CrossPlatformPage() {
         if (!isRefresh) setLoading(true);
         const res = await fetchCrossPlatform(0, undefined, sort);
         setOpportunities(res.opportunities ?? []);
-        if (res.lastUpdated) setLastUpdated(res.lastUpdated);
         setError(null);
       } catch (err) {
         setError((err as Error).message);
@@ -114,9 +111,9 @@ export default function CrossPlatformPage() {
           {/* Content */}
           {loading ? (
             <div className="space-y-4">
-              <SkeletonCard />
-              <SkeletonCard />
-              <SkeletonCard />
+              <div className="h-24 w-full rounded-lg bg-muted/20 animate-pulse" />
+              <div className="h-24 w-full rounded-lg bg-muted/20 animate-pulse" />
+              <div className="h-24 w-full rounded-lg bg-muted/20 animate-pulse" />
             </div>
           ) : error ? (
             <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-destructive">

@@ -29,7 +29,6 @@ const timePresets = [
 
 export default function NearResolutionPage() {
   const [opportunities, setOpportunities] = useState<NearResolutionOpportunity[]>([]);
-  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,7 +42,6 @@ export default function NearResolutionPage() {
 
         const res = await fetchNearResolution(filter);
         setOpportunities(res.opportunities ?? []);
-        setLastUpdated(res.lastUpdated ?? null);
         setError(null);
       } catch (err) {
         setError((err as Error).message);

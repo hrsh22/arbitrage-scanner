@@ -4,7 +4,7 @@
 
 import { db } from "../db/client.js";
 import { botPositions, botDailyStats, botEventLog } from "../db/botSchema.js";
-import { eq, desc, and, sql, gte } from "drizzle-orm";
+import { eq, desc, and, sql } from "drizzle-orm";
 import type { Position, DailyStats, OverallStats, BotEvent } from "./types.js";
 
 /**
