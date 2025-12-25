@@ -549,7 +549,7 @@ export class TradingClient {
       }
 
       const response = await fetch(
-        `https://data-api.polymarket.com/positions?user=${walletAddress}`,
+        `https://data-api.polymarket.com/positions?user=${walletAddress}&sizeThreshold=0`,
       );
 
       if (!response.ok) {
