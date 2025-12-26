@@ -12,16 +12,35 @@ import { logger } from "../logger.js";
 import { TradingClient } from "./tradingClient.js";
 
 /**
+ * Get the max hours until resolution for a market based on its tags.
+ * Uses the lowest matching limit if multiple tags apply.
+ */
+function getMaxHoursForTags(tags: string[] | undefined, defaultMaxHours: number): number {
+  if (!tags || tags.length === 0) return defaultMaxHours;
+
+  let minLimit = defaultMaxHours;
+  for (const tag of tags) {
+    const categoryLimit = BOT_CONFIG.CATEGORY_TIME_LIMITS[tag];
+    if (categoryLimit !== undefined && categoryLimit < minLimit) {
+      minLimit = categoryLimit;
+    }
+  }
+  return minLimit;
+}
+
+/**
  * Check if an opportunity meets our dynamic odds threshold.
  *
  * Rules:
- * - 95-99¢: Allowed if resolving within 24 hours
+ * - 95-99¢: Allowed if resolving within 24 hours (or category-specific limit)
  * - 99-99.5¢: Allowed only if resolving within 3 hours
  * - Above 99.5¢: Skip (too close to $1, no profit)
+ * - Crypto markets: Max 3 hours regardless of odds
  */
 export function isValidOpportunity(
   probability: number,
   hoursUntilClose: number,
+  tags?: string[],
 ): { valid: boolean; reason?: string } {
   // Skip above 99.5¢
   if (probability >= BOT_CONFIG.MAX_ODDS) {
@@ -49,11 +68,12 @@ export function isValidOpportunity(
     }
   }
 
-  // General time limit
-  if (hoursUntilClose > BOT_CONFIG.MAX_HOURS_GENERAL) {
+  // Category-specific time limit (e.g., crypto = 3 hours max)
+  const effectiveMaxHours = getMaxHoursForTags(tags, BOT_CONFIG.MAX_HOURS_GENERAL);
+  if (hoursUntilClose > effectiveMaxHours) {
     return {
       valid: false,
-      reason: `Resolves in ${hoursUntilClose.toFixed(1)}h, max ${BOT_CONFIG.MAX_HOURS_GENERAL}h`,
+      reason: `Category limit: resolves in ${hoursUntilClose.toFixed(1)}h, max ${effectiveMaxHours}h for tags [${tags?.join(", ") ?? "none"}]`,
     };
   }
 
@@ -205,8 +225,8 @@ export class StrategyEngine {
       };
     }
 
-    // Validate against strategy rules
-    const validation = isValidOpportunity(probability, hoursUntilClose);
+    // Validate against strategy rules (including category-specific time limits)
+    const validation = isValidOpportunity(probability, hoursUntilClose, opp.tags);
     if (!validation.valid) {
       const maxStats = calculateMaxInvestmentStats(likelyOutcome.bestAsk, likelyOutcome.liquidity);
       return {

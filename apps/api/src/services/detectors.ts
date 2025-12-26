@@ -1,4 +1,5 @@
 import { config } from "../config.js";
+import { BOT_CONFIG } from "../bot/config.js";
 import { logger } from "../logger.js";
 import type {
   NormalizedMarket,
@@ -7,6 +8,23 @@ import type {
   NearResolutionOpportunity,
   NearResolutionFilter,
 } from "../types.js";
+
+/**
+ * Get the max hours until resolution for a market based on its tags.
+ * Uses the lowest matching limit if multiple tags apply.
+ */
+function getMaxHoursForMarket(tags: string[] | undefined, defaultMaxHours: number): number {
+  if (!tags || tags.length === 0) return defaultMaxHours;
+
+  let minLimit = defaultMaxHours;
+  for (const tag of tags) {
+    const categoryLimit = BOT_CONFIG.CATEGORY_TIME_LIMITS[tag];
+    if (categoryLimit !== undefined && categoryLimit < minLimit) {
+      minLimit = categoryLimit;
+    }
+  }
+  return minLimit;
+}
 
 type DetectionResult = {
   opportunities: Opportunity[];
@@ -180,14 +198,16 @@ export const detectNearResolution = (
       continue;
     }
 
-    // Skip if not closing soon
-    if (hoursUntilClose > maxHours) {
+    // Skip if not closing soon (use category-specific limit if applicable)
+    const effectiveMaxHours = getMaxHoursForMarket(market.tags, maxHours);
+    if (hoursUntilClose > effectiveMaxHours) {
       rejections.tooFarOut++;
       logger.debug("Market rejected: closes too far out", {
         marketId: market.id,
         question: market.question?.slice(0, 50),
         hoursUntilClose: hoursUntilClose.toFixed(1),
-        maxHours,
+        maxHours: effectiveMaxHours,
+        tags: market.tags,
       });
       continue;
     }
@@ -322,6 +342,7 @@ export const detectNearResolution = (
       expectedValue,
       score,
       detectedAt: new Date(),
+      tags: market.tags,
     });
   }
 

@@ -24,6 +24,7 @@ export type NormalizedMarket = {
   outcomes: NormalizedOutcome[];
   liquidity?: number; // Market-level liquidity from Gamma API
   volume?: number; // Market-level volume from Gamma API
+  tags?: string[]; // Tag slugs from Polymarket API (e.g., ["crypto", "bitcoin"])
   _tokenIds?: string[]; // Internal: used for order book enrichment
 };
 
@@ -62,6 +63,7 @@ export type NearResolutionOpportunity = {
   eventSlug?: string;
   eventTitle?: string;
   question: string;
+  tags?: string[]; // Tag slugs from Polymarket API (e.g., ["crypto", "bitcoin"])
 
   // The likely outcome (Yes or No with highest odds)
   likelyOutcome: {

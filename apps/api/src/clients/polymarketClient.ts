@@ -15,6 +15,11 @@ type GammaMarket = {
   volume?: string;
 };
 
+type GammaTag = {
+  slug: string;
+  label: string;
+};
+
 type GammaEvent = {
   id?: string;
   slug?: string;
@@ -22,6 +27,7 @@ type GammaEvent = {
   startDate?: string;
   endDate?: string;
   markets?: GammaMarket[];
+  tags?: GammaTag[];
 };
 
 type ClobBook = {
@@ -281,6 +287,7 @@ export class PolymarketClient {
       eventEndDate: event.endDate ? new Date(event.endDate) : null,
       endsAt: market.endDate ? new Date(market.endDate) : null,
       outcomes,
+      tags: event.tags?.map((t) => t.slug) ?? [],
     };
   }
 
@@ -444,6 +451,7 @@ export class PolymarketClient {
           outcomes,
           liquidity: toNumber(market.liquidity) ?? undefined,
           volume: toNumber(market.volume) ?? undefined,
+          tags: event.tags?.map((t) => t.slug) ?? [],
           _tokenIds: tokenIds, // Keep for later order book fetch
         });
       }

@@ -18,6 +18,13 @@ export const BOT_CONFIG = {
   HIGH_ODDS_THRESHOLD: 0.99, // Above this, use MAX_HOURS_FOR_HIGH_ODDS
   MIN_LIQUIDITY: 50, // $50 minimum liquidity
 
+  // Category-specific time limits (hours)
+  // Key = tag slug from Polymarket API, Value = max hours until resolution
+  // Uses lowest matching limit if multiple tags match
+  CATEGORY_TIME_LIMITS: {
+    crypto: 3, // Crypto markets: high volatility, 3 hours max
+  } as Record<string, number>,
+
   // Scanning
   SCAN_INTERVAL_MS: 5 * 60 * 1000, // Every 5 minutes
   RESOLUTION_CHECK_INTERVAL_MS: 10 * 60 * 1000, // Check resolutions every 10 minutes
