@@ -37,6 +37,10 @@ export const BOT_CONFIG = {
   ENABLE_EARLY_EXIT: true, // Enable selling positions when price hits threshold
   EARLY_EXIT_MIN_PRICE: 0.9995, // Sell when price >= 99.95¢ (matches max possible)
 
+  // Stop-loss protection (sell when price drops below threshold)
+  ENABLE_STOP_LOSS: true, // Enable stop-loss selling
+  STOP_LOSS_THRESHOLD: 0.8, // Sell when price <= 80¢ (absolute price, not % drop)
+
   // Wallet tracking
   WALLET_SNAPSHOT_RETENTION_DAYS: 30, // Days to keep wallet snapshots
 

@@ -5,7 +5,7 @@
  * Uses Gnosis Safe (signature type 2) for Polymarket proxy wallets.
  */
 
-import { ClobClient, Side, AssetType } from "@polymarket/clob-client";
+import { ClobClient, Side, AssetType, OrderType } from "@polymarket/clob-client";
 import { Wallet, ethers } from "ethers";
 import { BOT_CONFIG } from "./config.js";
 import type { OrderBook, TradeResult, WalletStatus } from "./types.js";
@@ -664,6 +664,93 @@ export class TradingClient {
     } catch (error) {
       const errorMsg = (error as Error).message;
       logger.error("TradingClient: Sell order failed", {
+        tokenId,
+        shares,
+        error: errorMsg,
+      });
+
+      return {
+        success: false,
+        error: errorMsg,
+      };
+    }
+  }
+
+  /**
+   * Market sell - immediately sells shares at best available price.
+   * Uses FOK (Fill or Kill) order type for immediate execution.
+   *
+   * This is used for stop-loss to ensure we exit the position.
+   *
+   * @param tokenId - The token ID to sell
+   * @param shares - Number of shares to sell
+   * @returns Trade result with success status and details
+   */
+  async marketSell(tokenId: string, shares: number): Promise<TradeResult> {
+    if (!this.isInitialized()) {
+      return { success: false, error: "Trading client not initialized" };
+    }
+
+    try {
+      // Get current best bid (what we'll sell at)
+      const sellPrice = await this.getSellPrice(tokenId);
+
+      if (sellPrice <= 0) {
+        return {
+          success: false,
+          error: `No bids available for token`,
+        };
+      }
+
+      logger.info("TradingClient: Placing FOK market sell order", {
+        tokenId,
+        shares,
+        expectedPrice: sellPrice,
+      });
+
+      // Use createAndPostMarketOrder with FOK (Fill or Kill)
+      // This ensures we get filled immediately at market price or not at all
+      const result = await this.client!.createAndPostMarketOrder(
+        {
+          tokenID: tokenId,
+          amount: shares,
+          side: Side.SELL,
+          // price is optional - omitting uses market price
+        },
+        undefined, // options
+        OrderType.FOK, // Fill or Kill
+      );
+
+      // Check if order was successful
+      const isSuccess =
+        result.success === true || result.status === "matched" || result.status === "delayed";
+
+      if (!isSuccess) {
+        logger.error("TradingClient: FOK market sell rejected", {
+          tokenId,
+          shares,
+          result,
+        });
+        return {
+          success: false,
+          error: `Order rejected: ${result.status || "unknown"}`,
+        };
+      }
+
+      logger.info("TradingClient: FOK market sell executed", {
+        orderId: result.orderID,
+        status: result.status,
+      });
+
+      return {
+        success: true,
+        orderId: result.orderID,
+        fillPrice: sellPrice,
+        fillSize: shares,
+      };
+    } catch (error) {
+      const errorMsg = (error as Error).message;
+      logger.error("TradingClient: FOK market sell failed", {
         tokenId,
         shares,
         error: errorMsg,

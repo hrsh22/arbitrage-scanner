@@ -131,6 +131,21 @@ export class BotRepository {
   }
 
   /**
+   * Update position when stop-loss triggers
+   */
+  async stopPosition(id: number, data: { exitPrice: number; profitLoss: number }): Promise<void> {
+    await db
+      .update(botPositions)
+      .set({
+        status: "stopped",
+        profitLoss: data.profitLoss.toString(),
+        resolvedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(botPositions.id, id));
+  }
+
+  /**
    * Update position status (e.g., from "open" to "in_review")
    */
   async updatePositionStatus(id: number, status: string): Promise<void> {
@@ -171,7 +186,7 @@ export class BotRepository {
         ? parseFloat(row.hoursUntilCloseAtEntry)
         : undefined,
       pphScore: row.pphScore ? parseFloat(row.pphScore) : undefined,
-      status: row.status as "open" | "won" | "lost" | "expired",
+      status: row.status as "open" | "in_review" | "won" | "lost" | "stopped" | "expired",
       resolvedAt: row.resolvedAt ?? undefined,
       profitLoss: row.profitLoss ? parseFloat(row.profitLoss) : undefined,
       isSimulated: row.isSimulated,
@@ -456,6 +471,7 @@ export class BotRepository {
     cost: number;
     profitLoss: number;
     marketSlug?: string;
+    status?: "won" | "stopped";
   }): Promise<number> {
     const result = await db
       .insert(botPositions)
@@ -468,7 +484,7 @@ export class BotRepository {
         entryPrice: data.entryPrice.toString(),
         cost: data.cost.toString(),
         isSimulated: false,
-        status: "won",
+        status: data.status ?? "won",
         profitLoss: data.profitLoss.toString(),
         resolvedAt: new Date(),
       })

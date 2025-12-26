@@ -35,7 +35,7 @@ export interface Position {
   closesAt?: Date;
   hoursUntilCloseAtEntry?: number;
   pphScore?: number;
-  status: "open" | "in_review" | "won" | "lost" | "expired";
+  status: "open" | "in_review" | "won" | "lost" | "stopped" | "expired";
   resolvedAt?: Date;
   profitLoss?: number;
   isSimulated: boolean;

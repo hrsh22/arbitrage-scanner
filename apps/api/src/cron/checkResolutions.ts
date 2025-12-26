@@ -2,6 +2,10 @@
  * Cron: Check Bot Resolutions
  *
  * Standalone script to check all open positions for resolution.
+ * This script ONLY syncs resolution status (won/lost) from Polymarket.
+ *
+ * NOTE: Stop-loss and early exit are handled by checkPositions.ts cron
+ *
  * Usage: npm run cron:check-resolutions
  *
  * Logging levels:
@@ -12,9 +16,7 @@
 import "dotenv/config";
 import { getResolutionChecker } from "../bot/resolutionChecker.js";
 import { getBotRepository } from "../bot/repository.js";
-import { getTradingClient } from "../bot/tradingClient.js";
 import { logger } from "../logger.js";
-import { env } from "../env.js";
 
 async function main() {
   const startTime = Date.now();
@@ -24,42 +26,6 @@ async function main() {
   try {
     const repository = getBotRepository();
     const checker = getResolutionChecker();
-
-    // Initialize trading client for early exits (if private key is set)
-    const privateKey = env.POLYMARKET_PRIVATE_KEY;
-    let tradingClientReady = false;
-    if (privateKey) {
-      try {
-        const tradingClient = getTradingClient();
-        await tradingClient.initialize(privateKey);
-        tradingClientReady = true;
-        logger.info("Trading client initialized for early exits");
-      } catch (error) {
-        logger.warn("Failed to initialize trading client, early exits disabled", {
-          error: (error as Error).message,
-        });
-      }
-    } else {
-      logger.info("No private key configured, early exits disabled");
-    }
-
-    // Step 0: API-first early exit - sell any positions at 99.95¢+ directly from Polymarket
-    if (tradingClientReady) {
-      logger.info("Step 0: Running API-based early exit scan");
-      try {
-        const earlyExitResult = await checker.sellEligibleFromAPI();
-        logger.info("API-based early exit complete", {
-          checked: earlyExitResult.checked,
-          sold: earlyExitResult.sold,
-          totalProfit: earlyExitResult.totalProfit.toFixed(4),
-          errors: earlyExitResult.errors,
-        });
-      } catch (error) {
-        logger.warn("API-based early exit failed", {
-          error: (error as Error).message,
-        });
-      }
-    }
 
     // Step 1: Get open positions
     logger.info("Step 1: Fetching open positions");
