@@ -80,10 +80,11 @@ export class CrossPlatformPoller {
    * Start the poller
    */
   async start(): Promise<void> {
-
     // Skip polling if cross-platform arbitrage is disabled
     if (!env.ENABLE_CROSS_PLATFORM_ARBITRAGE) {
-      logger.info("CrossPlatformPoller: Cross-platform arbitrage polling disabled via ENABLE_CROSS_PLATFORM_ARBITRAGE=false");
+      logger.info(
+        "CrossPlatformPoller: Cross-platform arbitrage polling disabled via ENABLE_CROSS_PLATFORM_ARBITRAGE=false",
+      );
       return;
     }
 

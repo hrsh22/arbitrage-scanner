@@ -8,7 +8,7 @@
 import { ClobClient, Side, AssetType } from "@polymarket/clob-client";
 import { Wallet, ethers } from "ethers";
 import { BOT_CONFIG } from "./config.js";
-import type { OrderBook, TradeResult, WalletStatus } from "./types.js";
+import type { OrderBook, TradeResult, WalletStatus, ActivityRecord } from "./types.js";
 import { logger } from "../logger.js";
 
 // Polygon mainnet chain ID
@@ -673,6 +673,68 @@ export class TradingClient {
         success: false,
         error: errorMsg,
       };
+    }
+  }
+
+  /**
+   * Get all trading activity (historical trades) from Polymarket Data API.
+   * Supports pagination to fetch all historical data.
+   *
+   * @param limit - Max records per request (default 1000)
+   * @param maxPages - Max pages to fetch (default 10, for up to 10,000 trades)
+   * @returns Array of activity records
+   */
+  async getAllActivity(limit: number = 1000, maxPages: number = 10): Promise<ActivityRecord[]> {
+    const walletAddress = this.funderAddress || this.wallet?.address;
+    if (!walletAddress) {
+      logger.warn("TradingClient: No wallet address for getAllActivity");
+      return [];
+    }
+
+    const allActivity: ActivityRecord[] = [];
+    let offset = 0;
+
+    try {
+      for (let page = 0; page < maxPages; page++) {
+        const url = `https://data-api.polymarket.com/activity?user=${walletAddress}&limit=${limit}&offset=${offset}`;
+
+        const response = await fetch(url);
+
+        if (!response.ok) {
+          throw new Error(`Activity API returned ${response.status}`);
+        }
+
+        const activities = (await response.json()) as ActivityRecord[];
+
+        if (activities.length === 0) {
+          // No more data
+          break;
+        }
+
+        allActivity.push(...activities);
+
+        // If we got less than limit, we've reached the end
+        if (activities.length < limit) {
+          break;
+        }
+
+        offset += limit;
+
+        // Small delay to avoid rate limiting
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      logger.info("TradingClient: Fetched all activity", {
+        totalRecords: allActivity.length,
+        pagesScanned: Math.ceil(offset / limit) + 1,
+      });
+
+      return allActivity;
+    } catch (error) {
+      logger.error("TradingClient: Failed to get activity", {
+        error: (error as Error).message,
+      });
+      return allActivity; // Return what we have so far
     }
   }
 }

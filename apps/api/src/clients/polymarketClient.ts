@@ -549,47 +549,7 @@ export class PolymarketClient {
         updatedAt?: string;
       }>(url);
 
-      if (!market || !market.id) {
-        return null;
-      }
-
-      const closed = market.closed ?? false;
-      const active = market.active ?? true;
-      const acceptingOrders = market.acceptingOrders ?? null;
-      const outcomePricesArr = parseJsonArray(market.outcomePrices);
-      const outcomes = parseJsonArray(market.outcomes);
-
-      const price0 = toNumber(outcomePricesArr[0]);
-      const price1 = toNumber(outcomePricesArr[1]);
-
-      // Market is resolved when:
-      // 1. Market is closed AND
-      // 2. One outcome has price = 1 (winner pays out $1)
-      // Note: The API's `resolution` field is often null even for resolved markets,
-      // so we rely on price = 1 to determine the winner (only when market is closed)
-      let resolved = false;
-      let winningOutcome: string | undefined;
-
-      if (closed && price0 !== null && price1 !== null) {
-        if (price0 === 1) {
-          resolved = true;
-          winningOutcome = outcomes[0] || "Yes";
-        } else if (price1 === 1) {
-          resolved = true;
-          winningOutcome = outcomes[1] || "No";
-        }
-        // If closed but no price = 1, market is in review (not yet resolved)
-      }
-
-      return {
-        closed,
-        active,
-        acceptingOrders,
-        resolved,
-        winningOutcome,
-        resolvedAt: resolved && market.updatedAt ? new Date(market.updatedAt) : undefined,
-        outcomePrices: price0 !== null && price1 !== null ? [price0, price1] : null,
-      };
+      return this.parseMarketStatus(market);
     } catch (error) {
       logger.error("Failed to fetch market by ID", {
         marketId,
@@ -597,5 +557,116 @@ export class PolymarketClient {
       });
       return null;
     }
+  }
+
+  /**
+   * Fetch a single market by slug to check resolution status.
+   * Use this when marketId is not a valid Polymarket ID (e.g., conditionId).
+   */
+  async getMarketBySlug(slug: string): Promise<{
+    closed: boolean;
+    active: boolean;
+    acceptingOrders: boolean | null;
+    resolved: boolean;
+    winningOutcome?: string;
+    resolvedAt?: Date;
+    outcomePrices: [number, number] | null;
+  } | null> {
+    try {
+      const url = `${this.gammaBase}/markets?slug=${encodeURIComponent(slug)}`;
+      const markets = await this.fetchJson<
+        Array<{
+          id: string;
+          closed?: boolean;
+          active?: boolean;
+          acceptingOrders?: boolean | null;
+          resolutionSource?: string;
+          resolution?: string;
+          outcomes?: string;
+          outcomePrices?: string;
+          endDate?: string;
+          updatedAt?: string;
+        }>
+      >(url);
+
+      if (!markets || markets.length === 0) {
+        return null;
+      }
+
+      return this.parseMarketStatus(markets[0]);
+    } catch (error) {
+      logger.error("Failed to fetch market by slug", {
+        slug,
+        error: (error as Error).message,
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Parse market status from API response
+   */
+  private parseMarketStatus(
+    market:
+      | {
+          id?: string;
+          closed?: boolean;
+          active?: boolean;
+          acceptingOrders?: boolean | null;
+          outcomes?: string;
+          outcomePrices?: string;
+          updatedAt?: string;
+        }
+      | undefined,
+  ): {
+    closed: boolean;
+    active: boolean;
+    acceptingOrders: boolean | null;
+    resolved: boolean;
+    winningOutcome?: string;
+    resolvedAt?: Date;
+    outcomePrices: [number, number] | null;
+  } | null {
+    if (!market || !market.id) {
+      return null;
+    }
+
+    const closed = market.closed ?? false;
+    const active = market.active ?? true;
+    const acceptingOrders = market.acceptingOrders ?? null;
+    const outcomePricesArr = parseJsonArray(market.outcomePrices);
+    const outcomes = parseJsonArray(market.outcomes);
+
+    const price0 = toNumber(outcomePricesArr[0]);
+    const price1 = toNumber(outcomePricesArr[1]);
+
+    // Market is resolved when:
+    // 1. Market is closed AND
+    // 2. One outcome has price = 1 (winner pays out $1)
+    // Note: The API's `resolution` field is often null even for resolved markets,
+    // so we rely on price = 1 to determine the winner (only when market is closed)
+    let resolved = false;
+    let winningOutcome: string | undefined;
+
+    if (closed && price0 !== null && price1 !== null) {
+      if (price0 === 1) {
+        resolved = true;
+        winningOutcome = outcomes[0] || "Yes";
+      } else if (price1 === 1) {
+        resolved = true;
+        winningOutcome = outcomes[1] || "No";
+      }
+      // If closed but no price = 1, market is in review (not yet resolved)
+    }
+
+    return {
+      closed,
+      active,
+      acceptingOrders,
+      resolved,
+      winningOutcome,
+      resolvedAt: resolved && market.updatedAt ? new Date(market.updatedAt) : undefined,
+      outcomePrices: price0 !== null && price1 !== null ? [price0, price1] : null,
+    };
   }
 }

@@ -27,14 +27,18 @@ export const botPositions = pgTable(
 
     // Market info
     marketId: text("market_id").notNull(),
+    conditionId: text("condition_id"), // Polymarket's condition ID (market identifier)
     marketQuestion: text("market_question").notNull(),
     marketSlug: text("market_slug"),
     tokenId: text("token_id"),
+    eventSlug: text("event_slug"), // Polymarket event slug
 
     // Position details
     outcome: text("outcome").notNull(), // "Yes" or "No"
     entryPrice: numeric("entry_price", { precision: 10, scale: 6 }),
+    shares: numeric("shares", { precision: 18, scale: 8 }), // Actual share count from Polymarket
     cost: numeric("cost", { precision: 12, scale: 4 }).notNull(),
+    currentPrice: numeric("current_price", { precision: 10, scale: 6 }), // Latest price from Polymarket
 
     // Strategy info at time of bet
     closesAt: timestamp("closes_at", { withTimezone: true }),
@@ -43,12 +47,18 @@ export const botPositions = pgTable(
     expectedProfit: numeric("expected_profit", { precision: 12, scale: 6 }),
 
     // Resolution
-    status: text("status").notNull().default("open"), // open, won, lost, expired
+    status: text("status").notNull().default("open"), // open, won, lost, expired, sold
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
-    profitLoss: numeric("profit_loss", { precision: 12, scale: 4 }),
+    profitLoss: numeric("profit_loss", { precision: 12, scale: 4 }), // Total P/L (realized + unrealized at close)
+    realizedPnL: numeric("realized_pnl", { precision: 12, scale: 4 }), // P/L from shares already sold
+    unrealizedPnL: numeric("unrealized_pnl", { precision: 12, scale: 4 }), // P/L from shares still held
 
     // Mode tracking
     isSimulated: boolean("is_simulated").notNull().default(true),
+    source: text("source").default("bot"), // "bot" | "external" - where the position originated
+
+    // Sync tracking
+    lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
 
     // Timestamps
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -125,5 +135,48 @@ export const botEventLog = pgTable(
   (table) => ({
     typeIdx: index("bot_event_log_type_idx").on(table.eventType),
     createdIdx: index("bot_event_log_created_idx").on(table.createdAt),
+  }),
+);
+
+/**
+ * Bot Trades - individual trade records from Polymarket
+ *
+ * Each trade (buy/sell) is stored separately for granular tracking.
+ * Positions are aggregated from trades.
+ */
+export const botTrades = pgTable(
+  "bot_trades",
+  {
+    id: serial("id").primaryKey(),
+
+    // Unique identifier from Polymarket (prevents double-sync)
+    transactionHash: text("transaction_hash").notNull().unique(),
+
+    // Link to position (optional - set after position is created/found)
+    positionId: integer("position_id").references(() => botPositions.id),
+
+    // Trade details
+    tokenId: text("token_id").notNull(), // asset from Polymarket
+    side: text("side").notNull(), // "BUY" | "SELL"
+    shares: numeric("shares", { precision: 18, scale: 8 }).notNull(),
+    price: numeric("price", { precision: 10, scale: 6 }).notNull(),
+    usdcSize: numeric("usdc_size", { precision: 12, scale: 4 }).notNull(),
+
+    // Market metadata (from activity API)
+    conditionId: text("condition_id"), // Market ID
+    title: text("title"),
+    slug: text("slug"),
+    outcome: text("outcome"),
+    eventSlug: text("event_slug"),
+
+    // Timestamps
+    tradeTimestamp: timestamp("trade_timestamp", { withTimezone: true }), // From Polymarket
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    txHashIdx: uniqueIndex("bot_trades_tx_hash_idx").on(table.transactionHash),
+    tokenIdx: index("bot_trades_token_idx").on(table.tokenId),
+    positionIdx: index("bot_trades_position_idx").on(table.positionId),
+    timestampIdx: index("bot_trades_timestamp_idx").on(table.tradeTimestamp),
   }),
 );

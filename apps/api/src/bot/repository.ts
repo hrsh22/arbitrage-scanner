@@ -3,9 +3,16 @@
  */
 
 import { db } from "../db/client.js";
-import { botPositions, botDailyStats, botEventLog } from "../db/botSchema.js";
-import { eq, desc, and, sql } from "drizzle-orm";
-import type { Position, DailyStats, OverallStats, BotEvent } from "./types.js";
+import { botPositions, botDailyStats, botEventLog, botTrades } from "../db/botSchema.js";
+import { eq, desc, and, sql, inArray } from "drizzle-orm";
+import type {
+  Position,
+  DailyStats,
+  OverallStats,
+  BotEvent,
+  Trade,
+  PositionAggregates,
+} from "./types.js";
 
 /**
  * Get today's date in YYYY-MM-DD format (UTC)
@@ -160,21 +167,29 @@ export class BotRepository {
     return {
       id: row.id,
       marketId: row.marketId,
+      conditionId: row.conditionId ?? undefined,
       marketQuestion: row.marketQuestion,
       marketSlug: row.marketSlug ?? undefined,
       tokenId: row.tokenId ?? "",
+      eventSlug: row.eventSlug ?? undefined,
       outcome: row.outcome,
       entryPrice: row.entryPrice ? parseFloat(row.entryPrice) : 0,
+      shares: row.shares ? parseFloat(row.shares) : undefined,
       cost: parseFloat(row.cost),
+      currentPrice: row.currentPrice ? parseFloat(row.currentPrice) : undefined,
       closesAt: row.closesAt ?? undefined,
       hoursUntilCloseAtEntry: row.hoursUntilCloseAtEntry
         ? parseFloat(row.hoursUntilCloseAtEntry)
         : undefined,
       pphScore: row.pphScore ? parseFloat(row.pphScore) : undefined,
-      status: row.status as "open" | "won" | "lost" | "expired",
+      status: row.status as "open" | "won" | "lost" | "expired" | "sold",
       resolvedAt: row.resolvedAt ?? undefined,
       profitLoss: row.profitLoss ? parseFloat(row.profitLoss) : undefined,
+      realizedPnL: row.realizedPnL ? parseFloat(row.realizedPnL) : undefined,
+      unrealizedPnL: row.unrealizedPnL ? parseFloat(row.unrealizedPnL) : undefined,
       isSimulated: row.isSimulated,
+      source: (row.source as "bot" | "external") ?? "bot",
+      lastSyncedAt: row.lastSyncedAt ?? undefined,
       createdAt: row.createdAt,
     };
   }
@@ -475,6 +490,346 @@ export class BotRepository {
       .returning({ id: botPositions.id });
 
     return result[0]!.id;
+  }
+
+  // ==========================================
+  // POSITION SYNC (for Polymarket API sync)
+  // ==========================================
+
+  /**
+   * Get all positions by tokenIds
+   */
+  async getPositionsByTokenIds(tokenIds: string[]): Promise<Map<string, Position>> {
+    if (tokenIds.length === 0) {
+      return new Map();
+    }
+
+    const rows = await db
+      .select()
+      .from(botPositions)
+      .where(
+        sql`${botPositions.tokenId} = ANY(ARRAY[${sql.join(
+          tokenIds.map((id) => sql`${id}`),
+          sql`, `,
+        )}]::text[])`,
+      );
+
+    const map = new Map<string, Position>();
+    for (const row of rows) {
+      if (row.tokenId) {
+        map.set(row.tokenId, this.mapPosition(row));
+      }
+    }
+    return map;
+  }
+
+  /**
+   * Update position with synced data from Polymarket API
+   */
+  async syncPositionFromAPI(
+    id: number,
+    data: {
+      entryPrice?: number;
+      shares?: number;
+      currentPrice?: number;
+    },
+  ): Promise<void> {
+    await db
+      .update(botPositions)
+      .set({
+        entryPrice: data.entryPrice?.toString(),
+        shares: data.shares?.toString(),
+        currentPrice: data.currentPrice?.toString(),
+        lastSyncedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(botPositions.id, id));
+  }
+
+  /**
+   * Create an external position (detected from Polymarket API, not placed by bot)
+   */
+  async createExternalPosition(data: {
+    tokenId: string;
+    outcome: string;
+    entryPrice: number;
+    shares: number;
+    currentPrice: number;
+    marketSlug?: string;
+    conditionId?: string;
+  }): Promise<number> {
+    const cost = data.shares * data.entryPrice;
+    const result = await db
+      .insert(botPositions)
+      .values({
+        marketId: data.conditionId || `external-${data.tokenId.slice(0, 16)}`,
+        marketQuestion: data.marketSlug || `External Position ${data.tokenId.slice(0, 8)}...`,
+        marketSlug: data.marketSlug,
+        tokenId: data.tokenId,
+        outcome: data.outcome,
+        entryPrice: data.entryPrice.toString(),
+        shares: data.shares.toString(),
+        cost: cost.toString(),
+        currentPrice: data.currentPrice.toString(),
+        isSimulated: false,
+        source: "external",
+        status: "open",
+        lastSyncedAt: new Date(),
+      })
+      .returning({ id: botPositions.id });
+
+    return result[0]!.id;
+  }
+
+  /**
+   * Mark a position as sold (early exit detected externally)
+   */
+  async markPositionAsSold(
+    id: number,
+    data: {
+      sellPrice: number;
+      profitLoss: number;
+    },
+  ): Promise<void> {
+    await db
+      .update(botPositions)
+      .set({
+        status: "sold",
+        currentPrice: data.sellPrice.toString(),
+        profitLoss: data.profitLoss.toString(),
+        resolvedAt: new Date(),
+        lastSyncedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(botPositions.id, id));
+  }
+
+  /**
+   * Get all open positions with their tokenIds (for sync comparison)
+   */
+  async getAllOpenPositionsWithTokens(): Promise<Position[]> {
+    const rows = await db
+      .select()
+      .from(botPositions)
+      .where(
+        and(
+          sql`${botPositions.status} IN ('open', 'in_review')`,
+          sql`${botPositions.tokenId} IS NOT NULL`,
+        ),
+      );
+
+    return rows.map(this.mapPosition);
+  }
+
+  // ==========================================
+  // TRADES
+  // ==========================================
+
+  /**
+   * Check which transaction hashes are already synced
+   */
+  async getSyncedTransactionHashes(hashes: string[]): Promise<Set<string>> {
+    if (hashes.length === 0) {
+      return new Set();
+    }
+
+    const rows = await db
+      .select({ transactionHash: botTrades.transactionHash })
+      .from(botTrades)
+      .where(inArray(botTrades.transactionHash, hashes));
+
+    return new Set(rows.map((r) => r.transactionHash));
+  }
+
+  /**
+   * Create a trade record
+   */
+  async createTrade(trade: {
+    transactionHash: string;
+    positionId?: number;
+    tokenId: string;
+    side: "BUY" | "SELL";
+    shares: number;
+    price: number;
+    usdcSize: number;
+    conditionId?: string;
+    title?: string;
+    slug?: string;
+    outcome?: string;
+    eventSlug?: string;
+    tradeTimestamp?: Date;
+  }): Promise<number> {
+    const result = await db
+      .insert(botTrades)
+      .values({
+        transactionHash: trade.transactionHash,
+        positionId: trade.positionId,
+        tokenId: trade.tokenId,
+        side: trade.side,
+        shares: trade.shares.toString(),
+        price: trade.price.toString(),
+        usdcSize: trade.usdcSize.toString(),
+        conditionId: trade.conditionId,
+        title: trade.title,
+        slug: trade.slug,
+        outcome: trade.outcome,
+        eventSlug: trade.eventSlug,
+        tradeTimestamp: trade.tradeTimestamp,
+      })
+      .returning({ id: botTrades.id });
+
+    return result[0]!.id;
+  }
+
+  /**
+   * Get all trades for a token
+   */
+  async getTradesForToken(tokenId: string): Promise<Trade[]> {
+    const rows = await db
+      .select()
+      .from(botTrades)
+      .where(eq(botTrades.tokenId, tokenId))
+      .orderBy(botTrades.tradeTimestamp);
+
+    return rows.map(this.mapTrade);
+  }
+
+  /**
+   * Update trades with position ID
+   */
+  async linkTradesToPosition(tokenId: string, positionId: number): Promise<void> {
+    await db.update(botTrades).set({ positionId }).where(eq(botTrades.tokenId, tokenId));
+  }
+
+  /**
+   * Calculate position aggregates from trades
+   */
+  async calculatePositionAggregates(
+    tokenId: string,
+    currentPrice?: number,
+  ): Promise<PositionAggregates> {
+    const trades = await this.getTradesForToken(tokenId);
+
+    const buys = trades.filter((t) => t.side === "BUY");
+    const sells = trades.filter((t) => t.side === "SELL");
+
+    const totalSharesBought = buys.reduce((sum, t) => sum + t.shares, 0);
+    const totalSharesSold = sells.reduce((sum, t) => sum + t.shares, 0);
+    const netShares = totalSharesBought - totalSharesSold;
+
+    const totalCost = buys.reduce((sum, t) => sum + t.usdcSize, 0);
+    const totalProceeds = sells.reduce((sum, t) => sum + t.usdcSize, 0);
+
+    const avgEntryPrice = totalSharesBought > 0 ? totalCost / totalSharesBought : 0;
+
+    // Realized P/L: proceeds from sells minus cost basis of sold shares
+    const costOfSoldShares = totalSharesSold * avgEntryPrice;
+    const realizedPnL = totalProceeds - costOfSoldShares;
+
+    // Unrealized P/L: value of remaining shares minus their cost basis
+    const costOfRemainingShares = netShares * avgEntryPrice;
+    const currentValue = currentPrice ? netShares * currentPrice : 0;
+    const unrealizedPnL = currentPrice ? currentValue - costOfRemainingShares : 0;
+
+    return {
+      totalSharesBought,
+      totalSharesSold,
+      netShares,
+      totalCost,
+      totalProceeds,
+      avgEntryPrice,
+      realizedPnL: Math.round(realizedPnL * 10000) / 10000,
+      unrealizedPnL: Math.round(unrealizedPnL * 10000) / 10000,
+    };
+  }
+
+  /**
+   * Create or update position from trade data
+   */
+  async upsertPositionFromTrade(trade: {
+    tokenId: string;
+    conditionId?: string;
+    title?: string;
+    slug?: string;
+    outcome?: string;
+    eventSlug?: string;
+  }): Promise<number> {
+    // Check if position exists
+    const existing = await this.findPositionByTokenId(trade.tokenId);
+
+    if (existing) {
+      return existing.id;
+    }
+
+    // Create new position
+    const result = await db
+      .insert(botPositions)
+      .values({
+        marketId: trade.conditionId || `sync-${trade.tokenId.slice(0, 16)}`,
+        conditionId: trade.conditionId,
+        marketQuestion: trade.title || `Position ${trade.tokenId.slice(0, 8)}...`,
+        marketSlug: trade.slug,
+        tokenId: trade.tokenId,
+        eventSlug: trade.eventSlug,
+        outcome: trade.outcome || "Unknown",
+        cost: "0", // Will be updated from aggregates
+        isSimulated: false,
+        source: "external",
+        status: "open",
+        lastSyncedAt: new Date(),
+      })
+      .returning({ id: botPositions.id });
+
+    return result[0]!.id;
+  }
+
+  /**
+   * Update position from calculated aggregates
+   */
+  async updatePositionFromAggregates(
+    positionId: number,
+    aggregates: PositionAggregates,
+    currentPrice?: number,
+  ): Promise<void> {
+    const status = aggregates.netShares > 0 ? "open" : "sold";
+    const totalPnL = aggregates.realizedPnL + aggregates.unrealizedPnL;
+
+    await db
+      .update(botPositions)
+      .set({
+        entryPrice: aggregates.avgEntryPrice.toString(),
+        shares: aggregates.netShares.toString(),
+        cost: aggregates.totalCost.toString(),
+        currentPrice: currentPrice?.toString(),
+        profitLoss: totalPnL.toString(),
+        realizedPnL: aggregates.realizedPnL.toString(),
+        unrealizedPnL: aggregates.unrealizedPnL.toString(),
+        status,
+        lastSyncedAt: new Date(),
+        updatedAt: new Date(),
+        resolvedAt: status === "sold" ? new Date() : undefined,
+      })
+      .where(eq(botPositions.id, positionId));
+  }
+
+  private mapTrade(row: typeof botTrades.$inferSelect): Trade {
+    return {
+      id: row.id,
+      transactionHash: row.transactionHash,
+      positionId: row.positionId ?? undefined,
+      tokenId: row.tokenId,
+      side: row.side as "BUY" | "SELL",
+      shares: parseFloat(row.shares),
+      price: parseFloat(row.price),
+      usdcSize: parseFloat(row.usdcSize),
+      conditionId: row.conditionId ?? undefined,
+      title: row.title ?? undefined,
+      slug: row.slug ?? undefined,
+      outcome: row.outcome ?? undefined,
+      eventSlug: row.eventSlug ?? undefined,
+      tradeTimestamp: row.tradeTimestamp ?? undefined,
+      syncedAt: row.syncedAt,
+    };
   }
 }
 

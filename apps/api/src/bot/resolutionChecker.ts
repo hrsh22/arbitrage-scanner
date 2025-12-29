@@ -131,6 +131,7 @@ export class ResolutionChecker {
   private async checkPosition(position: {
     id: number;
     marketId: string;
+    marketSlug?: string;
     tokenId: string;
     outcome: string;
     entryPrice: number;
@@ -138,7 +139,14 @@ export class ResolutionChecker {
     isSimulated: boolean;
     status: string;
   }): Promise<{ resolved: boolean; status?: "won" | "lost" | "expired"; statusChanged?: boolean }> {
-    const marketStatus = await this.polyClient.getMarketById(position.marketId);
+    // Try slug first (more reliable), then marketId
+    let marketStatus = null;
+    if (position.marketSlug) {
+      marketStatus = await this.polyClient.getMarketBySlug(position.marketSlug);
+    }
+    if (!marketStatus) {
+      marketStatus = await this.polyClient.getMarketById(position.marketId);
+    }
 
     if (!marketStatus) {
       // Market not found - might be deleted/invalid

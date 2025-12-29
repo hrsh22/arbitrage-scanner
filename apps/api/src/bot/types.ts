@@ -26,19 +26,27 @@ export interface ScoredOpportunity {
 export interface Position {
   id: number;
   marketId: string;
+  conditionId?: string; // Polymarket's condition ID
   marketQuestion: string;
   marketSlug?: string;
   tokenId: string;
+  eventSlug?: string;
   outcome: string;
   entryPrice: number;
+  shares?: number; // Actual share count from Polymarket
   cost: number;
+  currentPrice?: number; // Latest price from Polymarket
   closesAt?: Date;
   hoursUntilCloseAtEntry?: number;
   pphScore?: number;
-  status: "open" | "in_review" | "won" | "lost" | "expired";
+  status: "open" | "in_review" | "won" | "lost" | "expired" | "sold";
   resolvedAt?: Date;
   profitLoss?: number;
+  realizedPnL?: number; // P/L from shares already sold
+  unrealizedPnL?: number; // P/L from shares still held (based on currentPrice)
   isSimulated: boolean;
+  source?: "bot" | "external"; // Where the position originated
+  lastSyncedAt?: Date;
   createdAt: Date;
 }
 
@@ -107,4 +115,63 @@ export interface WalletStatus {
   usdcBalance: number;
   allowanceOk: boolean;
   issues: string[];
+}
+
+/**
+ * Individual trade record from Polymarket
+ */
+export interface Trade {
+  id: number;
+  transactionHash: string;
+  positionId?: number;
+  tokenId: string;
+  side: "BUY" | "SELL";
+  shares: number;
+  price: number;
+  usdcSize: number;
+  conditionId?: string;
+  title?: string;
+  slug?: string;
+  outcome?: string;
+  eventSlug?: string;
+  tradeTimestamp?: Date;
+  syncedAt: Date;
+}
+
+/**
+ * Activity record from Polymarket Activity API
+ */
+export interface ActivityRecord {
+  proxyWallet: string;
+  timestamp: number; // Unix timestamp
+  conditionId: string;
+  type: string; // "TRADE"
+  size: number; // shares
+  usdcSize: number;
+  transactionHash: string;
+  price: number;
+  asset: string; // tokenId
+  side: "BUY" | "SELL";
+  outcomeIndex: number;
+  title: string;
+  slug: string;
+  icon?: string;
+  eventSlug: string;
+  outcome: string;
+  name?: string;
+  pseudonym?: string;
+}
+
+/**
+ * Position aggregates calculated from trades
+ */
+export interface PositionAggregates {
+  totalSharesBought: number;
+  totalSharesSold: number;
+  netShares: number;
+  totalCost: number; // Total USDC spent on buys
+  totalProceeds: number; // Total USDC received from sells
+  avgEntryPrice: number;
+  realizedPnL: number; // P/L from closed portion
+  unrealizedPnL: number; // P/L from open portion (requires currentPrice)
 }
