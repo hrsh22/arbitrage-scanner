@@ -6,6 +6,7 @@ import {
   detectCrossPlatformArbitrage,
   type CrossPlatformOpportunity,
 } from "./crossPlatformDetector.js";
+import { env } from "../env.js";
 
 const POLL_INTERVAL_MS = 30 * 1000; // 30 seconds
 
@@ -21,7 +22,7 @@ export class CrossPlatformPoller {
     private readonly polymarketClient: PolymarketClient,
     private readonly kalshiClient: KalshiClient,
     private readonly repository: CrossPlatformRepository,
-  ) {}
+  ) { }
 
   /**
    * Recalculate arbitrage instruction with updated order book prices
@@ -79,6 +80,13 @@ export class CrossPlatformPoller {
    * Start the poller
    */
   async start(): Promise<void> {
+
+    // Skip polling if cross-platform arbitrage is disabled
+    if (!env.ENABLE_CROSS_PLATFORM_ARBITRAGE) {
+      logger.info("CrossPlatformPoller: Cross-platform arbitrage polling disabled via ENABLE_CROSS_PLATFORM_ARBITRAGE=false");
+      return;
+    }
+
     logger.info("CrossPlatformPoller: Starting...");
 
     // Run immediately on start

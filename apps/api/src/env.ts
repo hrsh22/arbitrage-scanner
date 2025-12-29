@@ -46,6 +46,7 @@ export const env = {
   MIN_LIQUIDITY_USD: numberFromEnv("MIN_LIQUIDITY_USD", 50),
   MIN_PROFIT_PCT: numberFromEnv("MIN_PROFIT_PCT", 0), // Minimum profit % to show (0 = all)
   ENABLE_POLYMARKET_ARBITRAGE: boolFromEnv("ENABLE_POLYMARKET_ARBITRAGE", false), // Toggle Polymarket-only arbitrage
+  ENABLE_CROSS_PLATFORM_ARBITRAGE: boolFromEnv("ENABLE_CROSS_PLATFORM_ARBITRAGE", false), // Toggle cross-platform arbitrage
 
   // AI for exclusivity checking (optional)
   OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? null,
