@@ -4,7 +4,7 @@
 
 import { db } from "../db/client.js";
 import { botPositions, botDailyStats, botEventLog, botTrades } from "../db/botSchema.js";
-import { eq, desc, and, sql, inArray } from "drizzle-orm";
+import { eq, desc, and, sql, inArray, isNull } from "drizzle-orm";
 import type {
   Position,
   DailyStats,
@@ -627,18 +627,44 @@ export class BotRepository {
 
   /**
    * Check which transaction hashes are already synced
+   * Returns a Map of (transactionHash, conditionId) to identify synced trades
    */
-  async getSyncedTransactionHashes(hashes: string[]): Promise<Set<string>> {
+  async getSyncedTransactionHashes(hashes: string[]): Promise<Map<string, string>> {
     if (hashes.length === 0) {
-      return new Set();
+      return new Map();
     }
 
     const rows = await db
-      .select({ transactionHash: botTrades.transactionHash })
+      .select({ transactionHash: botTrades.transactionHash, conditionId: botTrades.conditionId })
       .from(botTrades)
       .where(inArray(botTrades.transactionHash, hashes));
 
-    return new Set(rows.map((r) => r.transactionHash));
+    const synced = new Map<string, string>();
+    for (const row of rows) {
+      if (row.conditionId) {
+        synced.set(`${row.transactionHash}|${row.conditionId}`, row.conditionId);
+      } else {
+        synced.set(row.transactionHash, "");
+      }
+    }
+    return synced;
+  }
+
+  /**
+   * Find a position by conditionId
+   */
+  async findPositionByConditionId(conditionId: string): Promise<Position | null> {
+    const rows = await db
+      .select()
+      .from(botPositions)
+      .where(eq(botPositions.conditionId, conditionId))
+      .limit(1);
+
+    if (rows.length === 0) {
+      return null;
+    }
+
+    return this.mapPosition(rows[0]!);
   }
 
   /**
@@ -647,8 +673,9 @@ export class BotRepository {
   async createTrade(trade: {
     transactionHash: string;
     positionId?: number;
-    tokenId: string;
-    side: "BUY" | "SELL";
+    tokenId?: string;
+    tradeType: "BUY" | "SELL" | "REDEEM";
+    side?: "BUY" | "SELL";
     shares: number;
     price: number;
     usdcSize: number;
@@ -665,6 +692,7 @@ export class BotRepository {
         transactionHash: trade.transactionHash,
         positionId: trade.positionId,
         tokenId: trade.tokenId,
+        tradeType: trade.tradeType,
         side: trade.side,
         shares: trade.shares.toString(),
         price: trade.price.toString(),
@@ -695,10 +723,30 @@ export class BotRepository {
   }
 
   /**
+   * Get all trades by conditionId (for REDEEM without tokenId)
+   */
+  async getTradesByConditionId(conditionId: string): Promise<Trade[]> {
+    const rows = await db
+      .select()
+      .from(botTrades)
+      .where(eq(botTrades.conditionId, conditionId))
+      .orderBy(botTrades.tradeTimestamp);
+
+    return rows.map(this.mapTrade);
+  }
+
+  /**
    * Update trades with position ID
    */
   async linkTradesToPosition(tokenId: string, positionId: number): Promise<void> {
     await db.update(botTrades).set({ positionId }).where(eq(botTrades.tokenId, tokenId));
+  }
+
+  /**
+   * Link trades to position by conditionId (for REDEEM trades without tokenId)
+   */
+  async linkTradesToPositionByConditionId(conditionId: string, positionId: number): Promise<void> {
+    await db.update(botTrades).set({ positionId }).where(eq(botTrades.conditionId, conditionId));
   }
 
   /**
@@ -710,21 +758,25 @@ export class BotRepository {
   ): Promise<PositionAggregates> {
     const trades = await this.getTradesForToken(tokenId);
 
-    const buys = trades.filter((t) => t.side === "BUY");
-    const sells = trades.filter((t) => t.side === "SELL");
+    const buys = trades.filter((t) => t.tradeType === "BUY");
+    const sells = trades.filter((t) => t.tradeType === "SELL");
+    const redeems = trades.filter((t) => t.tradeType === "REDEEM");
 
     const totalSharesBought = buys.reduce((sum, t) => sum + t.shares, 0);
     const totalSharesSold = sells.reduce((sum, t) => sum + t.shares, 0);
-    const netShares = totalSharesBought - totalSharesSold;
+    const totalSharesRedeemed = redeems.reduce((sum, t) => sum + t.shares, 0);
+    const netShares = totalSharesBought - totalSharesSold - totalSharesRedeemed;
 
     const totalCost = buys.reduce((sum, t) => sum + t.usdcSize, 0);
     const totalProceeds = sells.reduce((sum, t) => sum + t.usdcSize, 0);
+    const totalRedeemProceeds = redeems.reduce((sum, t) => sum + t.usdcSize, 0);
 
     const avgEntryPrice = totalSharesBought > 0 ? totalCost / totalSharesBought : 0;
 
-    // Realized P/L: proceeds from sells minus cost basis of sold shares
-    const costOfSoldShares = totalSharesSold * avgEntryPrice;
-    const realizedPnL = totalProceeds - costOfSoldShares;
+    // Realized P/L: proceeds from sells + redeems minus cost basis of those shares
+    const sharesRealized = totalSharesSold + totalSharesRedeemed;
+    const costOfRealizedShares = sharesRealized * avgEntryPrice;
+    const realizedPnL = totalProceeds + totalRedeemProceeds - costOfRealizedShares;
 
     // Unrealized P/L: value of remaining shares minus their cost basis
     const costOfRemainingShares = netShares * avgEntryPrice;
@@ -817,8 +869,9 @@ export class BotRepository {
       id: row.id,
       transactionHash: row.transactionHash,
       positionId: row.positionId ?? undefined,
-      tokenId: row.tokenId,
-      side: row.side as "BUY" | "SELL",
+      tokenId: row.tokenId ?? undefined,
+      tradeType: row.tradeType as "BUY" | "SELL" | "REDEEM",
+      side: row.side ? (row.side as "BUY" | "SELL") : undefined,
       shares: parseFloat(row.shares),
       price: parseFloat(row.price),
       usdcSize: parseFloat(row.usdcSize),

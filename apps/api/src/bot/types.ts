@@ -118,14 +118,20 @@ export interface WalletStatus {
 }
 
 /**
+ * Trade type for individual trade records
+ */
+export type TradeType = "BUY" | "SELL" | "REDEEM";
+
+/**
  * Individual trade record from Polymarket
  */
 export interface Trade {
   id: number;
   transactionHash: string;
   positionId?: number;
-  tokenId: string;
-  side: "BUY" | "SELL";
+  tokenId?: string; // Empty for REDEEM
+  tradeType: TradeType;
+  side?: "BUY" | "SELL"; // Legacy, use tradeType instead
   shares: number;
   price: number;
   usdcSize: number;
@@ -145,13 +151,13 @@ export interface ActivityRecord {
   proxyWallet: string;
   timestamp: number; // Unix timestamp
   conditionId: string;
-  type: string; // "TRADE"
+  type: "TRADE" | "REDEEM";
   size: number; // shares
   usdcSize: number;
   transactionHash: string;
   price: number;
-  asset: string; // tokenId
-  side: "BUY" | "SELL";
+  asset: string; // tokenId (empty for REDEEM)
+  side: "BUY" | "SELL" | ""; // Empty for REDEEM
   outcomeIndex: number;
   title: string;
   slug: string;

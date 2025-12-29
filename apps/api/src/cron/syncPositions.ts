@@ -86,8 +86,8 @@ async function main(): Promise<void> {
 
     logger.info("Activities fetched from Polymarket", {
       total: activities.length,
-      buys: activities.filter((a) => a.side === "BUY").length,
-      sells: activities.filter((a) => a.side === "SELL").length,
+      trades: activities.filter((a) => a.type === "TRADE").length,
+      redeems: activities.filter((a) => a.type === "REDEEM").length,
     });
 
     // ==========================================
@@ -95,25 +95,30 @@ async function main(): Promise<void> {
     // ==========================================
     logger.info("Step 2: Checking for already-synced trades");
     const allHashes = activities.map((a) => a.transactionHash);
-    const syncedHashes = await repository.getSyncedTransactionHashes(allHashes);
+    const syncedTrades = await repository.getSyncedTransactionHashes(allHashes);
 
-    const newActivities = activities.filter((a) => !syncedHashes.has(a.transactionHash));
+    // Filter out already-synced activities
+    const newActivities = activities.filter((a) => {
+      const key = a.conditionId ? `${a.transactionHash}|${a.conditionId}` : a.transactionHash;
+      return !syncedTrades.has(key);
+    });
 
-    logger.info("Trades to sync", {
+    logger.info("Activities to sync", {
       total: activities.length,
-      alreadySynced: syncedHashes.size,
+      alreadySynced: syncedTrades.size,
       newToSync: newActivities.length,
     });
 
     // ==========================================
-    // Step 3: Process new trades
+    // Step 3: Process TRADE activities (buys/sells)
     // ==========================================
-    if (newActivities.length > 0) {
-      logger.info("Step 3: Processing new trades");
+    const tradeActivities = newActivities.filter((a) => a.type === "TRADE");
+    if (tradeActivities.length > 0) {
+      logger.info("Step 3: Processing TRADE activities");
 
       // Group activities by tokenId to process positions efficiently
       const activitiesByToken = new Map<string, ActivityRecord[]>();
-      for (const activity of newActivities) {
+      for (const activity of tradeActivities) {
         const existing = activitiesByToken.get(activity.asset) || [];
         existing.push(activity);
         activitiesByToken.set(activity.asset, existing);
@@ -156,7 +161,10 @@ async function main(): Promise<void> {
                 transactionHash: activity.transactionHash,
                 positionId,
                 tokenId: activity.asset,
-                side: activity.side,
+                tradeType:
+                  activity.side === "BUY" || activity.side === "SELL" ? activity.side : "BUY",
+                side:
+                  activity.side === "BUY" || activity.side === "SELL" ? activity.side : undefined,
                 shares: activity.size,
                 price: activity.price,
                 usdcSize: activity.usdcSize,
@@ -198,12 +206,88 @@ async function main(): Promise<void> {
     }
 
     // ==========================================
+    // Step 3b: Process REDEEM activities (winning redemptions)
+    // ==========================================
+    const redeemActivities = newActivities.filter((a) => a.type === "REDEEM");
+    if (redeemActivities.length > 0) {
+      logger.info(`Step 3b: Processing ${redeemActivities.length} REDEEM activities`);
+
+      // Group REDEEM activities by conditionId (since tokenId is empty)
+      const activitiesByCondition = new Map<string, ActivityRecord[]>();
+      for (const activity of redeemActivities) {
+        const existing = activitiesByCondition.get(activity.conditionId) || [];
+        existing.push(activity);
+        activitiesByCondition.set(activity.conditionId, existing);
+      }
+
+      for (const [conditionId, conditionActivities] of activitiesByCondition) {
+        try {
+          // Find position by conditionId
+          const position = await repository.findPositionByConditionId(conditionId);
+          if (!position) {
+            logger.warn("Position not found for REDEEM, skipping", {
+              conditionId: conditionId.slice(0, 16) + "...",
+            });
+            continue;
+          }
+
+          // Create REDEEM trade records (price = $1.00)
+          for (const activity of conditionActivities) {
+            try {
+              await repository.createTrade({
+                transactionHash: activity.transactionHash,
+                positionId: position.id,
+                tokenId: undefined, // REDEEM has no tokenId
+                tradeType: "REDEEM",
+                side: undefined, // REDEEM has no side
+                shares: activity.size,
+                price: 1.0, // REDEEM always at $1
+                usdcSize: activity.usdcSize,
+                conditionId: activity.conditionId,
+                title: activity.title,
+                slug: activity.slug,
+                outcome: position.outcome, // Use position outcome since activity has empty
+                eventSlug: activity.eventSlug,
+                tradeTimestamp: new Date(activity.timestamp * 1000),
+              });
+
+              result.newTradesSynced++;
+
+              logger.debug("REDEEM synced", {
+                transactionHash: activity.transactionHash.slice(0, 16) + "...",
+                shares: activity.size.toFixed(4),
+                usdcSize: activity.usdcSize.toFixed(4),
+                tokenId: position.tokenId,
+              });
+            } catch (error) {
+              logger.debug("REDEEM already exists or failed", {
+                transactionHash: activity.transactionHash.slice(0, 16) + "...",
+                error: (error as Error).message,
+              });
+            }
+          }
+
+          // Link REDEEM trades to position by conditionId
+          await repository.linkTradesToPositionByConditionId(conditionId, position.id);
+        } catch (error) {
+          logger.error("Failed to process REDEEM activities", {
+            conditionId: conditionId.slice(0, 16) + "...",
+            error: (error as Error).message,
+          });
+          result.errors++;
+        }
+      }
+    }
+
+    // ==========================================
     // Step 4: Update positions from aggregates
     // ==========================================
     logger.info("Step 4: Updating positions from trade aggregates");
 
-    // Get all unique tokenIds from all activities (not just new ones)
-    const allTokenIds = [...new Set(activities.map((a) => a.asset))];
+    // Get all unique tokenIds from all TRADE activities (REDEEM has no tokenId)
+    const allTokenIds = [
+      ...new Set(activities.filter((a) => a.type === "TRADE").map((a) => a.asset)),
+    ];
 
     // Fetch current prices for open positions
     const currentPositions = await tradingClient.getAllPositions();

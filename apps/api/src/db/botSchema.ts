@@ -141,7 +141,7 @@ export const botEventLog = pgTable(
 /**
  * Bot Trades - individual trade records from Polymarket
  *
- * Each trade (buy/sell) is stored separately for granular tracking.
+ * Each trade (buy/sell/redeem) is stored separately for granular tracking.
  * Positions are aggregated from trades.
  */
 export const botTrades = pgTable(
@@ -150,14 +150,16 @@ export const botTrades = pgTable(
     id: serial("id").primaryKey(),
 
     // Unique identifier from Polymarket (prevents double-sync)
-    transactionHash: text("transaction_hash").notNull().unique(),
+    // Note: REDEEM transactions can have multiple markets per tx, so we use (hash, conditionId) as unique
+    transactionHash: text("transaction_hash").notNull(),
 
     // Link to position (optional - set after position is created/found)
     positionId: integer("position_id").references(() => botPositions.id),
 
     // Trade details
-    tokenId: text("token_id").notNull(), // asset from Polymarket
-    side: text("side").notNull(), // "BUY" | "SELL"
+    tokenId: text("token_id"), // asset from Polymarket (empty for REDEEM)
+    tradeType: text("trade_type").notNull().default("BUY"), // "BUY" | "SELL" | "REDEEM"
+    side: text("side"), // "BUY" | "SELL" | empty for REDEEM (legacy, use tradeType instead)
     shares: numeric("shares", { precision: 18, scale: 8 }).notNull(),
     price: numeric("price", { precision: 10, scale: 6 }).notNull(),
     usdcSize: numeric("usdc_size", { precision: 12, scale: 4 }).notNull(),
@@ -174,9 +176,14 @@ export const botTrades = pgTable(
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    txHashIdx: uniqueIndex("bot_trades_tx_hash_idx").on(table.transactionHash),
+    // Unique on (transactionHash, conditionId) to handle REDEEM with multiple markets per tx
+    txHashConditionIdx: uniqueIndex("bot_trades_tx_hash_condition_idx").on(
+      table.transactionHash,
+      table.conditionId,
+    ),
     tokenIdx: index("bot_trades_token_idx").on(table.tokenId),
     positionIdx: index("bot_trades_position_idx").on(table.positionId),
     timestampIdx: index("bot_trades_timestamp_idx").on(table.tradeTimestamp),
+    tradeTypeIdx: index("bot_trades_type_idx").on(table.tradeType),
   }),
 );
