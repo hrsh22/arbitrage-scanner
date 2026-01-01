@@ -12,6 +12,8 @@
  * 5. Add corresponding env vars for wallet credentials
  */
 
+import { env } from "../env.js";
+
 export type BotMode = "simulation" | "live";
 
 /**
@@ -87,7 +89,7 @@ export const DEFAULT_BOT_CONFIG: Omit<BotInstanceConfig, "id" | "name" | "wallet
   enableEarlyExit: true,
   earlyExitMinPrice: 0.9995,
   walletSnapshotRetentionDays: 30,
-  defaultMode: "simulation",
+  defaultMode: env.BOT_MODE || "simulation",
 };
 
 /**
