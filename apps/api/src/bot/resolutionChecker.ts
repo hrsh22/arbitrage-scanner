@@ -348,6 +348,17 @@ export class ResolutionChecker {
 
       for (const pos of positions) {
         try {
+          // Skip redeemable positions (already resolved - need redemption, not selling)
+          if (pos.redeemable) {
+            logger.debug("ResolutionChecker: Skipping redeemable position", {
+              botId: this.config.id,
+              tokenId: pos.tokenId.slice(0, 16) + "...",
+              outcome: pos.outcome,
+              curPrice: pos.curPrice,
+            });
+            continue;
+          }
+
           // Get current sell price
           const sellPrice = await this.tradingClient.getSellPrice(pos.tokenId);
 

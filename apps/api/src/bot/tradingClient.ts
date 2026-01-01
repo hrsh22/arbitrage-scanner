@@ -581,6 +581,7 @@ export class TradingClient {
       outcome: string;
       marketSlug?: string;
       conditionId?: string;
+      redeemable: boolean;
     }>
   > {
     try {
@@ -606,6 +607,7 @@ export class TradingClient {
         outcome: string;
         slug?: string;
         conditionId?: string;
+        redeemable?: boolean;
       }>;
 
       // Filter to positions with shares > 0
@@ -619,6 +621,7 @@ export class TradingClient {
           outcome: p.outcome,
           marketSlug: p.slug,
           conditionId: p.conditionId,
+          redeemable: p.redeemable ?? false,
         }));
     } catch (error) {
       logger.error("TradingClient: Failed to get all positions", {
