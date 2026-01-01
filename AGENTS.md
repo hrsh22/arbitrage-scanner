@@ -31,7 +31,7 @@ polymarket-mvp/
 | ----------------------- | ------------------------------------------------ | ------------------------------------------- |
 | Trading Bot             | `apps/api/src/bot/`                              | Autonomous betting engine with PPH strategy |
 | Bot Manager             | `apps/api/src/bot/botManager.ts`                 | Multi-bot instance orchestration            |
-| Bot Configs             | `apps/api/src/bot/botConfigs.ts`                 | Per-bot configuration definitions           |
+| Bot Configs             | `apps/api/src/bot/config/`                       | Per-bot configuration (modular structure)   |
 | Strategy Engine         | `apps/api/src/bot/strategyEngine.ts`             | PPH scoring and opportunity evaluation      |
 | Trading Client          | `apps/api/src/bot/tradingClient.ts`              | Polymarket CLOB order placement             |
 | Market Poller           | `apps/api/src/services/marketPoller.ts`          | Background market data fetching             |
@@ -117,12 +117,12 @@ PPH = (Profit if Win) / (Hours Until Close)
 - 99-99.5¢ odds: Allowed only if resolving within 6 hours
 - Above 99.5¢: Skip (too close to $1, no meaningful profit)
 
-**Hard-coded Safety Limits (in `bot/botConfigs.ts`):**
+**Hard-coded Safety Limits (in `bot/config/bots/bot1-default.ts`):**
 
-- `betSize: 1.00` - Fixed $1 per bet (configurable per bot)
-- `dailyBudget: 150` - $150/day max deployment (configurable per bot)
+- `betSize: 5.00` - Fixed $5 per bet (configurable per bot)
+- `dailyBudget: Infinity` - No limit by default (configurable per bot)
 - `minWalletReserve: 10` - Always keep $10 in wallet
-- `maxDailyLoss: 30` - Pause if daily loss exceeds $30
+- `maxDailyLoss: Infinity` - No limit by default (configurable per bot)
 
 ### Multi-Bot Configuration
 
@@ -132,27 +132,76 @@ The system supports running **multiple bot instances** simultaneously, each with
 - Different wallet accounts (separate private keys)
 - Independent daily budgets and tracking
 
-Bot configurations are defined in `apps/api/src/bot/botConfigs.ts`:
+Bot configurations are defined in `apps/api/src/bot/config/`:
 
-```typescript
-interface BotInstanceConfig {
-  id: number; // Unique bot ID (used in DB)
-  name: string; // Human-readable name
-  enabled: boolean; // Whether bot is active
-  walletPrivateKeyEnv: string; // Env var name for private key
-  walletFunderAddressEnv: string; // Env var name for funder address
-  minOdds: number; // Minimum odds threshold (e.g., 0.95)
-  maxOdds: number; // Maximum odds threshold (e.g., 0.995)
-  maxHoursGeneral: number; // Max hours to resolution for general odds
-  maxHoursHighOdds: number; // Max hours for 99%+ odds
-  betSize: number; // Bet size in USD
-  dailyBudget: number; // Daily budget limit
-  minWalletReserve: number; // Minimum wallet reserve
-  maxDailyLoss: number; // Max daily loss before pause
-}
+```
+src/bot/config/
+├── index.ts          # Main exports + helper functions + defineBotConfig()
+├── types.ts          # BotInstanceConfig interface
+└── bots/
+    ├── index.ts      # Aggregates all bot configs + validation
+    └── bot1-default.ts  # Bot 1 (SOURCE OF TRUTH for all defaults)
 ```
 
-To add a new bot, add an entry to `BOT_CONFIGS` array and set environment variables for the wallet.
+**bot1-default.ts is the source of truth** - all default values are defined there.
+Other bots use `defineBotConfig()` which inherits from bot1's values.
+
+To add a new bot:
+
+1. Create `bot{N}-{name}.ts` in `config/bots/`
+2. Import and add to `BOT_CONFIGS` array in `config/bots/index.ts`
+3. Set environment variables for the wallet
+
+Example bot config:
+
+```typescript
+// config/bots/bot2-aggressive.ts
+import { defineBotConfig } from "../index.js";
+
+export default defineBotConfig({
+  id: 2,
+  name: "aggressive",
+  walletPrivateKeyEnv: "WALLET_2_PRIVATE_KEY",
+  walletFunderAddressEnv: "WALLET_2_FUNDER_ADDRESS",
+  // Only specify overrides from bot1-default
+  minOdds: 0.9,
+  maxOdds: 0.95,
+  betSize: 10.0,
+});
+```
+
+src/bot/config/
+├── index.ts # Main exports + helper functions
+├── types.ts # BotInstanceConfig interface
+├── defaults.ts # Default values for all bots
+└── bots/
+├── index.ts # Aggregates all bot configs
+└── bot1-default.ts # Bot 1 configuration
+
+````
+
+To add a new bot:
+
+1. Create `bot{N}-{name}.ts` in `config/bots/`
+2. Import and add to `BOT_CONFIGS` array in `config/bots/index.ts`
+3. Set environment variables for the wallet
+
+Example bot config:
+
+```typescript
+// config/bots/bot2-aggressive.ts
+import { defineBotConfig } from "../defaults.js";
+
+export default defineBotConfig({
+  id: 2,
+  name: "aggressive",
+  walletPrivateKeyEnv: "WALLET_2_PRIVATE_KEY",
+  walletFunderAddressEnv: "WALLET_2_FUNDER_ADDRESS",
+  minOdds: 0.9,
+  maxOdds: 0.95,
+  betSize: 10.0,
+});
+````
 
 ### API Clients
 
@@ -214,8 +263,6 @@ curl http://localhost:8080/bot/status
 | `/bot/:botId/scan`               | POST   | Run scan for specific bot               |
 | `/bot/scan-all`                  | POST   | Run scan for all enabled bots           |
 | `/bot/check-resolutions-all`     | POST   | Check resolutions for all bots          |
-| `/bot/start`                     | POST   | Start the trading bot                   |
-| `/bot/stop`                      | POST   | Stop the trading bot                    |
 | `/bot/mode`                      | POST   | Switch simulation/live mode             |
 
 ---
@@ -228,14 +275,14 @@ curl http://localhost:8080/bot/status
 - ✅ Update this file when adding new features or changing architecture
 - ✅ Use the existing logger (`import { logger } from "./logger.js"`)
 - ✅ Follow the repository pattern for new database operations
-- ✅ Keep safety limits in `bot/botConfigs.ts` as constants (not env vars)
+- ✅ Keep safety limits in `bot/config/bots/bot1-default.ts` as constants (not env vars)
 
 ### Don'ts
 
 - ❌ Do NOT modify safety limits without explicit user approval
 - ❌ Do NOT remove simulation mode safeguards
 - ❌ Do NOT hardcode API keys or secrets (use env vars)
-- ❌ Do NOT change the fixed $1 bet size without explicit approval
+- ❌ Do NOT change the bet size without explicit approval
 - ❌ Do NOT bypass the daily budget limit
 
 ---
@@ -246,6 +293,7 @@ curl http://localhost:8080/bot/status
 
 | Date       | Change                                                                          | Files Affected                                                            |
 | ---------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| 2026-01-01 | Refactored bot config into modular structure with strict validation             | `bot/config/*`, removed `bot/botConfigs.ts`                               |
 | 2025-01-01 | Optimized multi-bot scans: fetch markets once, run all bots in parallel         | `bot/botManager.ts`, `bot/tradingBot.ts`, `cron/runTradingBot.ts`         |
 | 2024-12-31 | Added multi-bot support with BotManager and per-bot configurations              | `bot/botConfigs.ts`, `bot/botManager.ts`, `bot/routes.ts`, `botSchema.ts` |
 | 2024-12-22 | Added cron-friendly endpoints `/bot/scan` and `/bot/check-resolutions`          | `bot/routes.ts`, `bot/tradingBot.ts`, `bot/resolutionChecker.ts`          |

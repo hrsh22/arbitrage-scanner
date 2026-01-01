@@ -2,23 +2,22 @@
  * Trading Bot Configuration
  *
  * This file provides backward compatibility with existing code that imports BOT_CONFIG.
- * For multi-bot support, see botConfigs.ts which defines individual bot configurations.
+ * For multi-bot support, see config/index.ts which defines individual bot configurations.
  *
  * BOT_CONFIG is now derived from the default bot (id: 1) configuration.
  */
 
-// Re-export types and functions from botConfigs
-export type { BotInstanceConfig, BotMode } from "./botConfigs.js";
+// Re-export types and functions from config module
+export type { BotInstanceConfig, BotMode } from "./config/index.js";
 export {
   BOT_CONFIGS,
   DEFAULT_BOT_CONFIG,
   getBotConfig,
   getEnabledBotConfigs,
   getBotConfigByName,
-  validateBotEnvVars,
-} from "./botConfigs.js";
+} from "./config/index.js";
 
-import { getBotConfig, DEFAULT_BOT_CONFIG } from "./botConfigs.js";
+import { getBotConfig, DEFAULT_BOT_CONFIG } from "./config/index.js";
 
 /**
  * Legacy BOT_CONFIG for backward compatibility.
@@ -46,11 +45,6 @@ export const BOT_CONFIG = {
 
   // Category-specific time limits
   CATEGORY_TIME_LIMITS: defaultConfig?.categoryTimeLimits ?? DEFAULT_BOT_CONFIG.categoryTimeLimits,
-
-  // Scanning
-  SCAN_INTERVAL_MS: defaultConfig?.scanIntervalMs ?? DEFAULT_BOT_CONFIG.scanIntervalMs,
-  RESOLUTION_CHECK_INTERVAL_MS:
-    defaultConfig?.resolutionCheckIntervalMs ?? DEFAULT_BOT_CONFIG.resolutionCheckIntervalMs,
 
   // Safety
   MIN_WALLET_RESERVE: defaultConfig?.minWalletReserve ?? DEFAULT_BOT_CONFIG.minWalletReserve,

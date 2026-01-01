@@ -6,7 +6,7 @@
 
 import { Router } from "express";
 import { getBotManager } from "./botManager.js";
-import { getBotConfig, getEnabledBotConfigs } from "./botConfigs.js";
+import { getBotConfig, getEnabledBotConfigs } from "./config/index.js";
 import { getBotRepository } from "./repository.js";
 import { logger } from "../logger.js";
 
@@ -132,47 +132,6 @@ export function buildBotRouter(): Router {
     }
   });
 
-  /**
-   * POST /bot/start-all
-   * Start all enabled bots
-   */
-  router.post("/start-all", async (_req, res) => {
-    try {
-      await manager.initialize();
-      await manager.startAll();
-      const statuses = await manager.getAllStatuses();
-
-      res.json({
-        success: true,
-        message: "All bots started",
-        statuses,
-      });
-    } catch (error) {
-      logger.error("Bot API: Start-all failed", { error: (error as Error).message });
-      res.status(500).json({ error: (error as Error).message });
-    }
-  });
-
-  /**
-   * POST /bot/stop-all
-   * Stop all enabled bots
-   */
-  router.post("/stop-all", async (_req, res) => {
-    try {
-      await manager.stopAll();
-      const statuses = await manager.getAllStatuses();
-
-      res.json({
-        success: true,
-        message: "All bots stopped",
-        statuses,
-      });
-    } catch (error) {
-      logger.error("Bot API: Stop-all failed", { error: (error as Error).message });
-      res.status(500).json({ error: (error as Error).message });
-    }
-  });
-
   // ==========================================
   // SINGLE BOT ENDPOINTS (by ID)
   // ==========================================
@@ -207,7 +166,6 @@ export function buildBotRouter(): Router {
           minOdds: config.minOdds,
           maxOdds: config.maxOdds,
           maxHoursGeneral: config.maxHoursGeneral,
-          scanIntervalMs: config.scanIntervalMs,
         },
       });
     } catch (error) {
@@ -512,73 +470,6 @@ export function buildBotRouter(): Router {
   });
 
   /**
-   * POST /bot/:botId/start
-   * Start a specific bot
-   */
-  router.post("/:botId/start", async (req, res) => {
-    try {
-      const botId = parseInt(req.params.botId, 10);
-      if (isNaN(botId)) {
-        res.status(400).json({ error: "Invalid bot ID" });
-        return;
-      }
-
-      await manager.initialize();
-      const bot = manager.getBot(botId);
-      if (!bot) {
-        res.status(404).json({ error: `Bot ${botId} not found` });
-        return;
-      }
-
-      await bot.start();
-      const status = await bot.getStatus();
-
-      res.json({
-        success: true,
-        message: "Bot started",
-        botId,
-        status,
-      });
-    } catch (error) {
-      logger.error("Bot API: Failed to start bot", { error: (error as Error).message });
-      res.status(500).json({ error: (error as Error).message });
-    }
-  });
-
-  /**
-   * POST /bot/:botId/stop
-   * Stop a specific bot
-   */
-  router.post("/:botId/stop", async (req, res) => {
-    try {
-      const botId = parseInt(req.params.botId, 10);
-      if (isNaN(botId)) {
-        res.status(400).json({ error: "Invalid bot ID" });
-        return;
-      }
-
-      const bot = manager.getBot(botId);
-      if (!bot) {
-        res.status(404).json({ error: `Bot ${botId} not found` });
-        return;
-      }
-
-      await bot.stop();
-      const status = await bot.getStatus();
-
-      res.json({
-        success: true,
-        message: "Bot stopped",
-        botId,
-        status,
-      });
-    } catch (error) {
-      logger.error("Bot API: Failed to stop bot", { error: (error as Error).message });
-      res.status(500).json({ error: (error as Error).message });
-    }
-  });
-
-  /**
    * POST /bot/:botId/mode
    * Switch mode for a specific bot
    */
@@ -646,7 +537,6 @@ export function buildBotRouter(): Router {
           dailyBudget: config.dailyBudget,
           minOdds: config.minOdds,
           maxOdds: config.maxOdds,
-          scanIntervalMs: config.scanIntervalMs,
         },
       });
     } catch (error) {
@@ -838,59 +728,6 @@ export function buildBotRouter(): Router {
       });
     } catch (error) {
       logger.error("Bot API: Failed to get events", { error: (error as Error).message });
-      res.status(500).json({ error: (error as Error).message });
-    }
-  });
-
-  /**
-   * POST /bot/start
-   * Start default bot (backward compatibility)
-   */
-  router.post("/start", async (_req, res) => {
-    try {
-      await manager.initialize();
-      const bot = manager.getBot(1);
-      if (!bot) {
-        res.status(404).json({ error: "Default bot not configured" });
-        return;
-      }
-
-      await bot.start();
-      const status = await bot.getStatus();
-
-      res.json({
-        success: true,
-        message: "Bot started",
-        status,
-      });
-    } catch (error) {
-      logger.error("Bot API: Failed to start bot", { error: (error as Error).message });
-      res.status(500).json({ error: (error as Error).message });
-    }
-  });
-
-  /**
-   * POST /bot/stop
-   * Stop default bot (backward compatibility)
-   */
-  router.post("/stop", async (_req, res) => {
-    try {
-      const bot = manager.getBot(1);
-      if (!bot) {
-        res.status(404).json({ error: "Default bot not configured" });
-        return;
-      }
-
-      await bot.stop();
-      const status = await bot.getStatus();
-
-      res.json({
-        success: true,
-        message: "Bot stopped",
-        status,
-      });
-    } catch (error) {
-      logger.error("Bot API: Failed to stop bot", { error: (error as Error).message });
       res.status(500).json({ error: (error as Error).message });
     }
   });

@@ -12,7 +12,6 @@ export {
   getBotConfig,
   getEnabledBotConfigs,
   getBotConfigByName,
-  validateBotEnvVars,
   type BotMode,
   type BotConfig,
   type BotInstanceConfig,

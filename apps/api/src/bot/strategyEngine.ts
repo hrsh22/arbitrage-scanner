@@ -7,11 +7,10 @@
  * Supports multiple bot instances with different configurations.
  */
 
-import type { BotInstanceConfig } from "./botConfigs.js";
+import type { BotInstanceConfig } from "./config/index.js";
 import type { ScoredOpportunity } from "./types.js";
 import type { NearResolutionOpportunity } from "../types.js";
 import { logger } from "../logger.js";
-import { TradingClient } from "./tradingClient.js";
 
 /**
  * Get the max hours until resolution for a market based on its tags.
@@ -162,11 +161,9 @@ export function calculateMaxInvestmentStats(
 }
 
 export class StrategyEngine {
-  private tradingClient: TradingClient;
   private config: BotInstanceConfig;
 
-  constructor(tradingClient: TradingClient, config: BotInstanceConfig) {
-    this.tradingClient = tradingClient;
+  constructor(config: BotInstanceConfig) {
     this.config = config;
   }
 

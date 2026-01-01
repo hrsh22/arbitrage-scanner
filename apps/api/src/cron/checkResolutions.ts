@@ -15,7 +15,7 @@
 
 import "dotenv/config";
 import { parseArgs } from "node:util";
-import { getBotConfig, getEnabledBotConfigs } from "../bot/botConfigs.js";
+import { getBotConfig, getEnabledBotConfigs } from "../bot/config/index.js";
 import { getResolutionChecker } from "../bot/resolutionChecker.js";
 import { getBotRepository } from "../bot/repository.js";
 import { getTradingClient } from "../bot/tradingClient.js";

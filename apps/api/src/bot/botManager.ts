@@ -5,13 +5,9 @@
  * multiple bot instances with different configurations.
  */
 
-import { getEnabledBotConfigs, getBotConfig, type BotInstanceConfig } from "./botConfigs.js";
-import { TradingBot, getTradingBot, getTradingBotById } from "./tradingBot.js";
-import {
-  ResolutionChecker,
-  getResolutionChecker,
-  getResolutionCheckerById,
-} from "./resolutionChecker.js";
+import { getEnabledBotConfigs, getBotConfig, type BotInstanceConfig } from "./config/index.js";
+import { TradingBot, getTradingBot } from "./tradingBot.js";
+import { ResolutionChecker, getResolutionChecker } from "./resolutionChecker.js";
 import { getBotRepository } from "./repository.js";
 import type { BotStatus, OverallStats } from "./types.js";
 import { getSharedPolymarketClient } from "../clients/polymarketClient.js";
@@ -257,40 +253,6 @@ export class BotManager {
     // Use any repository to get aggregate stats (they all have access to the full table)
     const repository = getBotRepository("1");
     return repository.getAggregateStats(isSimulated);
-  }
-
-  /**
-   * Start all bots.
-   */
-  async startAll(): Promise<void> {
-    for (const config of getEnabledBotConfigs()) {
-      try {
-        const bot = getTradingBot(config);
-        await bot.start();
-      } catch (error) {
-        logger.error("BotManager: Failed to start bot", {
-          botId: config.id,
-          error: (error as Error).message,
-        });
-      }
-    }
-  }
-
-  /**
-   * Stop all bots.
-   */
-  async stopAll(): Promise<void> {
-    for (const config of getEnabledBotConfigs()) {
-      try {
-        const bot = getTradingBot(config);
-        await bot.stop();
-      } catch (error) {
-        logger.error("BotManager: Failed to stop bot", {
-          botId: config.id,
-          error: (error as Error).message,
-        });
-      }
-    }
   }
 
   /**

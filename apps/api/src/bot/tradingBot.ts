@@ -7,7 +7,7 @@
  * Supports multiple bot instances with different configurations.
  */
 
-import type { BotInstanceConfig, BotMode } from "./botConfigs.js";
+import type { BotInstanceConfig, BotMode } from "./config/index.js";
 import { TradingClient, getTradingClient } from "./tradingClient.js";
 import { StrategyEngine } from "./strategyEngine.js";
 import { BotRepository, getBotRepository } from "./repository.js";
@@ -19,9 +19,7 @@ import { logger } from "../logger.js";
 
 export class TradingBot {
   private config: BotInstanceConfig;
-  private isRunning = false;
   private mode: BotMode;
-  private scanInterval: NodeJS.Timeout | null = null;
   private lastScanAt: Date | null = null;
   private circuitBreakerTripped = false;
 
@@ -45,7 +43,7 @@ export class TradingBot {
     this.repository = getBotRepository(String(config.id));
 
     // Create strategy engine with this bot's config
-    this.strategyEngine = new StrategyEngine(this.tradingClient, config);
+    this.strategyEngine = new StrategyEngine(config);
 
     // Polymarket client is shared (stateless)
     this.polyClient = new PolymarketClient();
@@ -124,61 +122,6 @@ export class TradingBot {
         message: `Failed to initialize trading client: ${(error as Error).message}`,
       });
     }
-  }
-
-  /**
-   * Start the bot
-   */
-  async start(): Promise<void> {
-    if (this.isRunning) {
-      logger.warn("TradingBot: Already running", { botId: this.config.id });
-      return;
-    }
-
-    logger.info("TradingBot: Starting", {
-      botId: this.config.id,
-      botName: this.config.name,
-      mode: this.mode,
-    });
-
-    await this.repository.logEvent({
-      eventType: "info",
-      eventName: "bot_started",
-      message: `Trading bot "${this.config.name}" started in ${this.mode} mode`,
-    });
-
-    this.isRunning = true;
-
-    // Run initial scan
-    await this.runScanCycle();
-
-    // Start periodic scanning
-    this.scanInterval = setInterval(() => void this.runScanCycle(), this.config.scanIntervalMs);
-  }
-
-  /**
-   * Stop the bot
-   */
-  async stop(): Promise<void> {
-    if (!this.isRunning) {
-      logger.warn("TradingBot: Not running", { botId: this.config.id });
-      return;
-    }
-
-    logger.info("TradingBot: Stopping", { botId: this.config.id });
-
-    if (this.scanInterval) {
-      clearInterval(this.scanInterval);
-      this.scanInterval = null;
-    }
-
-    this.isRunning = false;
-
-    await this.repository.logEvent({
-      eventType: "info",
-      eventName: "bot_stopped",
-      message: `Trading bot "${this.config.name}" stopped`,
-    });
   }
 
   /**
@@ -505,7 +448,6 @@ export class TradingBot {
     return {
       botId: this.config.id,
       botName: this.config.name,
-      isRunning: this.isRunning,
       mode: this.mode,
       lastScanAt: this.lastScanAt ?? undefined,
       todayBets: todayStats.betsPlaced,

@@ -13,7 +13,7 @@
 
 import "dotenv/config";
 import { getBotManager } from "../bot/botManager.js";
-import { getEnabledBotConfigs } from "../bot/botConfigs.js";
+import { getEnabledBotConfigs } from "../bot/config/index.js";
 import { logger } from "../logger.js";
 
 async function main() {

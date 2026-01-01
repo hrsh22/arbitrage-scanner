@@ -53,7 +53,7 @@ module.exports = {
       name: "resolution-checker",
       script: "pnpm",
       args: "cron:check-bot-resolutions",
-      cron_restart: "*/10 * * * *",
+      cron_restart: "2-59/10 * * * *",
       autorestart: false,
       watch: false,
       env: {

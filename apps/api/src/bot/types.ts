@@ -63,7 +63,6 @@ export interface OverallStats {
 }
 
 export interface BotStatus {
-  isRunning: boolean;
   mode: "simulation" | "live";
   lastScanAt?: Date;
   todayBets: number;

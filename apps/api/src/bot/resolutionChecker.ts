@@ -9,7 +9,7 @@
  * Supports multiple bot instances with different configurations.
  */
 
-import type { BotInstanceConfig } from "./botConfigs.js";
+import type { BotInstanceConfig } from "./config/index.js";
 import { BotRepository, getBotRepository } from "./repository.js";
 import { TradingClient, getTradingClient } from "./tradingClient.js";
 import { PolymarketClient } from "../clients/polymarketClient.js";
@@ -17,8 +17,6 @@ import { logger } from "../logger.js";
 
 export class ResolutionChecker {
   private config: BotInstanceConfig;
-  private isRunning = false;
-  private checkInterval: NodeJS.Timeout | null = null;
   private repository: BotRepository;
   private polyClient: PolymarketClient;
   private tradingClient: TradingClient;
@@ -49,51 +47,8 @@ export class ResolutionChecker {
   }
 
   /**
-   * Start the resolution checker
-   */
-  async start(): Promise<void> {
-    if (this.isRunning) {
-      logger.warn("ResolutionChecker: Already running", { botId: this.config.id });
-      return;
-    }
-
-    logger.info("ResolutionChecker: Starting", {
-      botId: this.config.id,
-      botName: this.config.name,
-    });
-    this.isRunning = true;
-
-    // Run initial check
-    await this.runCheck();
-
-    // Start periodic checking
-    this.checkInterval = setInterval(
-      () => void this.runCheck(),
-      this.config.resolutionCheckIntervalMs,
-    );
-  }
-
-  /**
-   * Stop the resolution checker
-   */
-  async stop(): Promise<void> {
-    if (!this.isRunning) {
-      return;
-    }
-
-    logger.info("ResolutionChecker: Stopping", { botId: this.config.id });
-
-    if (this.checkInterval) {
-      clearInterval(this.checkInterval);
-      this.checkInterval = null;
-    }
-
-    this.isRunning = false;
-  }
-
-  /**
    * Main check cycle - check all open positions for resolution.
-   * Can be called directly for cron-style execution.
+   * Called by cron job.
    */
   async runCheck(): Promise<{ checked: number; resolved: number; won: number; lost: number }> {
     const startTime = Date.now();
