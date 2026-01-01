@@ -35,7 +35,7 @@ export const env = {
   POLYMARKET_CLOB_BASE: stringFromEnv("POLYMARKET_CLOB_BASE", "https://clob.polymarket.com"),
 
   // Market fetching
-  MAX_EVENTS: numberFromEnv("MAX_EVENTS", 500), // Top N most liquid events to fetch
+  MAX_EVENTS: numberFromEnv("MAX_EVENTS", 1000), // Top N most liquid events to fetch
 
   // Polling
   POLL_INTERVAL_MS: numberFromEnv("POLL_INTERVAL_MS", 60000), // 60 seconds (processing takes ~50s)

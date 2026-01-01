@@ -197,7 +197,7 @@ export class PolymarketClient {
       }
     }
 
-    return allEvents.slice(0, config.maxEvents + 100); // Allow slightly more events
+    return allEvents.slice(0, config.maxEvents); // Allow slightly more events
   }
 
   /**
