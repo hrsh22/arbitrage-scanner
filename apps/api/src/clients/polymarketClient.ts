@@ -599,3 +599,18 @@ export class PolymarketClient {
     }
   }
 }
+
+// Singleton instance for shared market fetching across all bot instances
+let sharedInstance: PolymarketClient | null = null;
+
+/**
+ * Get a shared PolymarketClient instance.
+ * Use this when multiple bots need to fetch the same market data
+ * to avoid duplicate API calls.
+ */
+export function getSharedPolymarketClient(): PolymarketClient {
+  if (!sharedInstance) {
+    sharedInstance = new PolymarketClient();
+  }
+  return sharedInstance;
+}

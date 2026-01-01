@@ -5,25 +5,47 @@
  * then updates positions with win/loss status and USD profit/loss.
  *
  * Also handles early exit (selling) when positions reach target price.
+ *
+ * Supports multiple bot instances with different configurations.
  */
 
-import { BOT_CONFIG } from "./config.js";
-import { getBotRepository, BotRepository } from "./repository.js";
-import { getTradingClient, TradingClient } from "./tradingClient.js";
+import type { BotInstanceConfig } from "./botConfigs.js";
+import { BotRepository, getBotRepository } from "./repository.js";
+import { TradingClient, getTradingClient } from "./tradingClient.js";
 import { PolymarketClient } from "../clients/polymarketClient.js";
 import { logger } from "../logger.js";
 
 export class ResolutionChecker {
+  private config: BotInstanceConfig;
   private isRunning = false;
   private checkInterval: NodeJS.Timeout | null = null;
   private repository: BotRepository;
   private polyClient: PolymarketClient;
   private tradingClient: TradingClient;
 
-  constructor() {
-    this.repository = getBotRepository();
+  constructor(config: BotInstanceConfig) {
+    this.config = config;
+    this.repository = getBotRepository(String(config.id));
     this.polyClient = new PolymarketClient();
-    this.tradingClient = getTradingClient();
+    this.tradingClient = getTradingClient(
+      config.walletPrivateKeyEnv,
+      config.walletFunderAddressEnv,
+      config.minWalletReserve,
+    );
+  }
+
+  /**
+   * Get bot instance ID.
+   */
+  get id(): number {
+    return this.config.id;
+  }
+
+  /**
+   * Get bot instance name.
+   */
+  get name(): string {
+    return this.config.name;
   }
 
   /**
@@ -31,11 +53,14 @@ export class ResolutionChecker {
    */
   async start(): Promise<void> {
     if (this.isRunning) {
-      logger.warn("ResolutionChecker: Already running");
+      logger.warn("ResolutionChecker: Already running", { botId: this.config.id });
       return;
     }
 
-    logger.info("ResolutionChecker: Starting");
+    logger.info("ResolutionChecker: Starting", {
+      botId: this.config.id,
+      botName: this.config.name,
+    });
     this.isRunning = true;
 
     // Run initial check
@@ -44,7 +69,7 @@ export class ResolutionChecker {
     // Start periodic checking
     this.checkInterval = setInterval(
       () => void this.runCheck(),
-      BOT_CONFIG.RESOLUTION_CHECK_INTERVAL_MS,
+      this.config.resolutionCheckIntervalMs,
     );
   }
 
@@ -56,7 +81,7 @@ export class ResolutionChecker {
       return;
     }
 
-    logger.info("ResolutionChecker: Stopping");
+    logger.info("ResolutionChecker: Stopping", { botId: this.config.id });
 
     if (this.checkInterval) {
       clearInterval(this.checkInterval);
@@ -74,15 +99,20 @@ export class ResolutionChecker {
     const startTime = Date.now();
 
     try {
-      // Get all open positions
+      // Get all open positions for this bot instance
       const openPositions = await this.repository.getOpenPositions();
 
       if (openPositions.length === 0) {
-        logger.info("ResolutionChecker: No open positions to check");
+        logger.info("ResolutionChecker: No open positions to check", {
+          botId: this.config.id,
+        });
         return { checked: 0, resolved: 0, won: 0, lost: 0 };
       }
 
-      logger.info("ResolutionChecker: Checking positions", { count: openPositions.length });
+      logger.info("ResolutionChecker: Checking positions", {
+        botId: this.config.id,
+        count: openPositions.length,
+      });
 
       let resolved = 0;
       let won = 0;
@@ -98,6 +128,7 @@ export class ResolutionChecker {
           }
         } catch (error) {
           logger.error("ResolutionChecker: Failed to check position", {
+            botId: this.config.id,
             positionId: position.id,
             marketId: position.marketId,
             error: (error as Error).message,
@@ -110,6 +141,7 @@ export class ResolutionChecker {
 
       const duration = Date.now() - startTime;
       logger.info("ResolutionChecker: Check complete", {
+        botId: this.config.id,
         checked: openPositions.length,
         resolved,
         won,
@@ -119,7 +151,10 @@ export class ResolutionChecker {
 
       return { checked: openPositions.length, resolved, won, lost };
     } catch (error) {
-      logger.error("ResolutionChecker: Check failed", { error: (error as Error).message });
+      logger.error("ResolutionChecker: Check failed", {
+        botId: this.config.id,
+        error: (error as Error).message,
+      });
       return { checked: 0, resolved: 0, won: 0, lost: 0 };
     }
   }
@@ -143,6 +178,7 @@ export class ResolutionChecker {
     if (!marketStatus) {
       // Market not found - might be deleted/invalid
       logger.warn("ResolutionChecker: Market not found", {
+        botId: this.config.id,
         marketId: position.marketId,
         positionId: position.id,
       });
@@ -150,6 +186,7 @@ export class ResolutionChecker {
     }
 
     logger.debug("ResolutionChecker: Market status from API", {
+      botId: this.config.id,
       positionId: position.id,
       marketId: position.marketId,
       currentPositionStatus: position.status,
@@ -170,6 +207,7 @@ export class ResolutionChecker {
         await this.repository.updatePositionStatus(position.id, "in_review");
 
         logger.info("ResolutionChecker: Position moved to in_review", {
+          botId: this.config.id,
           positionId: position.id,
           marketId: position.marketId,
         });
@@ -256,6 +294,7 @@ export class ResolutionChecker {
     });
 
     logger.info("ResolutionChecker: Position resolved", {
+      botId: this.config.id,
       positionId: position.id,
       status,
       profitLoss,
@@ -275,13 +314,15 @@ export class ResolutionChecker {
     totalProfit: number;
     errors: number;
   }> {
-    if (!BOT_CONFIG.ENABLE_EARLY_EXIT) {
-      logger.info("ResolutionChecker: Early exit disabled");
+    if (!this.config.enableEarlyExit) {
+      logger.info("ResolutionChecker: Early exit disabled", { botId: this.config.id });
       return { checked: 0, sold: 0, totalProfit: 0, errors: 0 };
     }
 
     if (!this.tradingClient.isInitialized()) {
-      logger.warn("ResolutionChecker: Trading client not initialized, skipping API-based sells");
+      logger.warn("ResolutionChecker: Trading client not initialized, skipping API-based sells", {
+        botId: this.config.id,
+      });
       return { checked: 0, sold: 0, totalProfit: 0, errors: 0 };
     }
 
@@ -290,11 +331,14 @@ export class ResolutionChecker {
       const positions = await this.tradingClient.getAllPositions();
 
       if (positions.length === 0) {
-        logger.info("ResolutionChecker: No positions found from API");
+        logger.info("ResolutionChecker: No positions found from API", {
+          botId: this.config.id,
+        });
         return { checked: 0, sold: 0, totalProfit: 0, errors: 0 };
       }
 
       logger.info("ResolutionChecker: Checking positions from API", {
+        botId: this.config.id,
         count: positions.length,
       });
 
@@ -308,12 +352,13 @@ export class ResolutionChecker {
           const sellPrice = await this.tradingClient.getSellPrice(pos.tokenId);
 
           // Skip if below threshold
-          if (sellPrice < BOT_CONFIG.EARLY_EXIT_MIN_PRICE) {
+          if (sellPrice < this.config.earlyExitMinPrice) {
             logger.debug("ResolutionChecker: Sell price below threshold", {
+              botId: this.config.id,
               tokenId: pos.tokenId.slice(0, 16) + "...",
               outcome: pos.outcome,
               sellPrice: sellPrice.toFixed(4),
-              threshold: BOT_CONFIG.EARLY_EXIT_MIN_PRICE,
+              threshold: this.config.earlyExitMinPrice,
             });
             continue;
           }
@@ -324,6 +369,7 @@ export class ResolutionChecker {
           const profitLoss = Math.round((proceeds - cost) * 10000) / 10000;
 
           logger.info("ResolutionChecker: Selling position from API", {
+            botId: this.config.id,
             tokenId: pos.tokenId.slice(0, 16) + "...",
             outcome: pos.outcome,
             shares: pos.size.toFixed(4),
@@ -336,11 +382,12 @@ export class ResolutionChecker {
           const result = await this.tradingClient.sellPosition(
             pos.tokenId,
             pos.size,
-            BOT_CONFIG.EARLY_EXIT_MIN_PRICE,
+            this.config.earlyExitMinPrice,
           );
 
           if (!result.success) {
             logger.error("ResolutionChecker: Sell failed", {
+              botId: this.config.id,
               tokenId: pos.tokenId.slice(0, 16) + "...",
               error: result.error,
             });
@@ -355,6 +402,7 @@ export class ResolutionChecker {
           totalProfit += profitLoss;
 
           logger.info("ResolutionChecker: Position sold via API", {
+            botId: this.config.id,
             tokenId: pos.tokenId.slice(0, 16) + "...",
             outcome: pos.outcome,
             profitLoss: profitLoss.toFixed(4),
@@ -364,6 +412,7 @@ export class ResolutionChecker {
           await new Promise((resolve) => setTimeout(resolve, 300));
         } catch (error) {
           logger.error("ResolutionChecker: Error processing position", {
+            botId: this.config.id,
             tokenId: pos.tokenId.slice(0, 16) + "...",
             error: (error as Error).message,
           });
@@ -372,6 +421,7 @@ export class ResolutionChecker {
       }
 
       logger.info("ResolutionChecker: API-based sell complete", {
+        botId: this.config.id,
         checked: positions.length,
         sold,
         totalProfit: totalProfit.toFixed(4),
@@ -381,6 +431,7 @@ export class ResolutionChecker {
       return { checked: positions.length, sold, totalProfit, errors };
     } catch (error) {
       logger.error("ResolutionChecker: sellEligibleFromAPI failed", {
+        botId: this.config.id,
         error: (error as Error).message,
       });
       return { checked: 0, sold: 0, totalProfit: 0, errors: 1 };
@@ -415,6 +466,7 @@ export class ResolutionChecker {
         await this.repository.recordWin(profitLoss, existing.isSimulated);
 
         logger.debug("ResolutionChecker: Updated existing DB position", {
+          botId: this.config.id,
           positionId: existing.id,
           tokenId: apiPosition.tokenId.slice(0, 16) + "...",
         });
@@ -432,6 +484,7 @@ export class ResolutionChecker {
         await this.repository.recordWin(profitLoss, false);
 
         logger.debug("ResolutionChecker: Created new DB position", {
+          botId: this.config.id,
           positionId,
           tokenId: apiPosition.tokenId.slice(0, 16) + "...",
         });
@@ -453,6 +506,7 @@ export class ResolutionChecker {
       });
     } catch (error) {
       logger.error("ResolutionChecker: Failed to sync position to DB", {
+        botId: this.config.id,
         tokenId: apiPosition.tokenId.slice(0, 16) + "...",
         error: (error as Error).message,
       });
@@ -460,12 +514,24 @@ export class ResolutionChecker {
   }
 }
 
-// Singleton instance
-let checkerInstance: ResolutionChecker | null = null;
+// Cache of resolution checker instances by bot ID
+const checkerInstances: Map<number, ResolutionChecker> = new Map();
 
-export function getResolutionChecker(): ResolutionChecker {
-  if (!checkerInstance) {
-    checkerInstance = new ResolutionChecker();
+/**
+ * Get a resolution checker for a specific bot configuration.
+ */
+export function getResolutionChecker(config: BotInstanceConfig): ResolutionChecker {
+  let instance = checkerInstances.get(config.id);
+  if (!instance) {
+    instance = new ResolutionChecker(config);
+    checkerInstances.set(config.id, instance);
   }
-  return checkerInstance;
+  return instance;
+}
+
+/**
+ * Get an existing resolution checker by bot ID.
+ */
+export function getResolutionCheckerById(id: number): ResolutionChecker | undefined {
+  return checkerInstances.get(id);
 }

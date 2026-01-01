@@ -25,6 +25,9 @@ export const botPositions = pgTable(
   {
     id: serial("id").primaryKey(),
 
+    // Bot instance identifier (supports multiple bot configurations)
+    botInstanceId: text("bot_instance_id").notNull().default("1"),
+
     // Market info
     marketId: text("market_id").notNull(),
     marketQuestion: text("market_question").notNull(),
@@ -59,6 +62,7 @@ export const botPositions = pgTable(
     marketIdx: index("bot_positions_market_idx").on(table.marketId),
     createdIdx: index("bot_positions_created_idx").on(table.createdAt),
     simulatedIdx: index("bot_positions_simulated_idx").on(table.isSimulated),
+    instanceIdx: index("bot_positions_instance_idx").on(table.botInstanceId),
   }),
 );
 
@@ -70,6 +74,9 @@ export const botDailyStats = pgTable(
   {
     id: serial("id").primaryKey(),
     date: text("date").notNull(), // YYYY-MM-DD in UTC
+
+    // Bot instance identifier (supports multiple bot configurations)
+    botInstanceId: text("bot_instance_id").notNull().default("1"),
 
     // Deployment stats
     betsPlaced: integer("bets_placed").notNull().default(0),
@@ -94,10 +101,12 @@ export const botDailyStats = pgTable(
   },
   (table) => ({
     dateIdx: index("bot_daily_stats_date_idx").on(table.date),
-    // Composite unique: one row per date per mode (simulated vs live)
-    dateSimulatedUnique: uniqueIndex("bot_daily_stats_date_simulated_unique").on(
+    instanceIdx: index("bot_daily_stats_instance_idx").on(table.botInstanceId),
+    // Composite unique: one row per date per mode per bot instance
+    dateSimulatedInstanceUnique: uniqueIndex("bot_daily_stats_date_simulated_instance_unique").on(
       table.date,
       table.isSimulated,
+      table.botInstanceId,
     ),
   }),
 );
@@ -112,6 +121,9 @@ export const botEventLog = pgTable(
   {
     id: serial("id").primaryKey(),
 
+    // Bot instance identifier (supports multiple bot configurations)
+    botInstanceId: text("bot_instance_id").notNull().default("1"),
+
     // Event classification
     eventType: text("event_type").notNull(), // circuit_breaker, error, trade, mode_change, info
     eventName: text("event_name").notNull(), // Specific event name
@@ -125,5 +137,6 @@ export const botEventLog = pgTable(
   (table) => ({
     typeIdx: index("bot_event_log_type_idx").on(table.eventType),
     createdIdx: index("bot_event_log_created_idx").on(table.createdAt),
+    instanceIdx: index("bot_event_log_instance_idx").on(table.botInstanceId),
   }),
 );

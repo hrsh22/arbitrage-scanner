@@ -3,9 +3,11 @@
  *
  * Implements the "Fast Money" strategy that prioritizes
  * capital velocity over raw profit percentage.
+ *
+ * Supports multiple bot instances with different configurations.
  */
 
-import { BOT_CONFIG } from "./config.js";
+import type { BotInstanceConfig } from "./botConfigs.js";
 import type { ScoredOpportunity } from "./types.js";
 import type { NearResolutionOpportunity } from "../types.js";
 import { logger } from "../logger.js";
@@ -15,12 +17,16 @@ import { TradingClient } from "./tradingClient.js";
  * Get the max hours until resolution for a market based on its tags.
  * Uses the lowest matching limit if multiple tags apply.
  */
-function getMaxHoursForTags(tags: string[] | undefined, defaultMaxHours: number): number {
+function getMaxHoursForTags(
+  tags: string[] | undefined,
+  defaultMaxHours: number,
+  categoryTimeLimits: Record<string, number>,
+): number {
   if (!tags || tags.length === 0) return defaultMaxHours;
 
   let minLimit = defaultMaxHours;
   for (const tag of tags) {
-    const categoryLimit = BOT_CONFIG.CATEGORY_TIME_LIMITS[tag];
+    const categoryLimit = categoryTimeLimits[tag];
     if (categoryLimit !== undefined && categoryLimit < minLimit) {
       minLimit = categoryLimit;
     }
@@ -29,47 +35,52 @@ function getMaxHoursForTags(tags: string[] | undefined, defaultMaxHours: number)
 }
 
 /**
- * Check if an opportunity meets our dynamic odds threshold.
+ * Check if an opportunity meets the dynamic odds threshold for a given config.
  *
  * Rules:
- * - 95-99¢: Allowed if resolving within 24 hours (or category-specific limit)
- * - 99-99.5¢: Allowed only if resolving within 3 hours
- * - Above 99.5¢: Skip (too close to $1, no profit)
- * - Crypto markets: Max 3 hours regardless of odds
+ * - Below minOdds: Skip
+ * - Above maxOdds: Skip (too close to $1, no profit)
+ * - Between highOddsThreshold and maxOdds: Only if resolving within maxHoursForHighOdds
+ * - Category-specific time limits apply
  */
 export function isValidOpportunity(
   probability: number,
   hoursUntilClose: number,
+  config: BotInstanceConfig,
   tags?: string[],
 ): { valid: boolean; reason?: string } {
-  // Skip above 99.5¢
-  if (probability >= BOT_CONFIG.MAX_ODDS) {
+  // Skip above maxOdds
+  if (probability >= config.maxOdds) {
     return {
       valid: false,
-      reason: `Odds ${(probability * 100).toFixed(1)}¢ above max ${(BOT_CONFIG.MAX_ODDS * 100).toFixed(1)}¢`,
+      reason: `Odds ${(probability * 100).toFixed(1)}¢ above max ${(config.maxOdds * 100).toFixed(1)}¢`,
     };
   }
 
-  // Skip below 95¢
-  if (probability < BOT_CONFIG.MIN_ODDS) {
+  // Skip below minOdds
+  if (probability < config.minOdds) {
     return {
       valid: false,
-      reason: `Odds ${(probability * 100).toFixed(1)}¢ below min ${(BOT_CONFIG.MIN_ODDS * 100).toFixed(0)}¢`,
+      reason: `Odds ${(probability * 100).toFixed(1)}¢ below min ${(config.minOdds * 100).toFixed(0)}¢`,
     };
   }
 
-  // 99-99.5¢ requires resolving within 3 hours
-  if (probability >= BOT_CONFIG.HIGH_ODDS_THRESHOLD) {
-    if (hoursUntilClose > BOT_CONFIG.MAX_HOURS_FOR_HIGH_ODDS) {
+  // High odds require faster resolution
+  if (probability >= config.highOddsThreshold) {
+    if (hoursUntilClose > config.maxHoursForHighOdds) {
       return {
         valid: false,
-        reason: `99¢+ market needs to resolve within ${BOT_CONFIG.MAX_HOURS_FOR_HIGH_ODDS}h, but resolves in ${hoursUntilClose.toFixed(1)}h`,
+        reason: `${(config.highOddsThreshold * 100).toFixed(0)}¢+ market needs to resolve within ${config.maxHoursForHighOdds}h, but resolves in ${hoursUntilClose.toFixed(1)}h`,
       };
     }
   }
 
   // Category-specific time limit (e.g., crypto = 3 hours max)
-  const effectiveMaxHours = getMaxHoursForTags(tags, BOT_CONFIG.MAX_HOURS_GENERAL);
+  const effectiveMaxHours = getMaxHoursForTags(
+    tags,
+    config.maxHoursGeneral,
+    config.categoryTimeLimits,
+  );
   if (hoursUntilClose > effectiveMaxHours) {
     return {
       valid: false,
@@ -152,9 +163,18 @@ export function calculateMaxInvestmentStats(
 
 export class StrategyEngine {
   private tradingClient: TradingClient;
+  private config: BotInstanceConfig;
 
-  constructor(tradingClient: TradingClient) {
+  constructor(tradingClient: TradingClient, config: BotInstanceConfig) {
     this.tradingClient = tradingClient;
+    this.config = config;
+  }
+
+  /**
+   * Get the configuration this engine uses.
+   */
+  getConfig(): BotInstanceConfig {
+    return this.config;
   }
 
   /**
@@ -185,6 +205,8 @@ export class StrategyEngine {
     scored.sort((a, b) => b.pphScore - a.pphScore);
 
     logger.info("StrategyEngine: Evaluated opportunities", {
+      botId: this.config.id,
+      botName: this.config.name,
       total: opportunities.length,
       valid: scored.filter((s) => s.canBet).length,
       invalid: scored.filter((s) => !s.canBet).length,
@@ -203,7 +225,7 @@ export class StrategyEngine {
     const { likelyOutcome, hoursUntilClose, closesAt, marketId, question } = opp;
     const probability = likelyOutcome.probability;
 
-    // Check if we already have a position
+    // Check if we already have a position (for THIS bot instance only)
     if (existingPositionMarketIds.has(marketId)) {
       const maxStats = calculateMaxInvestmentStats(likelyOutcome.bestAsk, likelyOutcome.liquidity);
       return {
@@ -226,7 +248,7 @@ export class StrategyEngine {
     }
 
     // Validate against strategy rules (including category-specific time limits)
-    const validation = isValidOpportunity(probability, hoursUntilClose, opp.tags);
+    const validation = isValidOpportunity(probability, hoursUntilClose, this.config, opp.tags);
     if (!validation.valid) {
       const maxStats = calculateMaxInvestmentStats(likelyOutcome.bestAsk, likelyOutcome.liquidity);
       return {
@@ -249,7 +271,7 @@ export class StrategyEngine {
     }
 
     // Check liquidity
-    if (likelyOutcome.liquidity < BOT_CONFIG.MIN_LIQUIDITY) {
+    if (likelyOutcome.liquidity < this.config.minLiquidity) {
       const maxStats = calculateMaxInvestmentStats(likelyOutcome.bestAsk, likelyOutcome.liquidity);
       return {
         marketId,
@@ -265,18 +287,16 @@ export class StrategyEngine {
         pphScore: 0,
         expectedProfit: 0,
         canBet: false,
-        skipReason: `Liquidity $${likelyOutcome.liquidity.toFixed(0)} below min $${BOT_CONFIG.MIN_LIQUIDITY}`,
+        skipReason: `Liquidity $${likelyOutcome.liquidity.toFixed(0)} below min $${this.config.minLiquidity}`,
         ...maxStats,
       };
     }
 
     // Use the best ask price from the opportunity data
-    // In a full implementation, we'd fetch the actual order book here
-    // to calculate slippage for our $1 bet
     const buyPrice = likelyOutcome.bestAsk;
 
-    // Skip if buy price is below minimum (95c)
-    if (buyPrice < BOT_CONFIG.MIN_ODDS) {
+    // Skip if buy price is below minimum
+    if (buyPrice < this.config.minOdds) {
       const maxStats = calculateMaxInvestmentStats(buyPrice, likelyOutcome.liquidity);
       return {
         marketId,
@@ -292,13 +312,13 @@ export class StrategyEngine {
         pphScore: 0,
         expectedProfit: 0,
         canBet: false,
-        skipReason: `Buy price ${(buyPrice * 100).toFixed(1)}¢ below min ${(BOT_CONFIG.MIN_ODDS * 100).toFixed(0)}¢`,
+        skipReason: `Buy price ${(buyPrice * 100).toFixed(1)}¢ below min ${(this.config.minOdds * 100).toFixed(0)}¢`,
         ...maxStats,
       };
     }
 
-    // Skip if buy price would give no profit (above 99.5c)
-    if (buyPrice >= BOT_CONFIG.MAX_ODDS) {
+    // Skip if buy price would give no profit (above maxOdds)
+    if (buyPrice >= this.config.maxOdds) {
       const maxStats = calculateMaxInvestmentStats(buyPrice, likelyOutcome.liquidity);
       return {
         marketId,
@@ -314,15 +334,15 @@ export class StrategyEngine {
         pphScore: 0,
         expectedProfit: 0,
         canBet: false,
-        skipReason: `Buy price ${(buyPrice * 100).toFixed(1)}¢ above max ${(BOT_CONFIG.MAX_ODDS * 100).toFixed(1)}¢`,
+        skipReason: `Buy price ${(buyPrice * 100).toFixed(1)}¢ above max ${(this.config.maxOdds * 100).toFixed(1)}¢`,
         ...maxStats,
       };
     }
 
-    // Additional check: if buyPrice is >= 99c, must close within MAX_HOURS_FOR_HIGH_ODDS
+    // Additional check: if buyPrice is >= highOddsThreshold, must close within maxHoursForHighOdds
     if (
-      buyPrice >= BOT_CONFIG.HIGH_ODDS_THRESHOLD &&
-      hoursUntilClose > BOT_CONFIG.MAX_HOURS_FOR_HIGH_ODDS
+      buyPrice >= this.config.highOddsThreshold &&
+      hoursUntilClose > this.config.maxHoursForHighOdds
     ) {
       const maxStats = calculateMaxInvestmentStats(buyPrice, likelyOutcome.liquidity);
       return {
@@ -339,7 +359,7 @@ export class StrategyEngine {
         pphScore: 0,
         expectedProfit: 0,
         canBet: false,
-        skipReason: `Buy price ${(buyPrice * 100).toFixed(1)}¢ ≥99¢ needs to close within ${BOT_CONFIG.MAX_HOURS_FOR_HIGH_ODDS}h`,
+        skipReason: `Buy price ${(buyPrice * 100).toFixed(1)}¢ ≥${(this.config.highOddsThreshold * 100).toFixed(0)}¢ needs to close within ${this.config.maxHoursForHighOdds}h`,
         ...maxStats,
       };
     }

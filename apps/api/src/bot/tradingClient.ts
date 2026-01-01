@@ -3,11 +3,12 @@
  *
  * Handles authentication, order placement, and order book queries.
  * Uses Gnosis Safe (signature type 2) for Polymarket proxy wallets.
+ *
+ * Supports multiple bot instances by accepting wallet credentials as env var names.
  */
 
 import { ClobClient, Side, AssetType } from "@polymarket/clob-client";
 import { Wallet, ethers } from "ethers";
-import { BOT_CONFIG } from "./config.js";
 import type { OrderBook, TradeResult, WalletStatus } from "./types.js";
 import { logger } from "../logger.js";
 
@@ -29,27 +30,60 @@ export class TradingClient {
   private funderAddress: string | null = null;
   private initialized = false;
 
+  // Wallet credential env var names
+  private privateKeyEnv: string;
+  private funderAddressEnv: string | undefined;
+
+  // Minimum wallet reserve for readiness check (can be overridden per-bot)
+  private minWalletReserve: number = 10;
+
   /**
-   * Initialize the trading client with a private key.
-   * This derives API credentials from the private key.
-   * @param privateKey - The EOA private key
-   * @param funderAddress - Optional proxy wallet address (for Polymarket web users)
+   * Create a new trading client.
+   *
+   * @param privateKeyEnv - Env var name for private key (e.g., "POLYMARKET_PRIVATE_KEY")
+   * @param funderAddressEnv - Env var name for funder address (e.g., "POLYMARKET_FUNDER_ADDRESS")
+   * @param minWalletReserve - Minimum wallet reserve for readiness checks
    */
-  async initialize(privateKey: string, funderAddress?: string): Promise<void> {
-    if (!privateKey || !privateKey.startsWith("0x")) {
-      throw new Error("Invalid private key format. Must start with 0x");
+  constructor(
+    privateKeyEnv: string = "POLYMARKET_PRIVATE_KEY",
+    funderAddressEnv?: string,
+    minWalletReserve: number = 10,
+  ) {
+    this.privateKeyEnv = privateKeyEnv;
+    this.funderAddressEnv = funderAddressEnv;
+    this.minWalletReserve = minWalletReserve;
+  }
+
+  /**
+   * Initialize the trading client.
+   * Reads credentials from environment variables and sets up the CLOB client.
+   */
+  async initialize(): Promise<void> {
+    const privateKey = process.env[this.privateKeyEnv];
+
+    if (!privateKey) {
+      throw new Error(`Missing env var: ${this.privateKeyEnv}`);
+    }
+
+    if (!privateKey.startsWith("0x")) {
+      throw new Error(`Invalid private key format in ${this.privateKeyEnv}. Must start with 0x`);
     }
 
     try {
       // Create wallet from private key
       this.wallet = new Wallet(privateKey);
       const walletAddress = this.wallet.address;
-      this.funderAddress = funderAddress || process.env.POLYMARKET_FUNDER_ADDRESS || null;
+
+      // Get funder address from env var if specified
+      this.funderAddress = this.funderAddressEnv
+        ? (process.env[this.funderAddressEnv] ?? null)
+        : null;
 
       logger.info("TradingClient: Initializing with wallet", {
         address: walletAddress,
         funderAddress: this.funderAddress,
         signatureType: SIGNATURE_TYPE,
+        privateKeyEnv: this.privateKeyEnv,
       });
 
       // Create initial client without API creds (for deriving them)
@@ -91,6 +125,7 @@ export class TradingClient {
     } catch (error) {
       logger.error("TradingClient: Initialization failed", {
         error: (error as Error).message,
+        privateKeyEnv: this.privateKeyEnv,
       });
       throw error;
     }
@@ -108,6 +143,13 @@ export class TradingClient {
    */
   getWalletAddress(): string | null {
     return this.wallet?.address ?? null;
+  }
+
+  /**
+   * Get funder address (proxy wallet).
+   */
+  getFunderAddress(): string | null {
+    return this.funderAddress;
   }
 
   /**
@@ -141,9 +183,9 @@ export class TradingClient {
       const allowance = parseFloat(balanceAllowance.allowance ?? "0");
       allowanceOk = allowance > 0;
 
-      if (usdcBalance < BOT_CONFIG.MIN_WALLET_RESERVE) {
+      if (usdcBalance < this.minWalletReserve) {
         issues.push(
-          `USDC balance ($${usdcBalance.toFixed(2)}) below minimum reserve ($${BOT_CONFIG.MIN_WALLET_RESERVE})`,
+          `USDC balance ($${usdcBalance.toFixed(2)}) below minimum reserve ($${this.minWalletReserve})`,
         );
       }
 
@@ -677,12 +719,29 @@ export class TradingClient {
   }
 }
 
-// Singleton instance
-let tradingClientInstance: TradingClient | null = null;
+// Cache of trading client instances by wallet env var name
+const tradingClientInstances: Map<string, TradingClient> = new Map();
 
-export function getTradingClient(): TradingClient {
-  if (!tradingClientInstance) {
-    tradingClientInstance = new TradingClient();
+/**
+ * Get a trading client for a specific wallet.
+ * Uses caching to return the same instance for the same wallet.
+ *
+ * @param privateKeyEnv - Env var name for private key
+ * @param funderAddressEnv - Env var name for funder address
+ * @param minWalletReserve - Minimum wallet reserve
+ */
+export function getTradingClient(
+  privateKeyEnv: string = "POLYMARKET_PRIVATE_KEY",
+  funderAddressEnv?: string,
+  minWalletReserve: number = 10,
+): TradingClient {
+  const cacheKey = `${privateKeyEnv}:${funderAddressEnv ?? ""}`;
+
+  let instance = tradingClientInstances.get(cacheKey);
+  if (!instance) {
+    instance = new TradingClient(privateKeyEnv, funderAddressEnv, minWalletReserve);
+    tradingClientInstances.set(cacheKey, instance);
   }
-  return tradingClientInstance;
+
+  return instance;
 }
