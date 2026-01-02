@@ -6,7 +6,6 @@
 
 import { Router } from "express";
 import { getBotManager } from "./botManager.js";
-import { getBotConfig, getEnabledBotConfigs } from "./config/index.js";
 import { getBotRepository } from "./repository.js";
 import { logger } from "../logger.js";
 

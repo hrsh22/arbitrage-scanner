@@ -121,7 +121,7 @@ PPH = (Profit if Win) / (Hours Until Close)
 
 - `betSize: 5.00` - Fixed $5 per bet (configurable per bot)
 - `dailyBudget: Infinity` - No limit by default (configurable per bot)
-- `minWalletReserve: 10` - Always keep $10 in wallet
+- `minWalletReserve: 0` - No reserve by default
 - `maxDailyLoss: Infinity` - No limit by default (configurable per bot)
 
 ### Multi-Bot Configuration
@@ -136,72 +136,49 @@ Bot configurations are defined in `apps/api/src/bot/config/`:
 
 ```
 src/bot/config/
-├── index.ts          # Main exports + helper functions + defineBotConfig()
-├── types.ts          # BotInstanceConfig interface
+├── index.ts          # Main exports + helper functions
+├── types.ts          # BotInstanceConfig interface (all fields required)
 └── bots/
     ├── index.ts      # Aggregates all bot configs + validation
-    └── bot1-default.ts  # Bot 1 (SOURCE OF TRUTH for all defaults)
+    ├── bot1-default.ts  # Bot 1 configuration
+    ├── bot2-aggressive.ts  # Bot 2: Lower odds, fast resolution
+    └── bot3-safe.ts     # Bot 3: High odds, very fast resolution
 ```
 
-**bot1-default.ts is the source of truth** - all default values are defined there.
-Other bots use `defineBotConfig()` which inherits from bot1's values.
+**Each bot config is fully explicit** - no inheritance between bots.
+All fields in `BotInstanceConfig` must be specified in each bot file.
 
 To add a new bot:
 
 1. Create `bot{N}-{name}.ts` in `config/bots/`
-2. Import and add to `BOT_CONFIGS` array in `config/bots/index.ts`
-3. Set environment variables for the wallet
+2. Copy all fields from an existing bot and modify as needed
+3. Import and add to `BOT_CONFIGS` array in `config/bots/index.ts`
+4. Set environment variables for the wallet
 
 Example bot config:
 
 ```typescript
 // config/bots/bot2-aggressive.ts
-import { defineBotConfig } from "../index.js";
+import { env } from "../../../env.js";
+import type { BotInstanceConfig, BotMode } from "../types.js";
 
-export default defineBotConfig({
+const config: BotInstanceConfig = {
   id: 2,
   name: "aggressive",
+  enabled: false,
   walletPrivateKeyEnv: "WALLET_2_PRIVATE_KEY",
   walletFunderAddressEnv: "WALLET_2_FUNDER_ADDRESS",
-  // Only specify overrides from bot1-default
+  betSize: 5.0,
+  dailyBudget: Infinity,
   minOdds: 0.9,
-  maxOdds: 0.95,
-  betSize: 10.0,
-});
+  maxOdds: 0.995,
+  maxHoursGeneral: 3,
+  // ... all other required fields
+  defaultMode: (env.BOT_MODE || "simulation") as BotMode,
+};
+
+export default config;
 ```
-
-src/bot/config/
-├── index.ts # Main exports + helper functions
-├── types.ts # BotInstanceConfig interface
-├── defaults.ts # Default values for all bots
-└── bots/
-├── index.ts # Aggregates all bot configs
-└── bot1-default.ts # Bot 1 configuration
-
-````
-
-To add a new bot:
-
-1. Create `bot{N}-{name}.ts` in `config/bots/`
-2. Import and add to `BOT_CONFIGS` array in `config/bots/index.ts`
-3. Set environment variables for the wallet
-
-Example bot config:
-
-```typescript
-// config/bots/bot2-aggressive.ts
-import { defineBotConfig } from "../defaults.js";
-
-export default defineBotConfig({
-  id: 2,
-  name: "aggressive",
-  walletPrivateKeyEnv: "WALLET_2_PRIVATE_KEY",
-  walletFunderAddressEnv: "WALLET_2_FUNDER_ADDRESS",
-  minOdds: 0.9,
-  maxOdds: 0.95,
-  betSize: 10.0,
-});
-````
 
 ### API Clients
 

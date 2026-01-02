@@ -1,8 +1,10 @@
 /**
- * Bot 1: Default
+ * Bot 2: Aggressive
  *
- * Primary trading bot with standard configuration.
- * All values are explicitly specified - no inheritance.
+ * Lower odds, fast resolution strategy.
+ * Targets 90-99.5¢ markets resolving within 3 hours.
+ *
+ * Higher risk, higher reward per bet.
  */
 
 import { env } from "../../../env.js";
@@ -10,29 +12,31 @@ import type { BotInstanceConfig, BotMode } from "../types.js";
 
 const config: BotInstanceConfig = {
   // Identity
-  id: 1,
-  name: "default",
-  enabled: true,
+  id: 2,
+  name: "aggressive",
+  enabled: false,
 
-  // Wallet
-  walletPrivateKeyEnv: "POLYMARKET_PRIVATE_KEY",
-  walletFunderAddressEnv: "POLYMARKET_FUNDER_ADDRESS",
+  // Wallet (separate from bot1)
+  walletPrivateKeyEnv: "WALLET_2_PRIVATE_KEY",
+  walletFunderAddressEnv: "WALLET_2_FUNDER_ADDRESS",
 
   // Betting
   betSize: 5.0,
   dailyBudget: Infinity,
 
-  // Market selection
-  minOdds: 0.95,
+  // Market selection: Lower odds, fast resolution
+  minOdds: 0.9,
   maxOdds: 0.995,
-  maxHoursGeneral: 24,
-  maxHoursForHighOdds: 2,
-  highOddsThreshold: 0.99,
+  maxHoursGeneral: 3,
   minLiquidity: 50,
+
+  // Disable high-odds special rule (set threshold above maxOdds)
+  highOddsThreshold: 1.0,
+  maxHoursForHighOdds: 3,
 
   // Category-specific time limits
   categoryTimeLimits: {
-    crypto: 3, // Crypto markets: high volatility, 3 hours max
+    crypto: 1, // Crypto: high volatility, 1 hour max for aggressive
   },
 
   // Safety limits

@@ -2,20 +2,22 @@
  * Bot Configuration Types
  *
  * Type definitions for bot instance configurations.
+ * Each bot must specify ALL fields - no inheritance.
  */
 
 export type BotMode = "simulation" | "live";
 
 /**
  * Configuration for a single bot instance.
+ * All fields are required - each bot config must be fully explicit.
  */
 export interface BotInstanceConfig {
-  // Identity (required)
+  // Identity
   id: number;
   name: string;
   enabled: boolean;
 
-  // Wallet credentials - env var names, not actual values (required)
+  // Wallet credentials - env var names, not actual values
   walletPrivateKeyEnv: string;
   walletFunderAddressEnv: string;
 
@@ -49,16 +51,3 @@ export interface BotInstanceConfig {
   // Mode
   defaultMode: BotMode;
 }
-
-/**
- * Partial config for defining a bot.
- * Only id, name, and wallet env vars are required.
- */
-export type BotConfigInput = {
-  id: number;
-  name: string;
-  walletPrivateKeyEnv: string;
-  walletFunderAddressEnv: string;
-} & Partial<
-  Omit<BotInstanceConfig, "id" | "name" | "walletPrivateKeyEnv" | "walletFunderAddressEnv">
->;
