@@ -9,6 +9,9 @@ import {
   CrossPlatformHistoryResponse,
   CrossPlatformStats,
   CrossPlatformSnapshotsResponse,
+  PositionAnalyticsOptions,
+  PositionAnalyticsResponse,
+  SinglePositionAnalyticsResponse,
 } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
@@ -162,6 +165,51 @@ export async function fetchCrossPlatformSnapshots(
   });
   if (!res.ok) {
     throw new Error(`Failed to load snapshots (${res.status})`);
+  }
+  return res.json();
+}
+
+const buildPositionAnalyticsQuery = (options: PositionAnalyticsOptions): string => {
+  const params = new URLSearchParams();
+  if (options.fidelityMinutes) params.set("fidelity", options.fidelityMinutes.toString());
+  if (options.stopLossThresholds?.length) {
+    params.set("stopLossThresholds", options.stopLossThresholds.join(","));
+  }
+  if (options.timeWindows?.length) {
+    params.set("timeWindows", options.timeWindows.join(","));
+  }
+  if (options.limit) params.set("limit", options.limit.toString());
+  if (options.status) params.set("status", options.status);
+  return params.toString();
+};
+
+export async function fetchPositionAnalytics(
+  options: PositionAnalyticsOptions = {},
+  signal?: AbortSignal,
+): Promise<PositionAnalyticsResponse> {
+  const qs = buildPositionAnalyticsQuery(options);
+  const res = await fetch(makeUrl("/position-analytics", qs), {
+    signal,
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to load position analytics (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function fetchSinglePositionAnalytics(
+  positionId: number,
+  options: PositionAnalyticsOptions = {},
+  signal?: AbortSignal,
+): Promise<SinglePositionAnalyticsResponse> {
+  const qs = buildPositionAnalyticsQuery(options);
+  const res = await fetch(makeUrl(`/position-analytics/${positionId}`, qs), {
+    signal,
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to load position analytics (${res.status})`);
   }
   return res.json();
 }
