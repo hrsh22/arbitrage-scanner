@@ -309,7 +309,8 @@ function simulateStopLoss(
       afterTrigger.length > 0 ? Math.max(...afterTrigger.map((p) => p.price)) : triggerPoint.price;
 
     const shares = cost / entryPrice;
-    const valueIfSold = shares * triggerPoint.price;
+    // Ideal execution: sell at stopPrice, not the actual gapped-down triggerPoint.price
+    const valueIfSold = shares * stopPrice;
     const profitLossIfSold = valueIfSold - cost;
     const recoveredAfterTrigger = actualPnL > profitLossIfSold;
 
@@ -385,7 +386,7 @@ function simulateHedging(
     const triggerPoint = relevantHistory[triggerIndex]!;
     let oppPrice = findClosestOppositePrice(oppositeHistory, triggerPoint.timestamp);
 
-    const theoreticalOppPrice = 1 - triggerPoint.price;
+    const theoreticalOppPrice = 1 - triggerPrice;
     if (oppPrice !== null) {
       if (oppPrice > theoreticalOppPrice + 0.15) {
         oppPrice = theoreticalOppPrice + 0.05;
