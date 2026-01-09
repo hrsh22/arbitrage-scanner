@@ -2,7 +2,6 @@ import {
   fetchPositions,
   fetchActivity,
   fetchPriceHistory,
-  fetchMarketTags,
   type PolymarketPosition,
   type PolymarketActivity,
 } from "./polymarket-api";
@@ -16,6 +15,10 @@ import type {
   HedgeStrategy,
   TimeWindowAnalysis,
   OppositeOutcomeAnalysis,
+  CategoryAnalysis,
+  CategoryStopLossAnalysis,
+  CategoryHedgingAnalysis,
+  BestStrategyRecommendation,
 } from "./types";
 
 export interface AnalyticsOptions {
@@ -33,6 +36,41 @@ const DEFAULT_OPTIONS: AnalyticsOptions = {
   limit: 1000,
   status: "all",
 };
+
+export function normalizeToCategory(tags: string[]): string {
+  const text = tags.join(" ").toLowerCase();
+
+  if (text.includes("equities") || text.includes("stocks")) return "Stocks";
+  if (text.includes("crypto") || text.includes("bitcoin") || text.includes("ethereum"))
+    return "Crypto";
+  if (
+    text.includes("sports") ||
+    text.includes("nfl") ||
+    text.includes("nba") ||
+    text.includes("tennis") ||
+    text.includes("soccer") ||
+    text.includes("games")
+  )
+    return "Sports";
+  if (
+    text.includes("politics") ||
+    text.includes("elections") ||
+    text.includes("trump") ||
+    text.includes("government")
+  )
+    return "Politics";
+  if (text.includes("weather") || text.includes("temperature") || text.includes("climate"))
+    return "Weather";
+  if (text.includes("ai") || text.includes("tech") || text.includes("technology"))
+    return "Tech & AI";
+  if (text.includes("entertainment") || text.includes("movies") || text.includes("box office"))
+    return "Entertainment";
+  if (text.includes("social") || text.includes("twitter") || text.includes("elon"))
+    return "Social Media";
+
+  if (tags.length > 0) return tags[0]!;
+  return "Unknown";
+}
 
 interface ReconstructedPosition {
   tokenId: string;
@@ -472,7 +510,7 @@ async function analyzePosition(
   const MAX_RANGE_SECONDS = 7 * 24 * 60 * 60;
   const adjustedStartTs = Math.max(entryTs, endTs - MAX_RANGE_SECONDS);
 
-  const [priceHistory, oppositeHistory, tags] = await Promise.all([
+  const [priceHistory, oppositeHistory] = await Promise.all([
     fetchPriceHistory(position.tokenId, adjustedStartTs, endTs, options.fidelityMinutes, signal),
     position.oppositeAsset
       ? fetchPriceHistory(
@@ -483,8 +521,9 @@ async function analyzePosition(
           signal,
         )
       : Promise.resolve([]),
-    position.eventSlug ? fetchMarketTags(position.eventSlug, signal) : Promise.resolve([]),
   ]);
+
+  const normalizedCategory = normalizeToCategory([]);
 
   if (priceHistory.length === 0) {
     const positionInfo: PositionInfo = {
@@ -492,6 +531,7 @@ async function analyzePosition(
       marketId: position.conditionId,
       marketQuestion: position.title,
       marketSlug: position.slug,
+      eventSlug: position.eventSlug || undefined,
       tokenId: position.tokenId,
       outcome: position.outcome,
       entryPrice: position.entryPrice,
@@ -542,6 +582,7 @@ async function analyzePosition(
       category: {
         outcome: position.status,
         tags: [],
+        normalized: normalizeToCategory([]),
       },
       analyzedAt: new Date().toISOString(),
       fidelityMinutes: options.fidelityMinutes,
@@ -600,6 +641,7 @@ async function analyzePosition(
     marketId: position.conditionId,
     marketQuestion: position.title,
     marketSlug: position.slug,
+    eventSlug: position.eventSlug || undefined,
     tokenId: position.tokenId,
     outcome: position.outcome,
     entryPrice: position.entryPrice,
@@ -629,7 +671,8 @@ async function analyzePosition(
     hedgingSimulations,
     category: {
       outcome: position.status,
-      tags,
+      tags: [],
+      normalized: normalizedCategory,
     },
     analyzedAt: new Date().toISOString(),
     fidelityMinutes: options.fidelityMinutes,
@@ -644,6 +687,167 @@ function hashTokenId(tokenId: string): number {
     hash = hash & hash;
   }
   return Math.abs(hash);
+}
+
+export function calculateCategoryAnalysis(
+  analytics: PositionAnalytics[],
+  stopLossThresholds: number[],
+): CategoryAnalysis[] {
+  const categoryMap = new Map<string, PositionAnalytics[]>();
+
+  for (const a of analytics) {
+    const cat = a.category.normalized;
+    if (!categoryMap.has(cat)) {
+      categoryMap.set(cat, []);
+    }
+    categoryMap.get(cat)!.push(a);
+  }
+
+  const results: CategoryAnalysis[] = [];
+
+  for (const [name, positions] of categoryMap) {
+    const wonCount = positions.filter((p) => p.category.outcome === "won").length;
+    const lostCount = positions.filter((p) => p.category.outcome === "lost").length;
+    const openCount = positions.filter((p) => p.category.outcome === "open").length;
+    const resolved = wonCount + lostCount;
+    const winRate = resolved > 0 ? (wonCount / resolved) * 100 : 0;
+    const totalPnL = positions.reduce((sum, p) => sum + (p.position.profitLoss ?? 0), 0);
+    const avgPnL = positions.length > 0 ? totalPnL / positions.length : 0;
+    const avgDrawdown =
+      positions.length > 0
+        ? positions.reduce((sum, p) => sum + p.maxDrawdownPercent, 0) / positions.length
+        : 0;
+
+    const stopLossAnalysis: CategoryStopLossAnalysis[] = stopLossThresholds.map((threshold) => {
+      let triggered = 0;
+      let recovered = 0;
+      let netImpact = 0;
+
+      for (const p of positions) {
+        const sim = p.stopLossSimulations.find((s) => s.threshold === threshold);
+        if (sim?.triggered) {
+          triggered++;
+          if (sim.recoveredAfterTrigger) recovered++;
+          if (sim.profitLossIfSold !== null && sim.profitLossIfHeld !== null) {
+            netImpact += sim.profitLossIfSold - sim.profitLossIfHeld;
+          }
+        }
+      }
+
+      return {
+        threshold,
+        triggered,
+        recovered,
+        netImpact,
+        avgImpactPerPosition: triggered > 0 ? netImpact / triggered : 0,
+      };
+    });
+
+    const hedgingAnalysis: CategoryHedgingAnalysis[] = stopLossThresholds.map((threshold) => {
+      let triggered = 0;
+      let fullLockNetImpact = 0;
+      let doubleOppositeNetImpact = 0;
+
+      for (const p of positions) {
+        const sim = p.hedgingSimulations.find((s) => s.threshold === threshold);
+        if (sim?.triggered && sim.strategies.length > 0) {
+          triggered++;
+          const actualPnL = p.position.profitLoss ?? 0;
+
+          for (const strat of sim.strategies) {
+            if (strat.actualPnl !== null) {
+              if (strat.name === "fullLockIn") {
+                fullLockNetImpact += strat.actualPnl - actualPnL;
+              } else if (strat.name === "doubleOpposite") {
+                doubleOppositeNetImpact += strat.actualPnl - actualPnL;
+              }
+            }
+          }
+        }
+      }
+
+      return {
+        threshold,
+        triggered,
+        fullLockNetImpact,
+        doubleOppositeNetImpact,
+      };
+    });
+
+    const bestStrategy = determineBestStrategy(stopLossAnalysis, hedgingAnalysis);
+
+    results.push({
+      name,
+      positions: positions.length,
+      wonCount,
+      lostCount,
+      openCount,
+      winRate,
+      totalPnL,
+      avgPnL,
+      avgDrawdown,
+      stopLossAnalysis,
+      hedgingAnalysis,
+      bestStrategy,
+    });
+  }
+
+  return results.sort((a, b) => b.positions - a.positions);
+}
+
+function determineBestStrategy(
+  stopLossAnalysis: CategoryStopLossAnalysis[],
+  hedgingAnalysis: CategoryHedgingAnalysis[],
+): BestStrategyRecommendation {
+  let bestType: "none" | "stop-loss" | "hedge-full" | "hedge-double" = "none";
+  let bestThreshold: number | null = null;
+  let bestImprovement = 0;
+
+  for (const sl of stopLossAnalysis) {
+    if (sl.netImpact > bestImprovement) {
+      bestImprovement = sl.netImpact;
+      bestType = "stop-loss";
+      bestThreshold = sl.threshold;
+    }
+  }
+
+  for (const h of hedgingAnalysis) {
+    if (h.fullLockNetImpact > bestImprovement) {
+      bestImprovement = h.fullLockNetImpact;
+      bestType = "hedge-full";
+      bestThreshold = h.threshold;
+    } else if (h.fullLockNetImpact === bestImprovement && bestImprovement > 0) {
+      bestType = "hedge-full";
+      bestThreshold = h.threshold;
+    }
+
+    if (h.doubleOppositeNetImpact > bestImprovement) {
+      bestImprovement = h.doubleOppositeNetImpact;
+      bestType = "hedge-double";
+      bestThreshold = h.threshold;
+    } else if (h.doubleOppositeNetImpact === bestImprovement && bestImprovement > 0) {
+      bestType = "hedge-double";
+      bestThreshold = h.threshold;
+    }
+  }
+
+  let reason = "";
+  if (bestType === "none") {
+    reason = "No strategy improves P/L for this category";
+  } else if (bestType === "stop-loss") {
+    reason = `Stop-loss at ${bestThreshold}% would have saved $${bestImprovement.toFixed(2)}`;
+  } else if (bestType === "hedge-full") {
+    reason = `Full lock-in hedge at ${bestThreshold}% drop would have saved $${bestImprovement.toFixed(2)}`;
+  } else if (bestType === "hedge-double") {
+    reason = `2x opposite hedge at ${bestThreshold}% drop would have saved $${bestImprovement.toFixed(2)}`;
+  }
+
+  return {
+    type: bestType,
+    threshold: bestThreshold,
+    expectedImprovement: bestImprovement,
+    reason,
+  };
 }
 
 function calculateSummary(
@@ -668,6 +872,7 @@ function calculateSummary(
       })),
       byOutcome: [],
       byTags: [],
+      byCategory: [],
     };
   }
 
@@ -748,6 +953,8 @@ function calculateSummary(
     };
   });
 
+  const byCategory = calculateCategoryAnalysis(analytics, stopLossThresholds);
+
   return {
     totalPositions: analytics.length,
     wonCount,
@@ -760,6 +967,7 @@ function calculateSummary(
     stopLossImpact,
     byOutcome,
     byTags: byTags.sort((a, b) => b.count - a.count).slice(0, 20),
+    byCategory,
   };
 }
 

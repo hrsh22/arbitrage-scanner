@@ -119,13 +119,36 @@ export async function fetchPriceHistory(
   }));
 }
 
-export async function fetchMarketTags(
-  _eventSlug: string,
-  _signal?: AbortSignal,
-): Promise<string[]> {
-  return [];
-}
-
 export const DEFAULT_WALLET = "0xabe50375A4064C5d5E0BE39063082e8eeF144097";
 
 export const WALLET_OPTIONS = [{ label: "Default", value: DEFAULT_WALLET }] as const;
+
+export async function fetchEventTags(
+  eventSlugs: string[],
+  signal?: AbortSignal,
+): Promise<Record<string, string[]>> {
+  if (eventSlugs.length === 0) return {};
+
+  const uniqueSlugs = [...new Set(eventSlugs.filter(Boolean))];
+  const batchSize = 20;
+  const results: Record<string, string[]> = {};
+
+  for (let i = 0; i < uniqueSlugs.length; i += batchSize) {
+    const batch = uniqueSlugs.slice(i, i + batchSize);
+    const url = `/api/gamma/events?slugs=${batch.join(",")}`;
+
+    try {
+      const response = await fetch(url, { signal });
+      if (response.ok) {
+        const data = (await response.json()) as { events: Record<string, string[]> };
+        Object.assign(results, data.events);
+      }
+    } catch {
+      batch.forEach((slug) => {
+        results[slug] = [];
+      });
+    }
+  }
+
+  return results;
+}

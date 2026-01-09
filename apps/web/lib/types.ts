@@ -272,6 +272,7 @@ export type PositionInfo = {
   marketId: string;
   marketQuestion: string;
   marketSlug?: string;
+  eventSlug?: string;
   tokenId: string;
   outcome: string;
   entryPrice: number;
@@ -304,6 +305,7 @@ export type PositionAnalytics = {
   category: {
     outcome: "won" | "lost" | "open";
     tags: string[];
+    normalized: string;
   };
   analyzedAt: string;
   fidelityMinutes: number;
@@ -343,4 +345,42 @@ export type AnalyticsSummary = {
   stopLossImpact: StopLossImpact[];
   byOutcome: OutcomeBreakdown[];
   byTags: TagBreakdown[];
+  byCategory: CategoryAnalysis[];
+};
+
+export type CategoryStopLossAnalysis = {
+  threshold: number;
+  triggered: number;
+  recovered: number;
+  netImpact: number;
+  avgImpactPerPosition: number;
+};
+
+export type CategoryHedgingAnalysis = {
+  threshold: number;
+  triggered: number;
+  fullLockNetImpact: number;
+  doubleOppositeNetImpact: number;
+};
+
+export type BestStrategyRecommendation = {
+  type: "none" | "stop-loss" | "hedge-full" | "hedge-double";
+  threshold: number | null;
+  expectedImprovement: number;
+  reason: string;
+};
+
+export type CategoryAnalysis = {
+  name: string;
+  positions: number;
+  wonCount: number;
+  lostCount: number;
+  openCount: number;
+  winRate: number;
+  totalPnL: number;
+  avgPnL: number;
+  avgDrawdown: number;
+  stopLossAnalysis: CategoryStopLossAnalysis[];
+  hedgingAnalysis: CategoryHedgingAnalysis[];
+  bestStrategy: BestStrategyRecommendation;
 };

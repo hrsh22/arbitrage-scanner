@@ -2,9 +2,18 @@
 
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Header } from "@/components/ui/header";
-import { getPositionAnalyticsFromApi } from "@/lib/position-analytics-service";
-import { DEFAULT_WALLET, WALLET_OPTIONS } from "@/lib/polymarket-api";
-import { PositionAnalytics, AnalyticsSummary, HedgingSimulation } from "@/lib/types";
+import {
+  getPositionAnalyticsFromApi,
+  calculateCategoryAnalysis,
+  normalizeToCategory,
+} from "@/lib/position-analytics-service";
+import { DEFAULT_WALLET, WALLET_OPTIONS, fetchEventTags } from "@/lib/polymarket-api";
+import {
+  PositionAnalytics,
+  AnalyticsSummary,
+  HedgingSimulation,
+  CategoryAnalysis,
+} from "@/lib/types";
 import {
   RefreshCw,
   TrendingDown,
@@ -21,6 +30,7 @@ import {
   Loader2,
   Info,
   Shield,
+  Tag,
 } from "lucide-react";
 import { Button } from "@workspace/ui/components/button";
 import {
@@ -493,6 +503,395 @@ function HedgingSimulationTable({ rows }: { rows: HedgingSummaryRow[] }) {
   );
 }
 
+function CategoryAnalysisSection({
+  categories,
+  loading,
+  onLoad,
+}: {
+  categories: CategoryAnalysis[] | null;
+  loading: boolean;
+  onLoad: () => void;
+}) {
+  const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground mr-2" />
+        <span className="text-sm text-muted-foreground">Loading category analysis...</span>
+      </div>
+    );
+  }
+
+  if (!categories) {
+    return (
+      <div className="flex flex-col items-center justify-center py-8 space-y-4">
+        <p className="text-sm text-muted-foreground">
+          Category analysis requires fetching market tags from Polymarket API.
+        </p>
+        <Button onClick={onLoad} variant="outline" size="sm">
+          <Tag className="h-4 w-4 mr-2" />
+          Load Category Analysis
+        </Button>
+      </div>
+    );
+  }
+
+  if (categories.length === 0) {
+    return <p className="text-sm text-muted-foreground">No category data available</p>;
+  }
+
+  const formatMoney = (val: number) => {
+    const prefix = val >= 0 ? (val > 0 ? "+" : "") : "";
+    return `${prefix}$${val.toFixed(2)}`;
+  };
+
+  const getBadgeColor = (type: string) => {
+    switch (type) {
+      case "stop-loss":
+        return "bg-orange-500/10 text-orange-500";
+      case "hedge-full":
+        return "bg-blue-500/10 text-blue-500";
+      case "hedge-double":
+        return "bg-purple-500/10 text-purple-500";
+      default:
+        return "bg-muted text-muted-foreground";
+    }
+  };
+
+  const getStrategyLabel = (type: string) => {
+    switch (type) {
+      case "stop-loss":
+        return "Stop-Loss";
+      case "hedge-full":
+        return "Hedge (Full)";
+      case "hedge-double":
+        return "Hedge (2x)";
+      default:
+        return "None";
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-end">
+        <Button onClick={onLoad} variant="ghost" size="sm">
+          <RefreshCw className="h-4 w-4 mr-2" />
+          Refresh
+        </Button>
+      </div>
+      <div className="rounded-md border">
+        <div className="w-full overflow-auto">
+          <table className="w-full caption-bottom text-sm">
+            <thead className="[&_tr]:border-b">
+              <tr className="border-b transition-colors bg-muted/30">
+                <th className="h-10 px-3 text-left align-middle font-medium text-muted-foreground w-8"></th>
+                <th className="h-10 px-3 text-left align-middle font-medium text-muted-foreground">
+                  <div className="flex items-center gap-1">
+                    Category
+                    <InfoTooltip text="Market category based on tags. Click row to see detailed strategy analysis." />
+                  </div>
+                </th>
+                <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
+                  Positions
+                </th>
+                <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
+                  <div className="flex items-center justify-end gap-1">
+                    Win Rate
+                    <InfoTooltip text="Percentage of resolved positions that won." />
+                  </div>
+                </th>
+                <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
+                  <div className="flex items-center justify-end gap-1">
+                    Total P/L
+                    <InfoTooltip text="Sum of profit/loss for all positions in this category." />
+                  </div>
+                </th>
+                <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
+                  <div className="flex items-center justify-end gap-1">
+                    Avg Drawdown
+                    <InfoTooltip text="Average maximum price drop experienced." />
+                  </div>
+                </th>
+                <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
+                  <div className="flex items-center justify-end gap-1">
+                    Best Strategy
+                    <InfoTooltip text="Strategy that would have produced the best improvement. Ties favor hedging." />
+                  </div>
+                </th>
+                <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
+                  <div className="flex items-center justify-end gap-1">
+                    Improvement
+                    <InfoTooltip text="Expected P/L improvement if best strategy was used." />
+                  </div>
+                </th>
+              </tr>
+            </thead>
+            <tbody className="[&_tr:last-child]:border-0">
+              {categories.map((cat) => {
+                const isExpanded = expandedCategory === cat.name;
+                return (
+                  <React.Fragment key={cat.name}>
+                    <tr
+                      className="border-b transition-colors hover:bg-muted/50 cursor-pointer"
+                      onClick={() => setExpandedCategory(isExpanded ? null : cat.name)}
+                    >
+                      <td className="p-2 align-middle text-center">
+                        {isExpanded ? (
+                          <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                        ) : (
+                          <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                        )}
+                      </td>
+                      <td className="p-3 align-middle font-medium">{cat.name}</td>
+                      <td className="p-3 align-middle text-right">
+                        <span className="text-muted-foreground text-xs">
+                          {cat.wonCount}W / {cat.lostCount}L / {cat.openCount}O
+                        </span>
+                        <span className="ml-2 font-medium">{cat.positions}</span>
+                      </td>
+                      <td className="p-3 align-middle text-right">
+                        <span
+                          className={cn(
+                            "font-medium",
+                            cat.winRate >= 50 ? "text-emerald-500" : "text-rose-500",
+                          )}
+                        >
+                          {cat.winRate.toFixed(1)}%
+                        </span>
+                      </td>
+                      <td
+                        className={cn(
+                          "p-3 align-middle text-right font-mono",
+                          cat.totalPnL >= 0 ? "text-emerald-500" : "text-rose-500",
+                        )}
+                      >
+                        {formatMoney(cat.totalPnL)}
+                      </td>
+                      <td className="p-3 align-middle text-right text-rose-500">
+                        {cat.avgDrawdown.toFixed(1)}%
+                      </td>
+                      <td className="p-3 align-middle text-right">
+                        <Badge variant="secondary" className={getBadgeColor(cat.bestStrategy.type)}>
+                          {getStrategyLabel(cat.bestStrategy.type)}
+                          {cat.bestStrategy.threshold !== null &&
+                            ` @${cat.bestStrategy.threshold}%`}
+                        </Badge>
+                      </td>
+                      <td
+                        className={cn(
+                          "p-3 align-middle text-right font-mono font-bold",
+                          cat.bestStrategy.expectedImprovement > 0
+                            ? "text-emerald-500"
+                            : "text-muted-foreground",
+                        )}
+                      >
+                        {formatMoney(cat.bestStrategy.expectedImprovement)}
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr className="bg-muted/20">
+                        <td colSpan={8} className="p-4">
+                          <CategoryDetailCard category={cat} />
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CategoryDetailCard({ category }: { category: CategoryAnalysis }) {
+  const chartData = category.stopLossAnalysis.map((sl, idx) => ({
+    threshold: `${sl.threshold}%`,
+    stopLoss: sl.netImpact,
+    hedgeFull: category.hedgingAnalysis[idx]?.fullLockNetImpact ?? 0,
+    hedgeDouble: category.hedgingAnalysis[idx]?.doubleOppositeNetImpact ?? 0,
+  }));
+
+  return (
+    <div className="rounded-md border bg-background p-4 shadow-sm space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h4 className="font-semibold">{category.name} - Strategy Comparison</h4>
+          <p className="text-xs text-muted-foreground">{category.bestStrategy.reason}</p>
+        </div>
+        <div className="text-right">
+          <p className="text-xs text-muted-foreground">Avg P/L per position</p>
+          <p
+            className={cn(
+              "font-mono font-bold",
+              category.avgPnL >= 0 ? "text-emerald-500" : "text-rose-500",
+            )}
+          >
+            {category.avgPnL >= 0 ? "+" : ""}${category.avgPnL.toFixed(2)}
+          </p>
+        </div>
+      </div>
+
+      <div className="h-[200px] w-full">
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={chartData}>
+            <CartesianGrid
+              strokeDasharray="3 3"
+              vertical={false}
+              stroke="hsl(var(--border))"
+              opacity={0.4}
+            />
+            <XAxis
+              dataKey="threshold"
+              stroke="hsl(var(--muted-foreground))"
+              fontSize={11}
+              tickLine={false}
+              axisLine={false}
+            />
+            <YAxis
+              stroke="hsl(var(--muted-foreground))"
+              fontSize={11}
+              tickLine={false}
+              axisLine={false}
+              tickFormatter={(val) => `$${val.toFixed(0)}`}
+              width={50}
+            />
+            <ChartTooltip
+              contentStyle={{
+                backgroundColor: "hsl(var(--background))",
+                borderColor: "hsl(var(--border))",
+                borderRadius: "var(--radius)",
+                fontSize: "12px",
+              }}
+              formatter={(val: number | undefined, name?: string) => [
+                typeof val === "number" ? `$${val.toFixed(2)}` : "N/A",
+                name === "stopLoss"
+                  ? "Stop-Loss"
+                  : name === "hedgeFull"
+                    ? "Hedge (Full)"
+                    : "Hedge (2x)",
+              ]}
+            />
+            <Legend
+              wrapperStyle={{ fontSize: "11px", paddingTop: "8px" }}
+              formatter={(value) =>
+                value === "stopLoss"
+                  ? "Stop-Loss"
+                  : value === "hedgeFull"
+                    ? "Hedge (Full)"
+                    : "Hedge (2x)"
+              }
+            />
+            <ReferenceLine y={0} stroke="hsl(var(--muted-foreground))" strokeDasharray="3 3" />
+            <Area
+              type="monotone"
+              dataKey="stopLoss"
+              stroke="#f97316"
+              fill="#f97316"
+              fillOpacity={0.1}
+              strokeWidth={2}
+            />
+            <Line
+              type="monotone"
+              dataKey="hedgeFull"
+              stroke="#3b82f6"
+              strokeWidth={2}
+              dot={false}
+            />
+            <Line
+              type="monotone"
+              dataKey="hedgeDouble"
+              stroke="#a855f7"
+              strokeWidth={2}
+              strokeDasharray="4 2"
+              dot={false}
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className="grid grid-cols-3 gap-4 text-xs">
+        <div className="bg-orange-500/10 rounded-md p-3">
+          <p className="text-orange-500 font-medium mb-1">Best Stop-Loss</p>
+          {(() => {
+            const best = category.stopLossAnalysis.reduce(
+              (max, sl) => (sl.netImpact > max.netImpact ? sl : max),
+              category.stopLossAnalysis[0]!,
+            );
+            return (
+              <>
+                <p className="font-mono">{best.threshold}% threshold</p>
+                <p className="text-muted-foreground">
+                  {best.triggered} triggered, {best.recovered} recovered
+                </p>
+                <p
+                  className={cn(
+                    "font-bold",
+                    best.netImpact > 0 ? "text-emerald-500" : "text-rose-500",
+                  )}
+                >
+                  {best.netImpact > 0 ? "+" : ""}${best.netImpact.toFixed(2)} net impact
+                </p>
+              </>
+            );
+          })()}
+        </div>
+        <div className="bg-blue-500/10 rounded-md p-3">
+          <p className="text-blue-500 font-medium mb-1">Best Hedge (Full Lock)</p>
+          {(() => {
+            const best = category.hedgingAnalysis.reduce(
+              (max, h) => (h.fullLockNetImpact > max.fullLockNetImpact ? h : max),
+              category.hedgingAnalysis[0]!,
+            );
+            return (
+              <>
+                <p className="font-mono">{best.threshold}% trigger</p>
+                <p className="text-muted-foreground">{best.triggered} positions hedged</p>
+                <p
+                  className={cn(
+                    "font-bold",
+                    best.fullLockNetImpact > 0 ? "text-emerald-500" : "text-rose-500",
+                  )}
+                >
+                  {best.fullLockNetImpact > 0 ? "+" : ""}${best.fullLockNetImpact.toFixed(2)} net
+                  impact
+                </p>
+              </>
+            );
+          })()}
+        </div>
+        <div className="bg-purple-500/10 rounded-md p-3">
+          <p className="text-purple-500 font-medium mb-1">Best Hedge (2x Opposite)</p>
+          {(() => {
+            const best = category.hedgingAnalysis.reduce(
+              (max, h) => (h.doubleOppositeNetImpact > max.doubleOppositeNetImpact ? h : max),
+              category.hedgingAnalysis[0]!,
+            );
+            return (
+              <>
+                <p className="font-mono">{best.threshold}% trigger</p>
+                <p className="text-muted-foreground">{best.triggered} positions hedged</p>
+                <p
+                  className={cn(
+                    "font-bold",
+                    best.doubleOppositeNetImpact > 0 ? "text-emerald-500" : "text-rose-500",
+                  )}
+                >
+                  {best.doubleOppositeNetImpact > 0 ? "+" : ""}$
+                  {best.doubleOppositeNetImpact.toFixed(2)} net impact
+                </p>
+              </>
+            );
+          })()}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PositionRow({ positionData }: { positionData: PositionAnalytics }) {
   const [expanded, setExpanded] = useState(false);
   const { position, priceHistory, oppositeOutcomePriceHistory, maxDrawdownPercent, category } =
@@ -777,6 +1176,9 @@ export default function PositionAnalyticsPage() {
   const [fidelity, setFidelity] = useState<1 | 5 | 15>(5);
   const [selectedWallet, setSelectedWallet] = useState(DEFAULT_WALLET);
 
+  const [categoryData, setCategoryData] = useState<CategoryAnalysis[] | null>(null);
+  const [categoryLoading, setCategoryLoading] = useState(false);
+
   const filteredPositions = useMemo(() => {
     if (statusFilter === "all") return allPositions;
     return allPositions.filter((p) => p.category.outcome === statusFilter);
@@ -805,6 +1207,7 @@ export default function PositionAnalyticsPage() {
         })),
         byOutcome: [],
         byTags: [],
+        byCategory: [],
       };
     }
 
@@ -929,6 +1332,42 @@ export default function PositionAnalyticsPage() {
   const handleFidelityChange = (val: string) => {
     setFidelity(Number(val) as 1 | 5 | 15);
   };
+
+  const loadCategoryAnalysis = useCallback(async () => {
+    if (allPositions.length === 0) return;
+
+    setCategoryLoading(true);
+    try {
+      const eventSlugs = allPositions
+        .map((p) => p.position.eventSlug)
+        .filter((slug): slug is string => slug !== undefined);
+
+      const tagsMap = await fetchEventTags(eventSlugs);
+
+      const positionsWithTags = allPositions.map((p) => {
+        const slug = p.position.eventSlug;
+        const tags = slug ? tagsMap[slug] || [] : [];
+        return {
+          ...p,
+          category: {
+            ...p.category,
+            tags,
+            normalized: normalizeToCategory(tags),
+          },
+        };
+      });
+
+      const thresholds = summary?.stopLossImpact.map((s) => s.threshold) || [
+        5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90,
+      ];
+      const categories = calculateCategoryAnalysis(positionsWithTags, thresholds);
+      setCategoryData(categories);
+    } catch (err) {
+      console.error("Failed to load category analysis:", err);
+    } finally {
+      setCategoryLoading(false);
+    }
+  }, [allPositions, summary]);
 
   const displaySummary = filteredSummary;
 
@@ -1231,6 +1670,26 @@ export default function PositionAnalyticsPage() {
                   </CardContent>
                 </Card>
               </div>
+
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Tag className="h-5 w-5 text-primary" />
+                    Category Analysis
+                    <InfoTooltip text="Strategy performance breakdown by market category. Shows which strategies work best for different types of markets." />
+                  </CardTitle>
+                  <CardDescription>
+                    Compare stop-loss and hedging effectiveness across different market categories
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  <CategoryAnalysisSection
+                    categories={categoryData}
+                    loading={categoryLoading}
+                    onLoad={loadCategoryAnalysis}
+                  />
+                </CardContent>
+              </Card>
             </>
           ) : (
             <div className="flex flex-col items-center justify-center py-12 text-center space-y-4">
