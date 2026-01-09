@@ -344,27 +344,3 @@ export type AnalyticsSummary = {
   byOutcome: OutcomeBreakdown[];
   byTags: TagBreakdown[];
 };
-
-export type PositionAnalyticsOptions = {
-  fidelityMinutes?: 1 | 5 | 15;
-  stopLossThresholds?: number[];
-  timeWindows?: number[];
-  limit?: number;
-  status?: "open" | "won" | "lost" | "expired" | "all";
-};
-
-export type PositionAnalyticsResponse = {
-  success: boolean;
-  positions: PositionAnalytics[];
-  summary: AnalyticsSummary;
-  options: Required<PositionAnalyticsOptions>;
-  generatedAt: string;
-  error?: string;
-};
-
-export type SinglePositionAnalyticsResponse = {
-  success: boolean;
-  analytics: PositionAnalytics | null;
-  generatedAt: string;
-  error?: string;
-};

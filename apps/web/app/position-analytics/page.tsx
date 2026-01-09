@@ -2,13 +2,9 @@
 
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Header } from "@/components/ui/header";
-import { fetchPositionAnalytics } from "@/lib/api";
-import {
-  PositionAnalytics,
-  AnalyticsSummary,
-  PositionAnalyticsOptions,
-  HedgingSimulation,
-} from "@/lib/types";
+import { getPositionAnalyticsFromApi } from "@/lib/position-analytics-service";
+import { DEFAULT_WALLET, WALLET_OPTIONS } from "@/lib/polymarket-api";
+import { PositionAnalytics, AnalyticsSummary, HedgingSimulation } from "@/lib/types";
 import {
   RefreshCw,
   TrendingDown,
@@ -68,7 +64,7 @@ function InfoTooltip({ text }: { text: string }) {
   return (
     <UITooltip>
       <TooltipTrigger asChild>
-        <button className="inline-flex items-center justify-center rounded-full p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
+        <button className="inline-flex items-center justify-center rounded-full p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer">
           <Info className="h-3.5 w-3.5" />
         </button>
       </TooltipTrigger>
@@ -337,25 +333,25 @@ function HedgingSimulationTable({ rows }: { rows: HedgingSummaryRow[] }) {
               <th className="h-10 px-3 text-left align-middle font-medium text-muted-foreground">
                 <div className="flex items-center gap-1">
                   Drop
-                  <InfoTooltip text="Price drop threshold that triggers the hedge." />
+                  <InfoTooltip text="Price drop threshold (cumulative: 5% includes all positions that dropped 5% or more)." />
                 </div>
               </th>
               <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
                 <div className="flex items-center justify-end gap-1">
                   Hit
-                  <InfoTooltip text="Number of positions that hit this drop level." />
+                  <InfoTooltip text="Number of positions that dropped at least this much from entry." />
                 </div>
               </th>
               <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
                 <div className="flex items-center justify-end gap-1">
                   Invested
-                  <InfoTooltip text="Total original investment for triggered positions." />
+                  <InfoTooltip text="Total original investment for positions that hit this threshold." />
                 </div>
               </th>
               <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
                 <div className="flex items-center justify-end gap-1">
                   No Hedge P/L
-                  <InfoTooltip text="Actual P/L from holding without hedging." />
+                  <InfoTooltip text="Actual P/L from holding without hedging for all positions that hit this threshold." />
                 </div>
               </th>
               <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
@@ -779,6 +775,7 @@ export default function PositionAnalyticsPage() {
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [fidelity, setFidelity] = useState<1 | 5 | 15>(5);
+  const [selectedWallet, setSelectedWallet] = useState(DEFAULT_WALLET);
 
   const filteredPositions = useMemo(() => {
     if (statusFilter === "all") return allPositions;
@@ -893,21 +890,19 @@ export default function PositionAnalyticsPage() {
         if (isRefresh) setRefreshing(true);
         else setInitialLoading(true);
 
-        const options: PositionAnalyticsOptions = {
-          fidelityMinutes: fidelity,
-          status: "all",
-          limit: 1000,
-        };
+        const res = await getPositionAnalyticsFromApi(
+          selectedWallet,
+          {
+            fidelityMinutes: fidelity,
+            status: "all",
+            limit: 1000,
+          },
+          abortControllerRef.current.signal,
+        );
 
-        const res = await fetchPositionAnalytics(options, abortControllerRef.current.signal);
-
-        if (res.success) {
-          setAllPositions(res.positions);
-          setSummary(res.summary);
-          setError(null);
-        } else {
-          setError(res.error || "Failed to load analytics data");
-        }
+        setAllPositions(res.positions);
+        setSummary(res.summary);
+        setError(null);
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
           setError((err as Error).message);
@@ -917,7 +912,7 @@ export default function PositionAnalyticsPage() {
         setRefreshing(false);
       }
     },
-    [fidelity],
+    [fidelity, selectedWallet],
   );
 
   useEffect(() => {
@@ -955,23 +950,50 @@ export default function PositionAnalyticsPage() {
             </div>
 
             <div className="flex items-center gap-3">
+              <Select value={selectedWallet} onValueChange={setSelectedWallet}>
+                <SelectTrigger className="w-[130px] cursor-pointer">
+                  <SelectValue placeholder="Wallet" />
+                </SelectTrigger>
+                <SelectContent>
+                  {WALLET_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value} className="cursor-pointer">
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
               <Tabs value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
                 <TabsList>
-                  <TabsTrigger value="all">All</TabsTrigger>
-                  <TabsTrigger value="open">Open</TabsTrigger>
-                  <TabsTrigger value="won">Won</TabsTrigger>
-                  <TabsTrigger value="lost">Lost</TabsTrigger>
+                  <TabsTrigger value="all" className="cursor-pointer">
+                    All
+                  </TabsTrigger>
+                  <TabsTrigger value="open" className="cursor-pointer">
+                    Open
+                  </TabsTrigger>
+                  <TabsTrigger value="won" className="cursor-pointer">
+                    Won
+                  </TabsTrigger>
+                  <TabsTrigger value="lost" className="cursor-pointer">
+                    Lost
+                  </TabsTrigger>
                 </TabsList>
               </Tabs>
 
               <Select value={fidelity.toString()} onValueChange={handleFidelityChange}>
-                <SelectTrigger className="w-[120px]">
+                <SelectTrigger className="w-[120px] cursor-pointer">
                   <SelectValue placeholder="Fidelity" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="1">1 Minute</SelectItem>
-                  <SelectItem value="5">5 Minutes</SelectItem>
-                  <SelectItem value="15">15 Minutes</SelectItem>
+                  <SelectItem value="1" className="cursor-pointer">
+                    1 Minute
+                  </SelectItem>
+                  <SelectItem value="5" className="cursor-pointer">
+                    5 Minutes
+                  </SelectItem>
+                  <SelectItem value="15" className="cursor-pointer">
+                    15 Minutes
+                  </SelectItem>
                 </SelectContent>
               </Select>
 
@@ -979,7 +1001,7 @@ export default function PositionAnalyticsPage() {
                 variant="outline"
                 onClick={handleRefresh}
                 disabled={refreshing || initialLoading}
-                className="gap-2"
+                className="gap-2 cursor-pointer"
               >
                 {refreshing ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
