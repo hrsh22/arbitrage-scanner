@@ -1190,7 +1190,7 @@ export async function fetchLastSyncTime(
   walletAddress: string,
   signal?: AbortSignal,
 ): Promise<Date | null> {
-  const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8080";
   const response = await fetch(`${apiBase}/resolved-positions/${walletAddress}/last-sync`, {
     signal,
   });
