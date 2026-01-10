@@ -485,7 +485,7 @@ export function buildResolvedPositionsRouter(): Router {
         return;
       }
 
-      const positions = await resolvedPositionsRepository.findByWallet(wallet);
+      const positions = await resolvedPositionsRepository.findByWalletLightweight(wallet);
       const stats = await resolvedPositionsRepository.getStats(wallet);
 
       res.json({

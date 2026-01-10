@@ -19,6 +19,43 @@ export class ResolvedPositionsRepository {
       .orderBy(desc(resolvedPositions.resolvedAt));
   }
 
+  async findByWalletLightweight(
+    walletAddress: string,
+  ): Promise<Omit<ResolvedPosition, "priceHistory" | "oppositeOutcomePriceHistory">[]> {
+    return this.database
+      .select({
+        id: resolvedPositions.id,
+        walletAddress: resolvedPositions.walletAddress,
+        tokenId: resolvedPositions.tokenId,
+        conditionId: resolvedPositions.conditionId,
+        eventSlug: resolvedPositions.eventSlug,
+        marketSlug: resolvedPositions.marketSlug,
+        marketQuestion: resolvedPositions.marketQuestion,
+        outcome: resolvedPositions.outcome,
+        entryPrice: resolvedPositions.entryPrice,
+        cost: resolvedPositions.cost,
+        size: resolvedPositions.size,
+        createdAt: resolvedPositions.createdAt,
+        resolvedAt: resolvedPositions.resolvedAt,
+        finalPrice: resolvedPositions.finalPrice,
+        profitLoss: resolvedPositions.profitLoss,
+        result: resolvedPositions.result,
+        maxDrawdownPercent: resolvedPositions.maxDrawdownPercent,
+        lowestPrice: resolvedPositions.lowestPrice,
+        highestPrice: resolvedPositions.highestPrice,
+        stopLossSimulations: resolvedPositions.stopLossSimulations,
+        hedgingSimulations: resolvedPositions.hedgingSimulations,
+        category: resolvedPositions.category,
+        tags: resolvedPositions.tags,
+        fidelityMinutes: resolvedPositions.fidelityMinutes,
+        capturedAt: resolvedPositions.capturedAt,
+        updatedAt: resolvedPositions.updatedAt,
+      })
+      .from(resolvedPositions)
+      .where(eq(resolvedPositions.walletAddress, walletAddress.toLowerCase()))
+      .orderBy(desc(resolvedPositions.resolvedAt));
+  }
+
   async findByTokenId(walletAddress: string, tokenId: string): Promise<ResolvedPosition | null> {
     const results = await this.database
       .select()

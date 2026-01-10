@@ -10,30 +10,33 @@ const GAMMA_API_BASE = "https://gamma-api.polymarket.com";
 
 const FIDELITY_MINUTES = 5;
 const THRESHOLDS = [5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90];
-const BATCH_SIZE = 10;
+const BATCH_SIZE = 50;
 
-interface PolymarketPosition {
+interface PricePoint {
+  t: number;
+  p: number;
+}
+
+interface ClosedPosition {
   proxyWallet: string;
   asset: string;
   conditionId: string;
-  size: number;
   avgPrice: number;
-  initialValue: number;
-  currentValue: number;
-  cashPnl: number;
-  percentPnl: number;
+  totalBought: number;
+  realizedPnl: number;
   curPrice: number;
-  redeemable: boolean;
+  timestamp: number;
   title: string;
   slug: string;
-  eventSlug?: string;
+  eventSlug: string;
   outcome: string;
+  outcomeIndex: number;
   oppositeOutcome: string;
   oppositeAsset: string;
   endDate: string;
 }
 
-interface PolymarketActivity {
+interface Activity {
   timestamp: number;
   conditionId: string;
   type: "TRADE" | "REDEEM" | "MAKER_REBATE";
@@ -42,74 +45,69 @@ interface PolymarketActivity {
   price: number;
   asset: string;
   side: "BUY" | "SELL";
-  title: string;
-  slug: string;
-  eventSlug?: string;
-  outcome: string;
 }
 
-interface PricePoint {
-  t: number;
-  p: number;
-}
-
-interface ReconstructedPosition {
-  tokenId: string;
-  conditionId: string;
-  title: string;
-  slug: string;
-  outcome: string;
-  oppositeAsset: string;
-  entryPrice: number;
-  cost: number;
-  size: number;
-  currentPrice: number;
-  profitLoss: number;
-  status: "open" | "won" | "lost";
-  createdAt: Date;
-  resolvedAt: Date | null;
-  eventSlug: string | null;
-}
-
-async function fetchPositions(walletAddress: string): Promise<PolymarketPosition[]> {
-  const allPositions: PolymarketPosition[] = [];
+async function fetchClosedPositions(walletAddress: string): Promise<ClosedPosition[]> {
+  const allPositions: ClosedPosition[] = [];
   let offset = 0;
-  const batchSize = 500;
+  const batchSize = 50;
 
   while (true) {
-    const url = `${DATA_API_BASE}/positions?user=${walletAddress}&sizeThreshold=0&limit=${batchSize}&offset=${offset}`;
+    const url = `${DATA_API_BASE}/v1/closed-positions?user=${walletAddress}&limit=${batchSize}&offset=${offset}`;
     const response = await fetch(url);
-    if (!response.ok) throw new Error(`Failed to fetch positions: ${response.status}`);
-    const batch = (await response.json()) as PolymarketPosition[];
+    if (!response.ok) throw new Error(`Failed to fetch closed positions: ${response.status}`);
+    const batch = (await response.json()) as ClosedPosition[];
     if (batch.length === 0) break;
     allPositions.push(...batch);
     offset += batchSize;
     if (batch.length < batchSize) break;
+    if (offset % 500 === 0) {
+      logger.info("Closed positions fetch progress", { offset, fetched: allPositions.length });
+    }
   }
 
   return allPositions;
 }
 
-async function fetchActivity(
-  walletAddress: string,
-  maxRecords = 5000,
-): Promise<PolymarketActivity[]> {
-  const allActivities: PolymarketActivity[] = [];
-  let offset = 0;
+async function fetchActivity(walletAddress: string): Promise<Activity[]> {
+  const allActivities: Activity[] = [];
   const batchSize = 500;
+  let lastTimestamp: number | null = null;
+  const maxIterations = 100;
 
-  while (allActivities.length < maxRecords) {
-    const url = `${DATA_API_BASE}/activity?user=${walletAddress}&limit=${batchSize}&offset=${offset}`;
+  for (let i = 0; i < maxIterations; i++) {
+    let url = `${DATA_API_BASE}/activity?user=${walletAddress}&limit=${batchSize}&sortBy=TIMESTAMP&sortDirection=ASC`;
+    if (lastTimestamp !== null) {
+      url += `&start=${lastTimestamp + 1}`;
+    }
+
     const response = await fetch(url);
     if (!response.ok) throw new Error(`Failed to fetch activity: ${response.status}`);
-    const batch = (await response.json()) as PolymarketActivity[];
+    const batch = (await response.json()) as Activity[];
     if (batch.length === 0) break;
+
     allActivities.push(...batch);
-    offset += batchSize;
+    lastTimestamp = batch[batch.length - 1]!.timestamp;
+
     if (batch.length < batchSize) break;
   }
 
   return allActivities;
+}
+
+function buildEntryTimestampMap(activity: Activity[]): Map<string, number> {
+  const entryMap = new Map<string, number>();
+
+  for (const act of activity) {
+    if (act.type === "TRADE" && act.side === "BUY") {
+      const existing = entryMap.get(act.asset);
+      if (!existing || act.timestamp < existing) {
+        entryMap.set(act.asset, act.timestamp);
+      }
+    }
+  }
+
+  return entryMap;
 }
 
 async function fetchPriceHistory(
@@ -169,90 +167,6 @@ function normalizeToCategory(tags: string[]): string {
     return "Social Media";
   if (tags.length > 0) return tags[0]!;
   return "Unknown";
-}
-
-function reconstructClosedPositions(
-  activity: PolymarketActivity[],
-  existingPositions: Map<string, PolymarketPosition>,
-  existingTokenIds: Set<string>,
-): ReconstructedPosition[] {
-  const closedPositions: ReconstructedPosition[] = [];
-
-  const conditionGroups = new Map<string, PolymarketActivity[]>();
-  for (const act of activity) {
-    if (act.type !== "TRADE" && act.type !== "REDEEM") continue;
-    const key = act.conditionId;
-    if (!conditionGroups.has(key)) {
-      conditionGroups.set(key, []);
-    }
-    conditionGroups.get(key)!.push(act);
-  }
-
-  for (const [conditionId, activities] of conditionGroups) {
-    const buys = activities.filter((a) => a.type === "TRADE" && a.side === "BUY");
-    const sells = activities.filter((a) => a.type === "TRADE" && a.side === "SELL");
-    const redeems = activities.filter((a) => a.type === "REDEEM");
-
-    if (buys.length === 0) continue;
-
-    const firstBuy = buys.sort((a, b) => a.timestamp - b.timestamp)[0]!;
-    const tokenId = firstBuy.asset;
-
-    if (existingPositions.has(tokenId)) continue;
-    if (existingTokenIds.has(tokenId)) continue;
-
-    const totalBought = buys.reduce((sum, b) => sum + b.usdcSize, 0);
-    const totalSold = sells.reduce((sum, s) => sum + s.usdcSize, 0);
-    const totalRedeemed = redeems.reduce((sum, r) => sum + r.usdcSize, 0);
-
-    const avgEntryPrice =
-      buys.reduce((sum, b) => sum + b.price * b.size, 0) / buys.reduce((sum, b) => sum + b.size, 0);
-
-    const lastActivity = activities.sort((a, b) => b.timestamp - a.timestamp)[0]!;
-
-    let status: "open" | "won" | "lost" = "open";
-    let profitLoss = 0;
-    let currentPrice = 0;
-
-    if (redeems.length > 0) {
-      profitLoss = totalRedeemed - totalBought;
-      status = profitLoss >= 0 ? "won" : "lost";
-      currentPrice = totalRedeemed > 0 ? 1 : 0;
-    } else if (sells.length > 0 && totalSold >= totalBought * 0.9) {
-      profitLoss = totalSold - totalBought;
-      status = profitLoss >= 0 ? "won" : "lost";
-      currentPrice = sells[0]?.price || 0;
-    } else {
-      continue;
-    }
-
-    closedPositions.push({
-      tokenId,
-      conditionId,
-      title: firstBuy.title,
-      slug: firstBuy.slug,
-      outcome: firstBuy.outcome,
-      oppositeAsset: "",
-      entryPrice: avgEntryPrice,
-      cost: totalBought,
-      size: buys.reduce((sum, b) => sum + b.size, 0),
-      currentPrice,
-      profitLoss,
-      status,
-      createdAt: new Date(firstBuy.timestamp * 1000),
-      resolvedAt: new Date(lastActivity.timestamp * 1000),
-      eventSlug: firstBuy.eventSlug || null,
-    });
-  }
-
-  return closedPositions;
-}
-
-function findFirstBuyTimestamp(activity: PolymarketActivity[], tokenId: string): Date {
-  const buys = activity
-    .filter((a) => a.asset === tokenId && a.type === "TRADE" && a.side === "BUY")
-    .sort((a, b) => a.timestamp - b.timestamp);
-  return buys.length > 0 ? new Date(buys[0]!.timestamp * 1000) : new Date();
 }
 
 function findPriceAtTimestamp(
@@ -448,65 +362,62 @@ async function syncWallet(wallet: string): Promise<{ synced: number; existing: n
   const existingTokenIds = await resolvedPositionsRepository.getExistingTokenIds(wallet);
   logger.info("Found existing positions in DB", { wallet, count: existingTokenIds.size });
 
-  const [positions, activity] = await Promise.all([
-    fetchPositions(wallet),
-    fetchActivity(wallet, 10000),
+  const [closedPositions, activity] = await Promise.all([
+    fetchClosedPositions(wallet),
+    fetchActivity(wallet),
   ]);
 
-  logger.info("Fetched from API", {
+  logger.info("Fetched data from API", {
     wallet,
-    positions: positions.length,
-    activity: activity.length,
+    closedPositions: closedPositions.length,
+    activityRecords: activity.length,
   });
 
-  const positionMap = new Map<string, PolymarketPosition>();
-  for (const p of positions) {
-    positionMap.set(p.asset, p);
-  }
+  const entryTimestampMap = buildEntryTimestampMap(activity);
+  logger.info("Built entry timestamp map", { entriesFound: entryTimestampMap.size });
 
-  const resolvedFromAPI = positions.filter((p) => p.redeemable);
-  const closedFromActivity = reconstructClosedPositions(activity, positionMap, existingTokenIds);
+  const won = closedPositions.filter((p) => p.realizedPnl >= 0).length;
+  const lost = closedPositions.filter((p) => p.realizedPnl < 0).length;
+  logger.info("Closed positions breakdown", { won, lost });
 
-  const newFromAPI = resolvedFromAPI.filter((p) => !existingTokenIds.has(p.asset));
-  const newFromActivity = closedFromActivity.filter((p) => !existingTokenIds.has(p.tokenId));
-
+  const newPositions = closedPositions.filter((p) => !existingTokenIds.has(p.asset));
   logger.info("New positions to process", {
     wallet,
-    fromAPI: newFromAPI.length,
-    fromActivity: newFromActivity.length,
+    newCount: newPositions.length,
+    existingCount: existingTokenIds.size,
   });
 
-  if (newFromAPI.length === 0 && newFromActivity.length === 0) {
+  if (newPositions.length === 0) {
     return { synced: 0, existing: existingTokenIds.size };
   }
 
   let totalInserted = 0;
 
-  async function processAPIPosition(pos: PolymarketPosition): Promise<NewResolvedPosition> {
-    const result: "won" | "lost" = pos.curPrice >= 0.99 ? "won" : "lost";
-    const createdAt = findFirstBuyTimestamp(activity, pos.asset);
-    const entryTs = Math.floor(createdAt.getTime() / 1000);
-    const nowTs = Math.floor(Date.now() / 1000);
+  async function processClosedPosition(pos: ClosedPosition): Promise<NewResolvedPosition> {
+    const result: "won" | "lost" = pos.realizedPnl >= 0 ? "won" : "lost";
+    const resolvedTs = pos.timestamp;
+
+    const actualEntryTs = entryTimestampMap.get(pos.asset);
+    const entryTs = actualEntryTs ?? resolvedTs - 86400 * 7;
 
     const [priceHistory, oppositeHistory] = await Promise.all([
-      fetchPriceHistory(pos.asset, entryTs, nowTs, FIDELITY_MINUTES),
+      fetchPriceHistory(pos.asset, entryTs, resolvedTs, FIDELITY_MINUTES),
       pos.oppositeAsset
-        ? fetchPriceHistory(pos.oppositeAsset, entryTs, nowTs, FIDELITY_MINUTES)
+        ? fetchPriceHistory(pos.oppositeAsset, entryTs, resolvedTs, FIDELITY_MINUTES)
         : Promise.resolve([]),
     ]);
 
     const entryPrice = pos.avgPrice;
-    const cost = pos.initialValue;
-    const actualPnL = pos.cashPnl;
+    const cost = pos.totalBought;
+    const actualPnL = pos.realizedPnl;
     const didOriginalWin = result === "won";
 
+    const relevantHistory = priceHistory.filter((p) => p.timestamp >= entryTs);
     let lowestPrice = entryPrice;
     let highestPrice = entryPrice;
-    for (const p of priceHistory) {
-      if (p.timestamp >= entryTs) {
-        if (p.price < lowestPrice) lowestPrice = p.price;
-        if (p.price > highestPrice) highestPrice = p.price;
-      }
+    for (const p of relevantHistory) {
+      if (p.price < lowestPrice) lowestPrice = p.price;
+      if (p.price > highestPrice) highestPrice = p.price;
     }
 
     const maxDrawdownPercent = entryPrice > 0 ? ((entryPrice - lowestPrice) / entryPrice) * 100 : 0;
@@ -543,17 +454,17 @@ async function syncWallet(wallet: string): Promise<{ synced: number; existing: n
       outcome: pos.outcome,
       entryPrice: entryPrice.toString(),
       cost: cost.toString(),
-      size: pos.size.toString(),
-      createdAt,
-      resolvedAt: new Date(),
+      size: (cost / entryPrice).toString(),
+      createdAt: new Date(entryTs * 1000),
+      resolvedAt: new Date(pos.timestamp * 1000),
       finalPrice: pos.curPrice.toString(),
-      profitLoss: pos.cashPnl.toString(),
+      profitLoss: pos.realizedPnl.toString(),
       result,
       maxDrawdownPercent: maxDrawdownPercent.toString(),
       lowestPrice: lowestPrice.toString(),
       highestPrice: highestPrice.toString(),
-      priceHistory,
-      oppositeOutcomePriceHistory: oppositeHistory,
+      priceHistory: relevantHistory,
+      oppositeOutcomePriceHistory: oppositeHistory.filter((p) => p.timestamp >= entryTs),
       stopLossSimulations,
       hedgingSimulations,
       category,
@@ -562,92 +473,20 @@ async function syncWallet(wallet: string): Promise<{ synced: number; existing: n
     };
   }
 
-  async function processActivityPosition(pos: ReconstructedPosition): Promise<NewResolvedPosition> {
-    const entryTs = Math.floor(pos.createdAt.getTime() / 1000);
-    const nowTs = Math.floor(Date.now() / 1000);
-    const priceHistory = await fetchPriceHistory(pos.tokenId, entryTs, nowTs, FIDELITY_MINUTES);
-
-    let lowestPrice = pos.entryPrice;
-    let highestPrice = pos.entryPrice;
-    for (const p of priceHistory) {
-      if (p.timestamp >= entryTs) {
-        if (p.price < lowestPrice) lowestPrice = p.price;
-        if (p.price > highestPrice) highestPrice = p.price;
-      }
-    }
-
-    const maxDrawdownPercent =
-      pos.entryPrice > 0 ? ((pos.entryPrice - lowestPrice) / pos.entryPrice) * 100 : 0;
-    const actualPnL = pos.profitLoss;
-    const didOriginalWin = pos.status === "won";
-
-    const stopLossSimulations = THRESHOLDS.map((t) =>
-      simulateStopLoss(priceHistory, pos.entryPrice, entryTs, pos.cost, t, actualPnL),
-    );
-    const hedgingSimulations = THRESHOLDS.map((t) =>
-      simulateHedging(
-        priceHistory,
-        [],
-        pos.entryPrice,
-        entryTs,
-        pos.cost,
-        t,
-        actualPnL,
-        didOriginalWin,
-      ),
-    );
-
-    let tags: string[] = [];
-    let category = "Unknown";
-    if (pos.eventSlug) {
-      tags = await fetchEventTags(pos.eventSlug);
-      category = normalizeToCategory(tags);
-    }
-
-    return {
-      walletAddress: wallet,
-      tokenId: pos.tokenId,
-      conditionId: pos.conditionId,
-      eventSlug: pos.eventSlug,
-      marketSlug: pos.slug,
-      marketQuestion: pos.title,
-      outcome: pos.outcome,
-      entryPrice: pos.entryPrice.toString(),
-      cost: pos.cost.toString(),
-      size: pos.size.toString(),
-      createdAt: pos.createdAt,
-      resolvedAt: pos.resolvedAt,
-      finalPrice: pos.currentPrice.toString(),
-      profitLoss: pos.profitLoss.toString(),
-      result: pos.status as "won" | "lost",
-      maxDrawdownPercent: maxDrawdownPercent.toString(),
-      lowestPrice: lowestPrice.toString(),
-      highestPrice: highestPrice.toString(),
-      priceHistory,
-      oppositeOutcomePriceHistory: [],
-      stopLossSimulations,
-      hedgingSimulations,
-      category,
-      tags,
-      fidelityMinutes: FIDELITY_MINUTES.toString(),
-    };
-  }
-
-  for (let i = 0; i < newFromAPI.length; i += BATCH_SIZE) {
-    const batch = newFromAPI.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < newPositions.length; i += BATCH_SIZE) {
+    const batch = newPositions.slice(i, i + BATCH_SIZE);
     const batchResults: NewResolvedPosition[] = [];
 
     for (const pos of batch) {
       try {
-        const record = await processAPIPosition(pos);
+        const record = await processClosedPosition(pos);
         batchResults.push(record);
       } catch (err) {
-        logger.warn("Failed to process API position", {
+        logger.warn("Failed to process closed position", {
           tokenId: pos.asset,
           error: (err as Error).message,
         });
       }
-      await new Promise((r) => setTimeout(r, 30));
     }
 
     if (batchResults.length > 0) {
@@ -657,34 +496,7 @@ async function syncWallet(wallet: string): Promise<{ synced: number; existing: n
         batch: Math.floor(i / BATCH_SIZE) + 1,
         inserted,
         totalInserted,
-      });
-    }
-  }
-
-  for (let i = 0; i < newFromActivity.length; i += BATCH_SIZE) {
-    const batch = newFromActivity.slice(i, i + BATCH_SIZE);
-    const batchResults: NewResolvedPosition[] = [];
-
-    for (const pos of batch) {
-      try {
-        const record = await processActivityPosition(pos);
-        batchResults.push(record);
-      } catch (err) {
-        logger.warn("Failed to process activity position", {
-          tokenId: pos.tokenId,
-          error: (err as Error).message,
-        });
-      }
-      await new Promise((r) => setTimeout(r, 30));
-    }
-
-    if (batchResults.length > 0) {
-      const inserted = await resolvedPositionsRepository.upsertMany(batchResults);
-      totalInserted += inserted;
-      logger.info("Saved batch", {
-        batch: Math.floor(i / BATCH_SIZE) + 1 + Math.ceil(newFromAPI.length / BATCH_SIZE),
-        inserted,
-        totalInserted,
+        remaining: newPositions.length - i - batch.length,
       });
     }
   }

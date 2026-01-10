@@ -18,8 +18,10 @@
   "dependencies": {
     "@ai-sdk/openai": "^2.0.86",
     "@polymarket/clob-client": "^5.1.2",
+    "@types/compression": "^1.8.1",
     "ai": "^5.0.113",
     "axios": "^1.13.2",
+    "compression": "^1.8.1",
     "dotenv": "^16.4.7",
     "drizzle-orm": "^0.38.1",
     "ethers": "^5",

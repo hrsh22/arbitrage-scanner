@@ -65,17 +65,17 @@ module.exports = {
 
     // Resolved Positions Sync - syncs resolved positions to DB for analytics dashboard
     // Runs at :07,:17,:27... to avoid collision with other crons
-    // {
-    //   name: "resolved-positions-sync",
-    //   script: "pnpm",
-    //   args: "cron:sync-resolved-positions",
-    //   cron_restart: "7-59/10 * * * *",
-    //   autorestart: false,
-    //   watch: false,
-    //   env: {
-    //     NODE_ENV: "production",
-    //     LOG_LEVEL: "info",
-    //   },
-    // },
+    {
+      name: "resolved-positions-sync",
+      script: "pnpm",
+      args: "cron:sync-resolved-positions",
+      cron_restart: "7-59/10 * * * *",
+      autorestart: false,
+      watch: false,
+      env: {
+        NODE_ENV: "production",
+        LOG_LEVEL: "info",
+      },
+    },
   ],
 };

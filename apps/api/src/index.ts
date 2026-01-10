@@ -1,4 +1,5 @@
 import express from "express";
+import compression from "compression";
 import { config } from "./config.js";
 import { db, pool } from "./db/client.js";
 import { OpportunityStore } from "./services/opportunityStore.js";
@@ -24,6 +25,7 @@ app.use((_req, res, next) => {
   next();
 });
 
+app.use(compression());
 app.use(express.json());
 
 const store = new OpportunityStore();
