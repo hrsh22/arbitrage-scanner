@@ -248,3 +248,129 @@ export async function syncResolvedPositions(
 
   return response.json();
 }
+
+export interface StopLossAnalysisItem {
+  threshold: number;
+  triggeredCount: number;
+  recoveredCount: number;
+  totalPnlIfSold: number;
+  totalPnlIfHeld: number;
+  netImpact: number;
+  avgImpactPerTriggered: number;
+}
+
+export interface HedgingAnalysisItem {
+  threshold: number;
+  triggeredCount: number;
+  recoveredCount: number;
+  fullLockGrossSavings: number;
+  fullLockCostOnWinners: number;
+  fullLockNetImpact: number;
+  doubleOppositeGrossSavings: number;
+  doubleOppositeCostOnWinners: number;
+  doubleOppositeNetImpact: number;
+}
+
+export interface CategoryStopLossItem {
+  threshold: number;
+  triggeredCount: number;
+  recoveredCount: number;
+  netImpact: number;
+}
+
+export interface CategoryHedgingItem {
+  threshold: number;
+  triggeredCount: number;
+  recoveredCount: number;
+  fullLockGrossSavings: number;
+  fullLockCostOnWinners: number;
+  fullLockNetImpact: number;
+  doubleOppositeGrossSavings: number;
+  doubleOppositeCostOnWinners: number;
+  doubleOppositeNetImpact: number;
+}
+
+export interface BestStrategy {
+  type: "none" | "stop-loss" | "hedge-full" | "hedge-double";
+  threshold: number | null;
+  expectedImprovement: number;
+  reason: string;
+}
+
+export interface CategoryBreakdownItem {
+  category: string;
+  positionCount: number;
+  winCount: number;
+  lossCount: number;
+  winRate: number;
+  totalPnl: number;
+  avgPnl: number;
+  avgDrawdown: number;
+  stopLossAnalysis: CategoryStopLossItem[];
+  hedgingAnalysis: CategoryHedgingItem[];
+  bestStrategy: BestStrategy;
+}
+
+export interface DailyPnlItem {
+  date: string;
+  pnl: number;
+  positionCount: number;
+  cumulativePnl: number;
+}
+
+export interface WalletAnalytics {
+  id: number;
+  walletAddress: string;
+  totalPnl: string;
+  totalCost: string;
+  winCount: string;
+  lossCount: string;
+  winRate: string;
+  avgEntryPrice: string;
+  avgPnlPerPosition: string;
+  avgHoldingHours: string;
+  stopLossAnalysis: StopLossAnalysisItem[];
+  hedgingAnalysis: HedgingAnalysisItem[];
+  categoryBreakdown: CategoryBreakdownItem[];
+  dailyPnl: DailyPnlItem[];
+  computedAt: string;
+}
+
+export interface WalletAnalyticsResponse {
+  success: boolean;
+  analytics: WalletAnalytics;
+}
+
+export async function fetchWalletAnalytics(
+  walletAddress: string,
+  signal?: AbortSignal,
+): Promise<WalletAnalyticsResponse> {
+  const url = `${API_BASE}/resolved-positions/${walletAddress}/analytics`;
+  const response = await fetch(url, { signal });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch wallet analytics: ${response.status}`);
+  }
+
+  return response.json();
+}
+
+export interface SinglePositionResponse {
+  success: boolean;
+  position: ResolvedPositionFromDB;
+}
+
+export async function fetchSinglePosition(
+  walletAddress: string,
+  tokenId: string,
+  signal?: AbortSignal,
+): Promise<SinglePositionResponse> {
+  const url = `${API_BASE}/resolved-positions/${walletAddress}/position/${tokenId}`;
+  const response = await fetch(url, { signal });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch position: ${response.status}`);
+  }
+
+  return response.json();
+}

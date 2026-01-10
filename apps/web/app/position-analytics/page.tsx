@@ -3,17 +3,16 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Header } from "@/components/ui/header";
 import {
-  getPositionAnalyticsHybrid,
-  calculateCategoryAnalysis,
-  fetchLastSyncTime,
-} from "@/lib/position-analytics-service";
+  fetchWalletAnalytics,
+  fetchResolvedPositionsFromDB,
+  fetchSinglePosition,
+  type WalletAnalytics,
+  type ResolvedPositionFromDB,
+  type StopLossAnalysisItem,
+  type HedgingAnalysisItem,
+  type CategoryBreakdownItem,
+} from "@/lib/polymarket-api";
 import { DEFAULT_WALLET, WALLET_OPTIONS } from "@/lib/polymarket-api";
-import {
-  PositionAnalytics,
-  AnalyticsSummary,
-  HedgingSimulation,
-  CategoryAnalysis,
-} from "@/lib/types";
 import {
   RefreshCw,
   TrendingDown,
@@ -48,7 +47,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@workspace/ui/components/select";
-import { Tabs, TabsList, TabsTrigger } from "@workspace/ui/components/tabs";
 import { Skeleton } from "@workspace/ui/components/skeleton";
 import {
   Tooltip as UITooltip,
@@ -70,28 +68,23 @@ import {
   ComposedChart,
 } from "recharts";
 
-type StatusFilter = "all" | "open" | "won" | "lost";
 type ResolvedFilter = "all" | "won" | "lost";
 
 function SectionFilter({
   value,
   onChange,
-  includeOpen = false,
 }: {
-  value: StatusFilter | ResolvedFilter;
+  value: ResolvedFilter;
   onChange: (v: ResolvedFilter) => void;
-  includeOpen?: boolean;
 }) {
-  const options = includeOpen
-    ? (["all", "open", "won", "lost"] as const)
-    : (["all", "won", "lost"] as const);
+  const options = ["all", "won", "lost"] as const;
 
   return (
     <div className="flex items-center gap-0.5 bg-muted/50 rounded-lg p-0.5">
       {options.map((opt) => (
         <button
           key={opt}
-          onClick={() => onChange(opt as ResolvedFilter)}
+          onClick={() => onChange(opt)}
           className={cn(
             "px-2 py-0.5 text-xs rounded capitalize font-medium transition-colors cursor-pointer",
             value === opt
@@ -104,18 +97,6 @@ function SectionFilter({
       ))}
     </div>
   );
-}
-
-function formatRelativeTime(date: Date): string {
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  if (diffMins < 1) return "just now";
-  if (diffMins < 60) return `${diffMins}m ago`;
-  const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
-  const diffDays = Math.floor(diffHours / 24);
-  return `${diffDays}d ago`;
 }
 
 function InfoTooltip({ text }: { text: string }) {
@@ -192,8 +173,8 @@ function SummaryCard({
   );
 }
 
-function StopLossTable({ simulations }: { simulations: AnalyticsSummary["stopLossImpact"] }) {
-  if (!simulations || simulations.length === 0)
+function StopLossTable({ analysis }: { analysis: StopLossAnalysisItem[] }) {
+  if (!analysis || analysis.length === 0)
     return <p className="text-sm text-muted-foreground">No data available</p>;
 
   return (
@@ -201,26 +182,26 @@ function StopLossTable({ simulations }: { simulations: AnalyticsSummary["stopLos
       <div className="w-full overflow-auto">
         <table className="w-full caption-bottom text-sm">
           <thead className="[&_tr]:border-b">
-            <tr className="border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted">
-              <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground [&:has([role=checkbox])]:pr-0">
+            <tr className="border-b transition-colors hover:bg-muted/50">
+              <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">
                 <div className="flex items-center gap-1">
                   Threshold
                   <InfoTooltip text="Stop-loss trigger level as a percentage drop from entry price." />
                 </div>
               </th>
-              <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground [&:has([role=checkbox])]:pr-0">
+              <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
                 <div className="flex items-center justify-end gap-1">
                   Triggered
                   <InfoTooltip text="Number of positions that would have hit this stop-loss level." />
                 </div>
               </th>
-              <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground [&:has([role=checkbox])]:pr-0">
+              <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
                 <div className="flex items-center justify-end gap-1">
                   Recovered
                   <InfoTooltip text="Of triggered positions, how many later recovered above entry price." />
                 </div>
               </th>
-              <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground [&:has([role=checkbox])]:pr-0">
+              <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
                 <div className="flex items-center justify-end gap-1">
                   Net Impact
                   <InfoTooltip text="Total P/L difference: (P/L if sold at stop-loss) - (P/L from holding). Negative = stop-loss would have cost you money." />
@@ -229,27 +210,24 @@ function StopLossTable({ simulations }: { simulations: AnalyticsSummary["stopLos
             </tr>
           </thead>
           <tbody className="[&_tr:last-child]:border-0">
-            {simulations.map((sim) => (
-              <tr
-                key={sim.threshold}
-                className="border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted"
-              >
-                <td className="p-4 align-middle font-medium">{sim.threshold}%</td>
-                <td className="p-4 align-middle text-right">{sim.wouldHaveTriggered}</td>
+            {analysis.map((item) => (
+              <tr key={item.threshold} className="border-b transition-colors hover:bg-muted/50">
+                <td className="p-4 align-middle font-medium">{item.threshold}%</td>
+                <td className="p-4 align-middle text-right">{item.triggeredCount}</td>
                 <td className="p-4 align-middle text-right text-muted-foreground">
-                  {sim.wouldHaveRecovered}
+                  {item.recoveredCount}
                 </td>
                 <td
                   className={cn(
                     "p-4 align-middle text-right font-bold",
-                    sim.netImpactIfUsed > 0
+                    item.netImpact > 0
                       ? "text-emerald-500"
-                      : sim.netImpactIfUsed < 0
+                      : item.netImpact < 0
                         ? "text-rose-500"
                         : "text-muted-foreground",
                   )}
                 >
-                  {sim.netImpactIfUsed > 0 ? "+" : ""}${sim.netImpactIfUsed.toFixed(2)}
+                  {item.netImpact > 0 ? "+" : ""}${item.netImpact.toFixed(2)}
                 </td>
               </tr>
             ))}
@@ -260,111 +238,10 @@ function StopLossTable({ simulations }: { simulations: AnalyticsSummary["stopLos
   );
 }
 
-type StrategyMetrics = {
-  hedgeCost: number;
-  totalInvestment: number;
-  pnlWithHedge: number;
-  netImpact: number;
-};
-
-type HedgingSummaryRow = {
-  threshold: number;
-  triggered: number;
-  originalInvestment: number;
-  actualPnlNoHedge: number;
-  fullLock: StrategyMetrics;
-  doubleOpposite: StrategyMetrics;
-  bestStrategy: string;
-  bestNetImpact: number;
-};
-
-function computeHedgingSummary(positions: PositionAnalytics[]): HedgingSummaryRow[] {
-  if (!positions || positions.length === 0) return [];
-
-  const thresholdMap = new Map<
-    number,
-    {
-      triggered: number;
-      originalInvestment: number;
-      actualPnlNoHedge: number;
-      fullLock: { hedgeCost: number; totalInvestment: number; pnlWithHedge: number };
-      doubleOpposite: { hedgeCost: number; totalInvestment: number; pnlWithHedge: number };
-    }
-  >();
-
-  for (const pos of positions) {
-    if (!pos.hedgingSimulations) continue;
-    const positionCost = pos.position.cost;
-    const positionActualPnl = pos.position.profitLoss ?? 0;
-
-    for (const sim of pos.hedgingSimulations) {
-      if (!thresholdMap.has(sim.threshold)) {
-        thresholdMap.set(sim.threshold, {
-          triggered: 0,
-          originalInvestment: 0,
-          actualPnlNoHedge: 0,
-          fullLock: { hedgeCost: 0, totalInvestment: 0, pnlWithHedge: 0 },
-          doubleOpposite: { hedgeCost: 0, totalInvestment: 0, pnlWithHedge: 0 },
-        });
-      }
-
-      const data = thresholdMap.get(sim.threshold)!;
-
-      if (sim.triggered && sim.strategies.length > 0) {
-        data.triggered++;
-        data.originalInvestment += positionCost;
-        data.actualPnlNoHedge += positionActualPnl;
-
-        for (const strat of sim.strategies) {
-          if (strat.actualPnl !== null) {
-            if (strat.name === "fullLockIn") {
-              data.fullLock.hedgeCost += strat.hedgeCost;
-              data.fullLock.totalInvestment += strat.totalInvestment;
-              data.fullLock.pnlWithHedge += strat.actualPnl;
-            } else if (strat.name === "doubleOpposite") {
-              data.doubleOpposite.hedgeCost += strat.hedgeCost;
-              data.doubleOpposite.totalInvestment += strat.totalInvestment;
-              data.doubleOpposite.pnlWithHedge += strat.actualPnl;
-            }
-          }
-        }
-      }
-    }
-  }
-
-  const rows: HedgingSummaryRow[] = [];
-  for (const [threshold, data] of thresholdMap) {
-    const fullLockNet = data.fullLock.pnlWithHedge - data.actualPnlNoHedge;
-    const doubleNet = data.doubleOpposite.pnlWithHedge - data.actualPnlNoHedge;
-
-    let bestStrategy = "None";
-    let bestNetImpact = 0;
-    const maxNet = Math.max(fullLockNet, doubleNet);
-    if (maxNet > 0) {
-      bestNetImpact = maxNet;
-      if (fullLockNet === maxNet) bestStrategy = "Full Lock";
-      else bestStrategy = "2x Opposite";
-    }
-
-    rows.push({
-      threshold,
-      triggered: data.triggered,
-      originalInvestment: data.originalInvestment,
-      actualPnlNoHedge: data.actualPnlNoHedge,
-      fullLock: { ...data.fullLock, netImpact: fullLockNet },
-      doubleOpposite: { ...data.doubleOpposite, netImpact: doubleNet },
-      bestStrategy,
-      bestNetImpact,
-    });
-  }
-
-  return rows.sort((a, b) => a.threshold - b.threshold);
-}
-
-function HedgingSimulationTable({ rows }: { rows: HedgingSummaryRow[] }) {
+function HedgingTable({ analysis }: { analysis: HedgingAnalysisItem[] }) {
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
 
-  if (!rows || rows.length === 0)
+  if (!analysis || analysis.length === 0)
     return <p className="text-sm text-muted-foreground">No hedging data available</p>;
 
   const toggleRow = (threshold: number) => {
@@ -389,51 +266,28 @@ function HedgingSimulationTable({ rows }: { rows: HedgingSummaryRow[] }) {
             <tr className="border-b transition-colors bg-muted/30">
               <th className="h-10 px-3 text-left align-middle font-medium text-muted-foreground w-8"></th>
               <th className="h-10 px-3 text-left align-middle font-medium text-muted-foreground">
-                <div className="flex items-center gap-1">
-                  Drop
-                  <InfoTooltip text="Price drop threshold (cumulative: 5% includes all positions that dropped 5% or more)." />
-                </div>
+                Drop %
               </th>
               <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
-                <div className="flex items-center justify-end gap-1">
-                  Hit
-                  <InfoTooltip text="Number of positions that dropped at least this much from entry." />
-                </div>
+                Triggered
               </th>
               <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
-                <div className="flex items-center justify-end gap-1">
-                  Invested
-                  <InfoTooltip text="Total original investment for positions that hit this threshold." />
-                </div>
+                Full Lock Net
               </th>
               <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
-                <div className="flex items-center justify-end gap-1">
-                  No Hedge P/L
-                  <InfoTooltip text="Actual P/L from holding without hedging for all positions that hit this threshold." />
-                </div>
-              </th>
-              <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
-                <div className="flex items-center justify-end gap-1">
-                  Best Strategy
-                  <InfoTooltip text="Strategy with the best net impact (hedged P/L minus no-hedge P/L)." />
-                </div>
-              </th>
-              <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
-                <div className="flex items-center justify-end gap-1">
-                  Net Impact
-                  <InfoTooltip text="Difference: (P/L with best hedge) - (P/L without hedge). Positive = hedging would have helped." />
-                </div>
+                2x Opposite Net
               </th>
             </tr>
           </thead>
           <tbody className="[&_tr:last-child]:border-0">
-            {rows.map((row) => {
-              const isExpanded = expandedRows.has(row.threshold);
+            {analysis.map((item) => {
+              const isExpanded = expandedRows.has(item.threshold);
+              const bestNet = Math.max(item.fullLockNetImpact, item.doubleOppositeNetImpact);
               return (
-                <React.Fragment key={row.threshold}>
+                <React.Fragment key={item.threshold}>
                   <tr
                     className="border-b transition-colors hover:bg-muted/50 cursor-pointer"
-                    onClick={() => toggleRow(row.threshold)}
+                    onClick={() => toggleRow(item.threshold)}
                   >
                     <td className="p-2 align-middle text-center">
                       {isExpanded ? (
@@ -442,101 +296,69 @@ function HedgingSimulationTable({ rows }: { rows: HedgingSummaryRow[] }) {
                         <ChevronDown className="h-4 w-4 text-muted-foreground" />
                       )}
                     </td>
-                    <td className="p-3 align-middle font-medium">{row.threshold}%</td>
-                    <td className="p-3 align-middle text-right">{row.triggered}</td>
-                    <td className="p-3 align-middle text-right font-mono">
-                      ${row.originalInvestment.toFixed(2)}
-                    </td>
+                    <td className="p-3 align-middle font-medium">{item.threshold}%</td>
+                    <td className="p-3 align-middle text-right">{item.triggeredCount}</td>
                     <td
                       className={cn(
                         "p-3 align-middle text-right font-mono",
-                        row.actualPnlNoHedge >= 0 ? "text-emerald-500" : "text-rose-500",
-                      )}
-                    >
-                      {formatMoney(row.actualPnlNoHedge)}
-                    </td>
-                    <td className="p-3 align-middle text-right text-xs font-semibold">
-                      {row.bestStrategy}
-                    </td>
-                    <td
-                      className={cn(
-                        "p-3 align-middle text-right font-mono font-bold",
-                        row.bestNetImpact > 0
+                        item.fullLockNetImpact > 0
                           ? "text-emerald-500"
-                          : row.bestNetImpact < 0
+                          : item.fullLockNetImpact < 0
                             ? "text-rose-500"
                             : "text-muted-foreground",
                       )}
                     >
-                      {formatMoney(row.bestNetImpact)}
+                      {formatMoney(item.fullLockNetImpact)}
+                    </td>
+                    <td
+                      className={cn(
+                        "p-3 align-middle text-right font-mono",
+                        item.doubleOppositeNetImpact > 0
+                          ? "text-emerald-500"
+                          : item.doubleOppositeNetImpact < 0
+                            ? "text-rose-500"
+                            : "text-muted-foreground",
+                      )}
+                    >
+                      {formatMoney(item.doubleOppositeNetImpact)}
                     </td>
                   </tr>
                   {isExpanded && (
                     <tr className="bg-muted/20">
-                      <td colSpan={7} className="p-4">
-                        <div className="rounded-md border bg-background p-4 shadow-sm">
-                          <table className="w-full text-xs">
-                            <thead>
-                              <tr className="text-muted-foreground">
-                                <th className="text-left py-1 font-medium">Strategy</th>
-                                <th className="text-right py-1 font-medium">Hedge Cost</th>
-                                <th className="text-right py-1 font-medium">Total Invested</th>
-                                <th className="text-right py-1 font-medium">P/L With Hedge</th>
-                                <th className="text-right py-1 font-medium">Net Impact</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {[
-                                {
-                                  name: "Full Lock-in",
-                                  data: row.fullLock,
-                                  desc: "Buy equal shares of opposite outcome. Guarantees a fixed return regardless of winner.",
-                                },
-                                {
-                                  name: "2x Opposite",
-                                  data: row.doubleOpposite,
-                                  desc: "Buy 2x shares of opposite outcome. Aggressive reversal bet - profits if original loses.",
-                                },
-                              ].map((s) => (
-                                <tr key={s.name} className="border-t border-muted">
-                                  <td className="py-2">
-                                    <div className="font-medium">{s.name}</div>
-                                    <div className="text-[10px] text-muted-foreground">
-                                      {s.desc}
-                                    </div>
-                                  </td>
-                                  <td className="py-2 text-right font-mono align-top pt-2">
-                                    ${s.data.hedgeCost.toFixed(2)}
-                                  </td>
-                                  <td className="py-2 text-right font-mono align-top pt-2">
-                                    ${s.data.totalInvestment.toFixed(2)}
-                                  </td>
-                                  <td
-                                    className={cn(
-                                      "py-2 text-right font-mono align-top pt-2",
-                                      s.data.pnlWithHedge >= 0
-                                        ? "text-emerald-500"
-                                        : "text-rose-500",
-                                    )}
-                                  >
-                                    {formatMoney(s.data.pnlWithHedge)}
-                                  </td>
-                                  <td
-                                    className={cn(
-                                      "py-2 text-right font-mono font-semibold align-top pt-2",
-                                      s.data.netImpact > 0
-                                        ? "text-emerald-500"
-                                        : s.data.netImpact < 0
-                                          ? "text-rose-500"
-                                          : "text-muted-foreground",
-                                    )}
-                                  >
-                                    {formatMoney(s.data.netImpact)}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                      <td colSpan={5} className="p-4">
+                        <div className="rounded-md border bg-background p-4 shadow-sm text-xs">
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="bg-blue-500/10 rounded-md p-3">
+                              <p className="text-blue-500 font-medium mb-1">Full Lock-in</p>
+                              <p className="text-muted-foreground">
+                                Buy equal shares of opposite outcome. Guarantees fixed return.
+                              </p>
+                              <p
+                                className={cn(
+                                  "font-bold mt-1",
+                                  item.fullLockNetImpact > 0 ? "text-emerald-500" : "text-rose-500",
+                                )}
+                              >
+                                {formatMoney(item.fullLockNetImpact)} net impact
+                              </p>
+                            </div>
+                            <div className="bg-purple-500/10 rounded-md p-3">
+                              <p className="text-purple-500 font-medium mb-1">2x Opposite</p>
+                              <p className="text-muted-foreground">
+                                Buy 2x shares of opposite. Aggressive reversal bet.
+                              </p>
+                              <p
+                                className={cn(
+                                  "font-bold mt-1",
+                                  item.doubleOppositeNetImpact > 0
+                                    ? "text-emerald-500"
+                                    : "text-rose-500",
+                                )}
+                              >
+                                {formatMoney(item.doubleOppositeNetImpact)} net impact
+                              </p>
+                            </div>
+                          </div>
                         </div>
                       </td>
                     </tr>
@@ -551,174 +373,7 @@ function HedgingSimulationTable({ rows }: { rows: HedgingSummaryRow[] }) {
   );
 }
 
-function CategoryAnalysisSection({ categories }: { categories: CategoryAnalysis[] }) {
-  const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
-
-  if (categories.length === 0) {
-    return <p className="text-sm text-muted-foreground">No category data available</p>;
-  }
-
-  const formatMoney = (val: number) => {
-    const prefix = val >= 0 ? (val > 0 ? "+" : "") : "";
-    return `${prefix}$${val.toFixed(2)}`;
-  };
-
-  const getBadgeColor = (type: string) => {
-    switch (type) {
-      case "stop-loss":
-        return "bg-orange-500/10 text-orange-500";
-      case "hedge-full":
-        return "bg-blue-500/10 text-blue-500";
-      case "hedge-double":
-        return "bg-purple-500/10 text-purple-500";
-      default:
-        return "bg-muted text-muted-foreground";
-    }
-  };
-
-  const getStrategyLabel = (type: string) => {
-    switch (type) {
-      case "stop-loss":
-        return "Stop-Loss";
-      case "hedge-full":
-        return "Hedge (Full)";
-      case "hedge-double":
-        return "Hedge (2x)";
-      default:
-        return "None";
-    }
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="rounded-md border">
-        <div className="w-full overflow-auto">
-          <table className="w-full caption-bottom text-sm">
-            <thead className="[&_tr]:border-b">
-              <tr className="border-b transition-colors bg-muted/30">
-                <th className="h-10 px-3 text-left align-middle font-medium text-muted-foreground w-8"></th>
-                <th className="h-10 px-3 text-left align-middle font-medium text-muted-foreground">
-                  <div className="flex items-center gap-1">
-                    Category
-                    <InfoTooltip text="Market category based on tags. Click row to see detailed strategy analysis." />
-                  </div>
-                </th>
-                <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
-                  Positions
-                </th>
-                <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
-                  <div className="flex items-center justify-end gap-1">
-                    Win Rate
-                    <InfoTooltip text="Percentage of resolved positions that won." />
-                  </div>
-                </th>
-                <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
-                  <div className="flex items-center justify-end gap-1">
-                    Total P/L
-                    <InfoTooltip text="Sum of profit/loss for all positions in this category." />
-                  </div>
-                </th>
-                <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
-                  <div className="flex items-center justify-end gap-1">
-                    Avg Drawdown
-                    <InfoTooltip text="Average maximum price drop experienced." />
-                  </div>
-                </th>
-                <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
-                  <div className="flex items-center justify-end gap-1">
-                    Best Strategy
-                    <InfoTooltip text="Strategy that would have produced the best improvement. Ties favor hedging." />
-                  </div>
-                </th>
-                <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
-                  <div className="flex items-center justify-end gap-1">
-                    Improvement
-                    <InfoTooltip text="Expected P/L improvement if best strategy was used." />
-                  </div>
-                </th>
-              </tr>
-            </thead>
-            <tbody className="[&_tr:last-child]:border-0">
-              {categories.map((cat) => {
-                const isExpanded = expandedCategory === cat.name;
-                return (
-                  <React.Fragment key={cat.name}>
-                    <tr
-                      className="border-b transition-colors hover:bg-muted/50 cursor-pointer"
-                      onClick={() => setExpandedCategory(isExpanded ? null : cat.name)}
-                    >
-                      <td className="p-2 align-middle text-center">
-                        {isExpanded ? (
-                          <ChevronUp className="h-4 w-4 text-muted-foreground" />
-                        ) : (
-                          <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                        )}
-                      </td>
-                      <td className="p-3 align-middle font-medium">{cat.name}</td>
-                      <td className="p-3 align-middle text-right">
-                        <span className="text-muted-foreground text-xs">
-                          {cat.wonCount}W / {cat.lostCount}L / {cat.openCount}O
-                        </span>
-                        <span className="ml-2 font-medium">{cat.positions}</span>
-                      </td>
-                      <td className="p-3 align-middle text-right">
-                        <span
-                          className={cn(
-                            "font-medium",
-                            cat.winRate >= 50 ? "text-emerald-500" : "text-rose-500",
-                          )}
-                        >
-                          {cat.winRate.toFixed(1)}%
-                        </span>
-                      </td>
-                      <td
-                        className={cn(
-                          "p-3 align-middle text-right font-mono",
-                          cat.totalPnL >= 0 ? "text-emerald-500" : "text-rose-500",
-                        )}
-                      >
-                        {formatMoney(cat.totalPnL)}
-                      </td>
-                      <td className="p-3 align-middle text-right text-rose-500">
-                        {cat.avgDrawdown.toFixed(1)}%
-                      </td>
-                      <td className="p-3 align-middle text-right">
-                        <Badge variant="secondary" className={getBadgeColor(cat.bestStrategy.type)}>
-                          {getStrategyLabel(cat.bestStrategy.type)}
-                          {cat.bestStrategy.threshold !== null &&
-                            ` @${cat.bestStrategy.threshold}%`}
-                        </Badge>
-                      </td>
-                      <td
-                        className={cn(
-                          "p-3 align-middle text-right font-mono font-bold",
-                          cat.bestStrategy.expectedImprovement > 0
-                            ? "text-emerald-500"
-                            : "text-muted-foreground",
-                        )}
-                      >
-                        {formatMoney(cat.bestStrategy.expectedImprovement)}
-                      </td>
-                    </tr>
-                    {isExpanded && (
-                      <tr className="bg-muted/20">
-                        <td colSpan={8} className="p-4">
-                          <CategoryDetailCard category={cat} />
-                        </td>
-                      </tr>
-                    )}
-                  </React.Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function CategoryDetailCard({ category }: { category: CategoryAnalysis }) {
+function CategoryDetailCard({ category }: { category: CategoryBreakdownItem }) {
   const chartData = category.stopLossAnalysis.map((sl, idx) => ({
     threshold: `${sl.threshold}%`,
     stopLoss: sl.netImpact,
@@ -726,11 +381,31 @@ function CategoryDetailCard({ category }: { category: CategoryAnalysis }) {
     hedgeDouble: category.hedgingAnalysis[idx]?.doubleOppositeNetImpact ?? 0,
   }));
 
+  const formatMoney = (val: number) => {
+    const prefix = val >= 0 ? (val > 0 ? "+" : "") : "";
+    return `${prefix}$${val.toFixed(2)}`;
+  };
+
+  const bestStopLoss = category.stopLossAnalysis.reduce(
+    (max, sl) => (sl.netImpact > max.netImpact ? sl : max),
+    category.stopLossAnalysis[0]!,
+  );
+
+  const bestHedgeFull = category.hedgingAnalysis.reduce(
+    (max, h) => (h.fullLockNetImpact > max.fullLockNetImpact ? h : max),
+    category.hedgingAnalysis[0]!,
+  );
+
+  const bestHedgeDouble = category.hedgingAnalysis.reduce(
+    (max, h) => (h.doubleOppositeNetImpact > max.doubleOppositeNetImpact ? h : max),
+    category.hedgingAnalysis[0]!,
+  );
+
   return (
     <div className="rounded-md border bg-background p-4 shadow-sm space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h4 className="font-semibold">{category.name} - Strategy Comparison</h4>
+          <h4 className="font-semibold">{category.category} - Strategy Comparison</h4>
           <p className="text-xs text-muted-foreground">{category.bestStrategy.reason}</p>
         </div>
         <div className="text-right">
@@ -738,10 +413,10 @@ function CategoryDetailCard({ category }: { category: CategoryAnalysis }) {
           <p
             className={cn(
               "font-mono font-bold",
-              category.avgPnL >= 0 ? "text-emerald-500" : "text-rose-500",
+              category.avgPnl >= 0 ? "text-emerald-500" : "text-rose-500",
             )}
           >
-            {category.avgPnL >= 0 ? "+" : ""}${category.avgPnL.toFixed(2)}
+            {formatMoney(category.avgPnl)}
           </p>
         </div>
       </div>
@@ -827,101 +502,255 @@ function CategoryDetailCard({ category }: { category: CategoryAnalysis }) {
       <div className="grid grid-cols-3 gap-4 text-xs">
         <div className="bg-orange-500/10 rounded-md p-3">
           <p className="text-orange-500 font-medium mb-1">Best Stop-Loss</p>
-          {(() => {
-            const best = category.stopLossAnalysis.reduce(
-              (max, sl) => (sl.netImpact > max.netImpact ? sl : max),
-              category.stopLossAnalysis[0]!,
-            );
-            return (
-              <>
-                <p className="font-mono">{best.threshold}% threshold</p>
-                <p className="text-muted-foreground">
-                  {best.triggered} triggered, {best.recovered} recovered
-                </p>
-                <p
-                  className={cn(
-                    "font-bold",
-                    best.netImpact > 0 ? "text-emerald-500" : "text-rose-500",
-                  )}
-                >
-                  {best.netImpact > 0 ? "+" : ""}${best.netImpact.toFixed(2)} net impact
-                </p>
-              </>
-            );
-          })()}
+          <p className="font-mono">{bestStopLoss.threshold}% threshold</p>
+          <p className="text-muted-foreground">
+            {bestStopLoss.triggeredCount} triggered, {bestStopLoss.recoveredCount} recovered
+          </p>
+          <p
+            className={cn(
+              "font-bold",
+              bestStopLoss.netImpact > 0 ? "text-emerald-500" : "text-rose-500",
+            )}
+          >
+            {formatMoney(bestStopLoss.netImpact)} net impact
+          </p>
         </div>
         <div className="bg-blue-500/10 rounded-md p-3">
           <p className="text-blue-500 font-medium mb-1">Best Hedge (Full Lock)</p>
-          {(() => {
-            const best = category.hedgingAnalysis.reduce(
-              (max, h) => (h.fullLockNetImpact > max.fullLockNetImpact ? h : max),
-              category.hedgingAnalysis[0]!,
-            );
-            return (
-              <>
-                <p className="font-mono">{best.threshold}% trigger</p>
-                <p className="text-muted-foreground">{best.triggered} positions hedged</p>
-                <p
-                  className={cn(
-                    "font-bold",
-                    best.fullLockNetImpact > 0 ? "text-emerald-500" : "text-rose-500",
-                  )}
-                >
-                  {best.fullLockNetImpact > 0 ? "+" : ""}${best.fullLockNetImpact.toFixed(2)} net
-                  impact
-                </p>
-              </>
-            );
-          })()}
+          <p className="font-mono">{bestHedgeFull.threshold}% trigger</p>
+          <p className="text-muted-foreground">
+            {bestHedgeFull.triggeredCount} triggered, {bestHedgeFull.recoveredCount} recovered
+          </p>
+          <div className="mt-1 space-y-0.5">
+            <p className="text-emerald-500">
+              +${bestHedgeFull.fullLockGrossSavings.toFixed(2)} saved on losers
+            </p>
+            <p className="text-rose-500">
+              -${bestHedgeFull.fullLockCostOnWinners.toFixed(2)} cost on winners
+            </p>
+            <p
+              className={cn(
+                "font-bold",
+                bestHedgeFull.fullLockNetImpact > 0 ? "text-emerald-500" : "text-rose-500",
+              )}
+            >
+              {formatMoney(bestHedgeFull.fullLockNetImpact)} net
+            </p>
+          </div>
         </div>
         <div className="bg-purple-500/10 rounded-md p-3">
           <p className="text-purple-500 font-medium mb-1">Best Hedge (2x Opposite)</p>
-          {(() => {
-            const best = category.hedgingAnalysis.reduce(
-              (max, h) => (h.doubleOppositeNetImpact > max.doubleOppositeNetImpact ? h : max),
-              category.hedgingAnalysis[0]!,
-            );
-            return (
-              <>
-                <p className="font-mono">{best.threshold}% trigger</p>
-                <p className="text-muted-foreground">{best.triggered} positions hedged</p>
-                <p
-                  className={cn(
-                    "font-bold",
-                    best.doubleOppositeNetImpact > 0 ? "text-emerald-500" : "text-rose-500",
-                  )}
-                >
-                  {best.doubleOppositeNetImpact > 0 ? "+" : ""}$
-                  {best.doubleOppositeNetImpact.toFixed(2)} net impact
-                </p>
-              </>
-            );
-          })()}
+          <p className="font-mono">{bestHedgeDouble.threshold}% trigger</p>
+          <p className="text-muted-foreground">
+            {bestHedgeDouble.triggeredCount} triggered, {bestHedgeDouble.recoveredCount} recovered
+          </p>
+          <div className="mt-1 space-y-0.5">
+            <p className="text-emerald-500">
+              +${bestHedgeDouble.doubleOppositeGrossSavings.toFixed(2)} saved on losers
+            </p>
+            <p className="text-rose-500">
+              -${bestHedgeDouble.doubleOppositeCostOnWinners.toFixed(2)} cost on winners
+            </p>
+            <p
+              className={cn(
+                "font-bold",
+                bestHedgeDouble.doubleOppositeNetImpact > 0 ? "text-emerald-500" : "text-rose-500",
+              )}
+            >
+              {formatMoney(bestHedgeDouble.doubleOppositeNetImpact)} net
+            </p>
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function PositionRow({ positionData }: { positionData: PositionAnalytics }) {
-  const [expanded, setExpanded] = useState(false);
-  const { position, priceHistory, oppositeOutcomePriceHistory, maxDrawdownPercent, category } =
-    positionData;
+function CategoryBreakdownSection({ categories }: { categories: CategoryBreakdownItem[] }) {
+  const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
 
-  const pnl = position.profitLoss ?? 0;
+  if (categories.length === 0) {
+    return <p className="text-sm text-muted-foreground">No category data available</p>;
+  }
+
+  const formatMoney = (val: number) => {
+    const prefix = val >= 0 ? (val > 0 ? "+" : "") : "";
+    return `${prefix}$${val.toFixed(2)}`;
+  };
+
+  const getBadgeColor = (type: string) => {
+    switch (type) {
+      case "stop-loss":
+        return "bg-orange-500/10 text-orange-500";
+      case "hedge-full":
+        return "bg-blue-500/10 text-blue-500";
+      case "hedge-double":
+        return "bg-purple-500/10 text-purple-500";
+      default:
+        return "bg-muted text-muted-foreground";
+    }
+  };
+
+  const getStrategyLabel = (type: string, threshold: number | null) => {
+    const labels: Record<string, string> = {
+      "stop-loss": "Stop-Loss",
+      "hedge-full": "Hedge (Full)",
+      "hedge-double": "Hedge (2x)",
+      none: "None",
+    };
+    const label = labels[type] || "None";
+    return threshold !== null ? `${label} @${threshold}%` : label;
+  };
+
+  return (
+    <div className="rounded-md border">
+      <div className="w-full overflow-auto">
+        <table className="w-full caption-bottom text-sm">
+          <thead className="[&_tr]:border-b">
+            <tr className="border-b transition-colors bg-muted/30">
+              <th className="h-10 px-3 text-left align-middle font-medium text-muted-foreground w-8"></th>
+              <th className="h-10 px-3 text-left align-middle font-medium text-muted-foreground">
+                Category
+              </th>
+              <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
+                Positions
+              </th>
+              <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
+                Win Rate
+              </th>
+              <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
+                Total P/L
+              </th>
+              <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
+                Avg Drawdown
+              </th>
+              <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
+                Best Strategy
+              </th>
+              <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
+                Improvement
+              </th>
+            </tr>
+          </thead>
+          <tbody className="[&_tr:last-child]:border-0">
+            {categories.map((cat) => {
+              const isExpanded = expandedCategory === cat.category;
+              return (
+                <React.Fragment key={cat.category}>
+                  <tr
+                    className="border-b transition-colors hover:bg-muted/50 cursor-pointer"
+                    onClick={() => setExpandedCategory(isExpanded ? null : cat.category)}
+                  >
+                    <td className="p-2 align-middle text-center">
+                      {isExpanded ? (
+                        <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                      ) : (
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      )}
+                    </td>
+                    <td className="p-3 align-middle font-medium">{cat.category}</td>
+                    <td className="p-3 align-middle text-right">
+                      <span className="text-muted-foreground text-xs">
+                        {cat.winCount}W / {cat.lossCount}L
+                      </span>
+                      <span className="ml-2">{cat.positionCount}</span>
+                    </td>
+                    <td
+                      className={cn(
+                        "p-3 align-middle text-right font-medium",
+                        cat.winRate >= 0.5 ? "text-emerald-500" : "text-rose-500",
+                      )}
+                    >
+                      {(cat.winRate * 100).toFixed(1)}%
+                    </td>
+                    <td
+                      className={cn(
+                        "p-3 align-middle text-right font-mono",
+                        cat.totalPnl >= 0 ? "text-emerald-500" : "text-rose-500",
+                      )}
+                    >
+                      {formatMoney(cat.totalPnl)}
+                    </td>
+                    <td className="p-3 align-middle text-right text-rose-500">
+                      {cat.avgDrawdown.toFixed(1)}%
+                    </td>
+                    <td className="p-3 align-middle text-right">
+                      <Badge variant="secondary" className={getBadgeColor(cat.bestStrategy.type)}>
+                        {getStrategyLabel(cat.bestStrategy.type, cat.bestStrategy.threshold)}
+                      </Badge>
+                    </td>
+                    <td
+                      className={cn(
+                        "p-3 align-middle text-right font-mono font-bold",
+                        cat.bestStrategy.expectedImprovement > 0
+                          ? "text-emerald-500"
+                          : "text-muted-foreground",
+                      )}
+                    >
+                      {formatMoney(cat.bestStrategy.expectedImprovement)}
+                    </td>
+                  </tr>
+                  {isExpanded && (
+                    <tr className="bg-muted/20">
+                      <td colSpan={8} className="p-4">
+                        <CategoryDetailCard category={cat} />
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+type PositionLightweight = Omit<
+  ResolvedPositionFromDB,
+  "priceHistory" | "oppositeOutcomePriceHistory"
+>;
+
+function PositionRow({ position, wallet }: { position: PositionLightweight; wallet: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [fullPosition, setFullPosition] = useState<ResolvedPositionFromDB | null>(null);
+
+  const pnl = parseFloat(position.profitLoss || "0");
   const isProfit = pnl >= 0;
-  const outcomeStatus = category.outcome;
+  const status = position.result as "won" | "lost";
   const statusColor =
-    outcomeStatus === "won"
-      ? "bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20"
-      : outcomeStatus === "lost"
-        ? "bg-rose-500/10 text-rose-500 hover:bg-rose-500/20"
-        : "bg-blue-500/10 text-blue-500 hover:bg-blue-500/20";
+    status === "won" ? "bg-emerald-500/10 text-emerald-500" : "bg-rose-500/10 text-rose-500";
+
+  const entryPriceCents = parseFloat(position.entryPrice || "0") * 100;
+  const finalPriceCents = parseFloat(position.finalPrice || "0") * 100;
+  const maxDrawdown = parseFloat(position.maxDrawdownPercent || "0");
+
+  const handleExpand = async () => {
+    if (expanded) {
+      setExpanded(false);
+      return;
+    }
+
+    if (!fullPosition) {
+      setLoading(true);
+      try {
+        const res = await fetchSinglePosition(wallet, position.tokenId);
+        setFullPosition(res.position);
+      } catch (err) {
+        console.error("Failed to fetch position details", err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    setExpanded(true);
+  };
 
   const chartData = useMemo(() => {
-    if (!priceHistory || priceHistory.length === 0) return [];
+    if (!fullPosition?.priceHistory || fullPosition.priceHistory.length === 0) return [];
 
-    const oppositePoints = oppositeOutcomePriceHistory || [];
+    const oppositePoints = fullPosition.oppositeOutcomePriceHistory || [];
 
     const findClosestOppositePrice = (targetTs: number): number | null => {
       if (oppositePoints.length === 0) return null;
@@ -937,7 +766,7 @@ function PositionRow({ positionData }: { positionData: PositionAnalytics }) {
       return minDiff <= 300 ? closest.price : null;
     };
 
-    return priceHistory.map((p) => {
+    return fullPosition.priceHistory.map((p) => {
       const ts = typeof p.timestamp === "number" ? p.timestamp * 1000 : p.timestamp;
       const oppPrice = findClosestOppositePrice(p.timestamp);
       return {
@@ -947,9 +776,8 @@ function PositionRow({ positionData }: { positionData: PositionAnalytics }) {
         timestamp: ts,
       };
     });
-  }, [priceHistory, oppositeOutcomePriceHistory]);
+  }, [fullPosition]);
 
-  const entryPriceCents = position.entryPrice * 100;
   const allPrices = chartData.flatMap((d) =>
     [d.ourPrice, d.oppositePrice].filter((p): p is number => p !== null),
   );
@@ -958,21 +786,26 @@ function PositionRow({ positionData }: { positionData: PositionAnalytics }) {
   const maxPrice =
     allPrices.length > 0 ? Math.max(...allPrices, entryPriceCents) * 1.05 : entryPriceCents * 1.1;
 
-  const chartColor =
-    outcomeStatus === "won" ? "#10b981" : outcomeStatus === "lost" ? "#f43f5e" : "#3b82f6";
+  const chartColor = status === "won" ? "#10b981" : "#f43f5e";
 
   return (
     <>
       <tr
-        className="border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted cursor-pointer"
-        onClick={() => setExpanded(!expanded)}
+        className="border-b transition-colors hover:bg-muted/50 cursor-pointer"
+        onClick={handleExpand}
       >
         <td className="p-4 align-middle w-[30px]">
-          {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          {loading ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : expanded ? (
+            <ChevronUp className="h-4 w-4" />
+          ) : (
+            <ChevronDown className="h-4 w-4" />
+          )}
         </td>
         <td className="p-4 align-middle">
           <div className="flex flex-col">
-            <span className="font-medium line-clamp-1" title={position.marketQuestion}>
+            <span className="font-medium line-clamp-1" title={position.marketQuestion || ""}>
               {position.marketQuestion}
             </span>
             <div className="flex items-center gap-2 mt-1">
@@ -980,15 +813,13 @@ function PositionRow({ positionData }: { positionData: PositionAnalytics }) {
                 {position.outcome}
               </Badge>
               <span className="text-xs text-muted-foreground">
-                {new Date(position.createdAt).toLocaleDateString()}
+                {position.resolvedAt ? new Date(position.resolvedAt).toLocaleDateString() : ""}
               </span>
             </div>
           </div>
         </td>
         <td className="p-4 align-middle text-right">{entryPriceCents.toFixed(1)}¢</td>
-        <td className="p-4 align-middle text-right">
-          {(positionData.currentOrFinalPrice * 100).toFixed(1)}¢
-        </td>
+        <td className="p-4 align-middle text-right">{finalPriceCents.toFixed(1)}¢</td>
         <td className="p-4 align-middle text-right font-mono">
           <span className={isProfit ? "text-emerald-500" : "text-rose-500"}>
             {isProfit ? "+" : ""}${pnl.toFixed(2)}
@@ -996,11 +827,11 @@ function PositionRow({ positionData }: { positionData: PositionAnalytics }) {
         </td>
         <td className="p-4 align-middle">
           <Badge variant="secondary" className={cn("capitalize", statusColor)}>
-            {outcomeStatus}
+            {status}
           </Badge>
         </td>
         <td className="p-4 align-middle text-right text-rose-500 font-medium">
-          {maxDrawdownPercent > 0 ? `-${maxDrawdownPercent.toFixed(1)}%` : "0%"}
+          {maxDrawdown > 0 ? `-${maxDrawdown.toFixed(1)}%` : "0%"}
         </td>
       </tr>
       {expanded && (
@@ -1046,7 +877,6 @@ function PositionRow({ positionData }: { positionData: PositionAnalytics }) {
                         borderRadius: "var(--radius)",
                         fontSize: "12px",
                       }}
-                      itemStyle={{ color: "hsl(var(--foreground))" }}
                       formatter={(val: number | undefined, name?: string) => [
                         typeof val === "number" ? `${val.toFixed(1)}¢` : "N/A",
                         name === "ourPrice" ? "Our Outcome" : "Opposite Outcome",
@@ -1055,7 +885,7 @@ function PositionRow({ positionData }: { positionData: PositionAnalytics }) {
                     <Legend
                       wrapperStyle={{ fontSize: "11px", paddingTop: "8px" }}
                       formatter={(value) =>
-                        value === "ourPrice" ? "Our Outcome (Sell)" : "Opposite (Hedge Buy)"
+                        value === "ourPrice" ? "Our Outcome" : "Opposite (Hedge)"
                       }
                     />
                     <ReferenceLine
@@ -1090,80 +920,15 @@ function PositionRow({ positionData }: { positionData: PositionAnalytics }) {
                     />
                   </ComposedChart>
                 </ResponsiveContainer>
+              ) : loading ? (
+                <div className="flex h-full items-center justify-center">
+                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                </div>
               ) : (
                 <div className="flex h-full items-center justify-center text-muted-foreground">
-                  No price history available for this position
+                  No price history available
                 </div>
               )}
-            </div>
-            <p className="text-[10px] text-muted-foreground mt-1 italic">
-              Chart shows mid-market prices. Actual bid (sell) prices are typically lower, ask (buy)
-              prices higher.
-            </p>
-            <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4 text-xs text-muted-foreground">
-              <div className="bg-background p-3 rounded-md border shadow-sm">
-                <div className="flex items-center gap-1 mb-1">
-                  <span className="font-semibold text-foreground">Entry Details</span>
-                  <InfoTooltip text="Cost is the total amount invested. Token ID is the unique identifier for this outcome on Polymarket." />
-                </div>
-                <div className="flex justify-between">
-                  <span>Cost:</span>
-                  <span className="font-mono text-foreground">${position.cost.toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Token ID:</span>
-                  <span
-                    className="font-mono text-foreground truncate max-w-[120px]"
-                    title={position.tokenId}
-                  >
-                    {position.tokenId.slice(0, 8)}...
-                  </span>
-                </div>
-              </div>
-              <div className="bg-background p-3 rounded-md border shadow-sm">
-                <div className="flex items-center gap-1 mb-1">
-                  <span className="font-semibold text-foreground">Performance</span>
-                  <InfoTooltip text="Lowest and highest mid-market prices observed after entry. Note: These are mid-prices, not bid/ask. Actual execution prices may differ due to spread." />
-                </div>
-                <div className="flex justify-between">
-                  <span>Lowest Price:</span>
-                  <span className="font-mono text-foreground">
-                    {(positionData.lowestPriceAfterEntry * 100).toFixed(1)}¢
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Highest Price:</span>
-                  <span className="font-mono text-foreground">
-                    {(positionData.highestPriceAfterEntry * 100).toFixed(1)}¢
-                  </span>
-                </div>
-              </div>
-              <div className="bg-background p-3 rounded-md border shadow-sm">
-                <div className="flex items-center gap-1 mb-1">
-                  <span className="font-semibold text-foreground">Time Analysis</span>
-                  <InfoTooltip text="Duration is the time from entry to resolution. Hedge Cost shows what it would have cost to buy opposite outcome shares at the lowest point (using mid-price, actual cost may be higher)." />
-                </div>
-                <div className="flex justify-between">
-                  <span>Duration:</span>
-                  <span className="text-foreground">
-                    {position.resolvedAt
-                      ? (
-                          (new Date(position.resolvedAt).getTime() -
-                            new Date(position.createdAt).getTime()) /
-                          (1000 * 60 * 60)
-                        ).toFixed(1) + "h"
-                      : "Active"}
-                  </span>
-                </div>
-                {positionData.oppositeOutcome && (
-                  <div className="flex justify-between">
-                    <span>Hedge Cost:</span>
-                    <span className="font-mono text-foreground">
-                      ${positionData.oppositeOutcome.hedgeCost.toFixed(2)}
-                    </span>
-                  </div>
-                )}
-              </div>
             </div>
           </td>
         </tr>
@@ -1173,91 +938,21 @@ function PositionRow({ positionData }: { positionData: PositionAnalytics }) {
 }
 
 export default function PositionAnalyticsPage() {
-  const [initialLoading, setInitialLoading] = useState(true);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  const [allPositions, setAllPositions] = useState<PositionAnalytics[]>([]);
-  const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
-  const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
-
-  const [stopLossFilter, setStopLossFilter] = useState<ResolvedFilter>("all");
-  const [hedgingFilter, setHedgingFilter] = useState<ResolvedFilter>("all");
-  const [categoryFilter, setCategoryFilter] = useState<ResolvedFilter>("all");
-  const [positionsFilter, setPositionsFilter] = useState<StatusFilter>("all");
-
-  const [fidelity, setFidelity] = useState<1 | 5 | 15>(5);
+  const [analytics, setAnalytics] = useState<WalletAnalytics | null>(null);
+  const [positions, setPositions] = useState<PositionLightweight[]>([]);
   const [selectedWallet, setSelectedWallet] = useState(DEFAULT_WALLET);
 
-  const resolvedPositions = useMemo(
-    () => allPositions.filter((p) => p.category.outcome !== "open"),
-    [allPositions],
-  );
+  const [positionsFilter, setPositionsFilter] = useState<ResolvedFilter>("all");
 
-  const filterResolved = useCallback(
-    (filter: ResolvedFilter): PositionAnalytics[] => {
-      if (filter === "all") return resolvedPositions;
-      return resolvedPositions.filter((p) => p.category.outcome === filter);
-    },
-    [resolvedPositions],
-  );
-
-  const positionsForTable = useMemo(() => {
-    if (positionsFilter === "all") return allPositions;
-    return allPositions.filter((p) => p.category.outcome === positionsFilter);
-  }, [allPositions, positionsFilter]);
-
-  const stopLossPositions = useMemo(
-    () => filterResolved(stopLossFilter),
-    [filterResolved, stopLossFilter],
-  );
-
-  const hedgingPositions = useMemo(
-    () => filterResolved(hedgingFilter),
-    [filterResolved, hedgingFilter],
-  );
-
-  const categoryPositions = useMemo(
-    () => filterResolved(categoryFilter),
-    [filterResolved, categoryFilter],
-  );
-
-  const computeStopLossImpact = useCallback(
-    (positions: PositionAnalytics[]): AnalyticsSummary["stopLossImpact"] => {
-      if (!summary) return [];
-      const thresholds = summary.stopLossImpact.map((s) => s.threshold);
-      return thresholds.map((threshold) => {
-        let triggered = 0;
-        let recovered = 0;
-        let netImpact = 0;
-        for (const pos of positions) {
-          const sim = pos.stopLossSimulations.find((s) => s.threshold === threshold);
-          if (sim?.triggered) {
-            triggered++;
-            if (sim.recoveredAfterTrigger) recovered++;
-            netImpact += (sim.profitLossIfSold ?? 0) - (sim.profitLossIfHeld ?? 0);
-          }
-        }
-        return {
-          threshold,
-          wouldHaveTriggered: triggered,
-          wouldHaveRecovered: recovered,
-          netImpactIfUsed: netImpact,
-        };
-      });
-    },
-    [summary],
-  );
-
-  const stopLossSummary = useMemo(
-    () => computeStopLossImpact(stopLossPositions),
-    [computeStopLossImpact, stopLossPositions],
-  );
-
-  const hedgingSummary = useMemo(() => computeHedgingSummary(hedgingPositions), [hedgingPositions]);
-
-  const displaySummary = summary;
+  const filteredPositions = useMemo(() => {
+    if (positionsFilter === "all") return positions;
+    return positions.filter((p) => p.result === positionsFilter);
+  }, [positions, positionsFilter]);
 
   const loadData = useCallback(
     async (isRefresh = false) => {
@@ -1268,35 +963,26 @@ export default function PositionAnalyticsPage() {
 
       try {
         if (isRefresh) setRefreshing(true);
-        else setInitialLoading(true);
+        else setLoading(true);
 
-        const [res, syncTime] = await Promise.all([
-          getPositionAnalyticsHybrid(
-            selectedWallet,
-            {
-              fidelityMinutes: fidelity,
-              status: "all",
-              limit: 1000,
-            },
-            abortControllerRef.current.signal,
-          ),
-          fetchLastSyncTime(selectedWallet, abortControllerRef.current.signal),
+        const [analyticsRes, positionsRes] = await Promise.all([
+          fetchWalletAnalytics(selectedWallet, abortControllerRef.current.signal),
+          fetchResolvedPositionsFromDB(selectedWallet, abortControllerRef.current.signal),
         ]);
 
-        setAllPositions(res.positions);
-        setSummary(res.summary);
-        setLastSyncTime(syncTime);
+        setAnalytics(analyticsRes.analytics);
+        setPositions(positionsRes.positions as PositionLightweight[]);
         setError(null);
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
           setError((err as Error).message);
         }
       } finally {
-        setInitialLoading(false);
+        setLoading(false);
         setRefreshing(false);
       }
     },
-    [fidelity, selectedWallet],
+    [selectedWallet],
   );
 
   useEffect(() => {
@@ -1310,17 +996,11 @@ export default function PositionAnalyticsPage() {
 
   const handleRefresh = () => loadData(true);
 
-  const handleFidelityChange = (val: string) => {
-    setFidelity(Number(val) as 1 | 5 | 15);
-  };
-
-  const categoryData = useMemo(() => {
-    if (categoryPositions.length === 0) return [];
-    const thresholds = summary?.stopLossImpact.map((s) => s.threshold) || [
-      5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90,
-    ];
-    return calculateCategoryAnalysis(categoryPositions, thresholds);
-  }, [categoryPositions, summary]);
+  const totalPnl = parseFloat(analytics?.totalPnl || "0");
+  const winCount = parseInt(analytics?.winCount || "0", 10);
+  const lossCount = parseInt(analytics?.lossCount || "0", 10);
+  const winRate = parseFloat(analytics?.winRate || "0");
+  const avgHoldingHours = parseFloat(analytics?.avgHoldingHours || "0");
 
   return (
     <>
@@ -1334,10 +1014,10 @@ export default function PositionAnalyticsPage() {
                 Position Analytics
               </h1>
               <p className="text-muted-foreground mt-1">
-                {allPositions.length} positions
-                {lastSyncTime && (
+                {positions.length} positions
+                {analytics?.computedAt && (
                   <span className="ml-2 text-xs">
-                    · Last synced {formatRelativeTime(lastSyncTime)}
+                    · Analytics computed {new Date(analytics.computedAt).toLocaleString()}
                   </span>
                 )}
                 {refreshing && <span className="ml-2 text-primary">(updating...)</span>}
@@ -1358,27 +1038,10 @@ export default function PositionAnalyticsPage() {
                 </SelectContent>
               </Select>
 
-              <Select value={fidelity.toString()} onValueChange={handleFidelityChange}>
-                <SelectTrigger className="w-[120px] cursor-pointer">
-                  <SelectValue placeholder="Fidelity" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="1" className="cursor-pointer">
-                    1 Minute
-                  </SelectItem>
-                  <SelectItem value="5" className="cursor-pointer">
-                    5 Minutes
-                  </SelectItem>
-                  <SelectItem value="15" className="cursor-pointer">
-                    15 Minutes
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-
               <Button
                 variant="outline"
                 onClick={handleRefresh}
-                disabled={refreshing || initialLoading}
+                disabled={refreshing || loading}
                 className="gap-2 cursor-pointer"
               >
                 {refreshing ? (
@@ -1398,261 +1061,172 @@ export default function PositionAnalyticsPage() {
             </div>
           )}
 
-          {initialLoading ? (
+          {loading ? (
             <div className="space-y-8">
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 {[1, 2, 3, 4].map((i) => (
                   <Skeleton key={i} className="h-32 w-full rounded-xl" />
                 ))}
               </div>
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <Skeleton className="h-[400px] rounded-xl" />
-                <Skeleton className="lg:col-span-2 h-[400px] rounded-xl" />
+                <Skeleton className="h-[400px] rounded-xl" />
               </div>
             </div>
-          ) : displaySummary ? (
+          ) : analytics ? (
             <>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 <SummaryCard
                   title="Total Positions"
-                  value={displaySummary.totalPositions}
-                  subtext={`${displaySummary.wonCount} won · ${displaySummary.lostCount} lost · ${displaySummary.openCount} open`}
+                  value={winCount + lossCount}
+                  subtext={`${winCount} won · ${lossCount} lost`}
                   icon={Activity}
                   colorClass="text-blue-500"
-                  info="Total number of live (non-simulated) positions analyzed. Positions are categorized as won (profit ≥ 0), lost (profit < 0), or open (not yet resolved)."
+                  info="Total number of resolved positions analyzed."
                 />
                 <SummaryCard
                   title="Win Rate"
-                  value={
-                    displaySummary.wonCount + displaySummary.lostCount > 0
-                      ? `${((displaySummary.wonCount / (displaySummary.wonCount + displaySummary.lostCount)) * 100).toFixed(1)}%`
-                      : "N/A"
-                  }
+                  value={`${(winRate * 100).toFixed(1)}%`}
                   subtext="Based on resolved positions"
                   icon={Percent}
-                  trend={displaySummary.wonCount > displaySummary.lostCount ? "up" : "neutral"}
-                  trendValue={
-                    displaySummary.wonCount > displaySummary.lostCount ? "Profitable" : ""
-                  }
+                  trend={winRate >= 0.5 ? "up" : "down"}
+                  trendValue={winRate >= 0.5 ? "Profitable" : ""}
                   colorClass="text-purple-500"
-                  info="Percentage of resolved positions that ended with profit. Calculated as: won / (won + lost). Open positions are excluded from this calculation."
+                  info="Percentage of positions that ended with profit."
                 />
                 <SummaryCard
-                  title="Avg Max Drawdown"
-                  value={`${displaySummary.avgMaxDrawdownPercent.toFixed(1)}%`}
-                  subtext={`${displaySummary.positionsWithDrawdownOver10Percent} positions > 10% DD`}
+                  title="Avg Hold Time"
+                  value={`${avgHoldingHours.toFixed(1)}h`}
+                  subtext="Average position duration"
                   icon={TrendingDown}
-                  colorClass="text-rose-500"
-                  info="Average of the maximum price drop experienced by each position after entry. Drawdown = (entry price - lowest price) / entry price × 100. Higher values indicate more volatile positions."
+                  colorClass="text-orange-500"
+                  info="Average time from entry to resolution."
                 />
                 <SummaryCard
                   title="Total PnL"
-                  value={`${displaySummary.byOutcome.reduce((acc, curr) => acc + curr.totalPnL, 0) >= 0 ? "+" : ""}$${displaySummary.byOutcome.reduce((acc, curr) => acc + curr.totalPnL, 0).toFixed(2)}`}
+                  value={`${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}`}
                   subtext="Realized Profit/Loss"
                   icon={DollarSign}
-                  trend={
-                    displaySummary.byOutcome.reduce((acc, curr) => acc + curr.totalPnL, 0) >= 0
-                      ? "up"
-                      : "down"
-                  }
+                  trend={totalPnl >= 0 ? "up" : "down"}
                   trendValue="Net Result"
                   colorClass="text-emerald-500"
-                  info="Sum of all realized profits and losses from resolved positions. Does not include unrealized P/L from open positions."
+                  info="Sum of all realized profits and losses."
                 />
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <Card>
                   <CardHeader className="pb-3">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <CardTitle className="text-lg flex items-center gap-2">
-                          <Target className="h-5 w-5 text-primary" />
-                          Stop Loss Simulation
-                          <InfoTooltip text="Simulates what would have happened if you had set stop-loss orders at different thresholds. 'Recovered' means holding was more profitable than selling at stop-loss." />
-                        </CardTitle>
-                        <CardDescription>
-                          Impact of stop-loss thresholds on past trades
-                        </CardDescription>
-                      </div>
-                      <SectionFilter
-                        value={stopLossFilter}
-                        onChange={(v) => setStopLossFilter(v)}
-                      />
-                    </div>
+                    <CardTitle className="text-lg flex items-center gap-2">
+                      <Target className="h-5 w-5 text-primary" />
+                      Stop Loss Simulation
+                      <InfoTooltip text="Simulates what would have happened with stop-loss orders at different thresholds." />
+                    </CardTitle>
+                    <CardDescription>Impact of stop-loss thresholds on past trades</CardDescription>
                   </CardHeader>
                   <CardContent className="pt-0">
-                    <StopLossTable simulations={stopLossSummary} />
+                    <StopLossTable analysis={analytics.stopLossAnalysis} />
                   </CardContent>
                 </Card>
 
                 <Card>
                   <CardHeader className="pb-3">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <CardTitle className="text-lg flex items-center gap-2">
-                          <Shield className="h-5 w-5 text-primary" />
-                          Hedging Simulation
-                          <InfoTooltip text="Simulates hedging by buying opposite outcome shares when price dropped. Click rows to see strategy details." />
-                        </CardTitle>
-                        <CardDescription>
-                          Compare hedging strategies at different trigger points
-                        </CardDescription>
-                      </div>
-                      <SectionFilter value={hedgingFilter} onChange={(v) => setHedgingFilter(v)} />
-                    </div>
+                    <CardTitle className="text-lg flex items-center gap-2">
+                      <Shield className="h-5 w-5 text-primary" />
+                      Hedging Simulation
+                      <InfoTooltip text="Simulates hedging by buying opposite outcome shares when price dropped." />
+                    </CardTitle>
+                    <CardDescription>
+                      Compare hedging strategies at different trigger points
+                    </CardDescription>
                   </CardHeader>
                   <CardContent className="pt-0">
-                    <HedgingSimulationTable rows={hedgingSummary} />
-                  </CardContent>
-                </Card>
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-                <Card className="lg:col-span-1">
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-lg flex items-center gap-2">
-                      <BarChart3 className="h-5 w-5 text-primary" />
-                      Outcome Analysis
-                      <InfoTooltip text="Breakdown by outcome. Won = profit ≥ 0, Lost = profit < 0, Open = pending." />
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    {(displaySummary?.byOutcome || []).map((outcome) => (
-                      <div key={outcome.outcome} className="space-y-2">
-                        <div className="flex justify-between text-sm font-medium">
-                          <span className="capitalize">{outcome.outcome}</span>
-                          <span
-                            className={outcome.totalPnL >= 0 ? "text-emerald-500" : "text-rose-500"}
-                          >
-                            {outcome.totalPnL >= 0 ? "+" : ""}${outcome.totalPnL.toFixed(2)}
-                          </span>
-                        </div>
-                        <div className="h-2 w-full bg-secondary rounded-full overflow-hidden">
-                          <div
-                            className={cn(
-                              "h-full transition-all",
-                              outcome.outcome === "won"
-                                ? "bg-emerald-500"
-                                : outcome.outcome === "lost"
-                                  ? "bg-rose-500"
-                                  : "bg-blue-500",
-                            )}
-                            style={{
-                              width: `${Math.max(5, (outcome.count / (displaySummary?.totalPositions || 1)) * 100)}%`,
-                            }}
-                          />
-                        </div>
-                        <div className="flex justify-between text-xs text-muted-foreground">
-                          <span>{outcome.count} positions</span>
-                          <span>Avg DD: {outcome.avgDrawdown.toFixed(1)}%</span>
-                        </div>
-                      </div>
-                    ))}
-                  </CardContent>
-                </Card>
-
-                <Card className="lg:col-span-3">
-                  <CardHeader className="pb-3">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <CardTitle className="text-lg">Positions</CardTitle>
-                        <CardDescription>
-                          {positionsForTable.length} positions
-                          {positionsFilter !== "all" && ` (${positionsFilter})`}
-                        </CardDescription>
-                      </div>
-                      <SectionFilter
-                        value={positionsFilter}
-                        onChange={(v) => setPositionsFilter(v as StatusFilter)}
-                        includeOpen
-                      />
-                    </div>
-                  </CardHeader>
-                  <CardContent className="p-0">
-                    <div className="border-t">
-                      <div className="w-full overflow-auto max-h-[600px]">
-                        <table className="w-full caption-bottom text-sm">
-                          <thead className="[&_tr]:border-b sticky top-0 bg-background z-10">
-                            <tr className="border-b transition-colors hover:bg-muted/50">
-                              <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground w-[30px]"></th>
-                              <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">
-                                Market
-                              </th>
-                              <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
-                                <div className="flex items-center justify-end gap-1">
-                                  Entry
-                                  <InfoTooltip text="Price you paid to enter this position." />
-                                </div>
-                              </th>
-                              <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
-                                <div className="flex items-center justify-end gap-1">
-                                  Last
-                                  <InfoTooltip text="Most recent mid-market price." />
-                                </div>
-                              </th>
-                              <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
-                                <div className="flex items-center justify-end gap-1">
-                                  P/L
-                                  <InfoTooltip text="Realized profit or loss." />
-                                </div>
-                              </th>
-                              <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">
-                                <div className="flex items-center gap-1">
-                                  Status
-                                  <InfoTooltip text="Won = profit ≥ 0. Lost = loss. Open = pending." />
-                                </div>
-                              </th>
-                              <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
-                                <div className="flex items-center justify-end gap-1">
-                                  Max DD
-                                  <InfoTooltip text="Maximum drawdown percentage." />
-                                </div>
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody className="[&_tr:last-child]:border-0">
-                            {positionsForTable.length === 0 ? (
-                              <tr>
-                                <td
-                                  colSpan={7}
-                                  className="p-4 align-middle text-center h-24 text-muted-foreground"
-                                >
-                                  No positions found matching filter.
-                                </td>
-                              </tr>
-                            ) : (
-                              positionsForTable.map((pos) => (
-                                <PositionRow key={pos.position.id} positionData={pos} />
-                              ))
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
+                    <HedgingTable analysis={analytics.hedgingAnalysis} />
                   </CardContent>
                 </Card>
               </div>
 
               <Card>
                 <CardHeader className="pb-3">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Tag className="h-5 w-5 text-primary" />
+                    Category Analysis
+                    <InfoTooltip text="Performance breakdown by market category." />
+                  </CardTitle>
+                  <CardDescription>
+                    Compare performance across different market categories
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  <CategoryBreakdownSection categories={analytics.categoryBreakdown} />
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
                     <div>
                       <CardTitle className="text-lg flex items-center gap-2">
-                        <Tag className="h-5 w-5 text-primary" />
-                        Category Analysis
-                        <InfoTooltip text="Strategy performance breakdown by market category. Shows which strategies work best for different types of markets." />
+                        <BarChart3 className="h-5 w-5 text-primary" />
+                        Positions
                       </CardTitle>
                       <CardDescription>
-                        Compare stop-loss and hedging effectiveness across different market
-                        categories
+                        {filteredPositions.length} positions
+                        {positionsFilter !== "all" && ` (${positionsFilter})`}
                       </CardDescription>
                     </div>
-                    <SectionFilter value={categoryFilter} onChange={(v) => setCategoryFilter(v)} />
+                    <SectionFilter
+                      value={positionsFilter}
+                      onChange={(v) => setPositionsFilter(v)}
+                    />
                   </div>
                 </CardHeader>
-                <CardContent className="pt-0">
-                  <CategoryAnalysisSection categories={categoryData} />
+                <CardContent className="p-0">
+                  <div className="border-t">
+                    <div className="w-full overflow-auto max-h-[600px]">
+                      <table className="w-full caption-bottom text-sm">
+                        <thead className="[&_tr]:border-b sticky top-0 bg-background z-10">
+                          <tr className="border-b transition-colors hover:bg-muted/50">
+                            <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground w-[30px]"></th>
+                            <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">
+                              Market
+                            </th>
+                            <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
+                              Entry
+                            </th>
+                            <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
+                              Final
+                            </th>
+                            <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
+                              P/L
+                            </th>
+                            <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">
+                              Status
+                            </th>
+                            <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
+                              Max DD
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="[&_tr:last-child]:border-0">
+                          {filteredPositions.length === 0 ? (
+                            <tr>
+                              <td
+                                colSpan={7}
+                                className="p-4 align-middle text-center h-24 text-muted-foreground"
+                              >
+                                No positions found matching filter.
+                              </td>
+                            </tr>
+                          ) : (
+                            filteredPositions.map((pos) => (
+                              <PositionRow key={pos.id} position={pos} wallet={selectedWallet} />
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 </CardContent>
               </Card>
             </>
@@ -1664,8 +1238,7 @@ export default function PositionAnalyticsPage() {
               <div>
                 <h3 className="text-lg font-medium">No Data Available</h3>
                 <p className="text-muted-foreground max-w-sm mx-auto">
-                  Could not fetch position analytics. Please check your connection or try again
-                  later.
+                  Could not fetch analytics. Please run the sync cron job first.
                 </p>
               </div>
               <Button onClick={handleRefresh}>Try Again</Button>

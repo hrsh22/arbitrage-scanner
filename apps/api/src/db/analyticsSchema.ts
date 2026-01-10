@@ -65,3 +65,34 @@ export const resolvedPositions = pgTable(
 
 export type ResolvedPosition = typeof resolvedPositions.$inferSelect;
 export type NewResolvedPosition = typeof resolvedPositions.$inferInsert;
+
+export const walletAnalytics = pgTable(
+  "wallet_analytics",
+  {
+    id: serial("id").primaryKey(),
+    walletAddress: text("wallet_address").notNull().unique(),
+
+    totalPnl: numeric("total_pnl", { precision: 14, scale: 4 }),
+    totalCost: numeric("total_cost", { precision: 14, scale: 4 }),
+    winCount: numeric("win_count", { precision: 10, scale: 0 }),
+    lossCount: numeric("loss_count", { precision: 10, scale: 0 }),
+    winRate: numeric("win_rate", { precision: 6, scale: 4 }),
+
+    avgEntryPrice: numeric("avg_entry_price", { precision: 10, scale: 6 }),
+    avgPnlPerPosition: numeric("avg_pnl_per_position", { precision: 14, scale: 4 }),
+    avgHoldingHours: numeric("avg_holding_hours", { precision: 10, scale: 2 }),
+
+    stopLossAnalysis: jsonb("stop_loss_analysis"),
+    hedgingAnalysis: jsonb("hedging_analysis"),
+    categoryBreakdown: jsonb("category_breakdown"),
+    dailyPnl: jsonb("daily_pnl"),
+
+    computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    walletIdx: uniqueIndex("wallet_analytics_wallet_idx").on(table.walletAddress),
+  }),
+);
+
+export type WalletAnalytics = typeof walletAnalytics.$inferSelect;
+export type NewWalletAnalytics = typeof walletAnalytics.$inferInsert;
