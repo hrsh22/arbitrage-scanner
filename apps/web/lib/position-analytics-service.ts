@@ -1185,3 +1185,16 @@ export async function triggerResolvedPositionsSync(
     total: response.total || response.existing + response.synced,
   };
 }
+
+export async function fetchLastSyncTime(
+  walletAddress: string,
+  signal?: AbortSignal,
+): Promise<Date | null> {
+  const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+  const response = await fetch(`${apiBase}/resolved-positions/${walletAddress}/last-sync`, {
+    signal,
+  });
+  if (!response.ok) return null;
+  const data = (await response.json()) as { success: boolean; lastSyncTime: string | null };
+  return data.lastSyncTime ? new Date(data.lastSyncTime) : null;
+}

@@ -813,5 +813,21 @@ export function buildResolvedPositionsRouter(): Router {
     }
   });
 
+  router.get("/:wallet/last-sync", async (req, res) => {
+    try {
+      const wallet = req.params.wallet;
+      if (!wallet) {
+        res.status(400).json({ success: false, error: "Wallet address required" });
+        return;
+      }
+
+      const lastSyncTime = await resolvedPositionsRepository.getLastSyncTime(wallet);
+      res.json({ success: true, lastSyncTime });
+    } catch (error) {
+      logger.error("Failed to fetch last sync time", { error: (error as Error).message });
+      res.status(500).json({ success: false, error: (error as Error).message });
+    }
+  });
+
   return router;
 }

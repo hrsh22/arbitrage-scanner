@@ -133,6 +133,17 @@ export class ResolvedPositionsRepository {
 
     return results[0] ?? { total: 0, won: 0, lost: 0, totalPnL: 0 };
   }
+
+  async getLastSyncTime(walletAddress: string): Promise<Date | null> {
+    const results = await this.database
+      .select({
+        lastUpdated: sql<Date>`max(updated_at)`,
+      })
+      .from(resolvedPositions)
+      .where(eq(resolvedPositions.walletAddress, walletAddress.toLowerCase()));
+
+    return results[0]?.lastUpdated ?? null;
+  }
 }
 
 export const resolvedPositionsRepository = new ResolvedPositionsRepository();

@@ -5,6 +5,7 @@ import { Header } from "@/components/ui/header";
 import {
   getPositionAnalyticsHybrid,
   calculateCategoryAnalysis,
+  fetchLastSyncTime,
 } from "@/lib/position-analytics-service";
 import { DEFAULT_WALLET, WALLET_OPTIONS } from "@/lib/polymarket-api";
 import {
@@ -103,6 +104,18 @@ function SectionFilter({
       ))}
     </div>
   );
+}
+
+function formatRelativeTime(date: Date): string {
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 1) return "just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays}d ago`;
 }
 
 function InfoTooltip({ text }: { text: string }) {
@@ -1167,6 +1180,7 @@ export default function PositionAnalyticsPage() {
 
   const [allPositions, setAllPositions] = useState<PositionAnalytics[]>([]);
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
+  const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
 
   const [stopLossFilter, setStopLossFilter] = useState<ResolvedFilter>("all");
   const [hedgingFilter, setHedgingFilter] = useState<ResolvedFilter>("all");
@@ -1256,18 +1270,22 @@ export default function PositionAnalyticsPage() {
         if (isRefresh) setRefreshing(true);
         else setInitialLoading(true);
 
-        const res = await getPositionAnalyticsHybrid(
-          selectedWallet,
-          {
-            fidelityMinutes: fidelity,
-            status: "all",
-            limit: 1000,
-          },
-          abortControllerRef.current.signal,
-        );
+        const [res, syncTime] = await Promise.all([
+          getPositionAnalyticsHybrid(
+            selectedWallet,
+            {
+              fidelityMinutes: fidelity,
+              status: "all",
+              limit: 1000,
+            },
+            abortControllerRef.current.signal,
+          ),
+          fetchLastSyncTime(selectedWallet, abortControllerRef.current.signal),
+        ]);
 
         setAllPositions(res.positions);
         setSummary(res.summary);
+        setLastSyncTime(syncTime);
         setError(null);
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
@@ -1316,7 +1334,12 @@ export default function PositionAnalyticsPage() {
                 Position Analytics
               </h1>
               <p className="text-muted-foreground mt-1">
-                Post-entry analysis for {allPositions.length} live positions
+                {allPositions.length} positions
+                {lastSyncTime && (
+                  <span className="ml-2 text-xs">
+                    · Last synced {formatRelativeTime(lastSyncTime)}
+                  </span>
+                )}
                 {refreshing && <span className="ml-2 text-primary">(updating...)</span>}
               </p>
             </div>
