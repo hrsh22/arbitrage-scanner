@@ -11,6 +11,7 @@ import { CrossPlatformPoller } from "./services/crossPlatformPoller.js";
 import { buildOpportunitiesRouter } from "./routes/opportunities.js";
 import { buildBotRouter } from "./bot/index.js";
 import { buildPositionAnalyticsRouter } from "./routes/positionAnalytics.js";
+import { buildResolvedPositionsRouter } from "./routes/resolvedPositions.js";
 import { logger } from "./logger.js";
 
 const app = express();
@@ -64,6 +65,9 @@ app.use("/bot", buildBotRouter());
 
 // Position Analytics API
 app.use("/position-analytics", buildPositionAnalyticsRouter());
+
+// Resolved Positions API (DB-backed)
+app.use("/resolved-positions", buildResolvedPositionsRouter());
 
 // Cross-platform arbitrage API (reads from DB, populated by background poller)
 app.get("/cross-platform", async (req, res) => {

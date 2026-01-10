@@ -2,8 +2,11 @@ import {
   fetchPositions,
   fetchActivity,
   fetchPriceHistory,
+  fetchResolvedPositionsFromDB,
+  syncResolvedPositions,
   type PolymarketPosition,
   type PolymarketActivity,
+  type ResolvedPositionFromDB,
 } from "./polymarket-api";
 import type {
   PositionAnalytics,
@@ -718,12 +721,14 @@ export function calculateCategoryAnalysis(
         ? positions.reduce((sum, p) => sum + p.maxDrawdownPercent, 0) / positions.length
         : 0;
 
+    const resolvedPositions = positions.filter((p) => p.category.outcome !== "open");
+
     const stopLossAnalysis: CategoryStopLossAnalysis[] = stopLossThresholds.map((threshold) => {
       let triggered = 0;
       let recovered = 0;
       let netImpact = 0;
 
-      for (const p of positions) {
+      for (const p of resolvedPositions) {
         const sim = p.stopLossSimulations.find((s) => s.threshold === threshold);
         if (sim?.triggered) {
           triggered++;
@@ -748,7 +753,7 @@ export function calculateCategoryAnalysis(
       let fullLockNetImpact = 0;
       let doubleOppositeNetImpact = 0;
 
-      for (const p of positions) {
+      for (const p of resolvedPositions) {
         const sim = p.hedgingSimulations.find((s) => s.threshold === threshold);
         if (sim?.triggered && sim.strategies.length > 0) {
           triggered++;
@@ -890,12 +895,14 @@ function calculateSummary(
       return sum + drop;
     }, 0) / analytics.length;
 
+  const resolvedOnly = analytics.filter((a) => a.category.outcome !== "open");
+
   const stopLossImpact = stopLossThresholds.map((threshold) => {
     let triggered = 0;
     let recovered = 0;
     let netImpact = 0;
 
-    for (const a of analytics) {
+    for (const a of resolvedOnly) {
       const sim = a.stopLossSimulations.find((s) => s.threshold === threshold);
       if (sim?.triggered) {
         triggered++;
@@ -1030,4 +1037,151 @@ export async function getPositionAnalyticsFromApi(
   const summary = calculateSummary(analytics, opts.stopLossThresholds);
 
   return { positions: analytics, summary, options: opts };
+}
+
+function convertDBRecordToPositionAnalytics(record: ResolvedPositionFromDB): PositionAnalytics {
+  const entryPrice = parseFloat(record.entryPrice || "0");
+  const cost = parseFloat(record.cost || "0");
+  const profitLoss = parseFloat(record.profitLoss || "0");
+  const maxDrawdownPercent = parseFloat(record.maxDrawdownPercent || "0");
+  const lowestPrice = parseFloat(record.lowestPrice || "0");
+  const highestPrice = parseFloat(record.highestPrice || "0");
+  const finalPrice = parseFloat(record.finalPrice || "0");
+  const fidelityMinutes = parseInt(record.fidelityMinutes || "5", 10) as 1 | 5 | 15;
+
+  const priceHistory = (record.priceHistory || []) as { timestamp: number; price: number }[];
+  const oppositeHistory = (record.oppositeOutcomePriceHistory || []) as {
+    timestamp: number;
+    price: number;
+  }[];
+
+  const stopLossSimulations = (record.stopLossSimulations || []) as StopLossSimulation[];
+  const hedgingSimulations = (record.hedgingSimulations || []) as HedgingSimulation[];
+
+  const result = record.result as "won" | "lost" | null;
+  const status: "open" | "won" | "lost" =
+    result === "won" ? "won" : result === "lost" ? "lost" : "open";
+
+  return {
+    position: {
+      id: record.id,
+      marketId: record.conditionId,
+      marketQuestion: record.marketQuestion || "",
+      marketSlug: record.marketSlug || undefined,
+      eventSlug: record.eventSlug || undefined,
+      tokenId: record.tokenId,
+      outcome: record.outcome || "",
+      entryPrice,
+      cost,
+      closesAt: undefined,
+      status,
+      resolvedAt: record.resolvedAt || undefined,
+      profitLoss,
+      isSimulated: false,
+      createdAt: record.createdAt || new Date().toISOString(),
+    },
+    priceHistory,
+    oppositeOutcomePriceHistory: oppositeHistory,
+    entryPrice,
+    lowestPriceAfterEntry: lowestPrice,
+    lowestPriceTimestamp: null,
+    highestPriceAfterEntry: highestPrice,
+    highestPriceTimestamp: null,
+    maxDrawdownPercent,
+    currentOrFinalPrice: finalPrice,
+    oppositeOutcome: null,
+    timeWindowAnalysis: [],
+    stopLossSimulations,
+    hedgingSimulations,
+    category: {
+      outcome: status,
+      tags: (record.tags || []) as string[],
+      normalized: record.category || "Unknown",
+    },
+    analyzedAt: record.capturedAt,
+    fidelityMinutes,
+  };
+}
+
+export async function getPositionAnalyticsHybrid(
+  walletAddress: string,
+  options: Partial<AnalyticsOptions> = {},
+  signal?: AbortSignal,
+): Promise<{
+  positions: PositionAnalytics[];
+  summary: AnalyticsSummary;
+  options: AnalyticsOptions;
+  fromDB: number;
+  fromAPI: number;
+}> {
+  const opts: AnalyticsOptions = { ...DEFAULT_OPTIONS, ...options };
+
+  let resolvedFromDB: PositionAnalytics[] = [];
+  try {
+    const dbResponse = await fetchResolvedPositionsFromDB(walletAddress, signal);
+    resolvedFromDB = dbResponse.positions.map(convertDBRecordToPositionAnalytics);
+  } catch (error) {
+    console.warn("Failed to fetch from DB, falling back to API only", error);
+  }
+
+  const resolvedTokenIds = new Set(resolvedFromDB.map((p) => p.position.tokenId));
+
+  let openPositions = await reconstructPositionsFromApi(walletAddress, signal);
+  openPositions = openPositions.filter(
+    (p) => p.status === "open" && !resolvedTokenIds.has(p.tokenId),
+  );
+
+  if (opts.limit && openPositions.length > opts.limit) {
+    openPositions = openPositions.slice(0, opts.limit);
+  }
+
+  const openResults = await parallelLimit(openPositions, CONCURRENCY_LIMIT, async (position) => {
+    try {
+      return await analyzePosition(position, opts, signal);
+    } catch (error) {
+      console.error("Failed to analyze position", position.tokenId, error);
+      return null;
+    }
+  });
+
+  const openAnalytics = openResults.filter((r): r is PositionAnalytics => r !== null);
+
+  let allAnalytics = [...resolvedFromDB, ...openAnalytics];
+
+  if (opts.status !== "all") {
+    allAnalytics = allAnalytics.filter((p) => p.category.outcome === opts.status);
+  }
+
+  allAnalytics.sort((a, b) => {
+    const dateA = new Date(a.position.createdAt).getTime();
+    const dateB = new Date(b.position.createdAt).getTime();
+    return dateB - dateA;
+  });
+
+  if (opts.limit && allAnalytics.length > opts.limit) {
+    allAnalytics = allAnalytics.slice(0, opts.limit);
+  }
+
+  const summary = calculateSummary(allAnalytics, opts.stopLossThresholds);
+
+  return {
+    positions: allAnalytics,
+    summary,
+    options: opts,
+    fromDB: resolvedFromDB.length,
+    fromAPI: openAnalytics.length,
+  };
+}
+
+export async function triggerResolvedPositionsSync(
+  walletAddress: string,
+  fidelity = 5,
+  signal?: AbortSignal,
+): Promise<{ synced: number; existing: number; total: number }> {
+  const response = await syncResolvedPositions(walletAddress, fidelity, signal);
+  return {
+    synced: response.synced,
+    existing: response.existing,
+    total: response.total || response.existing + response.synced,
+  };
 }

@@ -58,14 +58,28 @@ export async function fetchPositions(
   walletAddress: string,
   signal?: AbortSignal,
 ): Promise<PolymarketPosition[]> {
-  const url = `${DATA_API_BASE}/positions?user=${walletAddress}&sizeThreshold=0`;
-  const response = await fetch(url, { signal });
+  const allPositions: PolymarketPosition[] = [];
+  let offset = 0;
+  const batchSize = 500;
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch positions: ${response.status}`);
+  while (true) {
+    const url = `${DATA_API_BASE}/positions?user=${walletAddress}&sizeThreshold=0&limit=${batchSize}&offset=${offset}`;
+    const response = await fetch(url, { signal });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch positions: ${response.status}`);
+    }
+
+    const batch = (await response.json()) as PolymarketPosition[];
+    if (batch.length === 0) break;
+
+    allPositions.push(...batch);
+    offset += batchSize;
+
+    if (batch.length < batchSize) break;
   }
 
-  return response.json();
+  return allPositions;
 }
 
 export async function fetchActivity(
@@ -151,4 +165,86 @@ export async function fetchEventTags(
   }
 
   return results;
+}
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+
+export interface ResolvedPositionFromDB {
+  id: number;
+  walletAddress: string;
+  tokenId: string;
+  conditionId: string;
+  eventSlug: string | null;
+  marketSlug: string | null;
+  marketQuestion: string | null;
+  outcome: string | null;
+  entryPrice: string | null;
+  cost: string | null;
+  size: string | null;
+  createdAt: string | null;
+  resolvedAt: string | null;
+  finalPrice: string | null;
+  profitLoss: string | null;
+  result: string | null;
+  maxDrawdownPercent: string | null;
+  lowestPrice: string | null;
+  highestPrice: string | null;
+  priceHistory: { timestamp: number; price: number }[] | null;
+  oppositeOutcomePriceHistory: { timestamp: number; price: number }[] | null;
+  stopLossSimulations: unknown[] | null;
+  hedgingSimulations: unknown[] | null;
+  category: string | null;
+  tags: string[] | null;
+  fidelityMinutes: string | null;
+  capturedAt: string;
+  updatedAt: string;
+}
+
+export interface ResolvedPositionsResponse {
+  success: boolean;
+  positions: ResolvedPositionFromDB[];
+  stats: {
+    total: number;
+    won: number;
+    lost: number;
+    totalPnL: number;
+  };
+  count: number;
+}
+
+export interface SyncResponse {
+  success: boolean;
+  synced: number;
+  existing: number;
+  total?: number;
+  message?: string;
+}
+
+export async function fetchResolvedPositionsFromDB(
+  walletAddress: string,
+  signal?: AbortSignal,
+): Promise<ResolvedPositionsResponse> {
+  const url = `${API_BASE}/resolved-positions/${walletAddress}`;
+  const response = await fetch(url, { signal });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch resolved positions: ${response.status}`);
+  }
+
+  return response.json();
+}
+
+export async function syncResolvedPositions(
+  walletAddress: string,
+  fidelity = 5,
+  signal?: AbortSignal,
+): Promise<SyncResponse> {
+  const url = `${API_BASE}/resolved-positions/${walletAddress}/sync?fidelity=${fidelity}`;
+  const response = await fetch(url, { method: "POST", signal });
+
+  if (!response.ok) {
+    throw new Error(`Failed to sync resolved positions: ${response.status}`);
+  }
+
+  return response.json();
 }

@@ -12,6 +12,7 @@
     "db:migrate": "drizzle-kit migrate",
     "cron:run-trading-bot": "tsx src/cron/runTradingBot.ts",
     "cron:check-bot-resolutions": "tsx src/cron/checkResolutions.ts",
+    "cron:sync-resolved-positions": "tsx src/cron/syncResolvedPositions.ts",
     "approve-allowance": "tsx src/approveAllowance.ts"
   },
   "dependencies": {

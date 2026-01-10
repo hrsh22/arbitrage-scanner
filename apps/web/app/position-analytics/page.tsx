@@ -3,11 +3,10 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Header } from "@/components/ui/header";
 import {
-  getPositionAnalyticsFromApi,
+  getPositionAnalyticsHybrid,
   calculateCategoryAnalysis,
-  normalizeToCategory,
 } from "@/lib/position-analytics-service";
-import { DEFAULT_WALLET, WALLET_OPTIONS, fetchEventTags } from "@/lib/polymarket-api";
+import { DEFAULT_WALLET, WALLET_OPTIONS } from "@/lib/polymarket-api";
 import {
   PositionAnalytics,
   AnalyticsSummary,
@@ -69,6 +68,42 @@ import {
   Legend,
   ComposedChart,
 } from "recharts";
+
+type StatusFilter = "all" | "open" | "won" | "lost";
+type ResolvedFilter = "all" | "won" | "lost";
+
+function SectionFilter({
+  value,
+  onChange,
+  includeOpen = false,
+}: {
+  value: StatusFilter | ResolvedFilter;
+  onChange: (v: ResolvedFilter) => void;
+  includeOpen?: boolean;
+}) {
+  const options = includeOpen
+    ? (["all", "open", "won", "lost"] as const)
+    : (["all", "won", "lost"] as const);
+
+  return (
+    <div className="flex items-center gap-0.5 bg-muted/50 rounded-lg p-0.5">
+      {options.map((opt) => (
+        <button
+          key={opt}
+          onClick={() => onChange(opt as ResolvedFilter)}
+          className={cn(
+            "px-2 py-0.5 text-xs rounded capitalize font-medium transition-colors cursor-pointer",
+            value === opt
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {opt}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 function InfoTooltip({ text }: { text: string }) {
   return (
@@ -503,39 +538,8 @@ function HedgingSimulationTable({ rows }: { rows: HedgingSummaryRow[] }) {
   );
 }
 
-function CategoryAnalysisSection({
-  categories,
-  loading,
-  onLoad,
-}: {
-  categories: CategoryAnalysis[] | null;
-  loading: boolean;
-  onLoad: () => void;
-}) {
+function CategoryAnalysisSection({ categories }: { categories: CategoryAnalysis[] }) {
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-8">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground mr-2" />
-        <span className="text-sm text-muted-foreground">Loading category analysis...</span>
-      </div>
-    );
-  }
-
-  if (!categories) {
-    return (
-      <div className="flex flex-col items-center justify-center py-8 space-y-4">
-        <p className="text-sm text-muted-foreground">
-          Category analysis requires fetching market tags from Polymarket API.
-        </p>
-        <Button onClick={onLoad} variant="outline" size="sm">
-          <Tag className="h-4 w-4 mr-2" />
-          Load Category Analysis
-        </Button>
-      </div>
-    );
-  }
 
   if (categories.length === 0) {
     return <p className="text-sm text-muted-foreground">No category data available</p>;
@@ -574,12 +578,6 @@ function CategoryAnalysisSection({
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
-        <Button onClick={onLoad} variant="ghost" size="sm">
-          <RefreshCw className="h-4 w-4 mr-2" />
-          Refresh
-        </Button>
-      </div>
       <div className="rounded-md border">
         <div className="w-full overflow-auto">
           <table className="w-full caption-bottom text-sm">
@@ -1161,8 +1159,6 @@ function PositionRow({ positionData }: { positionData: PositionAnalytics }) {
   );
 }
 
-type StatusFilter = "all" | "open" | "won" | "lost";
-
 export default function PositionAnalyticsPage() {
   const [initialLoading, setInitialLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -1172,115 +1168,82 @@ export default function PositionAnalyticsPage() {
   const [allPositions, setAllPositions] = useState<PositionAnalytics[]>([]);
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
 
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [stopLossFilter, setStopLossFilter] = useState<ResolvedFilter>("all");
+  const [hedgingFilter, setHedgingFilter] = useState<ResolvedFilter>("all");
+  const [categoryFilter, setCategoryFilter] = useState<ResolvedFilter>("all");
+  const [positionsFilter, setPositionsFilter] = useState<StatusFilter>("all");
+
   const [fidelity, setFidelity] = useState<1 | 5 | 15>(5);
   const [selectedWallet, setSelectedWallet] = useState(DEFAULT_WALLET);
 
-  const [categoryData, setCategoryData] = useState<CategoryAnalysis[] | null>(null);
-  const [categoryLoading, setCategoryLoading] = useState(false);
+  const resolvedPositions = useMemo(
+    () => allPositions.filter((p) => p.category.outcome !== "open"),
+    [allPositions],
+  );
 
-  const filteredPositions = useMemo(() => {
-    if (statusFilter === "all") return allPositions;
-    return allPositions.filter((p) => p.category.outcome === statusFilter);
-  }, [allPositions, statusFilter]);
+  const filterResolved = useCallback(
+    (filter: ResolvedFilter): PositionAnalytics[] => {
+      if (filter === "all") return resolvedPositions;
+      return resolvedPositions.filter((p) => p.category.outcome === filter);
+    },
+    [resolvedPositions],
+  );
 
-  const filteredSummary = useMemo((): AnalyticsSummary | null => {
-    if (!summary) return null;
-    if (statusFilter === "all") return summary;
+  const positionsForTable = useMemo(() => {
+    if (positionsFilter === "all") return allPositions;
+    return allPositions.filter((p) => p.category.outcome === positionsFilter);
+  }, [allPositions, positionsFilter]);
 
-    const filtered = filteredPositions;
-    if (filtered.length === 0) {
-      return {
-        totalPositions: 0,
-        wonCount: 0,
-        lostCount: 0,
-        openCount: 0,
-        avgMaxDrawdownPercent: 0,
-        avgLowestPriceDropPercent: 0,
-        positionsWithDrawdownOver10Percent: 0,
-        positionsWithDrawdownOver20Percent: 0,
-        stopLossImpact: summary.stopLossImpact.map((s) => ({
-          ...s,
-          wouldHaveTriggered: 0,
-          wouldHaveRecovered: 0,
-          netImpactIfUsed: 0,
-        })),
-        byOutcome: [],
-        byTags: [],
-        byCategory: [],
-      };
-    }
+  const stopLossPositions = useMemo(
+    () => filterResolved(stopLossFilter),
+    [filterResolved, stopLossFilter],
+  );
 
-    const wonCount = filtered.filter((a) => a.category.outcome === "won").length;
-    const lostCount = filtered.filter((a) => a.category.outcome === "lost").length;
-    const openCount = filtered.filter((a) => a.category.outcome === "open").length;
-    const avgMaxDrawdown =
-      filtered.reduce((sum, a) => sum + a.maxDrawdownPercent, 0) / filtered.length;
+  const hedgingPositions = useMemo(
+    () => filterResolved(hedgingFilter),
+    [filterResolved, hedgingFilter],
+  );
 
-    const thresholds = summary.stopLossImpact.map((s) => s.threshold);
-    const stopLossImpact = thresholds.map((threshold) => {
-      let triggered = 0;
-      let recovered = 0;
-      let netImpact = 0;
+  const categoryPositions = useMemo(
+    () => filterResolved(categoryFilter),
+    [filterResolved, categoryFilter],
+  );
 
-      for (const pos of filtered) {
-        const sim = pos.stopLossSimulations.find((s) => s.threshold === threshold);
-        if (sim?.triggered) {
-          triggered++;
-          if (sim.recoveredAfterTrigger) recovered++;
-          const soldPnl = sim.profitLossIfSold ?? 0;
-          const heldPnl = sim.profitLossIfHeld ?? 0;
-          netImpact += soldPnl - heldPnl;
+  const computeStopLossImpact = useCallback(
+    (positions: PositionAnalytics[]): AnalyticsSummary["stopLossImpact"] => {
+      if (!summary) return [];
+      const thresholds = summary.stopLossImpact.map((s) => s.threshold);
+      return thresholds.map((threshold) => {
+        let triggered = 0;
+        let recovered = 0;
+        let netImpact = 0;
+        for (const pos of positions) {
+          const sim = pos.stopLossSimulations.find((s) => s.threshold === threshold);
+          if (sim?.triggered) {
+            triggered++;
+            if (sim.recoveredAfterTrigger) recovered++;
+            netImpact += (sim.profitLossIfSold ?? 0) - (sim.profitLossIfHeld ?? 0);
+          }
         }
-      }
+        return {
+          threshold,
+          wouldHaveTriggered: triggered,
+          wouldHaveRecovered: recovered,
+          netImpactIfUsed: netImpact,
+        };
+      });
+    },
+    [summary],
+  );
 
-      return {
-        threshold,
-        wouldHaveTriggered: triggered,
-        wouldHaveRecovered: recovered,
-        netImpactIfUsed: netImpact,
-      };
-    });
+  const stopLossSummary = useMemo(
+    () => computeStopLossImpact(stopLossPositions),
+    [computeStopLossImpact, stopLossPositions],
+  );
 
-    const outcomeMap = new Map<
-      string,
-      { count: number; totalPnL: number; totalDrawdown: number }
-    >();
-    for (const pos of filtered) {
-      const outcome = pos.category.outcome;
-      if (!outcomeMap.has(outcome)) {
-        outcomeMap.set(outcome, { count: 0, totalPnL: 0, totalDrawdown: 0 });
-      }
-      const data = outcomeMap.get(outcome)!;
-      data.count++;
-      data.totalPnL += pos.position.profitLoss ?? 0;
-      data.totalDrawdown += pos.maxDrawdownPercent;
-    }
+  const hedgingSummary = useMemo(() => computeHedgingSummary(hedgingPositions), [hedgingPositions]);
 
-    const byOutcome = Array.from(outcomeMap.entries()).map(([outcome, data]) => ({
-      outcome,
-      count: data.count,
-      totalPnL: data.totalPnL,
-      avgDrawdown: data.count > 0 ? data.totalDrawdown / data.count : 0,
-    }));
-
-    return {
-      ...summary,
-      totalPositions: filtered.length,
-      wonCount,
-      lostCount,
-      openCount,
-      avgMaxDrawdownPercent: avgMaxDrawdown,
-      positionsWithDrawdownOver10Percent: filtered.filter((a) => a.maxDrawdownPercent > 10).length,
-      positionsWithDrawdownOver20Percent: filtered.filter((a) => a.maxDrawdownPercent > 20).length,
-      stopLossImpact,
-      byOutcome,
-    };
-  }, [summary, filteredPositions, statusFilter]);
-
-  const hedgingSummary = useMemo(() => {
-    return computeHedgingSummary(filteredPositions);
-  }, [filteredPositions]);
+  const displaySummary = summary;
 
   const loadData = useCallback(
     async (isRefresh = false) => {
@@ -1293,7 +1256,7 @@ export default function PositionAnalyticsPage() {
         if (isRefresh) setRefreshing(true);
         else setInitialLoading(true);
 
-        const res = await getPositionAnalyticsFromApi(
+        const res = await getPositionAnalyticsHybrid(
           selectedWallet,
           {
             fidelityMinutes: fidelity,
@@ -1333,43 +1296,13 @@ export default function PositionAnalyticsPage() {
     setFidelity(Number(val) as 1 | 5 | 15);
   };
 
-  const loadCategoryAnalysis = useCallback(async () => {
-    if (allPositions.length === 0) return;
-
-    setCategoryLoading(true);
-    try {
-      const eventSlugs = allPositions
-        .map((p) => p.position.eventSlug)
-        .filter((slug): slug is string => slug !== undefined);
-
-      const tagsMap = await fetchEventTags(eventSlugs);
-
-      const positionsWithTags = allPositions.map((p) => {
-        const slug = p.position.eventSlug;
-        const tags = slug ? tagsMap[slug] || [] : [];
-        return {
-          ...p,
-          category: {
-            ...p.category,
-            tags,
-            normalized: normalizeToCategory(tags),
-          },
-        };
-      });
-
-      const thresholds = summary?.stopLossImpact.map((s) => s.threshold) || [
-        5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90,
-      ];
-      const categories = calculateCategoryAnalysis(positionsWithTags, thresholds);
-      setCategoryData(categories);
-    } catch (err) {
-      console.error("Failed to load category analysis:", err);
-    } finally {
-      setCategoryLoading(false);
-    }
-  }, [allPositions, summary]);
-
-  const displaySummary = filteredSummary;
+  const categoryData = useMemo(() => {
+    if (categoryPositions.length === 0) return [];
+    const thresholds = summary?.stopLossImpact.map((s) => s.threshold) || [
+      5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90,
+    ];
+    return calculateCategoryAnalysis(categoryPositions, thresholds);
+  }, [categoryPositions, summary]);
 
   return (
     <>
@@ -1401,23 +1334,6 @@ export default function PositionAnalyticsPage() {
                   ))}
                 </SelectContent>
               </Select>
-
-              <Tabs value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
-                <TabsList>
-                  <TabsTrigger value="all" className="cursor-pointer">
-                    All
-                  </TabsTrigger>
-                  <TabsTrigger value="open" className="cursor-pointer">
-                    Open
-                  </TabsTrigger>
-                  <TabsTrigger value="won" className="cursor-pointer">
-                    Won
-                  </TabsTrigger>
-                  <TabsTrigger value="lost" className="cursor-pointer">
-                    Lost
-                  </TabsTrigger>
-                </TabsList>
-              </Tabs>
 
               <Select value={fidelity.toString()} onValueChange={handleFidelityChange}>
                 <SelectTrigger className="w-[120px] cursor-pointer">
@@ -1525,28 +1441,43 @@ export default function PositionAnalyticsPage() {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <Card>
                   <CardHeader className="pb-3">
-                    <CardTitle className="text-lg flex items-center gap-2">
-                      <Target className="h-5 w-5 text-primary" />
-                      Stop Loss Simulation
-                      <InfoTooltip text="Simulates what would have happened if you had set stop-loss orders at different thresholds. 'Recovered' means holding was more profitable than selling at stop-loss." />
-                    </CardTitle>
-                    <CardDescription>Impact of stop-loss thresholds on past trades</CardDescription>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <CardTitle className="text-lg flex items-center gap-2">
+                          <Target className="h-5 w-5 text-primary" />
+                          Stop Loss Simulation
+                          <InfoTooltip text="Simulates what would have happened if you had set stop-loss orders at different thresholds. 'Recovered' means holding was more profitable than selling at stop-loss." />
+                        </CardTitle>
+                        <CardDescription>
+                          Impact of stop-loss thresholds on past trades
+                        </CardDescription>
+                      </div>
+                      <SectionFilter
+                        value={stopLossFilter}
+                        onChange={(v) => setStopLossFilter(v)}
+                      />
+                    </div>
                   </CardHeader>
                   <CardContent className="pt-0">
-                    <StopLossTable simulations={displaySummary?.stopLossImpact || []} />
+                    <StopLossTable simulations={stopLossSummary} />
                   </CardContent>
                 </Card>
 
                 <Card>
                   <CardHeader className="pb-3">
-                    <CardTitle className="text-lg flex items-center gap-2">
-                      <Shield className="h-5 w-5 text-primary" />
-                      Hedging Simulation
-                      <InfoTooltip text="Simulates hedging by buying opposite outcome shares when price dropped. Click rows to see strategy details." />
-                    </CardTitle>
-                    <CardDescription>
-                      Compare hedging strategies at different trigger points
-                    </CardDescription>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <CardTitle className="text-lg flex items-center gap-2">
+                          <Shield className="h-5 w-5 text-primary" />
+                          Hedging Simulation
+                          <InfoTooltip text="Simulates hedging by buying opposite outcome shares when price dropped. Click rows to see strategy details." />
+                        </CardTitle>
+                        <CardDescription>
+                          Compare hedging strategies at different trigger points
+                        </CardDescription>
+                      </div>
+                      <SectionFilter value={hedgingFilter} onChange={(v) => setHedgingFilter(v)} />
+                    </div>
                   </CardHeader>
                   <CardContent className="pt-0">
                     <HedgingSimulationTable rows={hedgingSummary} />
@@ -1600,11 +1531,20 @@ export default function PositionAnalyticsPage() {
 
                 <Card className="lg:col-span-3">
                   <CardHeader className="pb-3">
-                    <CardTitle className="text-lg">Positions</CardTitle>
-                    <CardDescription>
-                      {filteredPositions.length} positions
-                      {statusFilter !== "all" && ` (${statusFilter})`}
-                    </CardDescription>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <CardTitle className="text-lg">Positions</CardTitle>
+                        <CardDescription>
+                          {positionsForTable.length} positions
+                          {positionsFilter !== "all" && ` (${positionsFilter})`}
+                        </CardDescription>
+                      </div>
+                      <SectionFilter
+                        value={positionsFilter}
+                        onChange={(v) => setPositionsFilter(v as StatusFilter)}
+                        includeOpen
+                      />
+                    </div>
                   </CardHeader>
                   <CardContent className="p-0">
                     <div className="border-t">
@@ -1649,7 +1589,7 @@ export default function PositionAnalyticsPage() {
                             </tr>
                           </thead>
                           <tbody className="[&_tr:last-child]:border-0">
-                            {filteredPositions.length === 0 ? (
+                            {positionsForTable.length === 0 ? (
                               <tr>
                                 <td
                                   colSpan={7}
@@ -1659,7 +1599,7 @@ export default function PositionAnalyticsPage() {
                                 </td>
                               </tr>
                             ) : (
-                              filteredPositions.map((pos) => (
+                              positionsForTable.map((pos) => (
                                 <PositionRow key={pos.position.id} positionData={pos} />
                               ))
                             )}
@@ -1673,21 +1613,23 @@ export default function PositionAnalyticsPage() {
 
               <Card>
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-lg flex items-center gap-2">
-                    <Tag className="h-5 w-5 text-primary" />
-                    Category Analysis
-                    <InfoTooltip text="Strategy performance breakdown by market category. Shows which strategies work best for different types of markets." />
-                  </CardTitle>
-                  <CardDescription>
-                    Compare stop-loss and hedging effectiveness across different market categories
-                  </CardDescription>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-lg flex items-center gap-2">
+                        <Tag className="h-5 w-5 text-primary" />
+                        Category Analysis
+                        <InfoTooltip text="Strategy performance breakdown by market category. Shows which strategies work best for different types of markets." />
+                      </CardTitle>
+                      <CardDescription>
+                        Compare stop-loss and hedging effectiveness across different market
+                        categories
+                      </CardDescription>
+                    </div>
+                    <SectionFilter value={categoryFilter} onChange={(v) => setCategoryFilter(v)} />
+                  </div>
                 </CardHeader>
                 <CardContent className="pt-0">
-                  <CategoryAnalysisSection
-                    categories={categoryData}
-                    loading={categoryLoading}
-                    onLoad={loadCategoryAnalysis}
-                  />
+                  <CategoryAnalysisSection categories={categoryData} />
                 </CardContent>
               </Card>
             </>
