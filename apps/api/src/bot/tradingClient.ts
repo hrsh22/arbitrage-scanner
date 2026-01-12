@@ -7,7 +7,7 @@
  * Supports multiple bot instances by accepting wallet credentials as env var names.
  */
 
-import { ClobClient, Side, AssetType } from "@polymarket/clob-client";
+import { ClobClient, Side, AssetType, OrderType } from "@polymarket/clob-client";
 import { Wallet, ethers } from "ethers";
 import type { OrderBook, TradeResult, WalletStatus } from "./types.js";
 import { logger } from "../logger.js";
@@ -406,8 +406,14 @@ export class TradingClient {
    * @param tokenId - The outcome token to buy
    * @param usdcAmount - Amount of USDC to spend
    * @param maxPrice - Maximum price to pay (for slippage protection)
+   * @param useMarketOrder - If true, use FOK market order; if false, use limit order
    */
-  async placeBet(tokenId: string, usdcAmount: number, maxPrice: number): Promise<TradeResult> {
+  async placeBet(
+    tokenId: string,
+    usdcAmount: number,
+    maxPrice: number,
+    useMarketOrder: boolean = false,
+  ): Promise<TradeResult> {
     if (!this.isInitialized()) {
       return { success: false, error: "Trading client not initialized" };
     }
@@ -437,41 +443,11 @@ export class TradingClient {
         };
       }
 
-      // Use effective price + 0.1% buffer for the limit order
-      // This ensures we don't pay more than current market + tiny buffer
-      const limitPrice = Math.min(effectivePrice * 1.001, 0.995);
-
-      logger.info("TradingClient: Placing market buy order", {
-        tokenId,
-        usdcAmount,
-        maxPrice,
-        effectivePrice,
-        limitPrice,
-        tokensReceived,
-      });
-
-      // Create and place the order
-      // Using a limit order at the effective price (plus tiny buffer)
-      const order = await this.client!.createOrder({
-        tokenID: tokenId,
-        price: limitPrice,
-        size: tokensReceived,
-        side: Side.BUY,
-      });
-
-      const result = await this.client!.postOrder(order);
-
-      logger.info("TradingClient: Order placed", {
-        orderId: result.orderID,
-        status: result.status,
-      });
-
-      return {
-        success: result.success ?? false,
-        orderId: result.orderID,
-        fillPrice: effectivePrice,
-        fillSize: tokensReceived,
-      };
+      if (useMarketOrder) {
+        return await this.placeMarketBuyOrder(tokenId, usdcAmount, effectivePrice);
+      } else {
+        return await this.placeLimitBuyOrder(tokenId, effectivePrice, tokensReceived);
+      }
     } catch (error) {
       const errorMsg = (error as Error).message;
       logger.error("TradingClient: Order placement failed", {
@@ -484,6 +460,76 @@ export class TradingClient {
         error: errorMsg,
       };
     }
+  }
+
+  private async placeLimitBuyOrder(
+    tokenId: string,
+    effectivePrice: number,
+    tokensReceived: number,
+  ): Promise<TradeResult> {
+    const limitPrice = Math.min(effectivePrice * 1.001, 0.995);
+
+    logger.info("TradingClient: Placing limit buy order", {
+      tokenId,
+      effectivePrice,
+      limitPrice,
+      tokensReceived,
+    });
+
+    const order = await this.client!.createOrder({
+      tokenID: tokenId,
+      price: limitPrice,
+      size: tokensReceived,
+      side: Side.BUY,
+    });
+
+    const result = await this.client!.postOrder(order);
+
+    logger.info("TradingClient: Limit order placed", {
+      orderId: result.orderID,
+      status: result.status,
+    });
+
+    return {
+      success: result.success ?? false,
+      orderId: result.orderID,
+      fillPrice: effectivePrice,
+      fillSize: tokensReceived,
+    };
+  }
+
+  private async placeMarketBuyOrder(
+    tokenId: string,
+    usdcAmount: number,
+    effectivePrice: number,
+  ): Promise<TradeResult> {
+    logger.info("TradingClient: Placing FOK market buy order", {
+      tokenId,
+      usdcAmount,
+      effectivePrice,
+    });
+
+    const order = await this.client!.createMarketOrder({
+      tokenID: tokenId,
+      amount: usdcAmount,
+      side: Side.BUY,
+    });
+
+    const result = await this.client!.postOrder(order, OrderType.FOK);
+
+    logger.info("TradingClient: Market order placed", {
+      orderId: result.orderID,
+      status: result.status,
+    });
+
+    const tokensReceived = usdcAmount / effectivePrice;
+
+    return {
+      success: result.success ?? false,
+      orderId: result.orderID,
+      fillPrice: effectivePrice,
+      fillSize: tokensReceived,
+    };
   }
 
   /**

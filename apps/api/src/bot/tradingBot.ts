@@ -177,6 +177,11 @@ export class TradingBot {
           botId: this.config.id,
           reason: safetyCheck.reason,
         });
+
+        await this.logMissedOpportunitiesForReason(
+          preloadedMarkets,
+          safetyCheck.reason || "safety_check_failed",
+        );
         return;
       }
 
@@ -224,21 +229,84 @@ export class TradingBot {
       });
 
       if (maxBets === 0) {
-        logger.info("TradingBot: Daily budget exhausted", { botId: this.config.id });
+        const bettableOpps = scoredOpps.filter((o) => o.canBet);
+        logger.info("TradingBot: Daily budget exhausted", {
+          botId: this.config.id,
+          missedOpportunities: bettableOpps.length,
+        });
         await this.repository.logEvent({
           eventType: "info",
           eventName: "budget_exhausted",
-          message: "Daily budget exhausted. No more bets will be placed today.",
+          message: `Daily budget exhausted. Missed ${bettableOpps.length} opportunities.`,
         });
+
+        for (const opp of bettableOpps) {
+          await this.repository.logMissedOpportunity(
+            {
+              marketId: opp.marketId,
+              marketQuestion: opp.marketQuestion,
+              outcome: opp.outcome,
+              buyPrice: opp.buyPrice,
+              pphScore: opp.pphScore,
+              expectedProfit: opp.expectedProfit,
+              hoursUntilClose: opp.hoursUntilClose,
+            },
+            "budget_exhausted",
+          );
+        }
+
         this.lastScanAt = new Date();
         return;
       }
 
       // 6. Get top opportunities and place bets
       const topOpps = this.strategyEngine.getTopOpportunities(scoredOpps, maxBets);
+      let stoppedDueToBalance = false;
 
-      for (const opp of topOpps) {
-        await this.placeBet(opp);
+      for (let i = 0; i < topOpps.length; i++) {
+        const opp = topOpps[i]!;
+        const result = await this.placeBet(opp);
+
+        if (result === "insufficient_balance") {
+          stoppedDueToBalance = true;
+          for (let j = i + 1; j < topOpps.length; j++) {
+            const remainingOpp = topOpps[j]!;
+            await this.repository.logMissedOpportunity(
+              {
+                marketId: remainingOpp.marketId,
+                marketQuestion: remainingOpp.marketQuestion,
+                outcome: remainingOpp.outcome,
+                buyPrice: remainingOpp.buyPrice,
+                pphScore: remainingOpp.pphScore,
+                expectedProfit: remainingOpp.expectedProfit,
+                hoursUntilClose: remainingOpp.hoursUntilClose,
+              },
+              "insufficient_wallet_balance",
+            );
+          }
+          break;
+        }
+      }
+
+      if (!stoppedDueToBalance) {
+        const bettableOpps = scoredOpps.filter((o) => o.canBet);
+        const topOppMarketIds = new Set(topOpps.map((o) => o.marketId));
+        const missedDueToBudget = bettableOpps.filter((o) => !topOppMarketIds.has(o.marketId));
+
+        for (const opp of missedDueToBudget) {
+          await this.repository.logMissedOpportunity(
+            {
+              marketId: opp.marketId,
+              marketQuestion: opp.marketQuestion,
+              outcome: opp.outcome,
+              buyPrice: opp.buyPrice,
+              pphScore: opp.pphScore,
+              expectedProfit: opp.expectedProfit,
+              hoursUntilClose: opp.hoursUntilClose,
+            },
+            "insufficient_budget",
+          );
+        }
       }
 
       this.lastScanAt = new Date();
@@ -315,7 +383,9 @@ export class TradingBot {
   /**
    * Place a bet on an opportunity
    */
-  private async placeBet(opportunity: ScoredOpportunity): Promise<void> {
+  private async placeBet(
+    opportunity: ScoredOpportunity,
+  ): Promise<"success" | "failed" | "insufficient_balance"> {
     const isSimulation = this.mode === "simulation";
 
     logger.info("TradingBot: Placing bet", {
@@ -331,6 +401,7 @@ export class TradingBot {
       if (isSimulation) {
         // Simulation mode - just record the position
         await this.recordPosition(opportunity, isSimulation);
+        return "success";
       } else {
         // Live mode - actually place the trade
         if (!opportunity.tokenId) {
@@ -338,7 +409,33 @@ export class TradingBot {
             botId: this.config.id,
             marketId: opportunity.marketId,
           });
-          return;
+          return "failed";
+        }
+
+        // Check wallet balance before attempting bet
+        const balance = await this.tradingClient.getBalance();
+        if (balance < this.config.betSize) {
+          logger.warn("TradingBot: Insufficient balance for bet", {
+            botId: this.config.id,
+            balance,
+            betSize: this.config.betSize,
+            marketId: opportunity.marketId,
+          });
+
+          await this.repository.logMissedOpportunity(
+            {
+              marketId: opportunity.marketId,
+              marketQuestion: opportunity.marketQuestion,
+              outcome: opportunity.outcome,
+              buyPrice: opportunity.buyPrice,
+              pphScore: opportunity.pphScore,
+              expectedProfit: opportunity.expectedProfit,
+              hoursUntilClose: opportunity.hoursUntilClose,
+            },
+            "insufficient_wallet_balance",
+          );
+
+          return "insufficient_balance";
         }
 
         // Calculate max price with slippage, but cap at maxOdds
@@ -348,10 +445,12 @@ export class TradingBot {
           opportunity.tokenId,
           this.config.betSize,
           maxPrice,
+          this.config.useMarketOrders,
         );
 
         if (result.success) {
           await this.recordPosition(opportunity, isSimulation);
+          return "success";
         } else {
           logger.error("TradingBot: Trade failed", {
             botId: this.config.id,
@@ -364,6 +463,7 @@ export class TradingBot {
             message: `Trade failed: ${result.error}`,
             metadata: { marketId: opportunity.marketId, outcome: opportunity.outcome },
           });
+          return "failed";
         }
       }
     } catch (error) {
@@ -377,6 +477,7 @@ export class TradingBot {
         message: `Failed to place bet: ${(error as Error).message}`,
         metadata: { marketId: opportunity.marketId },
       });
+      return "failed";
     }
   }
 
@@ -457,6 +558,57 @@ export class TradingBot {
       openPositions: openPositions.length,
       walletBalance,
     };
+  }
+
+  private async logMissedOpportunitiesForReason(
+    preloadedMarkets: NormalizedMarket[] | undefined,
+    reason: string,
+  ): Promise<void> {
+    try {
+      const markets = preloadedMarkets ?? (await this.polyClient.getNormalizedMarkets());
+      const nearResolutionOpps = detectNearResolution(markets, {
+        maxHoursUntilClose: this.config.maxHoursGeneral,
+        minOdds: this.config.minOdds * 100,
+      });
+
+      if (nearResolutionOpps.length === 0) return;
+
+      const isSimulated = this.mode === "simulation";
+      const existingMarketIds = await this.repository.getOpenPositionMarketIds(isSimulated);
+      const scoredOpps = await this.strategyEngine.evaluateOpportunities(
+        nearResolutionOpps,
+        existingMarketIds,
+      );
+
+      const bettableOpps = scoredOpps.filter((o) => o.canBet);
+      for (const opp of bettableOpps) {
+        await this.repository.logMissedOpportunity(
+          {
+            marketId: opp.marketId,
+            marketQuestion: opp.marketQuestion,
+            outcome: opp.outcome,
+            buyPrice: opp.buyPrice,
+            pphScore: opp.pphScore,
+            expectedProfit: opp.expectedProfit,
+            hoursUntilClose: opp.hoursUntilClose,
+          },
+          reason,
+        );
+      }
+
+      if (bettableOpps.length > 0) {
+        logger.info("TradingBot: Logged missed opportunities", {
+          botId: this.config.id,
+          count: bettableOpps.length,
+          reason,
+        });
+      }
+    } catch (error) {
+      logger.error("TradingBot: Failed to log missed opportunities", {
+        botId: this.config.id,
+        error: (error as Error).message,
+      });
+    }
   }
 
   /**

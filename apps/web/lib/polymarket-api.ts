@@ -374,3 +374,41 @@ export async function fetchSinglePosition(
 
   return response.json();
 }
+
+export interface MissedOpportunityEvent {
+  id: number;
+  eventType: string;
+  eventName: string;
+  message: string;
+  metadata: {
+    marketId: string;
+    marketQuestion: string;
+    outcome: string;
+    buyPrice: number;
+    pphScore: number;
+    expectedProfit: number;
+    hoursUntilClose: number;
+    potentialProfit: number;
+  };
+  createdAt: string;
+}
+
+export interface MissedOpportunitiesResponse {
+  events: MissedOpportunityEvent[];
+  total: number;
+}
+
+export async function fetchMissedOpportunities(
+  botId: number = 1,
+  limit: number = 500,
+  signal?: AbortSignal,
+): Promise<MissedOpportunitiesResponse> {
+  const url = `${API_BASE}/bot/${botId}/events?type=missed_opportunity&limit=${limit}`;
+  const response = await fetch(url, { signal });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch missed opportunities: ${response.status}`);
+  }
+
+  return response.json();
+}

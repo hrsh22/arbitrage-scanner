@@ -530,7 +530,13 @@ export class BotRepository {
    * Log an event for this bot instance
    */
   async logEvent(event: {
-    eventType: "circuit_breaker" | "error" | "trade" | "mode_change" | "info";
+    eventType:
+      | "circuit_breaker"
+      | "error"
+      | "trade"
+      | "mode_change"
+      | "info"
+      | "missed_opportunity";
     eventName: string;
     message: string;
     metadata?: Record<string, unknown>;
@@ -541,6 +547,35 @@ export class BotRepository {
       eventName: event.eventName,
       message: event.message,
       metadata: event.metadata,
+    });
+  }
+
+  async logMissedOpportunity(
+    opportunity: {
+      marketId: string;
+      marketQuestion: string;
+      outcome: string;
+      buyPrice: number;
+      pphScore: number;
+      expectedProfit: number;
+      hoursUntilClose: number;
+    },
+    reason: string,
+  ): Promise<void> {
+    await this.logEvent({
+      eventType: "missed_opportunity",
+      eventName: reason,
+      message: `Missed: ${opportunity.outcome} @ ${(opportunity.buyPrice * 100).toFixed(1)}¢ on "${opportunity.marketQuestion.substring(0, 60)}..."`,
+      metadata: {
+        marketId: opportunity.marketId,
+        marketQuestion: opportunity.marketQuestion,
+        outcome: opportunity.outcome,
+        buyPrice: opportunity.buyPrice,
+        pphScore: opportunity.pphScore,
+        expectedProfit: opportunity.expectedProfit,
+        hoursUntilClose: opportunity.hoursUntilClose,
+        potentialProfit: opportunity.expectedProfit,
+      },
     });
   }
 

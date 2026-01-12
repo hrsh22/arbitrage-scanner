@@ -58,6 +58,18 @@ export function isValidOpportunity(
     return { valid: false, reason: "Market already closed" };
   }
 
+  // Skip blacklisted categories
+  if (tags && config.skipCategories.length > 0) {
+    const skipLower = config.skipCategories.map((s) => s.toLowerCase());
+    const matchedTag = tags.find((tag) => skipLower.includes(tag.toLowerCase()));
+    if (matchedTag) {
+      return {
+        valid: false,
+        reason: `Category "${matchedTag}" is in skipCategories blocklist`,
+      };
+    }
+  }
+
   // Skip above maxOdds (too little profit)
   if (buyPrice >= config.maxOdds) {
     return {

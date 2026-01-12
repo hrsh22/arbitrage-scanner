@@ -6,11 +6,13 @@ import {
   fetchWalletAnalytics,
   fetchResolvedPositionsFromDB,
   fetchSinglePosition,
+  fetchMissedOpportunities,
   type WalletAnalytics,
   type ResolvedPositionFromDB,
   type StopLossAnalysisItem,
   type HedgingAnalysisItem,
   type CategoryBreakdownItem,
+  type MissedOpportunityEvent,
 } from "@/lib/polymarket-api";
 import { DEFAULT_WALLET, WALLET_OPTIONS } from "@/lib/polymarket-api";
 import {
@@ -30,6 +32,7 @@ import {
   Info,
   Shield,
   Tag,
+  Ban,
 } from "lucide-react";
 import { Button } from "@workspace/ui/components/button";
 import {
@@ -707,6 +710,56 @@ function CategoryBreakdownSection({ categories }: { categories: CategoryBreakdow
   );
 }
 
+type MissedByDate = { date: string; count: number; potentialProfit: number };
+
+function MissedOpportunitiesCard({ events }: { events: MissedOpportunityEvent[] }) {
+  const byDate = useMemo(() => {
+    const map = new Map<string, { count: number; profit: number }>();
+    for (const e of events) {
+      const date = new Date(e.createdAt).toLocaleDateString();
+      const existing = map.get(date) || { count: 0, profit: 0 };
+      existing.count += 1;
+      existing.profit += e.metadata?.expectedProfit || 0;
+      map.set(date, existing);
+    }
+    return Array.from(map.entries())
+      .map(([date, data]) => ({ date, count: data.count, potentialProfit: data.profit }))
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .slice(0, 7);
+  }, [events]);
+
+  const totalMissed = events.length;
+  const totalPotentialProfit = events.reduce((s, e) => s + (e.metadata?.expectedProfit || 0), 0);
+
+  if (totalMissed === 0) return null;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Ban className="h-4 w-4 text-rose-500" />
+          Missed Opportunities
+        </CardTitle>
+        <CardDescription>
+          {totalMissed} missed · ${totalPotentialProfit.toFixed(2)} potential profit lost
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="pt-0">
+        <div className="flex flex-wrap gap-2">
+          {byDate.map((d) => (
+            <div key={d.date} className="bg-muted/50 rounded px-2 py-1 text-xs">
+              <span className="font-medium">{d.date}</span>
+              <span className="text-muted-foreground ml-1">
+                {d.count} missed · ${d.potentialProfit.toFixed(2)}
+              </span>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 type PositionLightweight = Omit<
   ResolvedPositionFromDB,
   "priceHistory" | "oppositeOutcomePriceHistory"
@@ -945,6 +998,7 @@ export default function PositionAnalyticsPage() {
 
   const [analytics, setAnalytics] = useState<WalletAnalytics | null>(null);
   const [positions, setPositions] = useState<PositionLightweight[]>([]);
+  const [missedOpportunities, setMissedOpportunities] = useState<MissedOpportunityEvent[]>([]);
   const [selectedWallet, setSelectedWallet] = useState(DEFAULT_WALLET);
 
   const [positionsFilter, setPositionsFilter] = useState<ResolvedFilter>("all");
@@ -965,13 +1019,15 @@ export default function PositionAnalyticsPage() {
         if (isRefresh) setRefreshing(true);
         else setLoading(true);
 
-        const [analyticsRes, positionsRes] = await Promise.all([
+        const [analyticsRes, positionsRes, missedRes] = await Promise.all([
           fetchWalletAnalytics(selectedWallet, abortControllerRef.current.signal),
           fetchResolvedPositionsFromDB(selectedWallet, abortControllerRef.current.signal),
+          fetchMissedOpportunities(1, 500, abortControllerRef.current.signal),
         ]);
 
         setAnalytics(analyticsRes.analytics);
         setPositions(positionsRes.positions as PositionLightweight[]);
+        setMissedOpportunities(missedRes.events);
         setError(null);
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
@@ -1113,6 +1169,8 @@ export default function PositionAnalyticsPage() {
                   info="Sum of all realized profits and losses."
                 />
               </div>
+
+              <MissedOpportunitiesCard events={missedOpportunities} />
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <Card>

@@ -35,6 +35,9 @@ const config: BotInstanceConfig = {
     crypto: 3, // Crypto markets: high volatility, 3 hours max
   },
 
+  // Categories to skip entirely
+  skipCategories: ["weather"],
+
   // Safety limits
   minWalletReserve: 0,
   maxDailyLoss: Infinity,
@@ -42,6 +45,9 @@ const config: BotInstanceConfig = {
   // Early exit
   enableEarlyExit: true,
   earlyExitMinPrice: 0.9995,
+
+  // Order execution
+  useMarketOrders: true,
 
   // Wallet tracking
   walletSnapshotRetentionDays: 30,

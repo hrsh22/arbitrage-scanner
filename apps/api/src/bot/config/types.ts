@@ -37,6 +37,10 @@ export interface BotInstanceConfig {
   // Key = tag slug from Polymarket API, Value = max hours until resolution
   categoryTimeLimits: Record<string, number>;
 
+  // Categories to skip entirely (tag slugs from Polymarket API)
+  // Markets with any of these tags will be excluded from trading
+  skipCategories: string[];
+
   // Safety limits
   minWalletReserve: number;
   maxDailyLoss: number;
@@ -44,6 +48,9 @@ export interface BotInstanceConfig {
   // Early exit
   enableEarlyExit: boolean;
   earlyExitMinPrice: number;
+
+  // Order execution
+  useMarketOrders: boolean;
 
   // Wallet tracking
   walletSnapshotRetentionDays: number;

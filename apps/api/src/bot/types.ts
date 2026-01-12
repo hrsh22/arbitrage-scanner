@@ -75,7 +75,7 @@ export interface BotStatus {
 
 export interface BotEvent {
   id: number;
-  eventType: "circuit_breaker" | "error" | "trade" | "mode_change" | "info";
+  eventType: "circuit_breaker" | "error" | "trade" | "mode_change" | "info" | "missed_opportunity";
   eventName: string;
   message: string;
   metadata?: Record<string, unknown>;
