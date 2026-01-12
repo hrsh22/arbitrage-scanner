@@ -54,11 +54,11 @@ const config: BotInstanceConfig = {
 
   // Hedging
   hedging: {
-    enabled: false,
+    enabled: true,
     dropThresholdPercent: 60,
     multiplier: 2,
     spreadTolerance: 0.1,
-    minPositionAgeMinutes: 30,
+    minPositionAgeMinutes: 0,
     onlyNearResolution: false,
     nearResolutionMinutes: 60,
   },
