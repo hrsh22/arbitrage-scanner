@@ -468,18 +468,22 @@ export class TradingClient {
     tokensReceived: number,
   ): Promise<TradeResult> {
     const limitPrice = Math.min(effectivePrice * 1.001, 0.995);
+    const roundedPrice = Math.floor(limitPrice * 100) / 100;
+    const roundedSize = Math.floor(tokensReceived * 10000) / 10000;
 
     logger.info("TradingClient: Placing limit buy order", {
       tokenId,
       effectivePrice,
       limitPrice,
+      roundedPrice,
       tokensReceived,
+      roundedSize,
     });
 
     const order = await this.client!.createOrder({
       tokenID: tokenId,
-      price: limitPrice,
-      size: tokensReceived,
+      price: roundedPrice,
+      size: roundedSize,
       side: Side.BUY,
     });
 
@@ -494,7 +498,7 @@ export class TradingClient {
       success: result.success ?? false,
       orderId: result.orderID,
       fillPrice: effectivePrice,
-      fillSize: tokensReceived,
+      fillSize: roundedSize,
     };
   }
 
@@ -503,15 +507,18 @@ export class TradingClient {
     usdcAmount: number,
     effectivePrice: number,
   ): Promise<TradeResult> {
+    const roundedAmount = Math.floor(usdcAmount * 100) / 100;
+
     logger.info("TradingClient: Placing FOK market buy order", {
       tokenId,
       usdcAmount,
+      roundedAmount,
       effectivePrice,
     });
 
     const order = await this.client!.createMarketOrder({
       tokenID: tokenId,
-      amount: usdcAmount,
+      amount: roundedAmount,
       side: Side.BUY,
     });
 
@@ -522,7 +529,7 @@ export class TradingClient {
       status: result.status,
     });
 
-    const tokensReceived = usdcAmount / effectivePrice;
+    const tokensReceived = roundedAmount / effectivePrice;
 
     return {
       success: result.success ?? false,
@@ -712,14 +719,13 @@ export class TradingClient {
         minPrice,
       });
 
-      // Create sell order at 0.999 (max CLOB allows)
-      // We only call this when sellPrice >= 0.9995, so 0.999 is always acceptable
       const orderPrice = 0.999;
+      const roundedSize = Math.floor(shares * 10000) / 10000;
 
       const order = await this.client!.createOrder({
         tokenID: tokenId,
         price: orderPrice,
-        size: shares,
+        size: roundedSize,
         side: Side.SELL,
       });
 
