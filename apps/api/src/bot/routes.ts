@@ -112,6 +112,37 @@ export function buildBotRouter(): Router {
     }
   });
 
+  router.post("/check-hedges-all", async (req, res) => {
+    try {
+      const startTime = Date.now();
+      const isSimulated = req.query.mode !== "live";
+      const results = await manager.runAllHedgingChecks(isSimulated);
+      const duration = Date.now() - startTime;
+
+      const totals = results.reduce(
+        (acc, r) => ({
+          checked: acc.checked + r.result.checked,
+          hedged: acc.hedged + r.result.hedged,
+          skipped: acc.skipped + r.result.skipped,
+          errors: acc.errors + r.result.errors,
+        }),
+        { checked: 0, hedged: 0, skipped: 0, errors: 0 },
+      );
+
+      res.json({
+        success: true,
+        message: "Hedging check completed for all bots",
+        durationMs: duration,
+        mode: isSimulated ? "simulation" : "live",
+        totals,
+        results,
+      });
+    } catch (error) {
+      logger.error("Bot API: Check-hedges-all failed", { error: (error as Error).message });
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
   /**
    * GET /bot/stats/aggregate
    * Get aggregate stats across all bots
@@ -464,6 +495,30 @@ export function buildBotRouter(): Router {
       });
     } catch (error) {
       logger.error("Bot API: Resolution check failed", { error: (error as Error).message });
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  router.post("/:botId/check-hedges", async (req, res) => {
+    try {
+      const botId = parseInt(req.params.botId, 10);
+      if (isNaN(botId)) {
+        res.status(400).json({ error: "Invalid bot ID" });
+        return;
+      }
+
+      const isSimulated = req.query.mode !== "live";
+      const result = await manager.runHedgingCheck(botId, isSimulated);
+
+      res.json({
+        success: true,
+        message: "Hedging check completed",
+        botId,
+        mode: isSimulated ? "simulation" : "live",
+        ...result,
+      });
+    } catch (error) {
+      logger.error("Bot API: Hedging check failed", { error: (error as Error).message });
       res.status(500).json({ error: (error as Error).message });
     }
   });

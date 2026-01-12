@@ -8,7 +8,7 @@
  */
 
 // Re-export types
-export type { BotInstanceConfig, BotMode } from "./types.js";
+export type { BotInstanceConfig, BotMode, HedgingConfig } from "./types.js";
 
 // Re-export bot configs
 export { BOT_CONFIGS } from "./bots/index.js";

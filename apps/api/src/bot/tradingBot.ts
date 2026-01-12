@@ -494,6 +494,7 @@ export class TradingBot {
       marketQuestion: opportunity.marketQuestion,
       marketSlug: opportunity.marketSlug,
       tokenId: opportunity.tokenId,
+      oppositeTokenId: opportunity.oppositeTokenId,
       outcome: opportunity.outcome,
       entryPrice: opportunity.buyPrice,
       cost: this.config.betSize,

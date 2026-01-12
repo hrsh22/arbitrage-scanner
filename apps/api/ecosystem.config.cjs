@@ -16,6 +16,7 @@
  * Cron Schedule:
  *   - Trading bot scan: Every 5 minutes at :00,:05,:10... (fetches markets once, runs all bots in parallel)
  *   - Resolution check: Every 10 minutes at :02,:12,:22... (checks all bot positions for resolution)
+ *   - Hedging check: Every 5 minutes at :03,:08,:13... (checks positions for hedging opportunities)
  *   - Resolved positions sync: Every 10 minutes at :07,:17,:27... (syncs resolved positions to DB for analytics)
  */
 
@@ -55,6 +56,21 @@ module.exports = {
       script: "pnpm",
       args: "cron:check-bot-resolutions",
       cron_restart: "2-59/10 * * * *",
+      autorestart: false,
+      watch: false,
+      env: {
+        NODE_ENV: "production",
+        LOG_LEVEL: "info",
+      },
+    },
+
+    // Hedging Checker - checks positions for hedging when value drops significantly
+    // Runs every 5 minutes, offset from trading bot scan
+    {
+      name: "hedging-checker",
+      script: "pnpm",
+      args: "cron:check-hedges --live",
+      cron_restart: "3-59/5 * * * *",
       autorestart: false,
       watch: false,
       env: {

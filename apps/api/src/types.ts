@@ -75,6 +75,14 @@ export type NearResolutionOpportunity = {
     liquidity: number;
   };
 
+  // The opposite outcome (for hedging)
+  oppositeOutcome: {
+    name: string;
+    tokenId: string;
+    bestBid: number;
+    bestAsk: number;
+  };
+
   // Time until resolution
   closesAt: Date;
   hoursUntilClose: number;

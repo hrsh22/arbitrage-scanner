@@ -52,6 +52,17 @@ const config: BotInstanceConfig = {
   // Wallet tracking
   walletSnapshotRetentionDays: 30,
 
+  // Hedging
+  hedging: {
+    enabled: false,
+    dropThresholdPercent: 60,
+    multiplier: 2,
+    spreadTolerance: 0.1,
+    minPositionAgeMinutes: 30,
+    onlyNearResolution: false,
+    nearResolutionMinutes: 60,
+  },
+
   // Mode - reads from environment
   defaultMode: (env.BOT_MODE || "simulation") as BotMode,
 };

@@ -1,0 +1,1 @@
+ALTER TABLE "bot_positions" ADD COLUMN "parent_position_id" integer;

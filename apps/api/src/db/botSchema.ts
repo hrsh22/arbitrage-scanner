@@ -39,6 +39,9 @@ export const botPositions = pgTable(
     entryPrice: numeric("entry_price", { precision: 10, scale: 6 }),
     cost: numeric("cost", { precision: 12, scale: 4 }).notNull(),
 
+    // Opposite outcome info (for hedging)
+    oppositeTokenId: text("opposite_token_id"),
+
     // Strategy info at time of bet
     closesAt: timestamp("closes_at", { withTimezone: true }),
     hoursUntilCloseAtEntry: numeric("hours_until_close_at_entry", { precision: 10, scale: 4 }),
@@ -49,6 +52,16 @@ export const botPositions = pgTable(
     status: text("status").notNull().default("open"), // open, won, lost, expired
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
     profitLoss: numeric("profit_loss", { precision: 12, scale: 4 }),
+
+    // Hedging
+    hedgedAt: timestamp("hedged_at", { withTimezone: true }),
+    hedgeTokenId: text("hedge_token_id"),
+    hedgeCost: numeric("hedge_cost", { precision: 12, scale: 4 }),
+    hedgePrice: numeric("hedge_price", { precision: 10, scale: 6 }),
+    hedgeShares: numeric("hedge_shares", { precision: 14, scale: 6 }),
+
+    // Links a hedge position to its original position (NULL for original positions)
+    parentPositionId: integer("parent_position_id"),
 
     // Mode tracking
     isSimulated: boolean("is_simulated").notNull().default(true),

@@ -7,6 +7,7 @@ export interface ScoredOpportunity {
   marketQuestion: string;
   marketSlug?: string;
   tokenId: string;
+  oppositeTokenId?: string;
   outcome: string; // "Yes" or "No"
   probability: number; // e.g., 0.96
   buyPrice: number; // Effective price after slippage
@@ -40,6 +41,7 @@ export interface Position {
   profitLoss?: number;
   isSimulated: boolean;
   createdAt: Date;
+  parentPositionId?: number;
 }
 
 export interface DailyStats {

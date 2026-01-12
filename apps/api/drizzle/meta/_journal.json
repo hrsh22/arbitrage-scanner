@@ -127,6 +127,20 @@
       "when": 1768074397568,
       "tag": "0017_violet_mercury",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1768227817915,
+      "tag": "0018_fine_veda",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1768231791277,
+      "tag": "0019_right_talos",
+      "breakpoints": true
     }
   ]
 }

@@ -46,6 +46,7 @@ export class BotRepository {
     marketQuestion: string;
     marketSlug?: string;
     tokenId?: string;
+    oppositeTokenId?: string;
     outcome: string;
     entryPrice?: number;
     cost: number;
@@ -54,6 +55,7 @@ export class BotRepository {
     pphScore?: number;
     expectedProfit?: number;
     isSimulated: boolean;
+    parentPositionId?: number;
   }): Promise<number> {
     const result = await db
       .insert(botPositions)
@@ -63,6 +65,7 @@ export class BotRepository {
         marketQuestion: position.marketQuestion,
         marketSlug: position.marketSlug,
         tokenId: position.tokenId,
+        oppositeTokenId: position.oppositeTokenId,
         outcome: position.outcome,
         entryPrice: position.entryPrice?.toString(),
         cost: position.cost.toString(),
@@ -71,11 +74,58 @@ export class BotRepository {
         pphScore: position.pphScore?.toString(),
         expectedProfit: position.expectedProfit?.toString(),
         isSimulated: position.isSimulated,
+        parentPositionId: position.parentPositionId,
         status: "open",
       })
       .returning({ id: botPositions.id });
 
     return result[0]!.id;
+  }
+
+  async createHedgePosition(
+    originalPosition: {
+      id: number;
+      marketId: string;
+      marketQuestion: string;
+      marketSlug?: string;
+      outcome: string;
+      closesAt: Date | null;
+      isSimulated: boolean;
+    },
+    hedge: {
+      tokenId: string;
+      entryPrice: number;
+      cost: number;
+    },
+  ): Promise<number> {
+    const hedgeOutcome = originalPosition.outcome === "Yes" ? "No" : "Yes";
+
+    const hedgePositionId = await this.createPosition({
+      marketId: originalPosition.marketId,
+      marketQuestion: originalPosition.marketQuestion,
+      marketSlug: originalPosition.marketSlug,
+      tokenId: hedge.tokenId,
+      outcome: hedgeOutcome,
+      entryPrice: hedge.entryPrice,
+      cost: hedge.cost,
+      closesAt: originalPosition.closesAt ?? undefined,
+      isSimulated: originalPosition.isSimulated,
+      parentPositionId: originalPosition.id,
+    });
+
+    await this.markPositionAsHedged(originalPosition.id);
+
+    return hedgePositionId;
+  }
+
+  async markPositionAsHedged(positionId: number): Promise<void> {
+    await db
+      .update(botPositions)
+      .set({
+        hedgedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(botPositions.id, positionId));
   }
 
   /**
@@ -255,6 +305,7 @@ export class BotRepository {
       profitLoss: row.profitLoss ? parseFloat(row.profitLoss) : undefined,
       isSimulated: row.isSimulated,
       createdAt: row.createdAt,
+      parentPositionId: row.parentPositionId ?? undefined,
     };
   }
 
@@ -723,6 +774,54 @@ export class BotRepository {
       .returning({ id: botPositions.id });
 
     return result[0]!.id;
+  }
+
+  async getOpenPositionsForHedging(isSimulated: boolean): Promise<
+    {
+      id: number;
+      marketId: string;
+      marketQuestion: string;
+      marketSlug: string | null;
+      tokenId: string | null;
+      oppositeTokenId: string | null;
+      outcome: string;
+      entryPrice: string | null;
+      cost: string;
+      closesAt: Date | null;
+      createdAt: Date;
+      hedgedAt: Date | null;
+      isSimulated: boolean;
+    }[]
+  > {
+    const rows = await db
+      .select({
+        id: botPositions.id,
+        marketId: botPositions.marketId,
+        marketQuestion: botPositions.marketQuestion,
+        marketSlug: botPositions.marketSlug,
+        tokenId: botPositions.tokenId,
+        oppositeTokenId: botPositions.oppositeTokenId,
+        outcome: botPositions.outcome,
+        entryPrice: botPositions.entryPrice,
+        cost: botPositions.cost,
+        closesAt: botPositions.closesAt,
+        createdAt: botPositions.createdAt,
+        hedgedAt: botPositions.hedgedAt,
+        isSimulated: botPositions.isSimulated,
+      })
+      .from(botPositions)
+      .where(
+        and(
+          eq(botPositions.botInstanceId, this.botInstanceId),
+          eq(botPositions.isSimulated, isSimulated),
+          eq(botPositions.status, "open"),
+          sql`${botPositions.hedgedAt} IS NULL`,
+          sql`${botPositions.parentPositionId} IS NULL`,
+        ),
+      )
+      .orderBy(botPositions.createdAt);
+
+    return rows;
   }
 }
 
