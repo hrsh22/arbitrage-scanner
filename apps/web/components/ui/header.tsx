@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { TrendingUp, Clock, Repeat2, History, Activity } from "lucide-react";
+import { TrendingUp, Clock, Repeat2, History, Activity, BarChart3 } from "lucide-react";
 import { cn } from "@workspace/ui/lib/utils";
 
 const navigation = [
@@ -17,6 +17,12 @@ const navigation = [
     href: "/near-resolution",
     icon: Clock,
     description: "High-confidence markets",
+  },
+  {
+    name: "Analytics",
+    href: "/position-analytics",
+    icon: BarChart3,
+    description: "Position analysis",
   },
 ];
 

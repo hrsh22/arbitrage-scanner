@@ -14,8 +14,9 @@
  *   pm2 stop all                    - Stop everything
  *
  * Cron Schedule:
- *   - Trading bot scan: Every 5 minutes (fetches markets once, runs all bots in parallel)
- *   - Resolution check: Every 10 minutes (checks all bot positions for resolution)
+ *   - Trading bot scan: Every 5 minutes at :00,:05,:10... (fetches markets once, runs all bots in parallel)
+ *   - Resolution check: Every 10 minutes at :02,:12,:22... (checks all bot positions for resolution)
+ *   - Resolved positions sync: Every 10 minutes at :07,:17,:27... (syncs resolved positions to DB for analytics)
  */
 
 module.exports = {
@@ -54,6 +55,21 @@ module.exports = {
       script: "pnpm",
       args: "cron:check-bot-resolutions",
       cron_restart: "2-59/10 * * * *",
+      autorestart: false,
+      watch: false,
+      env: {
+        NODE_ENV: "production",
+        LOG_LEVEL: "info",
+      },
+    },
+
+    // Resolved Positions Sync - syncs resolved positions to DB for analytics dashboard
+    // Runs at :07,:17,:27... to avoid collision with other crons
+    {
+      name: "resolved-positions-sync",
+      script: "pnpm",
+      args: "cron:sync-resolved-positions",
+      cron_restart: "7-59/10 * * * *",
       autorestart: false,
       watch: false,
       env: {

@@ -1,4 +1,5 @@
 import express from "express";
+import compression from "compression";
 import { config } from "./config.js";
 import { db, pool } from "./db/client.js";
 import { OpportunityStore } from "./services/opportunityStore.js";
@@ -10,6 +11,8 @@ import { MarketPoller } from "./services/marketPoller.js";
 import { CrossPlatformPoller } from "./services/crossPlatformPoller.js";
 import { buildOpportunitiesRouter } from "./routes/opportunities.js";
 import { buildBotRouter } from "./bot/index.js";
+import { buildPositionAnalyticsRouter } from "./routes/positionAnalytics.js";
+import { buildResolvedPositionsRouter } from "./routes/resolvedPositions.js";
 import { logger } from "./logger.js";
 
 const app = express();
@@ -22,6 +25,7 @@ app.use((_req, res, next) => {
   next();
 });
 
+app.use(compression());
 app.use(express.json());
 
 const store = new OpportunityStore();
@@ -60,6 +64,12 @@ app.use("/opportunities", buildOpportunitiesRouter(store, repository));
 
 // Trading Bot API
 app.use("/bot", buildBotRouter());
+
+// Position Analytics API
+app.use("/position-analytics", buildPositionAnalyticsRouter());
+
+// Resolved Positions API (DB-backed)
+app.use("/resolved-positions", buildResolvedPositionsRouter());
 
 // Cross-platform arbitrage API (reads from DB, populated by background poller)
 app.get("/cross-platform", async (req, res) => {

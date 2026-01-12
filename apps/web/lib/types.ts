@@ -218,3 +218,169 @@ export type CrossPlatformSnapshotsResponse = {
   count: number;
   lastUpdated: string;
 };
+
+export type PricePoint = {
+  timestamp: number;
+  price: number;
+};
+
+export type OppositeOutcomeAnalysis = {
+  priceAtLowest: number;
+  hedgeCost: number;
+  timestamp: number;
+};
+
+export type TimeWindowAnalysis = {
+  hoursBeforeClose: number;
+  price: number | null;
+  timestamp: number | null;
+};
+
+export type StopLossSimulation = {
+  threshold: number;
+  triggered: boolean;
+  triggerPrice: number | null;
+  triggerTimestamp: number | null;
+  recoveredAfterTrigger: boolean;
+  maxPriceAfterTrigger: number | null;
+  profitLossIfSold: number | null;
+  profitLossIfHeld: number | null;
+};
+
+export type HedgeStrategy = {
+  name: "fullLockIn" | "doubleOpposite";
+  hedgeShares: number;
+  hedgeCost: number;
+  totalInvestment: number;
+  pnlIfOriginalWins: number;
+  pnlIfOppositeWins: number;
+  actualPnl: number | null;
+  betterThanNoHedge: boolean | null;
+};
+
+export type HedgingSimulation = {
+  threshold: number;
+  triggered: boolean;
+  triggerPrice: number | null;
+  triggerTimestamp: number | null;
+  oppositePrice: number | null;
+  strategies: HedgeStrategy[];
+};
+
+export type PositionInfo = {
+  id: number;
+  marketId: string;
+  marketQuestion: string;
+  marketSlug?: string;
+  eventSlug?: string;
+  tokenId: string;
+  outcome: string;
+  entryPrice: number;
+  cost: number;
+  closesAt?: string;
+  hoursUntilCloseAtEntry?: number;
+  pphScore?: number;
+  status: "open" | "in_review" | "won" | "lost" | "expired";
+  resolvedAt?: string;
+  profitLoss?: number;
+  isSimulated: boolean;
+  createdAt: string;
+};
+
+export type PositionAnalytics = {
+  position: PositionInfo;
+  priceHistory: PricePoint[];
+  oppositeOutcomePriceHistory: PricePoint[];
+  entryPrice: number;
+  lowestPriceAfterEntry: number;
+  lowestPriceTimestamp: number | null;
+  highestPriceAfterEntry: number;
+  highestPriceTimestamp: number | null;
+  maxDrawdownPercent: number;
+  currentOrFinalPrice: number;
+  oppositeOutcome: OppositeOutcomeAnalysis | null;
+  timeWindowAnalysis: TimeWindowAnalysis[];
+  stopLossSimulations: StopLossSimulation[];
+  hedgingSimulations: HedgingSimulation[];
+  category: {
+    outcome: "won" | "lost" | "open";
+    tags: string[];
+    normalized: string;
+  };
+  analyzedAt: string;
+  fidelityMinutes: number;
+};
+
+export type StopLossImpact = {
+  threshold: number;
+  wouldHaveTriggered: number;
+  wouldHaveRecovered: number;
+  netImpactIfUsed: number;
+};
+
+export type OutcomeBreakdown = {
+  outcome: string;
+  count: number;
+  avgDrawdown: number;
+  totalPnL: number;
+};
+
+export type TagBreakdown = {
+  tag: string;
+  count: number;
+  avgDrawdown: number;
+  totalPnL: number;
+  winRate: number;
+};
+
+export type AnalyticsSummary = {
+  totalPositions: number;
+  wonCount: number;
+  lostCount: number;
+  openCount: number;
+  avgMaxDrawdownPercent: number;
+  avgLowestPriceDropPercent: number;
+  positionsWithDrawdownOver10Percent: number;
+  positionsWithDrawdownOver20Percent: number;
+  stopLossImpact: StopLossImpact[];
+  byOutcome: OutcomeBreakdown[];
+  byTags: TagBreakdown[];
+  byCategory: CategoryAnalysis[];
+};
+
+export type CategoryStopLossAnalysis = {
+  threshold: number;
+  triggered: number;
+  recovered: number;
+  netImpact: number;
+  avgImpactPerPosition: number;
+};
+
+export type CategoryHedgingAnalysis = {
+  threshold: number;
+  triggered: number;
+  fullLockNetImpact: number;
+  doubleOppositeNetImpact: number;
+};
+
+export type BestStrategyRecommendation = {
+  type: "none" | "stop-loss" | "hedge-full" | "hedge-double";
+  threshold: number | null;
+  expectedImprovement: number;
+  reason: string;
+};
+
+export type CategoryAnalysis = {
+  name: string;
+  positions: number;
+  wonCount: number;
+  lostCount: number;
+  openCount: number;
+  winRate: number;
+  totalPnL: number;
+  avgPnL: number;
+  avgDrawdown: number;
+  stopLossAnalysis: CategoryStopLossAnalysis[];
+  hedgingAnalysis: CategoryHedgingAnalysis[];
+  bestStrategy: BestStrategyRecommendation;
+};
