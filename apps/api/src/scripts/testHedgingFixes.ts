@@ -165,11 +165,10 @@ async function testOutcomeMapping() {
       actual: oppositeForUp?.name ?? "null",
     });
 
-    // OLD BUG: Hardcoded mapping would return "No" for non-"Yes" outcomes
     const oldBugResult = upOutcome.name === "Yes" ? "No" : "Yes";
     logTest({
       name: "Old bug would have returned wrong outcome",
-      passed: oldBugResult !== "Down",
+      passed: (oldBugResult as string) !== "Down",
       details: `Old code: outcome === "Yes" ? "No" : "Yes" → "${oldBugResult}" (WRONG!)`,
       expected: "Down",
       actual: oldBugResult,
