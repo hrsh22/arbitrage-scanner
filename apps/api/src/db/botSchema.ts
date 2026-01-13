@@ -10,12 +10,21 @@ import {
   integer,
   jsonb,
   numeric,
+  pgEnum,
   pgTable,
   serial,
   text,
   timestamp,
   uniqueIndex,
+  varchar,
 } from "drizzle-orm/pg-core";
+
+export const errorSeverityEnum = pgEnum("error_severity", [
+  "critical", // System down, immediate action required
+  "error", // Error that affects functionality
+  "warning", // Potential issue, system continues
+  "info", // Informational error (e.g., expected validation failures)
+]);
 
 /**
  * Bot Positions - tracks all bets placed by the bot
@@ -41,6 +50,8 @@ export const botPositions = pgTable(
 
     // Opposite outcome info (for hedging)
     oppositeTokenId: text("opposite_token_id"),
+    oppositeOutcome: text("opposite_outcome"),
+    tags: text("tags").array(),
 
     // Strategy info at time of bet
     closesAt: timestamp("closes_at", { withTimezone: true }),
@@ -79,43 +90,33 @@ export const botPositions = pgTable(
   }),
 );
 
-/**
- * Bot Daily Stats - aggregated daily statistics
- */
 export const botDailyStats = pgTable(
   "bot_daily_stats",
   {
     id: serial("id").primaryKey(),
-    date: text("date").notNull(), // YYYY-MM-DD in UTC
+    date: text("date").notNull(),
 
-    // Bot instance identifier (supports multiple bot configurations)
     botInstanceId: text("bot_instance_id").notNull().default("1"),
 
-    // Deployment stats
     betsPlaced: integer("bets_placed").notNull().default(0),
     amountDeployed: numeric("amount_deployed", { precision: 14, scale: 4 }).notNull().default("0"),
 
-    // Resolution stats (updated as positions resolve)
     betsResolved: integer("bets_resolved").default(0),
     betsWon: integer("bets_won").default(0),
     betsLost: integer("bets_lost").default(0),
 
-    // P&L
     grossProfit: numeric("gross_profit", { precision: 14, scale: 4 }).default("0"),
     grossLoss: numeric("gross_loss", { precision: 14, scale: 4 }).default("0"),
     netPnL: numeric("net_pnl", { precision: 14, scale: 4 }).default("0"),
 
-    // Mode tracking
     isSimulated: boolean("is_simulated").notNull().default(true),
 
-    // Timestamps
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     dateIdx: index("bot_daily_stats_date_idx").on(table.date),
     instanceIdx: index("bot_daily_stats_instance_idx").on(table.botInstanceId),
-    // Composite unique: one row per date per mode per bot instance
     dateSimulatedInstanceUnique: uniqueIndex("bot_daily_stats_date_simulated_instance_unique").on(
       table.date,
       table.isSimulated,
@@ -123,6 +124,66 @@ export const botDailyStats = pgTable(
     ),
   }),
 );
+
+export const botErrors = pgTable(
+  "bot_errors",
+  {
+    id: serial("id").primaryKey(),
+
+    botInstanceId: text("bot_instance_id").notNull().default("1"),
+
+    errorCode: varchar("error_code", { length: 50 }).notNull(),
+    severity: errorSeverityEnum("severity").notNull().default("error"),
+    message: text("message").notNull(),
+    stackTrace: text("stack_trace"),
+
+    component: varchar("component", { length: 100 }).notNull(),
+    functionName: varchar("function_name", { length: 100 }),
+    filePath: varchar("file_path", { length: 255 }),
+    lineNumber: integer("line_number"),
+
+    requestId: varchar("request_id", { length: 64 }),
+    correlationId: varchar("correlation_id", { length: 64 }),
+
+    positionId: integer("position_id"),
+    marketId: text("market_id"),
+    tokenId: text("token_id"),
+
+    environment: varchar("environment", { length: 20 }).notNull().default("development"),
+    nodeVersion: varchar("node_version", { length: 20 }),
+    appVersion: varchar("app_version", { length: 20 }),
+
+    isResolved: boolean("is_resolved").notNull().default(false),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    resolvedBy: varchar("resolved_by", { length: 100 }),
+    resolutionNote: text("resolution_note"),
+
+    errorHash: varchar("error_hash", { length: 64 }),
+    occurrenceCount: integer("occurrence_count").notNull().default(1),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+
+    metadata: jsonb("metadata"),
+
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    severityIdx: index("bot_errors_severity_idx").on(table.severity),
+    componentIdx: index("bot_errors_component_idx").on(table.component),
+    errorCodeIdx: index("bot_errors_error_code_idx").on(table.errorCode),
+    createdIdx: index("bot_errors_created_idx").on(table.createdAt),
+    instanceIdx: index("bot_errors_instance_idx").on(table.botInstanceId),
+    unresolvedIdx: index("bot_errors_unresolved_idx").on(table.isResolved),
+    hashIdx: uniqueIndex("bot_errors_hash_unique").on(table.errorHash),
+    correlationIdx: index("bot_errors_correlation_idx").on(table.correlationId),
+    positionIdx: index("bot_errors_position_idx").on(table.positionId),
+    marketIdx: index("bot_errors_market_idx").on(table.marketId),
+  }),
+);
+
+export type ErrorSeverity = "critical" | "error" | "warning" | "info";
+export type BotError = typeof botErrors.$inferSelect;
+export type NewBotError = typeof botErrors.$inferInsert;
 
 /**
  * Bot Event Log - all notable events (circuit breakers, errors, trades, etc.)

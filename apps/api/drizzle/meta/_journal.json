@@ -141,6 +141,20 @@
       "when": 1768231791277,
       "tag": "0019_right_talos",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1768285781170,
+      "tag": "0020_foamy_anthem",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1768288349038,
+      "tag": "0021_orange_iceman",
+      "breakpoints": true
     }
   ]
 }

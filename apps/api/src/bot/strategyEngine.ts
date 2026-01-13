@@ -334,6 +334,8 @@ export class StrategyEngine {
       marketSlug: opp.marketSlug,
       tokenId: likelyOutcome.tokenId,
       oppositeTokenId,
+      oppositeOutcome: oppositeOutcome?.name,
+      tags: opp.tags,
       outcome: likelyOutcome.name,
       probability,
       buyPrice,

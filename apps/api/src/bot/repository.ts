@@ -47,6 +47,8 @@ export class BotRepository {
     marketSlug?: string;
     tokenId?: string;
     oppositeTokenId?: string;
+    oppositeOutcome?: string;
+    tags?: string[];
     outcome: string;
     entryPrice?: number;
     cost: number;
@@ -66,6 +68,8 @@ export class BotRepository {
         marketSlug: position.marketSlug,
         tokenId: position.tokenId,
         oppositeTokenId: position.oppositeTokenId,
+        oppositeOutcome: position.oppositeOutcome,
+        tags: position.tags,
         outcome: position.outcome,
         entryPrice: position.entryPrice?.toString(),
         cost: position.cost.toString(),
@@ -96,9 +100,10 @@ export class BotRepository {
       tokenId: string;
       entryPrice: number;
       cost: number;
+      outcome: string;
     },
   ): Promise<number> {
-    const hedgeOutcome = originalPosition.outcome === "Yes" ? "No" : "Yes";
+    const hedgeOutcome = hedge.outcome;
 
     const hedgePositionId = await this.createPosition({
       marketId: originalPosition.marketId,
@@ -784,6 +789,8 @@ export class BotRepository {
       marketSlug: string | null;
       tokenId: string | null;
       oppositeTokenId: string | null;
+      oppositeOutcome: string | null;
+      tags: string[] | null;
       outcome: string;
       entryPrice: string | null;
       cost: string;
@@ -801,6 +808,8 @@ export class BotRepository {
         marketSlug: botPositions.marketSlug,
         tokenId: botPositions.tokenId,
         oppositeTokenId: botPositions.oppositeTokenId,
+        oppositeOutcome: botPositions.oppositeOutcome,
+        tags: botPositions.tags,
         outcome: botPositions.outcome,
         entryPrice: botPositions.entryPrice,
         cost: botPositions.cost,

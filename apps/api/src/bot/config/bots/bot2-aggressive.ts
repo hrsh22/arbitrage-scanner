@@ -65,6 +65,7 @@ const config: BotInstanceConfig = {
     minPositionAgeMinutes: 30,
     onlyNearResolution: false,
     nearResolutionMinutes: 60,
+    skipCategories: ["sports"],
   },
 
   // Mode - reads from environment

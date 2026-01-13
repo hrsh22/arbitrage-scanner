@@ -11,6 +11,7 @@ import { ClobClient, Side, AssetType, OrderType } from "@polymarket/clob-client"
 import { Wallet, ethers } from "ethers";
 import type { OrderBook, TradeResult, WalletStatus } from "./types.js";
 import { logger } from "../logger.js";
+import { getErrorLogger, ERROR_CODES } from "./errorLogger.js";
 
 // Polygon mainnet chain ID
 const CHAIN_ID = 137;
@@ -123,9 +124,11 @@ export class TradingClient {
       this.initialized = true;
       logger.info("TradingClient: Initialization complete");
     } catch (error) {
-      logger.error("TradingClient: Initialization failed", {
-        error: (error as Error).message,
-        privateKeyEnv: this.privateKeyEnv,
+      const errorLogger = getErrorLogger();
+      await errorLogger.logError(error as Error, "tradingClient.initialize", {
+        errorCode: ERROR_CODES.WALLET_ERROR,
+        severity: "critical",
+        context: { privateKeyEnv: this.privateKeyEnv },
       });
       throw error;
     }
@@ -331,7 +334,6 @@ export class TradingClient {
     try {
       const book = await this.client!.getOrderBook(tokenId);
 
-      // Parse order book - SDK returns OrderSummary objects with price/size properties
       return {
         bids: (book.bids ?? []).map((level) => ({
           price: parseFloat(String(level.price)),
@@ -341,6 +343,10 @@ export class TradingClient {
           price: parseFloat(String(level.price)),
           size: parseFloat(String(level.size)),
         })),
+        lastTradePrice:
+          "last_trade_price" in book && book.last_trade_price
+            ? parseFloat(String(book.last_trade_price))
+            : undefined,
       };
     } catch (error) {
       logger.error("TradingClient: Failed to get order book", {
@@ -450,9 +456,12 @@ export class TradingClient {
       }
     } catch (error) {
       const errorMsg = (error as Error).message;
-      logger.error("TradingClient: Order placement failed", {
+      const errorLogger = getErrorLogger();
+      await errorLogger.logOrderError(error as Error, {
+        marketId: tokenId,
         tokenId,
-        error: errorMsg,
+        side: "BUY",
+        amount: usdcAmount,
       });
 
       return {

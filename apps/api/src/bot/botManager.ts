@@ -8,6 +8,7 @@ import { getTradingClient } from "./tradingClient.js";
 import type { BotStatus, OverallStats } from "./types.js";
 import { getSharedPolymarketClient } from "../clients/polymarketClient.js";
 import { logger } from "../logger.js";
+import { getErrorLogger, ERROR_CODES } from "./errorLogger.js";
 
 const hedgingCheckerCache: Map<number, HedgingChecker> = new Map();
 
@@ -49,10 +50,10 @@ export class BotManager {
           botName: config.name,
         });
       } catch (error) {
-        logger.error("BotManager: Failed to initialize bot", {
-          botId: config.id,
-          botName: config.name,
-          error: (error as Error).message,
+        const errorLogger = getErrorLogger(String(config.id));
+        await errorLogger.logError(error as Error, "botManager", {
+          errorCode: ERROR_CODES.CONFIG_ERROR,
+          context: { botId: config.id, botName: config.name },
         });
       }
     }
@@ -151,9 +152,10 @@ export class BotManager {
             success: true,
           };
         } catch (error) {
-          logger.error("BotManager: Scan failed for bot", {
-            botId: config.id,
-            error: (error as Error).message,
+          const errorLogger = getErrorLogger(String(config.id));
+          await errorLogger.logError(error as Error, "botManager.runAllScans", {
+            errorCode: ERROR_CODES.SCAN_FAILED,
+            context: { botId: config.id, botName: config.name },
           });
           return {
             botId: config.id,
@@ -222,9 +224,10 @@ export class BotManager {
           result,
         });
       } catch (error) {
-        logger.error("BotManager: Resolution check failed for bot", {
-          botId: config.id,
-          error: (error as Error).message,
+        const errorLogger = getErrorLogger(String(config.id));
+        await errorLogger.logError(error as Error, "botManager.runAllResolutionChecks", {
+          errorCode: ERROR_CODES.RESOLUTION_FAILED,
+          context: { botId: config.id, botName: config.name },
         });
         results.push({
           botId: config.id,

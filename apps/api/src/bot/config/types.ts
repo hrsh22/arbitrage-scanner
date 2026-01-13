@@ -56,6 +56,13 @@ export interface HedgingConfig {
    * Example: 60 means only hedge in the last hour before market closes.
    */
   nearResolutionMinutes: number;
+
+  /**
+   * Categories to skip hedging for (tag slugs from Polymarket API).
+   * Markets with ANY of these tags will NOT be hedged.
+   * Example: ["sports", "nfl"] skips all sports and NFL markets.
+   */
+  skipCategories: string[];
 }
 
 /**

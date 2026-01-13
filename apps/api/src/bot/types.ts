@@ -8,6 +8,8 @@ export interface ScoredOpportunity {
   marketSlug?: string;
   tokenId: string;
   oppositeTokenId?: string;
+  oppositeOutcome?: string;
+  tags?: string[];
   outcome: string; // "Yes" or "No"
   probability: number; // e.g., 0.96
   buyPrice: number; // Effective price after slippage
@@ -92,6 +94,7 @@ export interface OrderBookLevel {
 export interface OrderBook {
   bids: OrderBookLevel[];
   asks: OrderBookLevel[];
+  lastTradePrice?: number;
 }
 
 export interface TradeResult {

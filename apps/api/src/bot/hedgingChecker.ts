@@ -2,7 +2,9 @@ import type { BotInstanceConfig, HedgingConfig } from "./config/index.js";
 import { TradingClient } from "./tradingClient.js";
 import { BotRepository } from "./repository.js";
 import { HedgeEvaluationResult, type HedgeEvaluationResultType } from "./hedgingConstants.js";
+import { getSharedPolymarketClient } from "../clients/polymarketClient.js";
 import { logger } from "../logger.js";
+import { getErrorLogger } from "./errorLogger.js";
 
 export interface HedgeCheckResult {
   checked: number;
@@ -15,6 +17,8 @@ interface PositionToEvaluate {
   dbId: number;
   tokenId: string;
   oppositeTokenId: string | null;
+  oppositeOutcome: string | null;
+  tags: string[] | null;
   outcome: string;
   entryPrice: number;
   cost: number;
@@ -66,10 +70,11 @@ export class HedgingChecker {
         }
       } catch (error) {
         result.errors++;
-        logger.error("HedgingChecker: Error processing position", {
-          botId: this.config.id,
+        const errorLogger = getErrorLogger(String(this.config.id));
+        await errorLogger.logHedgeError(error as Error, {
           positionId: position.dbId,
-          error: (error as Error).message,
+          marketId: position.marketId,
+          reason: "evaluateAndHedge failed",
         });
       }
     }
@@ -92,6 +97,8 @@ export class HedgingChecker {
           dbId: pos.id,
           tokenId: pos.tokenId,
           oppositeTokenId: pos.oppositeTokenId,
+          oppositeOutcome: pos.oppositeOutcome,
+          tags: pos.tags,
           outcome: pos.outcome,
           entryPrice: parseFloat(pos.entryPrice),
           cost: parseFloat(pos.cost),
@@ -121,6 +128,18 @@ export class HedgingChecker {
       return HedgeEvaluationResult.SKIPPED;
     }
 
+    if (this.hedgingConfig.skipCategories.length > 0) {
+      const skipResult = this.shouldSkipCategory(position.tags);
+      if (skipResult.skip) {
+        logger.info("HedgingChecker: Skipping due to category", {
+          positionId: position.dbId,
+          marketId: position.marketId,
+          matchedCategory: skipResult.matchedCategory,
+        });
+        return HedgeEvaluationResult.SKIPPED;
+      }
+    }
+
     const now = new Date();
     const positionAgeMinutes = (now.getTime() - position.createdAt.getTime()) / (1000 * 60);
     if (positionAgeMinutes < this.hedgingConfig.minPositionAgeMinutes) {
@@ -134,15 +153,16 @@ export class HedgingChecker {
       }
     }
 
-    const currentPrice = await this.getCurrentBidPrice(position.tokenId);
-    if (currentPrice === null) {
-      logger.warn("HedgingChecker: Could not get current price", {
+    const priceData = await this.getValidatedCurrentPrice(position.tokenId, position.entryPrice);
+    if (priceData === null) {
+      logger.warn("HedgingChecker: Could not get valid current price", {
         positionId: position.dbId,
         tokenId: position.tokenId,
       });
       return HedgeEvaluationResult.SKIPPED;
     }
 
+    const { currentPrice, lastTradePrice } = priceData;
     const entryPrice = position.entryPrice;
     const dropPercent = ((entryPrice - currentPrice) / entryPrice) * 100;
 
@@ -154,9 +174,21 @@ export class HedgingChecker {
       positionId: position.dbId,
       entryPrice,
       currentPrice,
+      lastTradePrice,
       dropPercent: dropPercent.toFixed(1),
       threshold: this.hedgingConfig.dropThresholdPercent,
     });
+
+    const oppositeOutcome =
+      position.oppositeOutcome ??
+      (await this.getOppositeOutcomeName(position.marketId, position.oppositeTokenId));
+    if (!oppositeOutcome) {
+      logger.warn("HedgingChecker: Could not determine opposite outcome name", {
+        positionId: position.dbId,
+        marketId: position.marketId,
+      });
+      return HedgeEvaluationResult.SKIPPED;
+    }
 
     const oppositeAskPrice = await this.getAskPrice(position.oppositeTokenId);
     if (oppositeAskPrice === null) {
@@ -192,20 +224,22 @@ export class HedgingChecker {
       return HedgeEvaluationResult.SKIPPED;
     }
 
-    const hedgeAmount = position.cost * this.hedgingConfig.multiplier;
-    const hedgeShares = hedgeAmount / oppositeAskPrice;
+    const originalShares = position.cost / position.entryPrice;
+    const hedgeShares = originalShares * this.hedgingConfig.multiplier;
+    const hedgeAmount = hedgeShares * oppositeAskPrice;
 
     if (position.isSimulated) {
       const hedgePositionId = await this.createHedgePositionRecord(
         position,
         oppositeAskPrice,
         hedgeAmount,
+        oppositeOutcome,
       );
 
       await this.repository.logEvent({
         eventType: "trade",
         eventName: "hedge_placed",
-        message: `[SIM] Hedge: ${hedgeShares.toFixed(2)} opposite shares @ ${(oppositeAskPrice * 100).toFixed(1)}¢ for $${hedgeAmount.toFixed(2)}`,
+        message: `[SIM] Hedge: ${hedgeShares.toFixed(2)} ${oppositeOutcome} shares @ ${(oppositeAskPrice * 100).toFixed(1)}¢ for $${hedgeAmount.toFixed(2)}`,
         metadata: {
           originalPositionId: position.dbId,
           hedgePositionId,
@@ -214,6 +248,7 @@ export class HedgingChecker {
           hedgeCost: hedgeAmount,
           hedgeShares,
           dropPercent,
+          oppositeOutcome,
           isSimulated: true,
         },
       });
@@ -238,12 +273,13 @@ export class HedgingChecker {
         position,
         tradeResult.fillPrice ?? oppositeAskPrice,
         hedgeAmount,
+        oppositeOutcome,
       );
 
       await this.repository.logEvent({
         eventType: "trade",
         eventName: "hedge_placed",
-        message: `Hedge: ${hedgeShares.toFixed(2)} opposite shares @ ${(oppositeAskPrice * 100).toFixed(1)}¢ for $${hedgeAmount.toFixed(2)}`,
+        message: `Hedge: ${hedgeShares.toFixed(2)} ${oppositeOutcome} shares @ ${(oppositeAskPrice * 100).toFixed(1)}¢ for $${hedgeAmount.toFixed(2)}`,
         metadata: {
           originalPositionId: position.dbId,
           hedgePositionId,
@@ -252,6 +288,7 @@ export class HedgingChecker {
           hedgeCost: hedgeAmount,
           hedgeShares,
           dropPercent,
+          oppositeOutcome,
           isSimulated: false,
         },
       });
@@ -282,7 +319,8 @@ export class HedgingChecker {
     try {
       const orderBook = await this.tradingClient.getOrderBook(tokenId);
       if (orderBook.bids.length > 0) {
-        return orderBook.bids[0]!.price;
+        const bidPrices = orderBook.bids.map((b) => b.price);
+        return Math.max(...bidPrices);
       }
       return null;
     } catch {
@@ -294,7 +332,8 @@ export class HedgingChecker {
     try {
       const orderBook = await this.tradingClient.getOrderBook(tokenId);
       if (orderBook.asks.length > 0) {
-        return orderBook.asks[0]!.price;
+        const askPrices = orderBook.asks.map((a) => a.price);
+        return Math.min(...askPrices);
       }
       return null;
     } catch {
@@ -306,6 +345,7 @@ export class HedgingChecker {
     position: PositionToEvaluate,
     hedgePrice: number,
     hedgeCost: number,
+    oppositeOutcome: string,
   ): Promise<number> {
     return await this.repository.createHedgePosition(
       {
@@ -321,7 +361,103 @@ export class HedgingChecker {
         tokenId: position.oppositeTokenId!,
         entryPrice: hedgePrice,
         cost: hedgeCost,
+        outcome: oppositeOutcome,
       },
     );
+  }
+
+  private async getValidatedCurrentPrice(
+    tokenId: string,
+    entryPrice: number,
+  ): Promise<{ currentPrice: number; lastTradePrice: number } | null> {
+    try {
+      const orderBook = await this.tradingClient.getOrderBook(tokenId);
+
+      const lastTradePrice = orderBook.lastTradePrice ?? null;
+      const bestBid =
+        orderBook.bids.length > 0 ? Math.max(...orderBook.bids.map((b) => b.price)) : null;
+
+      if (bestBid === null && lastTradePrice === null) {
+        return null;
+      }
+
+      const MAX_ALLOWED_DROP_FROM_ENTRY = 0.5;
+      const minReasonablePrice = entryPrice * (1 - MAX_ALLOWED_DROP_FROM_ENTRY);
+
+      if (bestBid !== null && bestBid >= minReasonablePrice) {
+        return { currentPrice: bestBid, lastTradePrice: lastTradePrice ?? bestBid };
+      }
+
+      if (lastTradePrice !== null && lastTradePrice >= minReasonablePrice) {
+        logger.warn("HedgingChecker: Bid price unrealistic, using lastTradePrice", {
+          tokenId,
+          bestBid,
+          lastTradePrice,
+          entryPrice,
+          minReasonablePrice,
+        });
+        return { currentPrice: lastTradePrice, lastTradePrice };
+      }
+
+      logger.warn("HedgingChecker: Price appears unrealistic, skipping", {
+        tokenId,
+        bestBid,
+        lastTradePrice,
+        entryPrice,
+        minReasonablePrice,
+      });
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async getOppositeOutcomeName(
+    marketId: string,
+    oppositeTokenId: string,
+  ): Promise<string | null> {
+    try {
+      const polyClient = getSharedPolymarketClient();
+      const marketData = await polyClient.getMarketOutcomes(marketId);
+
+      if (!marketData) {
+        return null;
+      }
+
+      const matchingOutcome = marketData.outcomes.find((o) => o.tokenId === oppositeTokenId);
+
+      if (matchingOutcome) {
+        return matchingOutcome.name;
+      }
+
+      logger.warn("HedgingChecker: Could not find opposite token in market outcomes", {
+        marketId,
+        oppositeTokenId,
+        availableTokens: marketData.outcomes.map((o) => o.tokenId),
+      });
+      return null;
+    } catch (error) {
+      logger.error("HedgingChecker: Failed to get opposite outcome name", {
+        marketId,
+        error: (error as Error).message,
+      });
+      return null;
+    }
+  }
+
+  private shouldSkipCategory(tags: string[] | null): { skip: boolean; matchedCategory?: string } {
+    if (this.hedgingConfig.skipCategories.length === 0 || !tags || tags.length === 0) {
+      return { skip: false };
+    }
+
+    const skipSet = new Set(this.hedgingConfig.skipCategories.map((s) => s.toLowerCase()));
+
+    for (const tag of tags) {
+      if (skipSet.has(tag.toLowerCase())) {
+        return { skip: true, matchedCategory: tag };
+      }
+    }
+
+    return { skip: false };
   }
 }
