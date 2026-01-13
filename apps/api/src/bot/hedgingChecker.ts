@@ -198,6 +198,26 @@ export class HedgingChecker {
       return HedgeEvaluationResult.SKIPPED;
     }
 
+    if (oppositeAskPrice > 0.99) {
+      logger.info("HedgingChecker: Opposite price > 99¢, hedging not worthwhile", {
+        positionId: position.dbId,
+        oppositeAskPrice,
+      });
+
+      await this.repository.logEvent({
+        eventType: "info",
+        eventName: "hedge_skipped_expensive",
+        message: `Hedge skipped: opposite @ ${(oppositeAskPrice * 100).toFixed(1)}¢ > 99¢, not worthwhile`,
+        metadata: {
+          positionId: position.dbId,
+          marketId: position.marketId,
+          oppositeAskPrice,
+        },
+      });
+
+      return HedgeEvaluationResult.SKIPPED;
+    }
+
     const theoreticalOpposite = 1 - currentPrice;
     const maxAcceptablePrice = theoreticalOpposite + this.hedgingConfig.spreadTolerance;
 
@@ -368,7 +388,7 @@ export class HedgingChecker {
 
   private async getValidatedCurrentPrice(
     tokenId: string,
-    entryPrice: number,
+    _entryPrice: number,
   ): Promise<{ currentPrice: number; lastTradePrice: number } | null> {
     try {
       const orderBook = await this.tradingClient.getOrderBook(tokenId);
@@ -381,31 +401,23 @@ export class HedgingChecker {
         return null;
       }
 
-      const MAX_ALLOWED_DROP_FROM_ENTRY = 0.5;
-      const minReasonablePrice = entryPrice * (1 - MAX_ALLOWED_DROP_FROM_ENTRY);
-
-      if (bestBid !== null && bestBid >= minReasonablePrice) {
+      if (bestBid !== null && bestBid >= 0.01) {
         return { currentPrice: bestBid, lastTradePrice: lastTradePrice ?? bestBid };
       }
 
-      if (lastTradePrice !== null && lastTradePrice >= minReasonablePrice) {
-        logger.warn("HedgingChecker: Bid price unrealistic, using lastTradePrice", {
+      if (bestBid !== null && bestBid < 0.01) {
+        logger.warn("HedgingChecker: Bid is < 1¢, order book unreliable, skipping", {
           tokenId,
           bestBid,
           lastTradePrice,
-          entryPrice,
-          minReasonablePrice,
         });
+        return null;
+      }
+
+      if (lastTradePrice !== null && lastTradePrice > 0) {
         return { currentPrice: lastTradePrice, lastTradePrice };
       }
 
-      logger.warn("HedgingChecker: Price appears unrealistic, skipping", {
-        tokenId,
-        bestBid,
-        lastTradePrice,
-        entryPrice,
-        minReasonablePrice,
-      });
       return null;
     } catch {
       return null;
