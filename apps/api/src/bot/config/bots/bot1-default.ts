@@ -19,7 +19,7 @@ const config: BotInstanceConfig = {
   walletFunderAddressEnv: "POLYMARKET_FUNDER_ADDRESS",
 
   // Betting
-  betSize: 5.0,
+  betSize: 25.0,
   dailyBudget: Infinity,
 
   // Market selection
@@ -28,7 +28,7 @@ const config: BotInstanceConfig = {
   maxHoursGeneral: 24,
   maxHoursForHighOdds: 2,
   highOddsThreshold: 0.99,
-  minLiquidity: 50,
+  minLiquidity: 250,
 
   // Category-specific time limits
   categoryTimeLimits: {
