@@ -25,14 +25,16 @@ const config: BotInstanceConfig = {
   // Market selection
   minOdds: 0.95,
   maxOdds: 0.995,
-  maxHoursGeneral: 24,
+  maxHoursGeneral: 2,
   maxHoursForHighOdds: 2,
   highOddsThreshold: 0.99,
   minLiquidity: 250,
 
   // Category-specific time limits
   categoryTimeLimits: {
-    crypto: 3, // Crypto markets: high volatility, 3 hours max
+    crypto: 1, // Crypto markets: high volatility, 1 hours max,
+    sports: 1, // Sports markets: high volatility, 1 hours max,
+    esports: 0.5, // Esports markets: high volatility, 0.5 hours max,
   },
 
   // Categories to skip entirely
@@ -54,7 +56,7 @@ const config: BotInstanceConfig = {
 
   // Hedging
   hedging: {
-    enabled: true,
+    enabled: false,
     dropThresholdPercent: 60,
     multiplier: 2,
     spreadTolerance: 0.1,
