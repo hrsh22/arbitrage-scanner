@@ -25,7 +25,7 @@ const config: BotInstanceConfig = {
   // Market selection
   minOdds: 0.95,
   maxOdds: 0.995,
-  maxHoursGeneral: 2,
+  maxHoursGeneral: 4,
   maxHoursForHighOdds: 2,
   highOddsThreshold: 0.99,
   minLiquidity: 250,
