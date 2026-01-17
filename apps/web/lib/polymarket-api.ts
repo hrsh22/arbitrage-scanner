@@ -183,6 +183,7 @@ export interface ResolvedPositionFromDB {
   size: string | null;
   createdAt: string | null;
   resolvedAt: string | null;
+  marketEndDate: string | null;
   finalPrice: string | null;
   profitLoss: string | null;
   result: string | null;
@@ -318,6 +319,15 @@ export interface DailyPnlItem {
   cumulativePnl: number;
 }
 
+export interface EntryTimingItem {
+  hoursBeforeResolution: number;
+  positionsEligible: number;
+  positionsWon: number;
+  positionsLost: number;
+  winRate: number;
+  avgEntryPrice: number;
+}
+
 export interface WalletAnalytics {
   id: number;
   walletAddress: string;
@@ -333,6 +343,7 @@ export interface WalletAnalytics {
   hedgingAnalysis: HedgingAnalysisItem[];
   categoryBreakdown: CategoryBreakdownItem[];
   dailyPnl: DailyPnlItem[];
+  entryTimingAnalysis: EntryTimingItem[];
   computedAt: string;
 }
 
@@ -408,6 +419,45 @@ export async function fetchMissedOpportunities(
 
   if (!response.ok) {
     throw new Error(`Failed to fetch missed opportunities: ${response.status}`);
+  }
+
+  return response.json();
+}
+
+export interface ComputedAnalytics {
+  totalPnl: string;
+  totalCost: string;
+  winCount: string;
+  lossCount: string;
+  winRate: string;
+  avgEntryPrice: string;
+  avgPnlPerPosition: string;
+  avgHoldingHours: string;
+  stopLossAnalysis: StopLossAnalysisItem[];
+  hedgingAnalysis: HedgingAnalysisItem[];
+  categoryBreakdown: CategoryBreakdownItem[];
+  dailyPnl: DailyPnlItem[];
+  entryTimingAnalysis: EntryTimingItem[];
+  positionCount: number;
+  period: "all" | "before" | "after";
+  computedAt: string;
+}
+
+export interface ComputedAnalyticsResponse {
+  success: boolean;
+  analytics: ComputedAnalytics;
+}
+
+export async function fetchComputedAnalytics(
+  walletAddress: string,
+  period: "all" | "before" | "after" = "all",
+  signal?: AbortSignal,
+): Promise<ComputedAnalyticsResponse> {
+  const url = `${API_BASE}/resolved-positions/${walletAddress}/analytics/compute?period=${period}`;
+  const response = await fetch(url, { signal });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch computed analytics: ${response.status}`);
   }
 
   return response.json();

@@ -1,10 +1,10 @@
 /**
- * Bot 2: Aggressive
+ * Bot 2: Bonding
  *
- * Lower odds, fast resolution strategy.
- * Targets 90-99.5¢ markets resolving within 3 hours.
+ * Bonds to long-term markets.
+ * Targets 99.5¢ markets resolving within 24 hours.
  *
- * Higher risk, higher reward per bet.
+ * Bonds to long-term markets.
  */
 
 import { env } from "../../../env.js";
@@ -13,7 +13,7 @@ import type { BotInstanceConfig, BotMode } from "../types.js";
 const config: BotInstanceConfig = {
   // Identity
   id: 2,
-  name: "aggressive",
+  name: "bonding",
   enabled: false,
 
   // Wallet (separate from bot1)
@@ -25,18 +25,18 @@ const config: BotInstanceConfig = {
   dailyBudget: Infinity,
 
   // Market selection: Lower odds, fast resolution
-  minOdds: 0.9,
-  maxOdds: 0.995,
-  maxHoursGeneral: 3,
+  minOdds: 0.991,
+  maxOdds: 0.998,
+  maxHoursGeneral: 24,
   minLiquidity: 50,
 
   // Disable high-odds special rule (set threshold above maxOdds)
   highOddsThreshold: 1.0,
-  maxHoursForHighOdds: 3,
+  maxHoursForHighOdds: 24,
 
   // Category-specific time limits
   categoryTimeLimits: {
-    crypto: 1, // Crypto: high volatility, 1 hour max for aggressive
+    // crypto: 1, // Crypto: high volatility, 1 hour max for aggressive
   },
 
   // Categories to skip entirely
@@ -47,11 +47,11 @@ const config: BotInstanceConfig = {
   maxDailyLoss: Infinity,
 
   // Early exit
-  enableEarlyExit: true,
+  enableEarlyExit: false,
   earlyExitMinPrice: 0.9995,
 
   // Order execution
-  useMarketOrders: false,
+  useMarketOrders: true,
 
   // Wallet tracking
   walletSnapshotRetentionDays: 30,

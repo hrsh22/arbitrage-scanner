@@ -1,4 +1,4 @@
-import { eq, sql, and, desc } from "drizzle-orm";
+import { eq, sql, and, desc, notInArray } from "drizzle-orm";
 import { db as defaultDb } from "../client.js";
 import {
   resolvedPositions,
@@ -8,6 +8,8 @@ import {
 
 type DbClient = typeof defaultDb;
 
+const EXCLUDED_POSITION_IDS = [1017, 1018, 1019, 1020];
+
 export class ResolvedPositionsRepository {
   constructor(private readonly database: DbClient = defaultDb) {}
 
@@ -15,7 +17,12 @@ export class ResolvedPositionsRepository {
     return this.database
       .select()
       .from(resolvedPositions)
-      .where(eq(resolvedPositions.walletAddress, walletAddress.toLowerCase()))
+      .where(
+        and(
+          eq(resolvedPositions.walletAddress, walletAddress.toLowerCase()),
+          notInArray(resolvedPositions.id, EXCLUDED_POSITION_IDS),
+        ),
+      )
       .orderBy(desc(resolvedPositions.resolvedAt));
   }
 
@@ -37,6 +44,7 @@ export class ResolvedPositionsRepository {
         size: resolvedPositions.size,
         createdAt: resolvedPositions.createdAt,
         resolvedAt: resolvedPositions.resolvedAt,
+        marketEndDate: resolvedPositions.marketEndDate,
         finalPrice: resolvedPositions.finalPrice,
         profitLoss: resolvedPositions.profitLoss,
         result: resolvedPositions.result,
@@ -52,7 +60,12 @@ export class ResolvedPositionsRepository {
         updatedAt: resolvedPositions.updatedAt,
       })
       .from(resolvedPositions)
-      .where(eq(resolvedPositions.walletAddress, walletAddress.toLowerCase()))
+      .where(
+        and(
+          eq(resolvedPositions.walletAddress, walletAddress.toLowerCase()),
+          notInArray(resolvedPositions.id, EXCLUDED_POSITION_IDS),
+        ),
+      )
       .orderBy(desc(resolvedPositions.resolvedAt));
   }
 
@@ -166,7 +179,12 @@ export class ResolvedPositionsRepository {
         totalPnL: sql<number>`coalesce(sum(profit_loss::numeric), 0)::float`,
       })
       .from(resolvedPositions)
-      .where(eq(resolvedPositions.walletAddress, walletAddress.toLowerCase()));
+      .where(
+        and(
+          eq(resolvedPositions.walletAddress, walletAddress.toLowerCase()),
+          notInArray(resolvedPositions.id, EXCLUDED_POSITION_IDS),
+        ),
+      );
 
     return results[0] ?? { total: 0, won: 0, lost: 0, totalPnL: 0 };
   }

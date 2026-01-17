@@ -155,6 +155,20 @@
       "when": 1768288349038,
       "tag": "0021_orange_iceman",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1768583066352,
+      "tag": "0022_panoramic_star_brand",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1768583848403,
+      "tag": "0023_yummy_kid_colt",
+      "breakpoints": true
     }
   ]
 }

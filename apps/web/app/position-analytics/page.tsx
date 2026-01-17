@@ -7,12 +7,15 @@ import {
   fetchResolvedPositionsFromDB,
   fetchSinglePosition,
   fetchMissedOpportunities,
+  fetchComputedAnalytics,
   type WalletAnalytics,
   type ResolvedPositionFromDB,
   type StopLossAnalysisItem,
   type HedgingAnalysisItem,
   type CategoryBreakdownItem,
   type MissedOpportunityEvent,
+  type EntryTimingItem,
+  type ComputedAnalytics,
 } from "@/lib/polymarket-api";
 import { DEFAULT_WALLET, WALLET_OPTIONS } from "@/lib/polymarket-api";
 import {
@@ -33,6 +36,10 @@ import {
   Shield,
   Tag,
   Ban,
+  Clock,
+  ArrowUpDown,
+  ExternalLink,
+  Check,
 } from "lucide-react";
 import { Button } from "@workspace/ui/components/button";
 import {
@@ -72,6 +79,10 @@ import {
 } from "recharts";
 
 type ResolvedFilter = "all" | "won" | "lost";
+type SortKey = "date" | "entry" | "final" | "pnl" | "maxdd";
+type SortDirection = "asc" | "desc";
+
+const SCALE_UP_TIMESTAMP = new Date("2026-01-14T12:30:00Z").getTime();
 
 function SectionFilter({
   value,
@@ -376,6 +387,92 @@ function HedgingTable({ analysis }: { analysis: HedgingAnalysisItem[] }) {
   );
 }
 
+function EntryTimingTable({ analysis }: { analysis: EntryTimingItem[] }) {
+  if (!analysis || analysis.length === 0)
+    return <p className="text-sm text-muted-foreground">No entry timing data available</p>;
+
+  const sortedAnalysis = [...analysis].sort(
+    (a, b) => b.hoursBeforeResolution - a.hoursBeforeResolution,
+  );
+
+  return (
+    <div className="rounded-md border">
+      <div className="w-full overflow-auto">
+        <table className="w-full caption-bottom text-sm">
+          <thead className="[&_tr]:border-b">
+            <tr className="border-b transition-colors hover:bg-muted/50">
+              <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">
+                <div className="flex items-center gap-1">
+                  Time Window
+                  <InfoTooltip text="Hours before resolution when price was between 95¢-99.5¢" />
+                </div>
+              </th>
+              <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
+                <div className="flex items-center justify-end gap-1">
+                  Eligible
+                  <InfoTooltip text="Positions that had enterable price (95¢-99.5¢) within this time window" />
+                </div>
+              </th>
+              <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
+                Won
+              </th>
+              <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
+                Lost
+              </th>
+              <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
+                <div className="flex items-center justify-end gap-1">
+                  Win Rate
+                  <InfoTooltip text="Percentage of eligible positions that won" />
+                </div>
+              </th>
+              <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
+                <div className="flex items-center justify-end gap-1">
+                  Avg Entry
+                  <InfoTooltip text="Average entry price for positions in this window" />
+                </div>
+              </th>
+            </tr>
+          </thead>
+          <tbody className="[&_tr:last-child]:border-0">
+            {sortedAnalysis.map((item) => (
+              <tr
+                key={item.hoursBeforeResolution}
+                className="border-b transition-colors hover:bg-muted/50"
+              >
+                <td className="p-4 align-middle font-medium">
+                  {item.hoursBeforeResolution >= 1
+                    ? `${item.hoursBeforeResolution}h`
+                    : `${item.hoursBeforeResolution * 60}min`}
+                </td>
+                <td className="p-4 align-middle text-right">{item.positionsEligible}</td>
+                <td className="p-4 align-middle text-right text-emerald-500">
+                  {item.positionsWon}
+                </td>
+                <td className="p-4 align-middle text-right text-rose-500">{item.positionsLost}</td>
+                <td
+                  className={cn(
+                    "p-4 align-middle text-right font-bold",
+                    item.winRate >= 1
+                      ? "text-emerald-500"
+                      : item.winRate >= 0.99
+                        ? "text-emerald-400"
+                        : "text-foreground",
+                  )}
+                >
+                  {(item.winRate * 100).toFixed(1)}%
+                </td>
+                <td className="p-4 align-middle text-right text-muted-foreground">
+                  {(item.avgEntryPrice * 100).toFixed(1)}¢
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function CategoryDetailCard({ category }: { category: CategoryBreakdownItem }) {
   const chartData = category.stopLossAnalysis.map((sl, idx) => ({
     threshold: `${sl.threshold}%`,
@@ -569,6 +666,88 @@ function CategoryDetailCard({ category }: { category: CategoryBreakdownItem }) {
   );
 }
 
+function SimpleCategoryTable({ categories }: { categories: SimpleCategoryBreakdown[] }) {
+  if (categories.length === 0) {
+    return <p className="text-sm text-muted-foreground">No positions in this period</p>;
+  }
+
+  const formatMoney = (val: number) => {
+    const prefix = val >= 0 ? (val > 0 ? "+" : "") : "";
+    return `${prefix}$${val.toFixed(2)}`;
+  };
+
+  return (
+    <div className="rounded-md border">
+      <div className="w-full overflow-auto">
+        <table className="w-full caption-bottom text-sm">
+          <thead className="[&_tr]:border-b">
+            <tr className="border-b transition-colors bg-muted/30">
+              <th className="h-10 px-3 text-left align-middle font-medium text-muted-foreground">
+                Category
+              </th>
+              <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
+                Positions
+              </th>
+              <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
+                Win Rate
+              </th>
+              <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
+                Total P/L
+              </th>
+              <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
+                Avg P/L
+              </th>
+              <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
+                Avg Drawdown
+              </th>
+            </tr>
+          </thead>
+          <tbody className="[&_tr:last-child]:border-0">
+            {categories.map((cat) => (
+              <tr key={cat.category} className="border-b transition-colors hover:bg-muted/50">
+                <td className="p-3 align-middle font-medium">{cat.category}</td>
+                <td className="p-3 align-middle text-right">
+                  <span className="text-muted-foreground text-xs">
+                    {cat.winCount}W / {cat.lossCount}L
+                  </span>
+                  <span className="ml-2">{cat.positionCount}</span>
+                </td>
+                <td
+                  className={cn(
+                    "p-3 align-middle text-right font-medium",
+                    cat.winRate >= 0.5 ? "text-emerald-500" : "text-rose-500",
+                  )}
+                >
+                  {(cat.winRate * 100).toFixed(1)}%
+                </td>
+                <td
+                  className={cn(
+                    "p-3 align-middle text-right font-mono",
+                    cat.totalPnl >= 0 ? "text-emerald-500" : "text-rose-500",
+                  )}
+                >
+                  {formatMoney(cat.totalPnl)}
+                </td>
+                <td
+                  className={cn(
+                    "p-3 align-middle text-right font-mono",
+                    cat.avgPnl >= 0 ? "text-emerald-500" : "text-rose-500",
+                  )}
+                >
+                  {formatMoney(cat.avgPnl)}
+                </td>
+                <td className="p-3 align-middle text-right text-rose-500">
+                  {cat.avgDrawdown.toFixed(1)}%
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function CategoryBreakdownSection({ categories }: { categories: CategoryBreakdownItem[] }) {
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
 
@@ -712,6 +891,295 @@ function CategoryBreakdownSection({ categories }: { categories: CategoryBreakdow
 
 type MissedByDate = { date: string; count: number; potentialProfit: number };
 
+interface PeriodStats {
+  positions: number;
+  won: number;
+  lost: number;
+  winRate: number;
+  totalPnl: number;
+  avgPnl: number;
+  avgHoldingHours: number;
+}
+
+function computePeriodStats(positions: PositionLightweight[]): PeriodStats {
+  const won = positions.filter((p) => p.result === "won").length;
+  const lost = positions.filter((p) => p.result === "lost").length;
+  const totalPnl = positions.reduce((sum, p) => sum + parseFloat(p.profitLoss || "0"), 0);
+
+  let totalHours = 0;
+  let hoursCount = 0;
+  for (const p of positions) {
+    if (p.createdAt) {
+      const endTime = p.marketEndDate
+        ? new Date(p.marketEndDate).getTime()
+        : p.resolvedAt
+          ? new Date(p.resolvedAt).getTime()
+          : null;
+      if (endTime) {
+        const hours = (endTime - new Date(p.createdAt).getTime()) / (1000 * 60 * 60);
+        const MAX_HOURS_THRESHOLD = 168;
+        if (hours > 0 && hours < MAX_HOURS_THRESHOLD) {
+          totalHours += hours;
+          hoursCount++;
+        }
+      }
+    }
+  }
+
+  return {
+    positions: positions.length,
+    won,
+    lost,
+    winRate: positions.length > 0 ? won / positions.length : 0,
+    totalPnl,
+    avgPnl: positions.length > 0 ? totalPnl / positions.length : 0,
+    avgHoldingHours: hoursCount > 0 ? totalHours / hoursCount : 0,
+  };
+}
+
+function filterPositionsByPeriod(
+  positions: PositionLightweight[],
+  period: "all" | "before" | "after",
+): PositionLightweight[] {
+  if (period === "all") return positions;
+  if (period === "before") {
+    return positions.filter((p) => new Date(p.createdAt || 0).getTime() < SCALE_UP_TIMESTAMP);
+  }
+  return positions.filter((p) => new Date(p.createdAt || 0).getTime() >= SCALE_UP_TIMESTAMP);
+}
+
+type SimpleCategoryBreakdown = {
+  category: string;
+  positionCount: number;
+  winCount: number;
+  lossCount: number;
+  winRate: number;
+  totalPnl: number;
+  avgPnl: number;
+  avgDrawdown: number;
+};
+
+function computeCategoryBreakdown(positions: PositionLightweight[]): SimpleCategoryBreakdown[] {
+  const byCategory = new Map<string, PositionLightweight[]>();
+
+  for (const p of positions) {
+    const cat = p.category || "Uncategorized";
+    if (!byCategory.has(cat)) byCategory.set(cat, []);
+    byCategory.get(cat)!.push(p);
+  }
+
+  return Array.from(byCategory.entries())
+    .map(([category, catPositions]) => {
+      const winCount = catPositions.filter((p) => p.result === "won").length;
+      const lossCount = catPositions.filter((p) => p.result === "lost").length;
+      const totalPnl = catPositions.reduce((s, p) => s + parseFloat(p.profitLoss || "0"), 0);
+      const avgDrawdown =
+        catPositions.reduce((s, p) => s + parseFloat(p.maxDrawdownPercent || "0"), 0) /
+        catPositions.length;
+
+      return {
+        category,
+        positionCount: catPositions.length,
+        winCount,
+        lossCount,
+        winRate: catPositions.length > 0 ? winCount / catPositions.length : 0,
+        totalPnl,
+        avgPnl: catPositions.length > 0 ? totalPnl / catPositions.length : 0,
+        avgDrawdown,
+      };
+    })
+    .sort((a, b) => b.positionCount - a.positionCount);
+}
+
+function PeriodComparisonCard({ positions }: { positions: PositionLightweight[] }) {
+  const periodStats = useMemo(() => {
+    const before = positions.filter(
+      (p) => new Date(p.createdAt || 0).getTime() < SCALE_UP_TIMESTAMP,
+    );
+    const after = positions.filter(
+      (p) => new Date(p.createdAt || 0).getTime() >= SCALE_UP_TIMESTAMP,
+    );
+
+    return {
+      before: computePeriodStats(before),
+      after: computePeriodStats(after),
+    };
+  }, [positions]);
+
+  const { before, after } = periodStats;
+
+  const winRateDelta = after.winRate - before.winRate;
+  const avgPnlDelta = after.avgPnl - before.avgPnl;
+  const avgHoldDelta = after.avgHoldingHours - before.avgHoldingHours;
+
+  const formatMoney = (val: number) => {
+    const prefix = val >= 0 ? (val > 0 ? "+" : "") : "";
+    return `${prefix}$${val.toFixed(2)}`;
+  };
+
+  const formatPercent = (val: number) => {
+    const prefix = val >= 0 ? (val > 0 ? "+" : "") : "";
+    return `${prefix}${(val * 100).toFixed(1)}%`;
+  };
+
+  if (before.positions === 0 || after.positions === 0) {
+    return null;
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-lg flex items-center gap-2">
+          <TrendingUp className="h-5 w-5 text-primary" />
+          Period Comparison
+          <InfoTooltip text="Compares performance between $5 bet period (before Jan 14, 2026 12:30 PM) and $25 bet period (after)." />
+        </CardTitle>
+        <CardDescription>Performance change after scaling from $5 to $25 bets</CardDescription>
+      </CardHeader>
+      <CardContent className="pt-0">
+        <div className="grid grid-cols-2 gap-4">
+          <div className="rounded-lg border bg-muted/20 p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="font-semibold text-sm">$5 Period</h4>
+              <Badge variant="outline" className="text-xs">
+                {before.positions} trades
+              </Badge>
+            </div>
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div>
+                <p className="text-muted-foreground text-xs">Win Rate</p>
+                <p className="font-mono font-medium">{(before.winRate * 100).toFixed(1)}%</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground text-xs">W / L</p>
+                <p className="font-mono font-medium">
+                  <span className="text-emerald-500">{before.won}</span>
+                  {" / "}
+                  <span className="text-rose-500">{before.lost}</span>
+                </p>
+              </div>
+              <div>
+                <p className="text-muted-foreground text-xs">Total P/L</p>
+                <p
+                  className={cn(
+                    "font-mono font-medium",
+                    before.totalPnl >= 0 ? "text-emerald-500" : "text-rose-500",
+                  )}
+                >
+                  {formatMoney(before.totalPnl)}
+                </p>
+              </div>
+              <div>
+                <p className="text-muted-foreground text-xs">Avg P/L</p>
+                <p
+                  className={cn(
+                    "font-mono font-medium",
+                    before.avgPnl >= 0 ? "text-emerald-500" : "text-rose-500",
+                  )}
+                >
+                  {formatMoney(before.avgPnl)}
+                </p>
+              </div>
+              <div className="col-span-2">
+                <p className="text-muted-foreground text-xs">Avg Hold Time</p>
+                <p className="font-mono font-medium">{before.avgHoldingHours.toFixed(1)}h</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-lg border bg-primary/5 border-primary/20 p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="font-semibold text-sm">$25 Period</h4>
+              <Badge variant="default" className="text-xs">
+                {after.positions} trades
+              </Badge>
+            </div>
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div>
+                <p className="text-muted-foreground text-xs">Win Rate</p>
+                <p className="font-mono font-medium flex items-center gap-1">
+                  {(after.winRate * 100).toFixed(1)}%
+                  <span
+                    className={cn(
+                      "text-[10px]",
+                      winRateDelta >= 0 ? "text-emerald-500" : "text-rose-500",
+                    )}
+                  >
+                    ({formatPercent(winRateDelta)})
+                  </span>
+                </p>
+              </div>
+              <div>
+                <p className="text-muted-foreground text-xs">W / L</p>
+                <p className="font-mono font-medium">
+                  <span className="text-emerald-500">{after.won}</span>
+                  {" / "}
+                  <span className="text-rose-500">{after.lost}</span>
+                </p>
+              </div>
+              <div>
+                <p className="text-muted-foreground text-xs">Total P/L</p>
+                <p
+                  className={cn(
+                    "font-mono font-medium",
+                    after.totalPnl >= 0 ? "text-emerald-500" : "text-rose-500",
+                  )}
+                >
+                  {formatMoney(after.totalPnl)}
+                </p>
+              </div>
+              <div>
+                <p className="text-muted-foreground text-xs">Avg P/L</p>
+                <p className="font-mono font-medium flex items-center gap-1">
+                  <span className={after.avgPnl >= 0 ? "text-emerald-500" : "text-rose-500"}>
+                    {formatMoney(after.avgPnl)}
+                  </span>
+                  <span
+                    className={cn(
+                      "text-[10px]",
+                      avgPnlDelta >= 0 ? "text-emerald-500" : "text-rose-500",
+                    )}
+                  >
+                    ({formatMoney(avgPnlDelta)})
+                  </span>
+                </p>
+              </div>
+              <div className="col-span-2">
+                <p className="text-muted-foreground text-xs">Avg Hold Time</p>
+                <p className="font-mono font-medium flex items-center gap-1">
+                  {after.avgHoldingHours.toFixed(1)}h
+                  <span
+                    className={cn(
+                      "text-[10px]",
+                      avgHoldDelta <= 0 ? "text-emerald-500" : "text-rose-500",
+                    )}
+                  >
+                    ({avgHoldDelta > 0 ? "+" : ""}
+                    {avgHoldDelta.toFixed(1)}h)
+                  </span>
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 p-3 rounded-md bg-muted/30 text-xs text-muted-foreground">
+          <strong className="text-foreground">Summary:</strong>{" "}
+          {winRateDelta >= 0 ? (
+            <>Win rate improved by {formatPercent(winRateDelta)} after scaling to $25 bets.</>
+          ) : (
+            <>Win rate decreased by {formatPercent(Math.abs(winRateDelta))} after scaling.</>
+          )}{" "}
+          Average P/L per trade changed by {formatMoney(avgPnlDelta)}.
+          {avgHoldDelta < 0 && (
+            <> Trades are closing {Math.abs(avgHoldDelta).toFixed(1)}h faster on average.</>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function MissedOpportunitiesCard({ events }: { events: MissedOpportunityEvent[] }) {
   const byDate = useMemo(() => {
     const map = new Map<string, { count: number; profit: number }>();
@@ -840,6 +1308,7 @@ function PositionRow({ position, wallet }: { position: PositionLightweight; wall
     allPrices.length > 0 ? Math.max(...allPrices, entryPriceCents) * 1.05 : entryPriceCents * 1.1;
 
   const chartColor = status === "won" ? "#10b981" : "#f43f5e";
+  const isAfterScaleUp = new Date(position.createdAt || 0).getTime() >= SCALE_UP_TIMESTAMP;
 
   return (
     <>
@@ -865,9 +1334,45 @@ function PositionRow({ position, wallet }: { position: PositionLightweight; wall
               <Badge variant="outline" className="text-[10px] h-5 px-1.5">
                 {position.outcome}
               </Badge>
+              <Badge
+                variant="outline"
+                className={cn(
+                  "text-[10px] h-5 px-1.5 font-mono",
+                  isAfterScaleUp
+                    ? "bg-primary/10 text-primary border-primary/30"
+                    : "bg-muted text-muted-foreground",
+                )}
+              >
+                {isAfterScaleUp ? "$25" : "$5"}
+              </Badge>
+              {position.category && (
+                <Badge
+                  variant="outline"
+                  className="text-[10px] h-5 px-1.5 bg-blue-500/10 text-blue-500 border-blue-500/30"
+                >
+                  {position.category}
+                </Badge>
+              )}
               <span className="text-xs text-muted-foreground">
                 {position.resolvedAt ? new Date(position.resolvedAt).toLocaleDateString() : ""}
               </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 gap-1 text-[10px] px-2 ml-1"
+                asChild
+              >
+                <a
+                  href={`https://polymarket.com/event/${position.eventSlug}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  title="View on Polymarket"
+                >
+                  Polymarket
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              </Button>
             </div>
           </div>
         </td>
@@ -990,6 +1495,147 @@ function PositionRow({ position, wallet }: { position: PositionLightweight; wall
   );
 }
 
+function MultiSelectCategory({
+  categories,
+  selected,
+  onChange,
+}: {
+  categories: string[];
+  selected: Set<string>;
+  onChange: (s: Set<string>) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const toggleCategory = (cat: string) => {
+    const next = new Set(selected);
+    if (next.has(cat)) next.delete(cat);
+    else next.add(cat);
+    onChange(next);
+  };
+
+  const selectAll = () => onChange(new Set(categories));
+  const clearAll = () => onChange(new Set());
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <Button
+        variant="outline"
+        className="w-[160px] justify-between text-xs h-8 px-2"
+        onClick={() => setIsOpen(!isOpen)}
+      >
+        <span className="truncate">
+          {selected.size === 0
+            ? "No Categories"
+            : selected.size === categories.length
+              ? "All Categories"
+              : `Categories (${selected.size})`}
+        </span>
+        <ChevronDown className="h-3 w-3 opacity-50" />
+      </Button>
+
+      {isOpen && (
+        <div className="absolute top-full right-0 mt-1 w-[220px] rounded-md border bg-popover text-popover-foreground shadow-md z-50 overflow-hidden bg-background">
+          <div className="p-2 border-b flex items-center justify-between bg-muted/30">
+            <button
+              onClick={selectAll}
+              className="text-[10px] text-primary hover:underline cursor-pointer"
+            >
+              Select All
+            </button>
+            <button
+              onClick={clearAll}
+              className="text-[10px] text-muted-foreground hover:text-primary hover:underline cursor-pointer"
+            >
+              Clear
+            </button>
+          </div>
+          <div className="max-h-[300px] overflow-auto p-1">
+            {categories.map((cat) => {
+              const isSelected = selected.has(cat);
+              return (
+                <div
+                  key={cat}
+                  className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground cursor-pointer"
+                  onClick={() => toggleCategory(cat)}
+                >
+                  <div
+                    className={cn(
+                      "flex h-4 w-4 items-center justify-center rounded-sm border border-primary",
+                      isSelected
+                        ? "bg-primary text-primary-foreground"
+                        : "opacity-50 [&_svg]:invisible",
+                    )}
+                  >
+                    <Check className="h-3 w-3" />
+                  </div>
+                  <span>{cat}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PeriodFilter({
+  value,
+  onChange,
+}: {
+  value: "all" | "before" | "after";
+  onChange: (v: "all" | "before" | "after") => void;
+}) {
+  return (
+    <div className="flex items-center gap-0.5 bg-muted/50 rounded-lg p-0.5 h-8">
+      <button
+        onClick={() => onChange("all")}
+        className={cn(
+          "px-3 py-0.5 text-xs rounded-md font-medium transition-colors cursor-pointer",
+          value === "all"
+            ? "bg-background text-foreground shadow-sm"
+            : "text-muted-foreground hover:text-foreground",
+        )}
+      >
+        All Time
+      </button>
+      <button
+        onClick={() => onChange("before")}
+        className={cn(
+          "px-3 py-0.5 text-xs rounded-md font-medium transition-colors cursor-pointer",
+          value === "before"
+            ? "bg-background text-foreground shadow-sm"
+            : "text-muted-foreground hover:text-foreground",
+        )}
+      >
+        $5 Period
+      </button>
+      <button
+        onClick={() => onChange("after")}
+        className={cn(
+          "px-3 py-0.5 text-xs rounded-md font-medium transition-colors cursor-pointer",
+          value === "after"
+            ? "bg-background text-foreground shadow-sm"
+            : "text-muted-foreground hover:text-foreground",
+        )}
+      >
+        $25 Period
+      </button>
+    </div>
+  );
+}
+
 export default function PositionAnalyticsPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -1002,11 +1648,94 @@ export default function PositionAnalyticsPage() {
   const [selectedWallet, setSelectedWallet] = useState(DEFAULT_WALLET);
 
   const [positionsFilter, setPositionsFilter] = useState<ResolvedFilter>("all");
+  const [categoryFilter, setCategoryFilter] = useState<Set<string>>(new Set());
+  const [periodFilter, setPeriodFilter] = useState<"all" | "before" | "after">("all");
+  const [sortConfig, setSortConfig] = useState<{ key: SortKey; direction: SortDirection }>({
+    key: "date",
+    direction: "desc",
+  });
+
+  const [stopLossPeriod, setStopLossPeriod] = useState<"all" | "before" | "after">("all");
+  const [hedgingPeriod, setHedgingPeriod] = useState<"all" | "before" | "after">("all");
+  const [entryTimingPeriod, setEntryTimingPeriod] = useState<"all" | "before" | "after">("all");
+  const [categoryPeriod, setCategoryPeriod] = useState<"all" | "before" | "after">("all");
+
+  const [periodAnalyticsCache, setPeriodAnalyticsCache] = useState<
+    Record<"before" | "after", ComputedAnalytics | null>
+  >({
+    before: null,
+    after: null,
+  });
+  const [periodAnalyticsLoading, setPeriodAnalyticsLoading] = useState<
+    Record<"before" | "after", boolean>
+  >({
+    before: false,
+    after: false,
+  });
+
+  const categories = useMemo(() => {
+    const cats = new Set(positions.map((p) => p.category).filter(Boolean) as string[]);
+    return Array.from(cats).sort();
+  }, [positions]);
 
   const filteredPositions = useMemo(() => {
-    if (positionsFilter === "all") return positions;
-    return positions.filter((p) => p.result === positionsFilter);
-  }, [positions, positionsFilter]);
+    let result = positions;
+
+    if (positionsFilter !== "all") {
+      result = result.filter((p) => p.result === positionsFilter);
+    }
+
+    if (categoryFilter.size > 0) {
+      result = result.filter((p) => p.category && categoryFilter.has(p.category));
+    }
+
+    if (periodFilter === "before") {
+      result = result.filter((p) => new Date(p.createdAt || 0).getTime() < SCALE_UP_TIMESTAMP);
+    } else if (periodFilter === "after") {
+      result = result.filter((p) => new Date(p.createdAt || 0).getTime() >= SCALE_UP_TIMESTAMP);
+    }
+
+    return [...result].sort((a, b) => {
+      const dir = sortConfig.direction === "asc" ? 1 : -1;
+
+      switch (sortConfig.key) {
+        case "date":
+          return (
+            (new Date(a.resolvedAt || 0).getTime() - new Date(b.resolvedAt || 0).getTime()) * dir
+          );
+        case "entry":
+          return (parseFloat(a.entryPrice || "0") - parseFloat(b.entryPrice || "0")) * dir;
+        case "final":
+          return (parseFloat(a.finalPrice || "0") - parseFloat(b.finalPrice || "0")) * dir;
+        case "pnl":
+          return (parseFloat(a.profitLoss || "0") - parseFloat(b.profitLoss || "0")) * dir;
+        case "maxdd":
+          return (
+            (parseFloat(a.maxDrawdownPercent || "0") - parseFloat(b.maxDrawdownPercent || "0")) *
+            dir
+          );
+        default:
+          return 0;
+      }
+    });
+  }, [positions, positionsFilter, categoryFilter, periodFilter, sortConfig]);
+
+  const handleSort = (key: SortKey) => {
+    setSortConfig((current) => ({
+      key,
+      direction: current.key === key && current.direction === "desc" ? "asc" : "desc",
+    }));
+  };
+
+  const SortIcon = ({ column }: { column: SortKey }) => {
+    if (sortConfig.key !== column)
+      return <ArrowUpDown className="ml-1 h-3 w-3 text-muted-foreground/30" />;
+    return sortConfig.direction === "asc" ? (
+      <ChevronUp className="ml-1 h-3 w-3" />
+    ) : (
+      <ChevronDown className="ml-1 h-3 w-3" />
+    );
+  };
 
   const loadData = useCallback(
     async (isRefresh = false) => {
@@ -1051,6 +1780,39 @@ export default function PositionAnalyticsPage() {
   }, [loadData]);
 
   const handleRefresh = () => loadData(true);
+
+  const fetchPeriodAnalytics = useCallback(
+    async (period: "before" | "after") => {
+      if (periodAnalyticsCache[period] || periodAnalyticsLoading[period]) return;
+
+      setPeriodAnalyticsLoading((prev) => ({ ...prev, [period]: true }));
+      try {
+        const res = await fetchComputedAnalytics(selectedWallet, period);
+        setPeriodAnalyticsCache((prev) => ({ ...prev, [period]: res.analytics }));
+      } catch (err) {
+        console.error(`Failed to fetch ${period} analytics:`, err);
+      } finally {
+        setPeriodAnalyticsLoading((prev) => ({ ...prev, [period]: false }));
+      }
+    },
+    [selectedWallet, periodAnalyticsCache, periodAnalyticsLoading],
+  );
+
+  useEffect(() => {
+    const periodsNeeded = new Set<"before" | "after">();
+    if (stopLossPeriod !== "all") periodsNeeded.add(stopLossPeriod);
+    if (hedgingPeriod !== "all") periodsNeeded.add(hedgingPeriod);
+    if (entryTimingPeriod !== "all") periodsNeeded.add(entryTimingPeriod);
+    if (categoryPeriod !== "all") periodsNeeded.add(categoryPeriod);
+
+    for (const period of periodsNeeded) {
+      fetchPeriodAnalytics(period);
+    }
+  }, [stopLossPeriod, hedgingPeriod, entryTimingPeriod, categoryPeriod, fetchPeriodAnalytics]);
+
+  useEffect(() => {
+    setPeriodAnalyticsCache({ before: null, after: null });
+  }, [selectedWallet]);
 
   const totalPnl = parseFloat(analytics?.totalPnl || "0");
   const winCount = parseInt(analytics?.winCount || "0", 10);
@@ -1172,51 +1934,155 @@ export default function PositionAnalyticsPage() {
 
               <MissedOpportunitiesCard events={missedOpportunities} />
 
+              <PeriodComparisonCard positions={positions} />
+
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <Card>
                   <CardHeader className="pb-3">
-                    <CardTitle className="text-lg flex items-center gap-2">
-                      <Target className="h-5 w-5 text-primary" />
-                      Stop Loss Simulation
-                      <InfoTooltip text="Simulates what would have happened with stop-loss orders at different thresholds." />
-                    </CardTitle>
-                    <CardDescription>Impact of stop-loss thresholds on past trades</CardDescription>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <CardTitle className="text-lg flex items-center gap-2">
+                          <Target className="h-5 w-5 text-primary" />
+                          Stop Loss Simulation
+                          <InfoTooltip text="Simulates what would have happened with stop-loss orders at different thresholds." />
+                        </CardTitle>
+                        <CardDescription>
+                          Impact of stop-loss thresholds on past trades
+                        </CardDescription>
+                      </div>
+                      <PeriodFilter value={stopLossPeriod} onChange={setStopLossPeriod} />
+                    </div>
                   </CardHeader>
                   <CardContent className="pt-0">
-                    <StopLossTable analysis={analytics.stopLossAnalysis} />
+                    {stopLossPeriod === "all" ? (
+                      <StopLossTable analysis={analytics.stopLossAnalysis} />
+                    ) : periodAnalyticsLoading[stopLossPeriod] ? (
+                      <div className="flex items-center justify-center p-4">
+                        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                        <span className="ml-2 text-sm text-muted-foreground">Loading...</span>
+                      </div>
+                    ) : periodAnalyticsCache[stopLossPeriod] ? (
+                      <StopLossTable
+                        analysis={periodAnalyticsCache[stopLossPeriod]!.stopLossAnalysis}
+                      />
+                    ) : (
+                      <div className="text-sm text-muted-foreground p-4 border rounded-md bg-muted/20">
+                        <p>
+                          Failed to load {stopLossPeriod === "before" ? "$5" : "$25"} period data
+                        </p>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
 
                 <Card>
                   <CardHeader className="pb-3">
-                    <CardTitle className="text-lg flex items-center gap-2">
-                      <Shield className="h-5 w-5 text-primary" />
-                      Hedging Simulation
-                      <InfoTooltip text="Simulates hedging by buying opposite outcome shares when price dropped." />
-                    </CardTitle>
-                    <CardDescription>
-                      Compare hedging strategies at different trigger points
-                    </CardDescription>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <CardTitle className="text-lg flex items-center gap-2">
+                          <Shield className="h-5 w-5 text-primary" />
+                          Hedging Simulation
+                          <InfoTooltip text="Simulates hedging by buying opposite outcome shares when price dropped." />
+                        </CardTitle>
+                        <CardDescription>
+                          Compare hedging strategies at different trigger points
+                        </CardDescription>
+                      </div>
+                      <PeriodFilter value={hedgingPeriod} onChange={setHedgingPeriod} />
+                    </div>
                   </CardHeader>
                   <CardContent className="pt-0">
-                    <HedgingTable analysis={analytics.hedgingAnalysis} />
+                    {hedgingPeriod === "all" ? (
+                      <HedgingTable analysis={analytics.hedgingAnalysis} />
+                    ) : periodAnalyticsLoading[hedgingPeriod] ? (
+                      <div className="flex items-center justify-center p-4">
+                        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                        <span className="ml-2 text-sm text-muted-foreground">Loading...</span>
+                      </div>
+                    ) : periodAnalyticsCache[hedgingPeriod] ? (
+                      <HedgingTable
+                        analysis={periodAnalyticsCache[hedgingPeriod]!.hedgingAnalysis}
+                      />
+                    ) : (
+                      <div className="text-sm text-muted-foreground p-4 border rounded-md bg-muted/20">
+                        <p>
+                          Failed to load {hedgingPeriod === "before" ? "$5" : "$25"} period data
+                        </p>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               </div>
 
               <Card>
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-lg flex items-center gap-2">
-                    <Tag className="h-5 w-5 text-primary" />
-                    Category Analysis
-                    <InfoTooltip text="Performance breakdown by market category." />
-                  </CardTitle>
-                  <CardDescription>
-                    Compare performance across different market categories
-                  </CardDescription>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-lg flex items-center gap-2">
+                        <Clock className="h-5 w-5 text-primary" />
+                        Entry Timing Analysis
+                        <InfoTooltip text="Shows how win rate changes based on how close to resolution you enter (price between 95¢-99.5¢)." />
+                      </CardTitle>
+                      <CardDescription>Win rate by time window before resolution</CardDescription>
+                    </div>
+                    <PeriodFilter value={entryTimingPeriod} onChange={setEntryTimingPeriod} />
+                  </div>
                 </CardHeader>
                 <CardContent className="pt-0">
-                  <CategoryBreakdownSection categories={analytics.categoryBreakdown} />
+                  {entryTimingPeriod === "all" ? (
+                    <EntryTimingTable analysis={analytics.entryTimingAnalysis} />
+                  ) : periodAnalyticsLoading[entryTimingPeriod] ? (
+                    <div className="flex items-center justify-center p-4">
+                      <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                      <span className="ml-2 text-sm text-muted-foreground">Loading...</span>
+                    </div>
+                  ) : periodAnalyticsCache[entryTimingPeriod] ? (
+                    <EntryTimingTable
+                      analysis={periodAnalyticsCache[entryTimingPeriod]!.entryTimingAnalysis}
+                    />
+                  ) : (
+                    <div className="text-sm text-muted-foreground p-4 border rounded-md bg-muted/20">
+                      <p>
+                        Failed to load {entryTimingPeriod === "before" ? "$5" : "$25"} period data
+                      </p>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-lg flex items-center gap-2">
+                        <Tag className="h-5 w-5 text-primary" />
+                        Category Analysis
+                        <InfoTooltip text="Performance breakdown by market category." />
+                      </CardTitle>
+                      <CardDescription>
+                        Compare performance across different market categories
+                      </CardDescription>
+                    </div>
+                    <PeriodFilter value={categoryPeriod} onChange={setCategoryPeriod} />
+                  </div>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  {categoryPeriod === "all" ? (
+                    <CategoryBreakdownSection categories={analytics.categoryBreakdown} />
+                  ) : periodAnalyticsLoading[categoryPeriod] ? (
+                    <div className="flex items-center justify-center p-4">
+                      <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                      <span className="ml-2 text-sm text-muted-foreground">Loading...</span>
+                    </div>
+                  ) : periodAnalyticsCache[categoryPeriod] ? (
+                    <CategoryBreakdownSection
+                      categories={periodAnalyticsCache[categoryPeriod]!.categoryBreakdown}
+                    />
+                  ) : (
+                    <div className="text-sm text-muted-foreground p-4 border rounded-md bg-muted/20">
+                      <p>Failed to load {categoryPeriod === "before" ? "$5" : "$25"} period data</p>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
 
@@ -1231,12 +2097,23 @@ export default function PositionAnalyticsPage() {
                       <CardDescription>
                         {filteredPositions.length} positions
                         {positionsFilter !== "all" && ` (${positionsFilter})`}
+                        {periodFilter === "before" && " · $5 Period"}
+                        {periodFilter === "after" && " · $25 Period"}
+                        {categoryFilter.size > 0 && ` · ${categoryFilter.size} Categories`}
                       </CardDescription>
                     </div>
-                    <SectionFilter
-                      value={positionsFilter}
-                      onChange={(v) => setPositionsFilter(v)}
-                    />
+                    <div className="flex items-center gap-2">
+                      <MultiSelectCategory
+                        categories={categories}
+                        selected={categoryFilter}
+                        onChange={setCategoryFilter}
+                      />
+                      <PeriodFilter value={periodFilter} onChange={setPeriodFilter} />
+                      <SectionFilter
+                        value={positionsFilter}
+                        onChange={(v) => setPositionsFilter(v)}
+                      />
+                    </div>
                   </div>
                 </CardHeader>
                 <CardContent className="p-0">
@@ -1246,23 +2123,53 @@ export default function PositionAnalyticsPage() {
                         <thead className="[&_tr]:border-b sticky top-0 bg-background z-10">
                           <tr className="border-b transition-colors hover:bg-muted/50">
                             <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground w-[30px]"></th>
-                            <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">
-                              Market
+                            <th
+                              className="h-12 px-4 text-left align-middle font-medium text-muted-foreground cursor-pointer hover:text-foreground transition-colors"
+                              onClick={() => handleSort("date")}
+                            >
+                              <div className="flex items-center">
+                                Market / Date
+                                <SortIcon column="date" />
+                              </div>
                             </th>
-                            <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
-                              Entry
+                            <th
+                              className="h-12 px-4 text-right align-middle font-medium text-muted-foreground cursor-pointer hover:text-foreground transition-colors"
+                              onClick={() => handleSort("entry")}
+                            >
+                              <div className="flex items-center justify-end">
+                                Entry
+                                <SortIcon column="entry" />
+                              </div>
                             </th>
-                            <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
-                              Final
+                            <th
+                              className="h-12 px-4 text-right align-middle font-medium text-muted-foreground cursor-pointer hover:text-foreground transition-colors"
+                              onClick={() => handleSort("final")}
+                            >
+                              <div className="flex items-center justify-end">
+                                Final
+                                <SortIcon column="final" />
+                              </div>
                             </th>
-                            <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
-                              P/L
+                            <th
+                              className="h-12 px-4 text-right align-middle font-medium text-muted-foreground cursor-pointer hover:text-foreground transition-colors"
+                              onClick={() => handleSort("pnl")}
+                            >
+                              <div className="flex items-center justify-end">
+                                P/L
+                                <SortIcon column="pnl" />
+                              </div>
                             </th>
                             <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">
                               Status
                             </th>
-                            <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
-                              Max DD
+                            <th
+                              className="h-12 px-4 text-right align-middle font-medium text-muted-foreground cursor-pointer hover:text-foreground transition-colors"
+                              onClick={() => handleSort("maxdd")}
+                            >
+                              <div className="flex items-center justify-end">
+                                Max DD
+                                <SortIcon column="maxdd" />
+                              </div>
                             </th>
                           </tr>
                         </thead>

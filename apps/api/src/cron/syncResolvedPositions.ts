@@ -12,6 +12,7 @@ const GAMMA_API_BASE = "https://gamma-api.polymarket.com";
 const FIDELITY_MINUTES = 5;
 const THRESHOLDS = [5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90];
 const BATCH_SIZE = 50;
+const ENTRY_TIMING_HOURS = [0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 18, 24];
 
 interface PricePoint {
   t: number;
@@ -168,6 +169,21 @@ function normalizeToCategory(tags: string[]): string {
     return "Social Media";
   if (tags.length > 0) return tags[0]!;
   return "Unknown";
+}
+
+function findActualResolutionTime(history: { timestamp: number; price: number }[]): Date | null {
+  if (history.length === 0) return null;
+
+  const sorted = [...history].sort((a, b) => a.timestamp - b.timestamp);
+
+  for (let i = 0; i < sorted.length; i++) {
+    const curr = sorted[i]!;
+    if (curr.price < 0.001 || curr.price > 0.999) {
+      return new Date(curr.timestamp * 1000);
+    }
+  }
+
+  return new Date(sorted[sorted.length - 1]!.timestamp * 1000);
 }
 
 function findPriceAtTimestamp(
@@ -401,10 +417,14 @@ async function syncWallet(wallet: string): Promise<{ synced: number; existing: n
     const actualEntryTs = entryTimestampMap.get(pos.asset);
     const entryTs = actualEntryTs ?? resolvedTs - 86400 * 7;
 
+    // Fetch 24h of price history before resolution for entry timing analysis
+    const twentyFourHoursBeforeResolution = resolvedTs - 24 * 60 * 60;
+    const historyStartTs = Math.min(entryTs, twentyFourHoursBeforeResolution);
+
     const [priceHistory, oppositeHistory] = await Promise.all([
-      fetchPriceHistory(pos.asset, entryTs, resolvedTs, FIDELITY_MINUTES),
+      fetchPriceHistory(pos.asset, historyStartTs, resolvedTs, FIDELITY_MINUTES),
       pos.oppositeAsset
-        ? fetchPriceHistory(pos.oppositeAsset, entryTs, resolvedTs, FIDELITY_MINUTES)
+        ? fetchPriceHistory(pos.oppositeAsset, historyStartTs, resolvedTs, FIDELITY_MINUTES)
         : Promise.resolve([]),
     ]);
 
@@ -458,14 +478,15 @@ async function syncWallet(wallet: string): Promise<{ synced: number; existing: n
       size: (cost / entryPrice).toString(),
       createdAt: new Date(entryTs * 1000),
       resolvedAt: new Date(pos.timestamp * 1000),
+      marketEndDate: findActualResolutionTime(priceHistory),
       finalPrice: pos.curPrice.toString(),
       profitLoss: pos.realizedPnl.toString(),
       result,
       maxDrawdownPercent: maxDrawdownPercent.toString(),
       lowestPrice: lowestPrice.toString(),
       highestPrice: highestPrice.toString(),
-      priceHistory: relevantHistory,
-      oppositeOutcomePriceHistory: oppositeHistory.filter((p) => p.timestamp >= entryTs),
+      priceHistory: priceHistory,
+      oppositeOutcomePriceHistory: oppositeHistory,
       stopLossSimulations,
       hedgingSimulations,
       category,
@@ -603,6 +624,15 @@ interface DailyPnlItem {
   cumulativePnl: number;
 }
 
+interface EntryTimingItem {
+  hoursBeforeResolution: number;
+  positionsEligible: number;
+  positionsWon: number;
+  positionsLost: number;
+  winRate: number;
+  avgEntryPrice: number;
+}
+
 async function computeWalletAnalytics(wallet: string): Promise<void> {
   const positions = await resolvedPositionsRepository.findByWallet(wallet);
   if (positions.length === 0) {
@@ -624,10 +654,10 @@ async function computeWalletAnalytics(wallet: string): Promise<void> {
 
   let totalHoldingHours = 0;
   for (const p of positions) {
-    if (p.createdAt && p.resolvedAt) {
+    if (p.createdAt && p.marketEndDate) {
       const hours =
-        (new Date(p.resolvedAt).getTime() - new Date(p.createdAt).getTime()) / (1000 * 60 * 60);
-      totalHoldingHours += hours;
+        (new Date(p.marketEndDate).getTime() - new Date(p.createdAt).getTime()) / (1000 * 60 * 60);
+      totalHoldingHours += Math.max(0, hours);
     }
   }
   const avgHoldingHours = totalHoldingHours / totalCount;
@@ -881,8 +911,8 @@ async function computeWalletAnalytics(wallet: string): Promise<void> {
 
   const dailyMap = new Map<string, { pnl: number; count: number }>();
   for (const p of positions) {
-    if (!p.resolvedAt) continue;
-    const date = new Date(p.resolvedAt).toISOString().split("T")[0]!;
+    if (!p.marketEndDate) continue;
+    const date = new Date(p.marketEndDate).toISOString().split("T")[0]!;
     const existing = dailyMap.get(date) || { pnl: 0, count: 0 };
     existing.pnl += parseFloat(p.profitLoss || "0");
     existing.count++;
@@ -902,6 +932,54 @@ async function computeWalletAnalytics(wallet: string): Promise<void> {
     };
   });
 
+  const entryTimingAnalysis: EntryTimingItem[] = ENTRY_TIMING_HOURS.map((hours) => {
+    let eligible = 0;
+    let won = 0;
+    let lost = 0;
+    let totalEntryPrice = 0;
+
+    for (const pos of positions) {
+      if (!pos.priceHistory || !pos.marketEndDate) continue;
+
+      const history = pos.priceHistory as { timestamp: number; price: number }[];
+      if (history.length === 0) continue;
+
+      const marketEndTs = Math.floor(new Date(pos.marketEndDate).getTime() / 1000);
+      const windowStart = marketEndTs - hours * 3600;
+      const windowEnd = marketEndTs;
+
+      let wasEnterable = false;
+
+      for (const point of history) {
+        if (point.timestamp >= windowStart && point.timestamp <= windowEnd) {
+          if (point.price >= 0.95 && point.price < 0.995) {
+            wasEnterable = true;
+            break;
+          }
+        }
+      }
+
+      if (wasEnterable) {
+        eligible++;
+        totalEntryPrice += parseFloat(pos.entryPrice || "0");
+        if (pos.result === "won") {
+          won++;
+        } else {
+          lost++;
+        }
+      }
+    }
+
+    return {
+      hoursBeforeResolution: hours,
+      positionsEligible: eligible,
+      positionsWon: won,
+      positionsLost: lost,
+      winRate: eligible > 0 ? won / eligible : 0,
+      avgEntryPrice: eligible > 0 ? totalEntryPrice / eligible : 0,
+    };
+  });
+
   await walletAnalyticsRepository.upsert({
     walletAddress: wallet,
     totalPnl: totalPnl.toFixed(4),
@@ -916,6 +994,7 @@ async function computeWalletAnalytics(wallet: string): Promise<void> {
     hedgingAnalysis,
     categoryBreakdown,
     dailyPnl,
+    entryTimingAnalysis,
   });
 
   logger.info("Computed wallet analytics", {

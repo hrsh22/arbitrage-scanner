@@ -1,0 +1,1 @@
+ALTER TABLE "wallet_analytics" ADD COLUMN "entry_timing_analysis" jsonb;
