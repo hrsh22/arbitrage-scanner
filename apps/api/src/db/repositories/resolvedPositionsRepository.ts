@@ -8,7 +8,12 @@ import {
 
 type DbClient = typeof defaultDb;
 
-const EXCLUDED_POSITION_IDS = [1017, 1018, 1019, 1020];
+const EXCLUDED_TOKEN_IDS = [
+  "100943024639274478570352975364597970206514209446512600353284309538264764768877",
+  "19022470015618883858435631177175708821716371083151544735291032062978093423605",
+  "96859628697644571187047441797794619765096302929239527019188539670142211555898",
+  "85497727990571415801175211173409338934582755200556781610389511336862561288757",
+];
 
 export class ResolvedPositionsRepository {
   constructor(private readonly database: DbClient = defaultDb) {}
@@ -20,7 +25,7 @@ export class ResolvedPositionsRepository {
       .where(
         and(
           eq(resolvedPositions.walletAddress, walletAddress.toLowerCase()),
-          notInArray(resolvedPositions.id, EXCLUDED_POSITION_IDS),
+          notInArray(resolvedPositions.tokenId, EXCLUDED_TOKEN_IDS),
         ),
       )
       .orderBy(desc(resolvedPositions.resolvedAt));
@@ -63,7 +68,7 @@ export class ResolvedPositionsRepository {
       .where(
         and(
           eq(resolvedPositions.walletAddress, walletAddress.toLowerCase()),
-          notInArray(resolvedPositions.id, EXCLUDED_POSITION_IDS),
+          notInArray(resolvedPositions.tokenId, EXCLUDED_TOKEN_IDS),
         ),
       )
       .orderBy(desc(resolvedPositions.resolvedAt));
@@ -182,7 +187,7 @@ export class ResolvedPositionsRepository {
       .where(
         and(
           eq(resolvedPositions.walletAddress, walletAddress.toLowerCase()),
-          notInArray(resolvedPositions.id, EXCLUDED_POSITION_IDS),
+          notInArray(resolvedPositions.tokenId, EXCLUDED_TOKEN_IDS),
         ),
       );
 

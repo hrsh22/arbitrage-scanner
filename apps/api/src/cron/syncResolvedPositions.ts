@@ -14,6 +14,8 @@ const THRESHOLDS = [5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90];
 const BATCH_SIZE = 50;
 const ENTRY_TIMING_HOURS = [0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 18, 24];
 
+const FORCE_RESYNC = process.argv.includes("--force");
+
 interface PricePoint {
   t: number;
   p: number;
@@ -213,17 +215,35 @@ function simulateStopLoss(
 ) {
   const stopPrice = entryPrice * (1 - threshold / 100);
   const shares = cost / entryPrice;
-  const relevantHistory = priceHistory.filter((p) => p.timestamp >= entryTs);
+
+  const entryPricePoint = { timestamp: entryTs, price: entryPrice };
+  const historyWithEntryPoint = [...priceHistory, entryPricePoint].sort(
+    (a, b) => a.timestamp - b.timestamp,
+  );
+  const relevantHistory = historyWithEntryPoint.filter((p) => p.timestamp >= entryTs);
 
   let triggerIndex = -1;
-  for (let i = 0; i < relevantHistory.length; i++) {
-    if (relevantHistory[i]!.price <= stopPrice) {
-      triggerIndex = i;
+  let interpolatedTrigger: { timestamp: number; price: number } | null = null;
+
+  for (let i = 1; i < relevantHistory.length; i++) {
+    const point = relevantHistory[i]!;
+    if (point.price <= stopPrice) {
+      if (i === 1) {
+        const prevPoint = relevantHistory[0]!;
+        const priceDiff = prevPoint.price - point.price;
+        const thresholdDiff = prevPoint.price - stopPrice;
+        const ratio = priceDiff > 0 ? thresholdDiff / priceDiff : 0.5;
+        const interpolatedTs =
+          prevPoint.timestamp + ratio * (point.timestamp - prevPoint.timestamp);
+        interpolatedTrigger = { timestamp: interpolatedTs, price: stopPrice };
+      } else {
+        triggerIndex = i;
+      }
       break;
     }
   }
 
-  if (triggerIndex === -1) {
+  if (triggerIndex === -1 && interpolatedTrigger === null) {
     return {
       threshold,
       triggered: false,
@@ -236,8 +256,9 @@ function simulateStopLoss(
     };
   }
 
-  const triggerPoint = relevantHistory[triggerIndex]!;
-  const afterTrigger = relevantHistory.slice(triggerIndex + 1);
+  const triggerPoint = interpolatedTrigger ?? relevantHistory[triggerIndex]!;
+  const afterTriggerStartIdx = interpolatedTrigger ? 1 : triggerIndex + 1;
+  const afterTrigger = relevantHistory.slice(afterTriggerStartIdx);
   const maxPriceAfterTrigger =
     afterTrigger.length > 0 ? Math.max(...afterTrigger.map((p) => p.price)) : triggerPoint.price;
   const valueIfSold = shares * stopPrice;
@@ -268,17 +289,34 @@ function simulateHedging(
 ) {
   const triggerPrice = entryPrice * (1 - threshold / 100);
   const shares = cost / entryPrice;
-  const relevantHistory = priceHistory.filter((p) => p.timestamp >= entryTs);
+  const entryPricePoint = { timestamp: entryTs, price: entryPrice };
+  const historyWithEntryPoint = [...priceHistory, entryPricePoint].sort(
+    (a, b) => a.timestamp - b.timestamp,
+  );
+  const relevantHistory = historyWithEntryPoint.filter((p) => p.timestamp >= entryTs);
 
   let triggerIndex = -1;
-  for (let i = 0; i < relevantHistory.length; i++) {
-    if (relevantHistory[i]!.price <= triggerPrice) {
-      triggerIndex = i;
+  let interpolatedTrigger: { timestamp: number; price: number } | null = null;
+
+  for (let i = 1; i < relevantHistory.length; i++) {
+    const point = relevantHistory[i]!;
+    if (point.price <= triggerPrice) {
+      if (i === 1) {
+        const prevPoint = relevantHistory[0]!;
+        const priceDiff = prevPoint.price - point.price;
+        const thresholdDiff = prevPoint.price - triggerPrice;
+        const ratio = priceDiff > 0 ? thresholdDiff / priceDiff : 0.5;
+        const interpolatedTs =
+          prevPoint.timestamp + ratio * (point.timestamp - prevPoint.timestamp);
+        interpolatedTrigger = { timestamp: interpolatedTs, price: triggerPrice };
+      } else {
+        triggerIndex = i;
+      }
       break;
     }
   }
 
-  if (triggerIndex === -1) {
+  if (triggerIndex === -1 && interpolatedTrigger === null) {
     return {
       threshold,
       triggered: false,
@@ -289,7 +327,7 @@ function simulateHedging(
     };
   }
 
-  const triggerPoint = relevantHistory[triggerIndex]!;
+  const triggerPoint = interpolatedTrigger ?? relevantHistory[triggerIndex]!;
   let oppPrice = findPriceAtTimestamp(oppositeHistory, triggerPoint.timestamp);
   const theoreticalOppPrice = 1 - triggerPrice;
 
@@ -397,14 +435,17 @@ async function syncWallet(wallet: string): Promise<{ synced: number; existing: n
   const lost = closedPositions.filter((p) => p.realizedPnl < 0).length;
   logger.info("Closed positions breakdown", { won, lost });
 
-  const newPositions = closedPositions.filter((p) => !existingTokenIds.has(p.asset));
-  logger.info("New positions to process", {
+  const positionsToProcess = FORCE_RESYNC
+    ? closedPositions
+    : closedPositions.filter((p) => !existingTokenIds.has(p.asset));
+  logger.info("Positions to process", {
     wallet,
-    newCount: newPositions.length,
+    count: positionsToProcess.length,
     existingCount: existingTokenIds.size,
+    forceResync: FORCE_RESYNC,
   });
 
-  if (newPositions.length === 0) {
+  if (positionsToProcess.length === 0) {
     return { synced: 0, existing: existingTokenIds.size };
   }
 
@@ -417,19 +458,23 @@ async function syncWallet(wallet: string): Promise<{ synced: number; existing: n
     const actualEntryTs = entryTimestampMap.get(pos.asset);
     const entryTs = actualEntryTs ?? resolvedTs - 86400 * 7;
 
-    // Fetch 24h of price history before resolution for entry timing analysis
+    const positionDurationSeconds = resolvedTs - entryTs;
+    const positionDurationHours = positionDurationSeconds / 3600;
+    const fidelity = positionDurationHours < 1 ? 1 : FIDELITY_MINUTES;
+
     const twentyFourHoursBeforeResolution = resolvedTs - 24 * 60 * 60;
     const historyStartTs = Math.min(entryTs, twentyFourHoursBeforeResolution);
 
     const [priceHistory, oppositeHistory] = await Promise.all([
-      fetchPriceHistory(pos.asset, historyStartTs, resolvedTs, FIDELITY_MINUTES),
+      fetchPriceHistory(pos.asset, historyStartTs, resolvedTs, fidelity),
       pos.oppositeAsset
-        ? fetchPriceHistory(pos.oppositeAsset, historyStartTs, resolvedTs, FIDELITY_MINUTES)
+        ? fetchPriceHistory(pos.oppositeAsset, historyStartTs, resolvedTs, fidelity)
         : Promise.resolve([]),
     ]);
 
     const entryPrice = pos.avgPrice;
-    const cost = pos.totalBought;
+    // IMPORTANT: totalBought is shares, not USDC! Multiply by avgPrice to get actual USDC cost.
+    const cost = pos.totalBought * pos.avgPrice;
     const actualPnL = pos.realizedPnl;
     const didOriginalWin = result === "won";
 
@@ -491,12 +536,12 @@ async function syncWallet(wallet: string): Promise<{ synced: number; existing: n
       hedgingSimulations,
       category,
       tags,
-      fidelityMinutes: FIDELITY_MINUTES.toString(),
+      fidelityMinutes: fidelity.toString(),
     };
   }
 
-  for (let i = 0; i < newPositions.length; i += BATCH_SIZE) {
-    const batch = newPositions.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < positionsToProcess.length; i += BATCH_SIZE) {
+    const batch = positionsToProcess.slice(i, i + BATCH_SIZE);
     const batchResults: NewResolvedPosition[] = [];
 
     for (const pos of batch) {
@@ -518,7 +563,7 @@ async function syncWallet(wallet: string): Promise<{ synced: number; existing: n
         batch: Math.floor(i / BATCH_SIZE) + 1,
         inserted,
         totalInserted,
-        remaining: newPositions.length - i - batch.length,
+        remaining: positionsToProcess.length - i - batch.length,
       });
     }
   }
@@ -1011,6 +1056,7 @@ async function main() {
   logger.info("=== CRON: Resolved Positions Sync Started ===", {
     walletCount: TRACKED_WALLETS.length,
     wallets: TRACKED_WALLETS,
+    forceResync: FORCE_RESYNC,
   });
 
   const results: { wallet: string; synced: number; existing: number; error?: string }[] = [];
