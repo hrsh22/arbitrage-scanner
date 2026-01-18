@@ -386,6 +386,16 @@ export class HedgingChecker {
     );
   }
 
+  /**
+   * Get the current BUY price (ask) for a token to determine drop from entry.
+   *
+   * We use ASK price because:
+   * - Entry price = what we PAID to buy (the ask at that time)
+   * - Current price for drop calculation = what we'd PAY to buy now (the ask now)
+   * - This compares apples to apples: buy price vs buy price
+   *
+   * Example: Bought YES at 99¢ (ask), now ask is 39¢ → 60% drop → trigger hedge
+   */
   private async getValidatedCurrentPrice(
     tokenId: string,
     _entryPrice: number,
@@ -394,21 +404,21 @@ export class HedgingChecker {
       const orderBook = await this.tradingClient.getOrderBook(tokenId);
 
       const lastTradePrice = orderBook.lastTradePrice ?? null;
-      const bestBid =
-        orderBook.bids.length > 0 ? Math.max(...orderBook.bids.map((b) => b.price)) : null;
+      const bestAsk =
+        orderBook.asks.length > 0 ? Math.min(...orderBook.asks.map((a) => a.price)) : null;
 
-      if (bestBid === null && lastTradePrice === null) {
+      if (bestAsk === null && lastTradePrice === null) {
         return null;
       }
 
-      if (bestBid !== null && bestBid >= 0.01) {
-        return { currentPrice: bestBid, lastTradePrice: lastTradePrice ?? bestBid };
+      if (bestAsk !== null && bestAsk >= 0.01) {
+        return { currentPrice: bestAsk, lastTradePrice: lastTradePrice ?? bestAsk };
       }
 
-      if (bestBid !== null && bestBid < 0.01) {
-        logger.warn("HedgingChecker: Bid is < 1¢, order book unreliable, skipping", {
+      if (bestAsk !== null && bestAsk < 0.01) {
+        logger.warn("HedgingChecker: Ask is < 1¢, order book unreliable, skipping", {
           tokenId,
-          bestBid,
+          bestAsk,
           lastTradePrice,
         });
         return null;
