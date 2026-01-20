@@ -29,6 +29,7 @@ export const resolvedPositions = pgTable(
 
     createdAt: timestamp("created_at", { withTimezone: true }),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    marketEndDate: timestamp("market_end_date", { withTimezone: true }),
 
     finalPrice: numeric("final_price", { precision: 10, scale: 6 }),
     profitLoss: numeric("profit_loss", { precision: 14, scale: 4 }),
@@ -86,6 +87,7 @@ export const walletAnalytics = pgTable(
     hedgingAnalysis: jsonb("hedging_analysis"),
     categoryBreakdown: jsonb("category_breakdown"),
     dailyPnl: jsonb("daily_pnl"),
+    entryTimingAnalysis: jsonb("entry_timing_analysis"),
 
     computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
   },

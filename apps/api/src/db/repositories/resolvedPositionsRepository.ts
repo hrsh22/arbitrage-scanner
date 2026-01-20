@@ -1,4 +1,4 @@
-import { eq, sql, and, desc } from "drizzle-orm";
+import { eq, sql, and, desc, notInArray } from "drizzle-orm";
 import { db as defaultDb } from "../client.js";
 import {
   resolvedPositions,
@@ -8,6 +8,13 @@ import {
 
 type DbClient = typeof defaultDb;
 
+const EXCLUDED_TOKEN_IDS = [
+  "100943024639274478570352975364597970206514209446512600353284309538264764768877",
+  "19022470015618883858435631177175708821716371083151544735291032062978093423605",
+  "96859628697644571187047441797794619765096302929239527019188539670142211555898",
+  "85497727990571415801175211173409338934582755200556781610389511336862561288757",
+];
+
 export class ResolvedPositionsRepository {
   constructor(private readonly database: DbClient = defaultDb) {}
 
@@ -15,7 +22,12 @@ export class ResolvedPositionsRepository {
     return this.database
       .select()
       .from(resolvedPositions)
-      .where(eq(resolvedPositions.walletAddress, walletAddress.toLowerCase()))
+      .where(
+        and(
+          eq(resolvedPositions.walletAddress, walletAddress.toLowerCase()),
+          notInArray(resolvedPositions.tokenId, EXCLUDED_TOKEN_IDS),
+        ),
+      )
       .orderBy(desc(resolvedPositions.resolvedAt));
   }
 
@@ -37,6 +49,7 @@ export class ResolvedPositionsRepository {
         size: resolvedPositions.size,
         createdAt: resolvedPositions.createdAt,
         resolvedAt: resolvedPositions.resolvedAt,
+        marketEndDate: resolvedPositions.marketEndDate,
         finalPrice: resolvedPositions.finalPrice,
         profitLoss: resolvedPositions.profitLoss,
         result: resolvedPositions.result,
@@ -52,7 +65,12 @@ export class ResolvedPositionsRepository {
         updatedAt: resolvedPositions.updatedAt,
       })
       .from(resolvedPositions)
-      .where(eq(resolvedPositions.walletAddress, walletAddress.toLowerCase()))
+      .where(
+        and(
+          eq(resolvedPositions.walletAddress, walletAddress.toLowerCase()),
+          notInArray(resolvedPositions.tokenId, EXCLUDED_TOKEN_IDS),
+        ),
+      )
       .orderBy(desc(resolvedPositions.resolvedAt));
   }
 
@@ -166,7 +184,12 @@ export class ResolvedPositionsRepository {
         totalPnL: sql<number>`coalesce(sum(profit_loss::numeric), 0)::float`,
       })
       .from(resolvedPositions)
-      .where(eq(resolvedPositions.walletAddress, walletAddress.toLowerCase()));
+      .where(
+        and(
+          eq(resolvedPositions.walletAddress, walletAddress.toLowerCase()),
+          notInArray(resolvedPositions.tokenId, EXCLUDED_TOKEN_IDS),
+        ),
+      );
 
     return results[0] ?? { total: 0, won: 0, lost: 0, totalPnL: 0 };
   }

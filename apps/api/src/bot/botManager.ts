@@ -1,17 +1,31 @@
-/**
- * Bot Manager - Manages multiple trading bot instances
- *
- * Provides centralized control for starting, stopping, and querying
- * multiple bot instances with different configurations.
- */
-
 import { getEnabledBotConfigs, getBotConfig, type BotInstanceConfig } from "./config/index.js";
 import { TradingBot, getTradingBot } from "./tradingBot.js";
 import { ResolutionChecker, getResolutionChecker } from "./resolutionChecker.js";
+import { HedgingChecker, type HedgeCheckResult } from "./hedgingChecker.js";
+export type { HedgeCheckResult };
 import { getBotRepository } from "./repository.js";
+import { getTradingClient } from "./tradingClient.js";
 import type { BotStatus, OverallStats } from "./types.js";
 import { getSharedPolymarketClient } from "../clients/polymarketClient.js";
 import { logger } from "../logger.js";
+import { getErrorLogger, ERROR_CODES } from "./errorLogger.js";
+
+const hedgingCheckerCache: Map<number, HedgingChecker> = new Map();
+
+function createHedgingChecker(config: BotInstanceConfig): HedgingChecker {
+  let checker = hedgingCheckerCache.get(config.id);
+  if (!checker) {
+    const tradingClient = getTradingClient(
+      config.walletPrivateKeyEnv,
+      config.walletFunderAddressEnv,
+      config.minWalletReserve,
+    );
+    const repository = getBotRepository(String(config.id));
+    checker = new HedgingChecker(config, tradingClient, repository);
+    hedgingCheckerCache.set(config.id, checker);
+  }
+  return checker;
+}
 
 export class BotManager {
   private initialized = false;
@@ -36,10 +50,10 @@ export class BotManager {
           botName: config.name,
         });
       } catch (error) {
-        logger.error("BotManager: Failed to initialize bot", {
-          botId: config.id,
-          botName: config.name,
-          error: (error as Error).message,
+        const errorLogger = getErrorLogger(String(config.id));
+        await errorLogger.logError(error as Error, "botManager", {
+          errorCode: ERROR_CODES.CONFIG_ERROR,
+          context: { botId: config.id, botName: config.name },
         });
       }
     }
@@ -138,9 +152,10 @@ export class BotManager {
             success: true,
           };
         } catch (error) {
-          logger.error("BotManager: Scan failed for bot", {
-            botId: config.id,
-            error: (error as Error).message,
+          const errorLogger = getErrorLogger(String(config.id));
+          await errorLogger.logError(error as Error, "botManager.runAllScans", {
+            errorCode: ERROR_CODES.SCAN_FAILED,
+            context: { botId: config.id, botName: config.name },
           });
           return {
             botId: config.id,
@@ -209,9 +224,10 @@ export class BotManager {
           result,
         });
       } catch (error) {
-        logger.error("BotManager: Resolution check failed for bot", {
-          botId: config.id,
-          error: (error as Error).message,
+        const errorLogger = getErrorLogger(String(config.id));
+        await errorLogger.logError(error as Error, "botManager.runAllResolutionChecks", {
+          errorCode: ERROR_CODES.RESOLUTION_FAILED,
+          context: { botId: config.id, botName: config.name },
         });
         results.push({
           botId: config.id,
@@ -260,6 +276,46 @@ export class BotManager {
    */
   getBotConfigs(): BotInstanceConfig[] {
     return getEnabledBotConfigs();
+  }
+
+  async runHedgingCheck(botId: number, isSimulated: boolean = true): Promise<HedgeCheckResult> {
+    const config = getBotConfig(botId);
+    if (!config) {
+      throw new Error(`Bot ${botId} not found`);
+    }
+
+    const checker = createHedgingChecker(config);
+    return checker.checkAndHedgePositions(isSimulated);
+  }
+
+  async runAllHedgingChecks(
+    isSimulated: boolean = true,
+  ): Promise<{ botId: number; botName: string; result: HedgeCheckResult }[]> {
+    const results: { botId: number; botName: string; result: HedgeCheckResult }[] = [];
+
+    for (const config of getEnabledBotConfigs()) {
+      try {
+        const checker = createHedgingChecker(config);
+        const result = await checker.checkAndHedgePositions(isSimulated);
+        results.push({
+          botId: config.id,
+          botName: config.name,
+          result,
+        });
+      } catch (error) {
+        logger.error("BotManager: Hedging check failed for bot", {
+          botId: config.id,
+          error: (error as Error).message,
+        });
+        results.push({
+          botId: config.id,
+          botName: config.name,
+          result: { checked: 0, hedged: 0, skipped: 0, errors: 1 },
+        });
+      }
+    }
+
+    return results;
   }
 }
 

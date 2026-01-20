@@ -42,6 +42,7 @@ export class WalletAnalyticsRepository {
           hedgingAnalysis: data.hedgingAnalysis,
           categoryBreakdown: data.categoryBreakdown,
           dailyPnl: data.dailyPnl,
+          entryTimingAnalysis: data.entryTimingAnalysis,
           computedAt: new Date(),
         },
       });

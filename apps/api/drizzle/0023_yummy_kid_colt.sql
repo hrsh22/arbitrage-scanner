@@ -1,0 +1,1 @@
+ALTER TABLE "resolved_positions" ADD COLUMN "market_end_date" timestamp with time zone;

@@ -11,6 +11,7 @@ import { ClobClient, Side, AssetType, OrderType } from "@polymarket/clob-client"
 import { Wallet, ethers } from "ethers";
 import type { OrderBook, TradeResult, WalletStatus } from "./types.js";
 import { logger } from "../logger.js";
+import { getErrorLogger, ERROR_CODES } from "./errorLogger.js";
 
 // Polygon mainnet chain ID
 const CHAIN_ID = 137;
@@ -123,9 +124,11 @@ export class TradingClient {
       this.initialized = true;
       logger.info("TradingClient: Initialization complete");
     } catch (error) {
-      logger.error("TradingClient: Initialization failed", {
-        error: (error as Error).message,
-        privateKeyEnv: this.privateKeyEnv,
+      const errorLogger = getErrorLogger();
+      await errorLogger.logError(error as Error, "tradingClient.initialize", {
+        errorCode: ERROR_CODES.WALLET_ERROR,
+        severity: "critical",
+        context: { privateKeyEnv: this.privateKeyEnv },
       });
       throw error;
     }
@@ -331,7 +334,6 @@ export class TradingClient {
     try {
       const book = await this.client!.getOrderBook(tokenId);
 
-      // Parse order book - SDK returns OrderSummary objects with price/size properties
       return {
         bids: (book.bids ?? []).map((level) => ({
           price: parseFloat(String(level.price)),
@@ -341,6 +343,10 @@ export class TradingClient {
           price: parseFloat(String(level.price)),
           size: parseFloat(String(level.size)),
         })),
+        lastTradePrice:
+          "last_trade_price" in book && book.last_trade_price
+            ? parseFloat(String(book.last_trade_price))
+            : undefined,
       };
     } catch (error) {
       logger.error("TradingClient: Failed to get order book", {
@@ -450,9 +456,12 @@ export class TradingClient {
       }
     } catch (error) {
       const errorMsg = (error as Error).message;
-      logger.error("TradingClient: Order placement failed", {
+      const errorLogger = getErrorLogger();
+      await errorLogger.logOrderError(error as Error, {
+        marketId: tokenId,
         tokenId,
-        error: errorMsg,
+        side: "BUY",
+        amount: usdcAmount,
       });
 
       return {
@@ -468,18 +477,22 @@ export class TradingClient {
     tokensReceived: number,
   ): Promise<TradeResult> {
     const limitPrice = Math.min(effectivePrice * 1.001, 0.995);
+    const roundedPrice = Math.floor(limitPrice * 100) / 100;
+    const roundedSize = Math.floor(tokensReceived * 10000) / 10000;
 
     logger.info("TradingClient: Placing limit buy order", {
       tokenId,
       effectivePrice,
       limitPrice,
+      roundedPrice,
       tokensReceived,
+      roundedSize,
     });
 
     const order = await this.client!.createOrder({
       tokenID: tokenId,
-      price: limitPrice,
-      size: tokensReceived,
+      price: roundedPrice,
+      size: roundedSize,
       side: Side.BUY,
     });
 
@@ -494,7 +507,7 @@ export class TradingClient {
       success: result.success ?? false,
       orderId: result.orderID,
       fillPrice: effectivePrice,
-      fillSize: tokensReceived,
+      fillSize: roundedSize,
     };
   }
 
@@ -503,15 +516,18 @@ export class TradingClient {
     usdcAmount: number,
     effectivePrice: number,
   ): Promise<TradeResult> {
+    const roundedAmount = Math.floor(usdcAmount * 100) / 100;
+
     logger.info("TradingClient: Placing FOK market buy order", {
       tokenId,
       usdcAmount,
+      roundedAmount,
       effectivePrice,
     });
 
     const order = await this.client!.createMarketOrder({
       tokenID: tokenId,
-      amount: usdcAmount,
+      amount: roundedAmount,
       side: Side.BUY,
     });
 
@@ -522,7 +538,7 @@ export class TradingClient {
       status: result.status,
     });
 
-    const tokensReceived = usdcAmount / effectivePrice;
+    const tokensReceived = roundedAmount / effectivePrice;
 
     return {
       success: result.success ?? false,
@@ -712,14 +728,13 @@ export class TradingClient {
         minPrice,
       });
 
-      // Create sell order at 0.999 (max CLOB allows)
-      // We only call this when sellPrice >= 0.9995, so 0.999 is always acceptable
       const orderPrice = 0.999;
+      const roundedSize = Math.floor(shares * 10000) / 10000;
 
       const order = await this.client!.createOrder({
         tokenID: tokenId,
         price: orderPrice,
-        size: shares,
+        size: roundedSize,
         side: Side.SELL,
       });
 

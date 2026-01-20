@@ -225,9 +225,10 @@ export class StrategyEngine {
     opp: NearResolutionOpportunity,
     existingPositionMarketIds: Set<string>,
   ): Promise<ScoredOpportunity | null> {
-    const { likelyOutcome, hoursUntilClose, closesAt, marketId, question } = opp;
+    const { likelyOutcome, oppositeOutcome, hoursUntilClose, closesAt, marketId, question } = opp;
     const probability = likelyOutcome.probability; // Keep for informational purposes only
     const buyPrice = likelyOutcome.bestAsk;
+    const oppositeTokenId = oppositeOutcome?.tokenId;
 
     // Check if we already have a position (for THIS bot instance only)
     if (existingPositionMarketIds.has(marketId)) {
@@ -237,6 +238,7 @@ export class StrategyEngine {
         marketQuestion: question,
         marketSlug: opp.marketSlug,
         tokenId: likelyOutcome.tokenId,
+        oppositeTokenId,
         outcome: likelyOutcome.name,
         probability,
         buyPrice,
@@ -259,6 +261,7 @@ export class StrategyEngine {
         marketQuestion: question,
         marketSlug: opp.marketSlug,
         tokenId: likelyOutcome.tokenId,
+        oppositeTokenId,
         outcome: likelyOutcome.name,
         probability,
         buyPrice,
@@ -282,6 +285,7 @@ export class StrategyEngine {
         marketQuestion: question,
         marketSlug: opp.marketSlug,
         tokenId: likelyOutcome.tokenId,
+        oppositeTokenId,
         outcome: likelyOutcome.name,
         probability,
         buyPrice,
@@ -308,6 +312,7 @@ export class StrategyEngine {
         marketQuestion: question,
         marketSlug: opp.marketSlug,
         tokenId: likelyOutcome.tokenId,
+        oppositeTokenId,
         outcome: likelyOutcome.name,
         probability,
         buyPrice,
@@ -328,6 +333,9 @@ export class StrategyEngine {
       marketQuestion: question,
       marketSlug: opp.marketSlug,
       tokenId: likelyOutcome.tokenId,
+      oppositeTokenId,
+      oppositeOutcome: oppositeOutcome?.name,
+      tags: opp.tags,
       outcome: likelyOutcome.name,
       probability,
       buyPrice,

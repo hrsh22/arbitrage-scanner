@@ -12,6 +12,9 @@ const GAMMA_API_BASE = "https://gamma-api.polymarket.com";
 const FIDELITY_MINUTES = 5;
 const THRESHOLDS = [5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90];
 const BATCH_SIZE = 50;
+const ENTRY_TIMING_HOURS = [0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 18, 24];
+
+const FORCE_RESYNC = process.argv.includes("--force");
 
 interface PricePoint {
   t: number;
@@ -170,6 +173,21 @@ function normalizeToCategory(tags: string[]): string {
   return "Unknown";
 }
 
+function findActualResolutionTime(history: { timestamp: number; price: number }[]): Date | null {
+  if (history.length === 0) return null;
+
+  const sorted = [...history].sort((a, b) => a.timestamp - b.timestamp);
+
+  for (let i = 0; i < sorted.length; i++) {
+    const curr = sorted[i]!;
+    if (curr.price < 0.001 || curr.price > 0.999) {
+      return new Date(curr.timestamp * 1000);
+    }
+  }
+
+  return new Date(sorted[sorted.length - 1]!.timestamp * 1000);
+}
+
 function findPriceAtTimestamp(
   history: { timestamp: number; price: number }[],
   targetTs: number,
@@ -197,17 +215,35 @@ function simulateStopLoss(
 ) {
   const stopPrice = entryPrice * (1 - threshold / 100);
   const shares = cost / entryPrice;
-  const relevantHistory = priceHistory.filter((p) => p.timestamp >= entryTs);
+
+  const entryPricePoint = { timestamp: entryTs, price: entryPrice };
+  const historyWithEntryPoint = [...priceHistory, entryPricePoint].sort(
+    (a, b) => a.timestamp - b.timestamp,
+  );
+  const relevantHistory = historyWithEntryPoint.filter((p) => p.timestamp >= entryTs);
 
   let triggerIndex = -1;
-  for (let i = 0; i < relevantHistory.length; i++) {
-    if (relevantHistory[i]!.price <= stopPrice) {
-      triggerIndex = i;
+  let interpolatedTrigger: { timestamp: number; price: number } | null = null;
+
+  for (let i = 1; i < relevantHistory.length; i++) {
+    const point = relevantHistory[i]!;
+    if (point.price <= stopPrice) {
+      if (i === 1) {
+        const prevPoint = relevantHistory[0]!;
+        const priceDiff = prevPoint.price - point.price;
+        const thresholdDiff = prevPoint.price - stopPrice;
+        const ratio = priceDiff > 0 ? thresholdDiff / priceDiff : 0.5;
+        const interpolatedTs =
+          prevPoint.timestamp + ratio * (point.timestamp - prevPoint.timestamp);
+        interpolatedTrigger = { timestamp: interpolatedTs, price: stopPrice };
+      } else {
+        triggerIndex = i;
+      }
       break;
     }
   }
 
-  if (triggerIndex === -1) {
+  if (triggerIndex === -1 && interpolatedTrigger === null) {
     return {
       threshold,
       triggered: false,
@@ -220,8 +256,9 @@ function simulateStopLoss(
     };
   }
 
-  const triggerPoint = relevantHistory[triggerIndex]!;
-  const afterTrigger = relevantHistory.slice(triggerIndex + 1);
+  const triggerPoint = interpolatedTrigger ?? relevantHistory[triggerIndex]!;
+  const afterTriggerStartIdx = interpolatedTrigger ? 1 : triggerIndex + 1;
+  const afterTrigger = relevantHistory.slice(afterTriggerStartIdx);
   const maxPriceAfterTrigger =
     afterTrigger.length > 0 ? Math.max(...afterTrigger.map((p) => p.price)) : triggerPoint.price;
   const valueIfSold = shares * stopPrice;
@@ -252,17 +289,34 @@ function simulateHedging(
 ) {
   const triggerPrice = entryPrice * (1 - threshold / 100);
   const shares = cost / entryPrice;
-  const relevantHistory = priceHistory.filter((p) => p.timestamp >= entryTs);
+  const entryPricePoint = { timestamp: entryTs, price: entryPrice };
+  const historyWithEntryPoint = [...priceHistory, entryPricePoint].sort(
+    (a, b) => a.timestamp - b.timestamp,
+  );
+  const relevantHistory = historyWithEntryPoint.filter((p) => p.timestamp >= entryTs);
 
   let triggerIndex = -1;
-  for (let i = 0; i < relevantHistory.length; i++) {
-    if (relevantHistory[i]!.price <= triggerPrice) {
-      triggerIndex = i;
+  let interpolatedTrigger: { timestamp: number; price: number } | null = null;
+
+  for (let i = 1; i < relevantHistory.length; i++) {
+    const point = relevantHistory[i]!;
+    if (point.price <= triggerPrice) {
+      if (i === 1) {
+        const prevPoint = relevantHistory[0]!;
+        const priceDiff = prevPoint.price - point.price;
+        const thresholdDiff = prevPoint.price - triggerPrice;
+        const ratio = priceDiff > 0 ? thresholdDiff / priceDiff : 0.5;
+        const interpolatedTs =
+          prevPoint.timestamp + ratio * (point.timestamp - prevPoint.timestamp);
+        interpolatedTrigger = { timestamp: interpolatedTs, price: triggerPrice };
+      } else {
+        triggerIndex = i;
+      }
       break;
     }
   }
 
-  if (triggerIndex === -1) {
+  if (triggerIndex === -1 && interpolatedTrigger === null) {
     return {
       threshold,
       triggered: false,
@@ -273,7 +327,7 @@ function simulateHedging(
     };
   }
 
-  const triggerPoint = relevantHistory[triggerIndex]!;
+  const triggerPoint = interpolatedTrigger ?? relevantHistory[triggerIndex]!;
   let oppPrice = findPriceAtTimestamp(oppositeHistory, triggerPoint.timestamp);
   const theoreticalOppPrice = 1 - triggerPrice;
 
@@ -381,14 +435,17 @@ async function syncWallet(wallet: string): Promise<{ synced: number; existing: n
   const lost = closedPositions.filter((p) => p.realizedPnl < 0).length;
   logger.info("Closed positions breakdown", { won, lost });
 
-  const newPositions = closedPositions.filter((p) => !existingTokenIds.has(p.asset));
-  logger.info("New positions to process", {
+  const positionsToProcess = FORCE_RESYNC
+    ? closedPositions
+    : closedPositions.filter((p) => !existingTokenIds.has(p.asset));
+  logger.info("Positions to process", {
     wallet,
-    newCount: newPositions.length,
+    count: positionsToProcess.length,
     existingCount: existingTokenIds.size,
+    forceResync: FORCE_RESYNC,
   });
 
-  if (newPositions.length === 0) {
+  if (positionsToProcess.length === 0) {
     return { synced: 0, existing: existingTokenIds.size };
   }
 
@@ -401,15 +458,23 @@ async function syncWallet(wallet: string): Promise<{ synced: number; existing: n
     const actualEntryTs = entryTimestampMap.get(pos.asset);
     const entryTs = actualEntryTs ?? resolvedTs - 86400 * 7;
 
+    const positionDurationSeconds = resolvedTs - entryTs;
+    const positionDurationHours = positionDurationSeconds / 3600;
+    const fidelity = positionDurationHours < 1 ? 1 : FIDELITY_MINUTES;
+
+    const twentyFourHoursBeforeResolution = resolvedTs - 24 * 60 * 60;
+    const historyStartTs = Math.min(entryTs, twentyFourHoursBeforeResolution);
+
     const [priceHistory, oppositeHistory] = await Promise.all([
-      fetchPriceHistory(pos.asset, entryTs, resolvedTs, FIDELITY_MINUTES),
+      fetchPriceHistory(pos.asset, historyStartTs, resolvedTs, fidelity),
       pos.oppositeAsset
-        ? fetchPriceHistory(pos.oppositeAsset, entryTs, resolvedTs, FIDELITY_MINUTES)
+        ? fetchPriceHistory(pos.oppositeAsset, historyStartTs, resolvedTs, fidelity)
         : Promise.resolve([]),
     ]);
 
     const entryPrice = pos.avgPrice;
-    const cost = pos.totalBought;
+    // IMPORTANT: totalBought is shares, not USDC! Multiply by avgPrice to get actual USDC cost.
+    const cost = pos.totalBought * pos.avgPrice;
     const actualPnL = pos.realizedPnl;
     const didOriginalWin = result === "won";
 
@@ -458,24 +523,25 @@ async function syncWallet(wallet: string): Promise<{ synced: number; existing: n
       size: (cost / entryPrice).toString(),
       createdAt: new Date(entryTs * 1000),
       resolvedAt: new Date(pos.timestamp * 1000),
+      marketEndDate: findActualResolutionTime(priceHistory),
       finalPrice: pos.curPrice.toString(),
       profitLoss: pos.realizedPnl.toString(),
       result,
       maxDrawdownPercent: maxDrawdownPercent.toString(),
       lowestPrice: lowestPrice.toString(),
       highestPrice: highestPrice.toString(),
-      priceHistory: relevantHistory,
-      oppositeOutcomePriceHistory: oppositeHistory.filter((p) => p.timestamp >= entryTs),
+      priceHistory: priceHistory,
+      oppositeOutcomePriceHistory: oppositeHistory,
       stopLossSimulations,
       hedgingSimulations,
       category,
       tags,
-      fidelityMinutes: FIDELITY_MINUTES.toString(),
+      fidelityMinutes: fidelity.toString(),
     };
   }
 
-  for (let i = 0; i < newPositions.length; i += BATCH_SIZE) {
-    const batch = newPositions.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < positionsToProcess.length; i += BATCH_SIZE) {
+    const batch = positionsToProcess.slice(i, i + BATCH_SIZE);
     const batchResults: NewResolvedPosition[] = [];
 
     for (const pos of batch) {
@@ -497,7 +563,7 @@ async function syncWallet(wallet: string): Promise<{ synced: number; existing: n
         batch: Math.floor(i / BATCH_SIZE) + 1,
         inserted,
         totalInserted,
-        remaining: newPositions.length - i - batch.length,
+        remaining: positionsToProcess.length - i - batch.length,
       });
     }
   }
@@ -603,6 +669,15 @@ interface DailyPnlItem {
   cumulativePnl: number;
 }
 
+interface EntryTimingItem {
+  hoursBeforeResolution: number;
+  positionsEligible: number;
+  positionsWon: number;
+  positionsLost: number;
+  winRate: number;
+  avgEntryPrice: number;
+}
+
 async function computeWalletAnalytics(wallet: string): Promise<void> {
   const positions = await resolvedPositionsRepository.findByWallet(wallet);
   if (positions.length === 0) {
@@ -624,10 +699,10 @@ async function computeWalletAnalytics(wallet: string): Promise<void> {
 
   let totalHoldingHours = 0;
   for (const p of positions) {
-    if (p.createdAt && p.resolvedAt) {
+    if (p.createdAt && p.marketEndDate) {
       const hours =
-        (new Date(p.resolvedAt).getTime() - new Date(p.createdAt).getTime()) / (1000 * 60 * 60);
-      totalHoldingHours += hours;
+        (new Date(p.marketEndDate).getTime() - new Date(p.createdAt).getTime()) / (1000 * 60 * 60);
+      totalHoldingHours += Math.max(0, hours);
     }
   }
   const avgHoldingHours = totalHoldingHours / totalCount;
@@ -881,8 +956,8 @@ async function computeWalletAnalytics(wallet: string): Promise<void> {
 
   const dailyMap = new Map<string, { pnl: number; count: number }>();
   for (const p of positions) {
-    if (!p.resolvedAt) continue;
-    const date = new Date(p.resolvedAt).toISOString().split("T")[0]!;
+    if (!p.marketEndDate) continue;
+    const date = new Date(p.marketEndDate).toISOString().split("T")[0]!;
     const existing = dailyMap.get(date) || { pnl: 0, count: 0 };
     existing.pnl += parseFloat(p.profitLoss || "0");
     existing.count++;
@@ -902,6 +977,54 @@ async function computeWalletAnalytics(wallet: string): Promise<void> {
     };
   });
 
+  const entryTimingAnalysis: EntryTimingItem[] = ENTRY_TIMING_HOURS.map((hours) => {
+    let eligible = 0;
+    let won = 0;
+    let lost = 0;
+    let totalEntryPrice = 0;
+
+    for (const pos of positions) {
+      if (!pos.priceHistory || !pos.marketEndDate) continue;
+
+      const history = pos.priceHistory as { timestamp: number; price: number }[];
+      if (history.length === 0) continue;
+
+      const marketEndTs = Math.floor(new Date(pos.marketEndDate).getTime() / 1000);
+      const windowStart = marketEndTs - hours * 3600;
+      const windowEnd = marketEndTs;
+
+      let wasEnterable = false;
+
+      for (const point of history) {
+        if (point.timestamp >= windowStart && point.timestamp <= windowEnd) {
+          if (point.price >= 0.95 && point.price < 0.995) {
+            wasEnterable = true;
+            break;
+          }
+        }
+      }
+
+      if (wasEnterable) {
+        eligible++;
+        totalEntryPrice += parseFloat(pos.entryPrice || "0");
+        if (pos.result === "won") {
+          won++;
+        } else {
+          lost++;
+        }
+      }
+    }
+
+    return {
+      hoursBeforeResolution: hours,
+      positionsEligible: eligible,
+      positionsWon: won,
+      positionsLost: lost,
+      winRate: eligible > 0 ? won / eligible : 0,
+      avgEntryPrice: eligible > 0 ? totalEntryPrice / eligible : 0,
+    };
+  });
+
   await walletAnalyticsRepository.upsert({
     walletAddress: wallet,
     totalPnl: totalPnl.toFixed(4),
@@ -916,6 +1039,7 @@ async function computeWalletAnalytics(wallet: string): Promise<void> {
     hedgingAnalysis,
     categoryBreakdown,
     dailyPnl,
+    entryTimingAnalysis,
   });
 
   logger.info("Computed wallet analytics", {
@@ -932,6 +1056,7 @@ async function main() {
   logger.info("=== CRON: Resolved Positions Sync Started ===", {
     walletCount: TRACKED_WALLETS.length,
     wallets: TRACKED_WALLETS,
+    forceResync: FORCE_RESYNC,
   });
 
   const results: { wallet: string; synced: number; existing: number; error?: string }[] = [];

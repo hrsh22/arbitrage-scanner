@@ -872,5 +872,52 @@ export function buildResolvedPositionsRouter(): Router {
     }
   });
 
+  router.get("/:wallet/analytics/compute", async (req, res) => {
+    try {
+      const wallet = req.params.wallet;
+      const period = (req.query.period as string) || "all";
+
+      if (!wallet) {
+        res.status(400).json({ success: false, error: "Wallet address required" });
+        return;
+      }
+
+      if (!["all", "before", "after"].includes(period)) {
+        res.status(400).json({ success: false, error: "Invalid period. Use: all, before, after" });
+        return;
+      }
+
+      const { computeAnalytics } = await import("../services/analyticsComputer.js");
+
+      let positions = await resolvedPositionsRepository.findByWallet(wallet);
+
+      const SCALE_UP_TIMESTAMP = new Date("2026-01-14T12:30:00Z").getTime();
+
+      if (period === "before") {
+        positions = positions.filter(
+          (p) => new Date(p.createdAt || 0).getTime() < SCALE_UP_TIMESTAMP,
+        );
+      } else if (period === "after") {
+        positions = positions.filter(
+          (p) => new Date(p.createdAt || 0).getTime() >= SCALE_UP_TIMESTAMP,
+        );
+      }
+
+      const analytics = computeAnalytics(positions);
+
+      res.json({
+        success: true,
+        analytics: {
+          ...analytics,
+          period,
+          computedAt: new Date().toISOString(),
+        },
+      });
+    } catch (error) {
+      logger.error("Failed to compute wallet analytics", { error: (error as Error).message });
+      res.status(500).json({ success: false, error: (error as Error).message });
+    }
+  });
+
   return router;
 }
