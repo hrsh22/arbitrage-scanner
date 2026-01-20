@@ -3,6 +3,7 @@ import { db } from "../db/client.js";
 import { resolvedPositions } from "../db/analyticsSchema.js";
 import { eq } from "drizzle-orm";
 import { logger } from "../logger.js";
+import { TRACKED_WALLETS } from "../constants/trackedWallets.js";
 
 const BATCH_SIZE = 50;
 
@@ -27,56 +28,61 @@ function findActualResolutionTime(history: PricePoint[]): number | null {
 }
 
 async function backfillMarketEndDate() {
-  const walletAddress = "0xabe50375a4064c5d5e0be39063082e8eef144097";
+  for (const walletAddress of TRACKED_WALLETS) {
+    logger.info("Processing wallet", { walletAddress });
 
-  const positionsToUpdate = await db
-    .select({
-      id: resolvedPositions.id,
-      priceHistory: resolvedPositions.priceHistory,
-    })
-    .from(resolvedPositions)
-    .where(eq(resolvedPositions.walletAddress, walletAddress));
+    const positionsToUpdate = await db
+      .select({
+        id: resolvedPositions.id,
+        priceHistory: resolvedPositions.priceHistory,
+      })
+      .from(resolvedPositions)
+      .where(eq(resolvedPositions.walletAddress, walletAddress));
 
-  logger.info("Starting market_end_date backfill from price history", {
-    totalPositions: positionsToUpdate.length,
-  });
+    logger.info("Starting market_end_date backfill from price history", {
+      walletAddress,
+      totalPositions: positionsToUpdate.length,
+    });
 
-  let updated = 0;
-  let noHistory = 0;
+    let updated = 0;
+    let noHistory = 0;
 
-  for (let i = 0; i < positionsToUpdate.length; i += BATCH_SIZE) {
-    const batch = positionsToUpdate.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < positionsToUpdate.length; i += BATCH_SIZE) {
+      const batch = positionsToUpdate.slice(i, i + BATCH_SIZE);
 
-    for (const pos of batch) {
-      const history = pos.priceHistory as PricePoint[] | null;
-      if (!history || history.length === 0) {
-        noHistory++;
-        continue;
+      for (const pos of batch) {
+        const history = pos.priceHistory as PricePoint[] | null;
+        if (!history || history.length === 0) {
+          noHistory++;
+          continue;
+        }
+
+        const resolutionTs = findActualResolutionTime(history);
+        if (resolutionTs) {
+          await db
+            .update(resolvedPositions)
+            .set({ marketEndDate: new Date(resolutionTs * 1000) })
+            .where(eq(resolvedPositions.id, pos.id));
+          updated++;
+        }
       }
 
-      const resolutionTs = findActualResolutionTime(history);
-      if (resolutionTs) {
-        await db
-          .update(resolvedPositions)
-          .set({ marketEndDate: new Date(resolutionTs * 1000) })
-          .where(eq(resolvedPositions.id, pos.id));
-        updated++;
-      }
+      logger.info("Backfill progress", {
+        walletAddress,
+        processed: Math.min(i + BATCH_SIZE, positionsToUpdate.length),
+        total: positionsToUpdate.length,
+        updated,
+        noHistory,
+      });
     }
 
-    logger.info("Backfill progress", {
-      processed: Math.min(i + BATCH_SIZE, positionsToUpdate.length),
-      total: positionsToUpdate.length,
+    logger.info("Market end date backfill complete for wallet", {
+      walletAddress,
       updated,
       noHistory,
+      total: positionsToUpdate.length,
     });
   }
-
-  logger.info("Market end date backfill complete", {
-    updated,
-    noHistory,
-    total: positionsToUpdate.length,
-  });
 }
 
 backfillMarketEndDate()
