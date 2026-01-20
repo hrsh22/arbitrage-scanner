@@ -135,7 +135,11 @@ export async function fetchPriceHistory(
 
 export const DEFAULT_WALLET = "0xabe50375A4064C5d5E0BE39063082e8eeF144097";
 
-export const WALLET_OPTIONS = [{ label: "Default", value: DEFAULT_WALLET }] as const;
+export const WALLET_OPTIONS = [
+  { label: "Default", value: DEFAULT_WALLET },
+  { label: "Bonding", value: "0x4884D7cFD4cDaf76C183D974f41D05381DE006DD" },
+  { label: "Hedging", value: "0x3bb59DdB9043d40AeF6a38bb4DF85F74a5Ac899b" },
+] as const;
 
 export async function fetchEventTags(
   eventSlugs: string[],
