@@ -3,24 +3,32 @@
  *
  * Implements the "Fast Money" strategy that prioritizes
  * capital velocity over raw profit percentage.
+ *
+ * All entry/exit decisions are based on buyPrice (actual order book price),
+ * NOT the displayed probability from Polymarket API.
+ *
+ * Supports multiple bot instances with different configurations.
  */
 
-import { BOT_CONFIG } from "./config.js";
+import type { BotInstanceConfig } from "./config/index.js";
 import type { ScoredOpportunity } from "./types.js";
 import type { NearResolutionOpportunity } from "../types.js";
 import { logger } from "../logger.js";
-import { TradingClient } from "./tradingClient.js";
 
 /**
  * Get the max hours until resolution for a market based on its tags.
  * Uses the lowest matching limit if multiple tags apply.
  */
-function getMaxHoursForTags(tags: string[] | undefined, defaultMaxHours: number): number {
+function getMaxHoursForTags(
+  tags: string[] | undefined,
+  defaultMaxHours: number,
+  categoryTimeLimits: Record<string, number>,
+): number {
   if (!tags || tags.length === 0) return defaultMaxHours;
 
   let minLimit = defaultMaxHours;
   for (const tag of tags) {
-    const categoryLimit = BOT_CONFIG.CATEGORY_TIME_LIMITS[tag];
+    const categoryLimit = categoryTimeLimits[tag];
     if (categoryLimit !== undefined && categoryLimit < minLimit) {
       minLimit = categoryLimit;
     }
@@ -29,56 +37,76 @@ function getMaxHoursForTags(tags: string[] | undefined, defaultMaxHours: number)
 }
 
 /**
- * Check if an opportunity meets our dynamic odds threshold.
+ * Check if an opportunity meets the strategy criteria for a given config.
+ *
+ * Uses buyPrice (actual order book price) for all checks, NOT probability.
  *
  * Rules:
- * - 95-99¢: Allowed if resolving within 24 hours (or category-specific limit)
- * - 99-99.5¢: Allowed only if resolving within 3 hours
- * - Above 99.5¢: Skip (too close to $1, no profit)
- * - Crypto markets: Max 3 hours regardless of odds
+ * - Below minOdds: Skip
+ * - Above maxOdds: Skip (too close to $1, no profit)
+ * - Between highOddsThreshold and maxOdds: Only if resolving within maxHoursForHighOdds
+ * - Category-specific time limits apply
  */
 export function isValidOpportunity(
-  probability: number,
+  buyPrice: number,
   hoursUntilClose: number,
+  config: BotInstanceConfig,
   tags?: string[],
 ): { valid: boolean; reason?: string } {
-  // Skip above 99.5¢
-  if (probability >= BOT_CONFIG.MAX_ODDS) {
-    return {
-      valid: false,
-      reason: `Odds ${(probability * 100).toFixed(1)}¢ above max ${(BOT_CONFIG.MAX_ODDS * 100).toFixed(1)}¢`,
-    };
+  // Market already closed
+  if (hoursUntilClose <= 0) {
+    return { valid: false, reason: "Market already closed" };
   }
 
-  // Skip below 95¢
-  if (probability < BOT_CONFIG.MIN_ODDS) {
-    return {
-      valid: false,
-      reason: `Odds ${(probability * 100).toFixed(1)}¢ below min ${(BOT_CONFIG.MIN_ODDS * 100).toFixed(0)}¢`,
-    };
-  }
-
-  // 99-99.5¢ requires resolving within 3 hours
-  if (probability >= BOT_CONFIG.HIGH_ODDS_THRESHOLD) {
-    if (hoursUntilClose > BOT_CONFIG.MAX_HOURS_FOR_HIGH_ODDS) {
+  // Skip blacklisted categories
+  if (tags && config.skipCategories.length > 0) {
+    const skipLower = config.skipCategories.map((s) => s.toLowerCase());
+    const matchedTag = tags.find((tag) => skipLower.includes(tag.toLowerCase()));
+    if (matchedTag) {
       return {
         valid: false,
-        reason: `99¢+ market needs to resolve within ${BOT_CONFIG.MAX_HOURS_FOR_HIGH_ODDS}h, but resolves in ${hoursUntilClose.toFixed(1)}h`,
+        reason: `Category "${matchedTag}" is in skipCategories blocklist`,
+      };
+    }
+  }
+
+  // Skip above maxOdds (too little profit)
+  if (buyPrice >= config.maxOdds) {
+    return {
+      valid: false,
+      reason: `Buy price ${(buyPrice * 100).toFixed(1)}¢ above max ${(config.maxOdds * 100).toFixed(1)}¢`,
+    };
+  }
+
+  // Skip below minOdds
+  if (buyPrice < config.minOdds) {
+    return {
+      valid: false,
+      reason: `Buy price ${(buyPrice * 100).toFixed(1)}¢ below min ${(config.minOdds * 100).toFixed(0)}¢`,
+    };
+  }
+
+  // High odds require faster resolution
+  if (buyPrice >= config.highOddsThreshold) {
+    if (hoursUntilClose > config.maxHoursForHighOdds) {
+      return {
+        valid: false,
+        reason: `Buy price ${(buyPrice * 100).toFixed(1)}¢ ≥ ${(config.highOddsThreshold * 100).toFixed(0)}¢ threshold, must resolve within ${config.maxHoursForHighOdds}h (resolves in ${hoursUntilClose.toFixed(1)}h)`,
       };
     }
   }
 
   // Category-specific time limit (e.g., crypto = 3 hours max)
-  const effectiveMaxHours = getMaxHoursForTags(tags, BOT_CONFIG.MAX_HOURS_GENERAL);
+  const effectiveMaxHours = getMaxHoursForTags(
+    tags,
+    config.maxHoursGeneral,
+    config.categoryTimeLimits,
+  );
   if (hoursUntilClose > effectiveMaxHours) {
     return {
       valid: false,
       reason: `Category limit: resolves in ${hoursUntilClose.toFixed(1)}h, max ${effectiveMaxHours}h for tags [${tags?.join(", ") ?? "none"}]`,
     };
-  }
-
-  if (hoursUntilClose <= 0) {
-    return { valid: false, reason: "Market already closed" };
   }
 
   return { valid: true };
@@ -87,34 +115,26 @@ export function isValidOpportunity(
 /**
  * Calculate Profit Per Hour (PPH) score.
  *
- * For near-certainty bets (95%+), we assume we win.
  * PPH = Profit if Win / Hours Until Close
  *
  * Higher PPH = faster capital turnover = more profit over time
  */
-export function calculatePPH(
-  probability: number,
-  buyPrice: number,
-  hoursUntilClose: number,
-): number {
+export function calculatePPH(buyPrice: number, hoursUntilClose: number): number {
   if (hoursUntilClose <= 0) return 0;
 
   // Profit if we win = $1 - buyPrice
   const profitIfWin = 1 - buyPrice;
 
-  // For high-confidence bets, we assume we win
   // PPH = how much profit per hour of capital locked
-  const pph = profitIfWin / hoursUntilClose;
-
-  return pph;
+  return profitIfWin / hoursUntilClose;
 }
 
 /**
  * Calculate expected profit for a $1 bet.
  * For near-certainty bets, this is simply the profit if we win.
  */
-export function calculateExpectedProfit(probability: number, buyPrice: number): number {
-  // Simple: profit if win = $1 payout - buy price
+export function calculateExpectedProfit(buyPrice: number): number {
+  // Profit if win = $1 payout - buy price
   return 1 - buyPrice;
 }
 
@@ -130,17 +150,12 @@ export function calculateMaxInvestmentStats(
   liquidity: number,
 ): { maxInvestment: number; maxProfitPercent: number; maxProfitAbsolute: number } {
   // Max investment is limited by available liquidity at the ask price
-  // Liquidity represents the $ value available at this price level
   const maxInvestment = liquidity;
 
   // Profit % = (payout - cost) / cost * 100
-  // If buyPrice = 0.96, we pay $0.96 to get $1.00 → profit = $0.04 → 4.17%
   const maxProfitPercent = buyPrice > 0 ? ((1 - buyPrice) / buyPrice) * 100 : 0;
 
-  // Absolute profit = maxInvestment * profit margin
-  // Number of shares we can buy = maxInvestment / buyPrice
-  // Payout if we win = shares * $1 = maxInvestment / buyPrice
-  // Profit = payout - cost = (maxInvestment / buyPrice) - maxInvestment
+  // Absolute profit = (maxInvestment / buyPrice) - maxInvestment
   const maxProfitAbsolute = buyPrice > 0 ? maxInvestment / buyPrice - maxInvestment : 0;
 
   return {
@@ -151,15 +166,22 @@ export function calculateMaxInvestmentStats(
 }
 
 export class StrategyEngine {
-  private tradingClient: TradingClient;
+  private config: BotInstanceConfig;
 
-  constructor(tradingClient: TradingClient) {
-    this.tradingClient = tradingClient;
+  constructor(config: BotInstanceConfig) {
+    this.config = config;
+  }
+
+  /**
+   * Get the configuration this engine uses.
+   */
+  getConfig(): BotInstanceConfig {
+    return this.config;
   }
 
   /**
    * Evaluate a list of near-resolution opportunities.
-   * Fetches order books and calculates PPH scores.
+   * Uses buyPrice for all validation checks.
    */
   async evaluateOpportunities(
     opportunities: NearResolutionOpportunity[],
@@ -185,6 +207,8 @@ export class StrategyEngine {
     scored.sort((a, b) => b.pphScore - a.pphScore);
 
     logger.info("StrategyEngine: Evaluated opportunities", {
+      botId: this.config.id,
+      botName: this.config.name,
       total: opportunities.length,
       valid: scored.filter((s) => s.canBet).length,
       invalid: scored.filter((s) => !s.canBet).length,
@@ -195,25 +219,29 @@ export class StrategyEngine {
 
   /**
    * Evaluate a single opportunity.
+   * All validation is based on buyPrice (order book), not probability.
    */
   private async evaluateSingleOpportunity(
     opp: NearResolutionOpportunity,
     existingPositionMarketIds: Set<string>,
   ): Promise<ScoredOpportunity | null> {
-    const { likelyOutcome, hoursUntilClose, closesAt, marketId, question } = opp;
-    const probability = likelyOutcome.probability;
+    const { likelyOutcome, oppositeOutcome, hoursUntilClose, closesAt, marketId, question } = opp;
+    const probability = likelyOutcome.probability; // Keep for informational purposes only
+    const buyPrice = likelyOutcome.bestAsk;
+    const oppositeTokenId = oppositeOutcome?.tokenId;
 
-    // Check if we already have a position
+    // Check if we already have a position (for THIS bot instance only)
     if (existingPositionMarketIds.has(marketId)) {
-      const maxStats = calculateMaxInvestmentStats(likelyOutcome.bestAsk, likelyOutcome.liquidity);
+      const maxStats = calculateMaxInvestmentStats(buyPrice, likelyOutcome.liquidity);
       return {
         marketId,
         marketQuestion: question,
         marketSlug: opp.marketSlug,
         tokenId: likelyOutcome.tokenId,
+        oppositeTokenId,
         outcome: likelyOutcome.name,
         probability,
-        buyPrice: likelyOutcome.bestAsk,
+        buyPrice,
         hoursUntilClose,
         closesAt,
         liquidity: likelyOutcome.liquidity,
@@ -225,18 +253,42 @@ export class StrategyEngine {
       };
     }
 
-    // Validate against strategy rules (including category-specific time limits)
-    const validation = isValidOpportunity(probability, hoursUntilClose, opp.tags);
-    if (!validation.valid) {
-      const maxStats = calculateMaxInvestmentStats(likelyOutcome.bestAsk, likelyOutcome.liquidity);
+    // Check liquidity first (quick check)
+    if (likelyOutcome.liquidity < this.config.minLiquidity) {
+      const maxStats = calculateMaxInvestmentStats(buyPrice, likelyOutcome.liquidity);
       return {
         marketId,
         marketQuestion: question,
         marketSlug: opp.marketSlug,
         tokenId: likelyOutcome.tokenId,
+        oppositeTokenId,
         outcome: likelyOutcome.name,
         probability,
-        buyPrice: likelyOutcome.bestAsk,
+        buyPrice,
+        hoursUntilClose,
+        closesAt,
+        liquidity: likelyOutcome.liquidity,
+        pphScore: 0,
+        expectedProfit: 0,
+        canBet: false,
+        skipReason: `Liquidity $${likelyOutcome.liquidity.toFixed(0)} below min $${this.config.minLiquidity}`,
+        ...maxStats,
+      };
+    }
+
+    // Validate against strategy rules using buyPrice
+    const validation = isValidOpportunity(buyPrice, hoursUntilClose, this.config, opp.tags);
+    if (!validation.valid) {
+      const maxStats = calculateMaxInvestmentStats(buyPrice, likelyOutcome.liquidity);
+      return {
+        marketId,
+        marketQuestion: question,
+        marketSlug: opp.marketSlug,
+        tokenId: likelyOutcome.tokenId,
+        oppositeTokenId,
+        outcome: likelyOutcome.name,
+        probability,
+        buyPrice,
         hoursUntilClose,
         closesAt,
         liquidity: likelyOutcome.liquidity,
@@ -248,107 +300,11 @@ export class StrategyEngine {
       };
     }
 
-    // Check liquidity
-    if (likelyOutcome.liquidity < BOT_CONFIG.MIN_LIQUIDITY) {
-      const maxStats = calculateMaxInvestmentStats(likelyOutcome.bestAsk, likelyOutcome.liquidity);
-      return {
-        marketId,
-        marketQuestion: question,
-        marketSlug: opp.marketSlug,
-        tokenId: likelyOutcome.tokenId,
-        outcome: likelyOutcome.name,
-        probability,
-        buyPrice: likelyOutcome.bestAsk,
-        hoursUntilClose,
-        closesAt,
-        liquidity: likelyOutcome.liquidity,
-        pphScore: 0,
-        expectedProfit: 0,
-        canBet: false,
-        skipReason: `Liquidity $${likelyOutcome.liquidity.toFixed(0)} below min $${BOT_CONFIG.MIN_LIQUIDITY}`,
-        ...maxStats,
-      };
-    }
-
-    // Use the best ask price from the opportunity data
-    // In a full implementation, we'd fetch the actual order book here
-    // to calculate slippage for our $1 bet
-    const buyPrice = likelyOutcome.bestAsk;
-
-    // Skip if buy price is below minimum (95c)
-    if (buyPrice < BOT_CONFIG.MIN_ODDS) {
-      const maxStats = calculateMaxInvestmentStats(buyPrice, likelyOutcome.liquidity);
-      return {
-        marketId,
-        marketQuestion: question,
-        marketSlug: opp.marketSlug,
-        tokenId: likelyOutcome.tokenId,
-        outcome: likelyOutcome.name,
-        probability,
-        buyPrice,
-        hoursUntilClose,
-        closesAt,
-        liquidity: likelyOutcome.liquidity,
-        pphScore: 0,
-        expectedProfit: 0,
-        canBet: false,
-        skipReason: `Buy price ${(buyPrice * 100).toFixed(1)}¢ below min ${(BOT_CONFIG.MIN_ODDS * 100).toFixed(0)}¢`,
-        ...maxStats,
-      };
-    }
-
-    // Skip if buy price would give no profit (above 99.5c)
-    if (buyPrice >= BOT_CONFIG.MAX_ODDS) {
-      const maxStats = calculateMaxInvestmentStats(buyPrice, likelyOutcome.liquidity);
-      return {
-        marketId,
-        marketQuestion: question,
-        marketSlug: opp.marketSlug,
-        tokenId: likelyOutcome.tokenId,
-        outcome: likelyOutcome.name,
-        probability,
-        buyPrice,
-        hoursUntilClose,
-        closesAt,
-        liquidity: likelyOutcome.liquidity,
-        pphScore: 0,
-        expectedProfit: 0,
-        canBet: false,
-        skipReason: `Buy price ${(buyPrice * 100).toFixed(1)}¢ above max ${(BOT_CONFIG.MAX_ODDS * 100).toFixed(1)}¢`,
-        ...maxStats,
-      };
-    }
-
-    // Additional check: if buyPrice is >= 99c, must close within MAX_HOURS_FOR_HIGH_ODDS
-    if (
-      buyPrice >= BOT_CONFIG.HIGH_ODDS_THRESHOLD &&
-      hoursUntilClose > BOT_CONFIG.MAX_HOURS_FOR_HIGH_ODDS
-    ) {
-      const maxStats = calculateMaxInvestmentStats(buyPrice, likelyOutcome.liquidity);
-      return {
-        marketId,
-        marketQuestion: question,
-        marketSlug: opp.marketSlug,
-        tokenId: likelyOutcome.tokenId,
-        outcome: likelyOutcome.name,
-        probability,
-        buyPrice,
-        hoursUntilClose,
-        closesAt,
-        liquidity: likelyOutcome.liquidity,
-        pphScore: 0,
-        expectedProfit: 0,
-        canBet: false,
-        skipReason: `Buy price ${(buyPrice * 100).toFixed(1)}¢ ≥99¢ needs to close within ${BOT_CONFIG.MAX_HOURS_FOR_HIGH_ODDS}h`,
-        ...maxStats,
-      };
-    }
-
     // Calculate scores
-    const pphScore = calculatePPH(probability, buyPrice, hoursUntilClose);
-    const expectedProfit = calculateExpectedProfit(probability, buyPrice);
+    const pphScore = calculatePPH(buyPrice, hoursUntilClose);
+    const expectedProfit = calculateExpectedProfit(buyPrice);
 
-    // Skip if expected value is negative
+    // Skip if expected value is negative (shouldn't happen if buyPrice < 1, but safety check)
     if (expectedProfit < 0) {
       const maxStats = calculateMaxInvestmentStats(buyPrice, likelyOutcome.liquidity);
       return {
@@ -356,6 +312,7 @@ export class StrategyEngine {
         marketQuestion: question,
         marketSlug: opp.marketSlug,
         tokenId: likelyOutcome.tokenId,
+        oppositeTokenId,
         outcome: likelyOutcome.name,
         probability,
         buyPrice,
@@ -376,6 +333,9 @@ export class StrategyEngine {
       marketQuestion: question,
       marketSlug: opp.marketSlug,
       tokenId: likelyOutcome.tokenId,
+      oppositeTokenId,
+      oppositeOutcome: oppositeOutcome?.name,
+      tags: opp.tags,
       outcome: likelyOutcome.name,
       probability,
       buyPrice,

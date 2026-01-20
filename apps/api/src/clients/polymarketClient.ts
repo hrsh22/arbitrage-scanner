@@ -197,7 +197,7 @@ export class PolymarketClient {
       }
     }
 
-    return allEvents.slice(0, config.maxEvents + 100); // Allow slightly more events
+    return allEvents.slice(0, config.maxEvents); // Allow slightly more events
   }
 
   /**
@@ -598,4 +598,86 @@ export class PolymarketClient {
       return null;
     }
   }
+
+  /**
+   * Fetch market outcomes with token IDs.
+   * Returns array of {name, tokenId} for each outcome.
+   */
+  async getMarketOutcomes(
+    marketId: string,
+  ): Promise<{ outcomes: Array<{ name: string; tokenId: string }> } | null> {
+    try {
+      const url = `${this.gammaBase}/markets/${marketId}`;
+      const market = await this.fetchJson<{
+        id: string;
+        outcomes?: string;
+        clobTokenIds?: string;
+      }>(url);
+
+      if (!market || !market.id) {
+        return null;
+      }
+
+      const outcomeNames = parseJsonArray(market.outcomes);
+      const tokenIds = parseJsonArray(market.clobTokenIds);
+
+      if (outcomeNames.length !== tokenIds.length) {
+        return null;
+      }
+
+      const outcomes = outcomeNames.map((name, index) => ({
+        name: name || (index === 0 ? "Yes" : "No"),
+        tokenId: tokenIds[index] || "",
+      }));
+
+      return { outcomes };
+    } catch (error) {
+      logger.error("Failed to fetch market outcomes", {
+        marketId,
+        error: (error as Error).message,
+      });
+      return null;
+    }
+  }
+
+  async getMarketTags(marketId: string): Promise<string[]> {
+    try {
+      const marketUrl = `${this.gammaBase}/markets/${marketId}`;
+      const market = await this.fetchJson<{ slug?: string }>(marketUrl);
+
+      if (!market?.slug) {
+        return [];
+      }
+
+      const eventUrl = `${this.gammaBase}/events?slug=${market.slug}`;
+      const events = await this.fetchJson<GammaEvent[]>(eventUrl);
+
+      if (!events || events.length === 0 || !events[0]?.tags) {
+        return [];
+      }
+
+      return events[0].tags.map((t) => t.slug);
+    } catch (error) {
+      logger.warn("Failed to fetch market tags", {
+        marketId,
+        error: (error as Error).message,
+      });
+      return [];
+    }
+  }
+}
+
+// Singleton instance for shared market fetching across all bot instances
+let sharedInstance: PolymarketClient | null = null;
+
+/**
+ * Get a shared PolymarketClient instance.
+ * Use this when multiple bots need to fetch the same market data
+ * to avoid duplicate API calls.
+ */
+export function getSharedPolymarketClient(): PolymarketClient {
+  if (!sharedInstance) {
+    sharedInstance = new PolymarketClient();
+  }
+  return sharedInstance;
 }

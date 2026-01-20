@@ -1,5 +1,7 @@
 /**
  * Bot Repository - Database operations for the trading bot
+ *
+ * All queries are scoped by botInstanceId to support multiple bot configurations.
  */
 
 import { db } from "../db/client.js";
@@ -15,6 +17,23 @@ function getTodayDate(): string {
 }
 
 export class BotRepository {
+  private botInstanceId: string;
+
+  /**
+   * Create a repository scoped to a specific bot instance.
+   * @param botInstanceId - The bot instance ID (defaults to "1" for backward compatibility)
+   */
+  constructor(botInstanceId: string = "1") {
+    this.botInstanceId = botInstanceId;
+  }
+
+  /**
+   * Get the bot instance ID this repository is scoped to.
+   */
+  getBotInstanceId(): string {
+    return this.botInstanceId;
+  }
+
   // ==========================================
   // POSITIONS
   // ==========================================
@@ -27,6 +46,9 @@ export class BotRepository {
     marketQuestion: string;
     marketSlug?: string;
     tokenId?: string;
+    oppositeTokenId?: string;
+    oppositeOutcome?: string;
+    tags?: string[];
     outcome: string;
     entryPrice?: number;
     cost: number;
@@ -35,14 +57,19 @@ export class BotRepository {
     pphScore?: number;
     expectedProfit?: number;
     isSimulated: boolean;
+    parentPositionId?: number;
   }): Promise<number> {
     const result = await db
       .insert(botPositions)
       .values({
+        botInstanceId: this.botInstanceId,
         marketId: position.marketId,
         marketQuestion: position.marketQuestion,
         marketSlug: position.marketSlug,
         tokenId: position.tokenId,
+        oppositeTokenId: position.oppositeTokenId,
+        oppositeOutcome: position.oppositeOutcome,
+        tags: position.tags,
         outcome: position.outcome,
         entryPrice: position.entryPrice?.toString(),
         cost: position.cost.toString(),
@@ -51,6 +78,7 @@ export class BotRepository {
         pphScore: position.pphScore?.toString(),
         expectedProfit: position.expectedProfit?.toString(),
         isSimulated: position.isSimulated,
+        parentPositionId: position.parentPositionId,
         status: "open",
       })
       .returning({ id: botPositions.id });
@@ -58,26 +86,110 @@ export class BotRepository {
     return result[0]!.id;
   }
 
+  async createHedgePosition(
+    originalPosition: {
+      id: number;
+      marketId: string;
+      marketQuestion: string;
+      marketSlug?: string;
+      outcome: string;
+      closesAt: Date | null;
+      isSimulated: boolean;
+    },
+    hedge: {
+      tokenId: string;
+      entryPrice: number;
+      cost: number;
+      outcome: string;
+    },
+  ): Promise<number> {
+    const hedgeOutcome = hedge.outcome;
+
+    const hedgePositionId = await this.createPosition({
+      marketId: originalPosition.marketId,
+      marketQuestion: originalPosition.marketQuestion,
+      marketSlug: originalPosition.marketSlug,
+      tokenId: hedge.tokenId,
+      outcome: hedgeOutcome,
+      entryPrice: hedge.entryPrice,
+      cost: hedge.cost,
+      closesAt: originalPosition.closesAt ?? undefined,
+      isSimulated: originalPosition.isSimulated,
+      parentPositionId: originalPosition.id,
+    });
+
+    await this.markPositionAsHedged(originalPosition.id);
+
+    return hedgePositionId;
+  }
+
+  async markPositionAsHedged(positionId: number): Promise<void> {
+    await db
+      .update(botPositions)
+      .set({
+        hedgedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(botPositions.id, positionId));
+  }
+
   /**
    * Get all open positions (includes "in_review" since they still need resolution checks)
+   * Scoped to this bot instance.
    */
   async getOpenPositions(isSimulated?: boolean): Promise<Position[]> {
-    let query = db
+    // Build the where condition
+    const whereCondition =
+      isSimulated !== undefined
+        ? and(
+            eq(botPositions.botInstanceId, this.botInstanceId),
+            eq(botPositions.isSimulated, isSimulated),
+            sql`${botPositions.status} IN ('open', 'in_review')`,
+          )
+        : and(
+            eq(botPositions.botInstanceId, this.botInstanceId),
+            sql`${botPositions.status} IN ('open', 'in_review')`,
+          );
+
+    const rows = await db
       .select()
       .from(botPositions)
-      .where(sql`${botPositions.status} IN ('open', 'in_review')`)
-      .$dynamic();
+      .where(whereCondition)
+      .orderBy(desc(botPositions.createdAt));
 
-    if (isSimulated !== undefined) {
-      query = query.where(eq(botPositions.isSimulated, isSimulated));
-    }
-
-    const rows = await query.orderBy(desc(botPositions.createdAt));
     return rows.map(this.mapPosition);
   }
 
   /**
-   * Check if we have a position in a market (for the same mode)
+   * Get all open positions across ALL bot instances.
+   * Useful for resolution checking that applies to all bots.
+   */
+  async getAllOpenPositions(
+    isSimulated?: boolean,
+  ): Promise<(Position & { botInstanceId: string })[]> {
+    // Build the where condition
+    const whereCondition =
+      isSimulated !== undefined
+        ? and(
+            eq(botPositions.isSimulated, isSimulated),
+            sql`${botPositions.status} IN ('open', 'in_review')`,
+          )
+        : sql`${botPositions.status} IN ('open', 'in_review')`;
+
+    const rows = await db
+      .select()
+      .from(botPositions)
+      .where(whereCondition)
+      .orderBy(desc(botPositions.createdAt));
+
+    return rows.map((row) => ({
+      ...this.mapPosition(row),
+      botInstanceId: row.botInstanceId,
+    }));
+  }
+
+  /**
+   * Check if we have a position in a market (for this bot instance only)
    */
   async hasPositionInMarket(marketId: string, isSimulated: boolean): Promise<boolean> {
     const result = await db
@@ -85,6 +197,7 @@ export class BotRepository {
       .from(botPositions)
       .where(
         and(
+          eq(botPositions.botInstanceId, this.botInstanceId),
           eq(botPositions.marketId, marketId),
           eq(botPositions.isSimulated, isSimulated),
           sql`${botPositions.status} IN ('open', 'in_review')`,
@@ -96,7 +209,8 @@ export class BotRepository {
   }
 
   /**
-   * Get all market IDs we have open positions in (for the same mode)
+   * Get all market IDs we have open positions in (for this bot instance only)
+   * This ensures bot A doesn't skip markets that bot B has positions in.
    */
   async getOpenPositionMarketIds(isSimulated: boolean): Promise<Set<string>> {
     const rows = await db
@@ -104,6 +218,7 @@ export class BotRepository {
       .from(botPositions)
       .where(
         and(
+          eq(botPositions.botInstanceId, this.botInstanceId),
           eq(botPositions.isSimulated, isSimulated),
           sql`${botPositions.status} IN ('open', 'in_review')`,
         ),
@@ -144,16 +259,35 @@ export class BotRepository {
   }
 
   /**
-   * Get position history (resolved positions)
+   * Get position history (resolved positions) for this bot instance
    */
   async getPositionHistory(limit: number = 100): Promise<Position[]> {
+    const rows = await db
+      .select()
+      .from(botPositions)
+      .where(eq(botPositions.botInstanceId, this.botInstanceId))
+      .orderBy(desc(botPositions.createdAt))
+      .limit(limit);
+
+    return rows.map(this.mapPosition);
+  }
+
+  /**
+   * Get position history across ALL bot instances
+   */
+  async getAllPositionHistory(
+    limit: number = 100,
+  ): Promise<(Position & { botInstanceId: string })[]> {
     const rows = await db
       .select()
       .from(botPositions)
       .orderBy(desc(botPositions.createdAt))
       .limit(limit);
 
-    return rows.map(this.mapPosition);
+    return rows.map((row) => ({
+      ...this.mapPosition(row),
+      botInstanceId: row.botInstanceId,
+    }));
   }
 
   private mapPosition(row: typeof botPositions.$inferSelect): Position {
@@ -176,6 +310,7 @@ export class BotRepository {
       profitLoss: row.profitLoss ? parseFloat(row.profitLoss) : undefined,
       isSimulated: row.isSimulated,
       createdAt: row.createdAt,
+      parentPositionId: row.parentPositionId ?? undefined,
     };
   }
 
@@ -184,7 +319,7 @@ export class BotRepository {
   // ==========================================
 
   /**
-   * Get or create today's stats record
+   * Get or create today's stats record for this bot instance
    */
   async getTodayStats(isSimulated: boolean): Promise<DailyStats> {
     const today = getTodayDate();
@@ -193,7 +328,13 @@ export class BotRepository {
     const existing = await db
       .select()
       .from(botDailyStats)
-      .where(and(eq(botDailyStats.date, today), eq(botDailyStats.isSimulated, isSimulated)))
+      .where(
+        and(
+          eq(botDailyStats.botInstanceId, this.botInstanceId),
+          eq(botDailyStats.date, today),
+          eq(botDailyStats.isSimulated, isSimulated),
+        ),
+      )
       .limit(1);
 
     if (existing.length > 0) {
@@ -205,6 +346,7 @@ export class BotRepository {
       const result = await db
         .insert(botDailyStats)
         .values({
+          botInstanceId: this.botInstanceId,
           date: today,
           isSimulated,
           betsPlaced: 0,
@@ -221,7 +363,13 @@ export class BotRepository {
       const retrySelect = await db
         .select()
         .from(botDailyStats)
-        .where(and(eq(botDailyStats.date, today), eq(botDailyStats.isSimulated, isSimulated)))
+        .where(
+          and(
+            eq(botDailyStats.botInstanceId, this.botInstanceId),
+            eq(botDailyStats.date, today),
+            eq(botDailyStats.isSimulated, isSimulated),
+          ),
+        )
         .limit(1);
 
       if (retrySelect.length > 0) {
@@ -233,7 +381,7 @@ export class BotRepository {
   }
 
   /**
-   * Get remaining budget for today
+   * Get remaining budget for today for this bot instance
    */
   async getRemainingBudget(dailyBudget: number, isSimulated: boolean): Promise<number> {
     const stats = await this.getTodayStats(isSimulated);
@@ -241,7 +389,7 @@ export class BotRepository {
   }
 
   /**
-   * Increment today's bet count and amount deployed
+   * Increment today's bet count and amount deployed for this bot instance
    */
   async recordBet(amount: number, isSimulated: boolean): Promise<void> {
     const today = getTodayDate();
@@ -257,11 +405,17 @@ export class BotRepository {
         amountDeployed: sql`CAST(${botDailyStats.amountDeployed} AS DECIMAL) + ${amount}`,
         updatedAt: new Date(),
       })
-      .where(and(eq(botDailyStats.date, today), eq(botDailyStats.isSimulated, isSimulated)));
+      .where(
+        and(
+          eq(botDailyStats.botInstanceId, this.botInstanceId),
+          eq(botDailyStats.date, today),
+          eq(botDailyStats.isSimulated, isSimulated),
+        ),
+      );
   }
 
   /**
-   * Record a win
+   * Record a win for this bot instance
    */
   async recordWin(profit: number, isSimulated: boolean): Promise<void> {
     const today = getTodayDate();
@@ -276,11 +430,17 @@ export class BotRepository {
         netPnL: sql`CAST(${botDailyStats.netPnL} AS DECIMAL) + ${profit}`,
         updatedAt: new Date(),
       })
-      .where(and(eq(botDailyStats.date, today), eq(botDailyStats.isSimulated, isSimulated)));
+      .where(
+        and(
+          eq(botDailyStats.botInstanceId, this.botInstanceId),
+          eq(botDailyStats.date, today),
+          eq(botDailyStats.isSimulated, isSimulated),
+        ),
+      );
   }
 
   /**
-   * Record a loss
+   * Record a loss for this bot instance
    */
   async recordLoss(loss: number, isSimulated: boolean): Promise<void> {
     const today = getTodayDate();
@@ -295,14 +455,29 @@ export class BotRepository {
         netPnL: sql`CAST(${botDailyStats.netPnL} AS DECIMAL) - ${Math.abs(loss)}`,
         updatedAt: new Date(),
       })
-      .where(and(eq(botDailyStats.date, today), eq(botDailyStats.isSimulated, isSimulated)));
+      .where(
+        and(
+          eq(botDailyStats.botInstanceId, this.botInstanceId),
+          eq(botDailyStats.date, today),
+          eq(botDailyStats.isSimulated, isSimulated),
+        ),
+      );
   }
 
   /**
-   * Get overall stats across all time
+   * Get overall stats across all time for this bot instance
    */
   async getOverallStats(isSimulated?: boolean): Promise<OverallStats> {
-    let query = db
+    // Build the where condition
+    const whereCondition =
+      isSimulated !== undefined
+        ? and(
+            eq(botDailyStats.botInstanceId, this.botInstanceId),
+            eq(botDailyStats.isSimulated, isSimulated),
+          )
+        : eq(botDailyStats.botInstanceId, this.botInstanceId);
+
+    const result = await db
       .select({
         totalBets: sql<number>`COALESCE(SUM(${botDailyStats.betsPlaced}), 0)`,
         totalDeployed: sql<string>`COALESCE(SUM(CAST(${botDailyStats.amountDeployed} AS DECIMAL)), 0)`,
@@ -310,13 +485,9 @@ export class BotRepository {
         totalLost: sql<number>`COALESCE(SUM(${botDailyStats.betsLost}), 0)`,
         totalPnL: sql<string>`COALESCE(SUM(CAST(${botDailyStats.netPnL} AS DECIMAL)), 0)`,
       })
-      .from(botDailyStats);
+      .from(botDailyStats)
+      .where(whereCondition);
 
-    if (isSimulated !== undefined) {
-      query = query.where(eq(botDailyStats.isSimulated, isSimulated)) as typeof query;
-    }
-
-    const result = await query;
     const row = result[0]!;
 
     const totalBets = Number(row.totalBets);
@@ -336,16 +507,61 @@ export class BotRepository {
   }
 
   /**
-   * Get daily stats history
+   * Get overall stats across ALL bot instances
+   */
+  async getAggregateStats(isSimulated?: boolean): Promise<OverallStats> {
+    // Build the where condition
+    const whereCondition =
+      isSimulated !== undefined ? eq(botDailyStats.isSimulated, isSimulated) : undefined;
+
+    const baseQuery = db
+      .select({
+        totalBets: sql<number>`COALESCE(SUM(${botDailyStats.betsPlaced}), 0)`,
+        totalDeployed: sql<string>`COALESCE(SUM(CAST(${botDailyStats.amountDeployed} AS DECIMAL)), 0)`,
+        totalWon: sql<number>`COALESCE(SUM(${botDailyStats.betsWon}), 0)`,
+        totalLost: sql<number>`COALESCE(SUM(${botDailyStats.betsLost}), 0)`,
+        totalPnL: sql<string>`COALESCE(SUM(CAST(${botDailyStats.netPnL} AS DECIMAL)), 0)`,
+      })
+      .from(botDailyStats);
+
+    const result = whereCondition ? await baseQuery.where(whereCondition) : await baseQuery;
+    const row = result[0]!;
+
+    const totalBets = Number(row.totalBets);
+    const totalWon = Number(row.totalWon);
+    const totalLost = Number(row.totalLost);
+    const totalPnL = parseFloat(row.totalPnL);
+
+    return {
+      totalBetsPlaced: totalBets,
+      totalAmountDeployed: parseFloat(row.totalDeployed),
+      totalBetsWon: totalWon,
+      totalBetsLost: totalLost,
+      totalNetPnL: totalPnL,
+      winRate: totalBets > 0 ? (totalWon / (totalWon + totalLost)) * 100 : 0,
+      averagePnLPerBet: totalBets > 0 ? totalPnL / totalBets : 0,
+    };
+  }
+
+  /**
+   * Get daily stats history for this bot instance
    */
   async getDailyStatsHistory(limit: number = 30, isSimulated?: boolean): Promise<DailyStats[]> {
-    let query = db.select().from(botDailyStats).$dynamic();
+    // Build the where condition
+    const whereCondition =
+      isSimulated !== undefined
+        ? and(
+            eq(botDailyStats.botInstanceId, this.botInstanceId),
+            eq(botDailyStats.isSimulated, isSimulated),
+          )
+        : eq(botDailyStats.botInstanceId, this.botInstanceId);
 
-    if (isSimulated !== undefined) {
-      query = query.where(eq(botDailyStats.isSimulated, isSimulated));
-    }
-
-    const rows = await query.orderBy(desc(botDailyStats.date)).limit(limit);
+    const rows = await db
+      .select()
+      .from(botDailyStats)
+      .where(whereCondition)
+      .orderBy(desc(botDailyStats.date))
+      .limit(limit);
 
     return rows.map(this.mapDailyStats);
   }
@@ -367,15 +583,22 @@ export class BotRepository {
   // ==========================================
 
   /**
-   * Log an event
+   * Log an event for this bot instance
    */
   async logEvent(event: {
-    eventType: "circuit_breaker" | "error" | "trade" | "mode_change" | "info";
+    eventType:
+      | "circuit_breaker"
+      | "error"
+      | "trade"
+      | "mode_change"
+      | "info"
+      | "missed_opportunity";
     eventName: string;
     message: string;
     metadata?: Record<string, unknown>;
   }): Promise<void> {
     await db.insert(botEventLog).values({
+      botInstanceId: this.botInstanceId,
       eventType: event.eventType,
       eventName: event.eventName,
       message: event.message,
@@ -383,13 +606,43 @@ export class BotRepository {
     });
   }
 
+  async logMissedOpportunity(
+    opportunity: {
+      marketId: string;
+      marketQuestion: string;
+      outcome: string;
+      buyPrice: number;
+      pphScore: number;
+      expectedProfit: number;
+      hoursUntilClose: number;
+    },
+    reason: string,
+  ): Promise<void> {
+    await this.logEvent({
+      eventType: "missed_opportunity",
+      eventName: reason,
+      message: `Missed: ${opportunity.outcome} @ ${(opportunity.buyPrice * 100).toFixed(1)}¢ on "${opportunity.marketQuestion.substring(0, 60)}..."`,
+      metadata: {
+        marketId: opportunity.marketId,
+        marketQuestion: opportunity.marketQuestion,
+        outcome: opportunity.outcome,
+        buyPrice: opportunity.buyPrice,
+        pphScore: opportunity.pphScore,
+        expectedProfit: opportunity.expectedProfit,
+        hoursUntilClose: opportunity.hoursUntilClose,
+        potentialProfit: opportunity.expectedProfit,
+      },
+    });
+  }
+
   /**
-   * Get recent events
+   * Get recent events for this bot instance
    */
   async getRecentEvents(limit: number = 100): Promise<BotEvent[]> {
     const rows = await db
       .select()
       .from(botEventLog)
+      .where(eq(botEventLog.botInstanceId, this.botInstanceId))
       .orderBy(desc(botEventLog.createdAt))
       .limit(limit);
 
@@ -404,13 +657,39 @@ export class BotRepository {
   }
 
   /**
-   * Get events by type
+   * Get recent events across ALL bot instances
+   */
+  async getAllRecentEvents(limit: number = 100): Promise<(BotEvent & { botInstanceId: string })[]> {
+    const rows = await db
+      .select()
+      .from(botEventLog)
+      .orderBy(desc(botEventLog.createdAt))
+      .limit(limit);
+
+    return rows.map((row) => ({
+      id: row.id,
+      botInstanceId: row.botInstanceId,
+      eventType: row.eventType as BotEvent["eventType"],
+      eventName: row.eventName,
+      message: row.message,
+      metadata: row.metadata as Record<string, unknown> | undefined,
+      createdAt: row.createdAt,
+    }));
+  }
+
+  /**
+   * Get events by type for this bot instance
    */
   async getEventsByType(eventType: string, limit: number = 50): Promise<BotEvent[]> {
     const rows = await db
       .select()
       .from(botEventLog)
-      .where(eq(botEventLog.eventType, eventType))
+      .where(
+        and(
+          eq(botEventLog.botInstanceId, this.botInstanceId),
+          eq(botEventLog.eventType, eventType),
+        ),
+      )
       .orderBy(desc(botEventLog.createdAt))
       .limit(limit);
 
@@ -429,9 +708,30 @@ export class BotRepository {
   // ==========================================
 
   /**
-   * Find a position by tokenId
+   * Find a position by tokenId (scoped to this bot instance)
    */
   async findPositionByTokenId(tokenId: string): Promise<Position | null> {
+    const rows = await db
+      .select()
+      .from(botPositions)
+      .where(
+        and(eq(botPositions.botInstanceId, this.botInstanceId), eq(botPositions.tokenId, tokenId)),
+      )
+      .limit(1);
+
+    if (rows.length === 0) {
+      return null;
+    }
+
+    return this.mapPosition(rows[0]!);
+  }
+
+  /**
+   * Find a position by tokenId across ALL bot instances
+   */
+  async findAnyPositionByTokenId(
+    tokenId: string,
+  ): Promise<(Position & { botInstanceId: string }) | null> {
     const rows = await db
       .select()
       .from(botPositions)
@@ -442,7 +742,10 @@ export class BotRepository {
       return null;
     }
 
-    return this.mapPosition(rows[0]!);
+    return {
+      ...this.mapPosition(rows[0]!),
+      botInstanceId: rows[0]!.botInstanceId,
+    };
   }
 
   /**
@@ -460,6 +763,7 @@ export class BotRepository {
     const result = await db
       .insert(botPositions)
       .values({
+        botInstanceId: this.botInstanceId,
         marketId: `api-${data.tokenId.slice(0, 16)}`, // Generate a placeholder marketId
         marketQuestion: data.marketSlug || `Position ${data.tokenId.slice(0, 8)}...`,
         marketSlug: data.marketSlug,
@@ -476,14 +780,72 @@ export class BotRepository {
 
     return result[0]!.id;
   }
+
+  async getOpenPositionsForHedging(isSimulated: boolean): Promise<
+    {
+      id: number;
+      marketId: string;
+      marketQuestion: string;
+      marketSlug: string | null;
+      tokenId: string | null;
+      oppositeTokenId: string | null;
+      oppositeOutcome: string | null;
+      tags: string[] | null;
+      outcome: string;
+      entryPrice: string | null;
+      cost: string;
+      closesAt: Date | null;
+      createdAt: Date;
+      hedgedAt: Date | null;
+      isSimulated: boolean;
+    }[]
+  > {
+    const rows = await db
+      .select({
+        id: botPositions.id,
+        marketId: botPositions.marketId,
+        marketQuestion: botPositions.marketQuestion,
+        marketSlug: botPositions.marketSlug,
+        tokenId: botPositions.tokenId,
+        oppositeTokenId: botPositions.oppositeTokenId,
+        oppositeOutcome: botPositions.oppositeOutcome,
+        tags: botPositions.tags,
+        outcome: botPositions.outcome,
+        entryPrice: botPositions.entryPrice,
+        cost: botPositions.cost,
+        closesAt: botPositions.closesAt,
+        createdAt: botPositions.createdAt,
+        hedgedAt: botPositions.hedgedAt,
+        isSimulated: botPositions.isSimulated,
+      })
+      .from(botPositions)
+      .where(
+        and(
+          eq(botPositions.botInstanceId, this.botInstanceId),
+          eq(botPositions.isSimulated, isSimulated),
+          eq(botPositions.status, "open"),
+          sql`${botPositions.hedgedAt} IS NULL`,
+          sql`${botPositions.parentPositionId} IS NULL`,
+        ),
+      )
+      .orderBy(botPositions.createdAt);
+
+    return rows;
+  }
 }
 
-// Singleton instance
-let repositoryInstance: BotRepository | null = null;
+// Singleton instance cache for backward compatibility
+const repositoryInstances: Map<string, BotRepository> = new Map();
 
-export function getBotRepository(): BotRepository {
-  if (!repositoryInstance) {
-    repositoryInstance = new BotRepository();
+/**
+ * Get a repository instance for a specific bot.
+ * Uses caching to return the same instance for the same botInstanceId.
+ */
+export function getBotRepository(botInstanceId: string = "1"): BotRepository {
+  let instance = repositoryInstances.get(botInstanceId);
+  if (!instance) {
+    instance = new BotRepository(botInstanceId);
+    repositoryInstances.set(botInstanceId, instance);
   }
-  return repositoryInstance;
+  return instance;
 }

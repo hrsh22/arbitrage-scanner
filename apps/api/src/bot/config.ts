@@ -1,49 +1,65 @@
 /**
  * Trading Bot Configuration
  *
- * Hard-coded safety limits and strategy parameters.
- * These cannot be changed at runtime for safety.
+ * This file provides backward compatibility with existing code that imports BOT_CONFIG.
+ * For multi-bot support, see config/index.ts which defines individual bot configurations.
+ *
+ * BOT_CONFIG is now derived from the default bot (id: 1) configuration.
  */
+
+// Re-export types and functions from config module
+export type { BotInstanceConfig, BotMode } from "./config/index.js";
+export {
+  BOT_CONFIGS,
+  DEFAULT_BOT_CONFIG,
+  getBotConfig,
+  getEnabledBotConfigs,
+  getBotConfigByName,
+} from "./config/index.js";
+
+import { getBotConfig, DEFAULT_BOT_CONFIG } from "./config/index.js";
+
+/**
+ * Legacy BOT_CONFIG for backward compatibility.
+ *
+ * This maps to bot ID 1 (default bot) configuration.
+ * New code should use getBotConfig(id) or BotInstanceConfig directly.
+ *
+ * @deprecated Use getBotConfig(id) or access config from TradingBot instance
+ */
+const defaultConfig = getBotConfig(1);
 
 export const BOT_CONFIG = {
   // Betting
-  BET_SIZE: 5.0, // Fixed $5 per bet (Polymarket min order is $1)
-  DAILY_BUDGET: Infinity, // No daily budget max deployment
+  BET_SIZE: defaultConfig?.betSize ?? DEFAULT_BOT_CONFIG.betSize,
+  DAILY_BUDGET: defaultConfig?.dailyBudget ?? DEFAULT_BOT_CONFIG.dailyBudget,
 
   // Market selection
-  MIN_ODDS: 0.95, // 95¢ minimum probability
-  MAX_ODDS: 0.995, // 99.5¢ maximum (skip above)
-  MAX_HOURS_GENERAL: 24, // Default: <24 hours to resolution
-  MAX_HOURS_FOR_HIGH_ODDS: 2, // 99-99.5¢ only if resolving within 2 hours
-  HIGH_ODDS_THRESHOLD: 0.99, // Above this, use MAX_HOURS_FOR_HIGH_ODDS
-  MIN_LIQUIDITY: 50, // $50 minimum liquidity
+  MIN_ODDS: defaultConfig?.minOdds ?? DEFAULT_BOT_CONFIG.minOdds,
+  MAX_ODDS: defaultConfig?.maxOdds ?? DEFAULT_BOT_CONFIG.maxOdds,
+  MAX_HOURS_GENERAL: defaultConfig?.maxHoursGeneral ?? DEFAULT_BOT_CONFIG.maxHoursGeneral,
+  MAX_HOURS_FOR_HIGH_ODDS:
+    defaultConfig?.maxHoursForHighOdds ?? DEFAULT_BOT_CONFIG.maxHoursForHighOdds,
+  HIGH_ODDS_THRESHOLD: defaultConfig?.highOddsThreshold ?? DEFAULT_BOT_CONFIG.highOddsThreshold,
+  MIN_LIQUIDITY: defaultConfig?.minLiquidity ?? DEFAULT_BOT_CONFIG.minLiquidity,
 
-  // Category-specific time limits (hours)
-  // Key = tag slug from Polymarket API, Value = max hours until resolution
-  // Uses lowest matching limit if multiple tags match
-  CATEGORY_TIME_LIMITS: {
-    crypto: 3, // Crypto markets: high volatility, 3 hours max
-  } as Record<string, number>,
+  // Category-specific time limits
+  CATEGORY_TIME_LIMITS: defaultConfig?.categoryTimeLimits ?? DEFAULT_BOT_CONFIG.categoryTimeLimits,
 
-  // Scanning
-  SCAN_INTERVAL_MS: 5 * 60 * 1000, // Every 5 minutes
-  RESOLUTION_CHECK_INTERVAL_MS: 10 * 60 * 1000, // Check resolutions every 10 minutes
+  // Safety
+  MIN_WALLET_RESERVE: defaultConfig?.minWalletReserve ?? DEFAULT_BOT_CONFIG.minWalletReserve,
+  MAX_DAILY_LOSS: defaultConfig?.maxDailyLoss ?? DEFAULT_BOT_CONFIG.maxDailyLoss,
 
-  // Safety (disabled - no limits)
-  MIN_WALLET_RESERVE: 10, // $10 minimum wallet reserve
-  MAX_DAILY_LOSS: Infinity, // No daily loss limit
-
-  // Early exit (sell at market when price hits threshold)
-  ENABLE_EARLY_EXIT: true, // Enable selling positions when price hits threshold
-  EARLY_EXIT_MIN_PRICE: 0.9995, // Sell when price >= 99.95¢ (matches max possible)
+  // Early exit
+  ENABLE_EARLY_EXIT: defaultConfig?.enableEarlyExit ?? DEFAULT_BOT_CONFIG.enableEarlyExit,
+  EARLY_EXIT_MIN_PRICE: defaultConfig?.earlyExitMinPrice ?? DEFAULT_BOT_CONFIG.earlyExitMinPrice,
 
   // Wallet tracking
-  WALLET_SNAPSHOT_RETENTION_DAYS: 30, // Days to keep wallet snapshots
+  WALLET_SNAPSHOT_RETENTION_DAYS:
+    defaultConfig?.walletSnapshotRetentionDays ?? DEFAULT_BOT_CONFIG.walletSnapshotRetentionDays,
 
-  // Default mode (always simulation until explicitly switched)
-  DEFAULT_MODE: "simulation" as const,
+  // Default mode
+  DEFAULT_MODE: defaultConfig?.defaultMode ?? DEFAULT_BOT_CONFIG.defaultMode,
 } as const;
-
-export type BotMode = "simulation" | "live";
 
 export type BotConfig = typeof BOT_CONFIG;

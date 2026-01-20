@@ -30,6 +30,8 @@ polymarket-mvp/
 | Component               | Location                                         | Purpose                                     |
 | ----------------------- | ------------------------------------------------ | ------------------------------------------- |
 | Trading Bot             | `apps/api/src/bot/`                              | Autonomous betting engine with PPH strategy |
+| Bot Manager             | `apps/api/src/bot/botManager.ts`                 | Multi-bot instance orchestration            |
+| Bot Configs             | `apps/api/src/bot/config/`                       | Per-bot configuration (modular structure)   |
 | Strategy Engine         | `apps/api/src/bot/strategyEngine.ts`             | PPH scoring and opportunity evaluation      |
 | Trading Client          | `apps/api/src/bot/tradingClient.ts`              | Polymarket CLOB order placement             |
 | Market Poller           | `apps/api/src/services/marketPoller.ts`          | Background market data fetching             |
@@ -115,12 +117,68 @@ PPH = (Profit if Win) / (Hours Until Close)
 - 99-99.5¢ odds: Allowed only if resolving within 6 hours
 - Above 99.5¢: Skip (too close to $1, no meaningful profit)
 
-**Hard-coded Safety Limits (in `bot/config.ts`):**
+**Hard-coded Safety Limits (in `bot/config/bots/bot1-default.ts`):**
 
-- `BET_SIZE: 1.00` - Fixed $1 per bet
-- `DAILY_BUDGET: 150` - $150/day max deployment
-- `MIN_WALLET_RESERVE: 10` - Always keep $10 in wallet
-- `MAX_DAILY_LOSS: 30` - Pause if daily loss exceeds $30
+- `betSize: 5.00` - Fixed $5 per bet (configurable per bot)
+- `dailyBudget: Infinity` - No limit by default (configurable per bot)
+- `minWalletReserve: 0` - No reserve by default
+- `maxDailyLoss: Infinity` - No limit by default (configurable per bot)
+
+### Multi-Bot Configuration
+
+The system supports running **multiple bot instances** simultaneously, each with:
+
+- Different strategy parameters (odds ranges, time thresholds)
+- Different wallet accounts (separate private keys)
+- Independent daily budgets and tracking
+
+Bot configurations are defined in `apps/api/src/bot/config/`:
+
+```
+src/bot/config/
+├── index.ts          # Main exports + helper functions
+├── types.ts          # BotInstanceConfig interface (all fields required)
+└── bots/
+    ├── index.ts      # Aggregates all bot configs + validation
+    ├── bot1-default.ts  # Bot 1 configuration
+    ├── bot2-aggressive.ts  # Bot 2: Lower odds, fast resolution
+    └── bot3-safe.ts     # Bot 3: High odds, very fast resolution
+```
+
+**Each bot config is fully explicit** - no inheritance between bots.
+All fields in `BotInstanceConfig` must be specified in each bot file.
+
+To add a new bot:
+
+1. Create `bot{N}-{name}.ts` in `config/bots/`
+2. Copy all fields from an existing bot and modify as needed
+3. Import and add to `BOT_CONFIGS` array in `config/bots/index.ts`
+4. Set environment variables for the wallet
+
+Example bot config:
+
+```typescript
+// config/bots/bot2-aggressive.ts
+import { env } from "../../../env.js";
+import type { BotInstanceConfig, BotMode } from "../types.js";
+
+const config: BotInstanceConfig = {
+  id: 2,
+  name: "aggressive",
+  enabled: false,
+  walletPrivateKeyEnv: "WALLET_2_PRIVATE_KEY",
+  walletFunderAddressEnv: "WALLET_2_FUNDER_ADDRESS",
+  betSize: 5.0,
+  dailyBudget: Infinity,
+  minOdds: 0.9,
+  maxOdds: 0.995,
+  maxHoursGeneral: 3,
+  // ... all other required fields
+  defaultMode: (env.BOT_MODE || "simulation") as BotMode,
+};
+
+export default config;
+```
 
 ### API Clients
 
@@ -141,10 +199,15 @@ PPH = (Profit if Win) / (Hours Until Close)
 Required variables (see `apps/api/src/env.ts`):
 
 ```
-DATABASE_URL          # PostgreSQL connection string
-POLYMARKET_PRIVATE_KEY # (Optional) For live trading
-OPENAI_API_KEY        # (Optional) For AI match verification
-BOT_MODE              # "simulation" | "live"
+DATABASE_URL               # PostgreSQL connection string
+POLYMARKET_PRIVATE_KEY     # Primary wallet for live trading
+POLYMARKET_FUNDER_ADDRESS  # Primary wallet funder address
+OPENAI_API_KEY             # (Optional) For AI match verification
+BOT_MODE                   # "simulation" | "live"
+
+# Additional wallets for multi-bot (optional)
+WALLET_2_PRIVATE_KEY       # Second bot wallet
+WALLET_2_FUNDER_ADDRESS    # Second bot funder address
 ```
 
 ---
@@ -171,9 +234,12 @@ curl http://localhost:8080/bot/status
 | `/health`                        | GET    | Server health check                     |
 | `/cross-platform`                | GET    | Active arbitrage opportunities          |
 | `/opportunities/near-resolution` | GET    | High-confidence near-resolution markets |
-| `/bot/status`                    | GET    | Trading bot status                      |
-| `/bot/start`                     | POST   | Start the trading bot                   |
-| `/bot/stop`                      | POST   | Stop the trading bot                    |
+| `/bot/status`                    | GET    | Default bot status (bot ID 1)           |
+| `/bot/instances`                 | GET    | List all bot instances with status      |
+| `/bot/:botId/status`             | GET    | Specific bot status                     |
+| `/bot/:botId/scan`               | POST   | Run scan for specific bot               |
+| `/bot/scan-all`                  | POST   | Run scan for all enabled bots           |
+| `/bot/check-resolutions-all`     | POST   | Check resolutions for all bots          |
 | `/bot/mode`                      | POST   | Switch simulation/live mode             |
 
 ---
@@ -186,14 +252,14 @@ curl http://localhost:8080/bot/status
 - ✅ Update this file when adding new features or changing architecture
 - ✅ Use the existing logger (`import { logger } from "./logger.js"`)
 - ✅ Follow the repository pattern for new database operations
-- ✅ Keep safety limits in `bot/config.ts` as constants (not env vars)
+- ✅ Keep safety limits in `bot/config/bots/bot1-default.ts` as constants (not env vars)
 
 ### Don'ts
 
 - ❌ Do NOT modify safety limits without explicit user approval
 - ❌ Do NOT remove simulation mode safeguards
 - ❌ Do NOT hardcode API keys or secrets (use env vars)
-- ❌ Do NOT change the fixed $1 bet size without explicit approval
+- ❌ Do NOT change the bet size without explicit approval
 - ❌ Do NOT bypass the daily budget limit
 
 ---
@@ -202,13 +268,16 @@ curl http://localhost:8080/bot/status
 
 <!-- This section should be updated after each significant change -->
 
-| Date       | Change                                                                          | Files Affected                                                        |
-| ---------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| 2024-12-22 | Added cron-friendly endpoints `/bot/scan` and `/bot/check-resolutions`          | `bot/routes.ts`, `bot/tradingBot.ts`, `bot/resolutionChecker.ts`      |
-| 2024-12-22 | Added resolution checker to track position outcomes and calculate USD P/L       | `bot/resolutionChecker.ts`, `clients/polymarketClient.ts`, `index.ts` |
-| 2024-12-22 | Relaxed 99¢+ time threshold from 3h to 6h                                       | `bot/config.ts`                                                       |
-| 2024-12-22 | Added max investment stats (maxInvestment, maxProfitPercent, maxProfitAbsolute) | `bot/types.ts`, `bot/strategyEngine.ts`                               |
-| 2024-12-22 | Initial AGENTS.md creation                                                      | `AGENTS.md`                                                           |
+| Date       | Change                                                                          | Files Affected                                                            |
+| ---------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| 2026-01-01 | Refactored bot config into modular structure with strict validation             | `bot/config/*`, removed `bot/botConfigs.ts`                               |
+| 2025-01-01 | Optimized multi-bot scans: fetch markets once, run all bots in parallel         | `bot/botManager.ts`, `bot/tradingBot.ts`, `cron/runTradingBot.ts`         |
+| 2024-12-31 | Added multi-bot support with BotManager and per-bot configurations              | `bot/botConfigs.ts`, `bot/botManager.ts`, `bot/routes.ts`, `botSchema.ts` |
+| 2024-12-22 | Added cron-friendly endpoints `/bot/scan` and `/bot/check-resolutions`          | `bot/routes.ts`, `bot/tradingBot.ts`, `bot/resolutionChecker.ts`          |
+| 2024-12-22 | Added resolution checker to track position outcomes and calculate USD P/L       | `bot/resolutionChecker.ts`, `clients/polymarketClient.ts`, `index.ts`     |
+| 2024-12-22 | Relaxed 99¢+ time threshold from 3h to 6h                                       | `bot/config.ts`                                                           |
+| 2024-12-22 | Added max investment stats (maxInvestment, maxProfitPercent, maxProfitAbsolute) | `bot/types.ts`, `bot/strategyEngine.ts`                                   |
+| 2024-12-22 | Initial AGENTS.md creation                                                      | `AGENTS.md`                                                               |
 
 ---
 
@@ -222,7 +291,9 @@ flowchart TB
 
     subgraph Backend[Express API]
         Router[API Routes]
-        Bot[Trading Bot]
+        BotMgr[Bot Manager]
+        Bot1[Bot Instance 1]
+        Bot2[Bot Instance 2]
         Strategy[Strategy Engine]
         TradingClient[Trading Client]
 
@@ -249,9 +320,13 @@ flowchart TB
     end
 
     Web --> Router
-    Router --> Bot
-    Bot --> Strategy
-    Bot --> TradingClient
+    Router --> BotMgr
+    BotMgr --> Bot1
+    BotMgr --> Bot2
+    Bot1 --> Strategy
+    Bot2 --> Strategy
+    Bot1 --> TradingClient
+    Bot2 --> TradingClient
     TradingClient --> PolyCLOB
 
     MP --> PolyGamma
@@ -261,7 +336,8 @@ flowchart TB
     Detector --> Matcher
     Matcher --> AIVerifier
 
-    Bot --> PG
+    Bot1 --> PG
+    Bot2 --> PG
     CPP --> PG
     MP --> PG
 ```

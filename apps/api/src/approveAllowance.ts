@@ -11,7 +11,7 @@ async function main() {
   }
 
   console.log("Initializing trading client...");
-  await client.initialize(privateKey);
+  await client.initialize();
 
   console.log("Approving USDC allowance...");
   const result = await client.approveAllowance();

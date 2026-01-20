@@ -3,13 +3,15 @@
  *
  * Handles authentication, order placement, and order book queries.
  * Uses Gnosis Safe (signature type 2) for Polymarket proxy wallets.
+ *
+ * Supports multiple bot instances by accepting wallet credentials as env var names.
  */
 
-import { ClobClient, Side, AssetType } from "@polymarket/clob-client";
+import { ClobClient, Side, AssetType, OrderType } from "@polymarket/clob-client";
 import { Wallet, ethers } from "ethers";
-import { BOT_CONFIG } from "./config.js";
 import type { OrderBook, TradeResult, WalletStatus } from "./types.js";
 import { logger } from "../logger.js";
+import { getErrorLogger, ERROR_CODES } from "./errorLogger.js";
 
 // Polygon mainnet chain ID
 const CHAIN_ID = 137;
@@ -29,27 +31,60 @@ export class TradingClient {
   private funderAddress: string | null = null;
   private initialized = false;
 
+  // Wallet credential env var names
+  private privateKeyEnv: string;
+  private funderAddressEnv: string | undefined;
+
+  // Minimum wallet reserve for readiness check (can be overridden per-bot)
+  private minWalletReserve: number = 10;
+
   /**
-   * Initialize the trading client with a private key.
-   * This derives API credentials from the private key.
-   * @param privateKey - The EOA private key
-   * @param funderAddress - Optional proxy wallet address (for Polymarket web users)
+   * Create a new trading client.
+   *
+   * @param privateKeyEnv - Env var name for private key (e.g., "POLYMARKET_PRIVATE_KEY")
+   * @param funderAddressEnv - Env var name for funder address (e.g., "POLYMARKET_FUNDER_ADDRESS")
+   * @param minWalletReserve - Minimum wallet reserve for readiness checks
    */
-  async initialize(privateKey: string, funderAddress?: string): Promise<void> {
-    if (!privateKey || !privateKey.startsWith("0x")) {
-      throw new Error("Invalid private key format. Must start with 0x");
+  constructor(
+    privateKeyEnv: string = "POLYMARKET_PRIVATE_KEY",
+    funderAddressEnv?: string,
+    minWalletReserve: number = 10,
+  ) {
+    this.privateKeyEnv = privateKeyEnv;
+    this.funderAddressEnv = funderAddressEnv;
+    this.minWalletReserve = minWalletReserve;
+  }
+
+  /**
+   * Initialize the trading client.
+   * Reads credentials from environment variables and sets up the CLOB client.
+   */
+  async initialize(): Promise<void> {
+    const privateKey = process.env[this.privateKeyEnv];
+
+    if (!privateKey) {
+      throw new Error(`Missing env var: ${this.privateKeyEnv}`);
+    }
+
+    if (!privateKey.startsWith("0x")) {
+      throw new Error(`Invalid private key format in ${this.privateKeyEnv}. Must start with 0x`);
     }
 
     try {
       // Create wallet from private key
       this.wallet = new Wallet(privateKey);
       const walletAddress = this.wallet.address;
-      this.funderAddress = funderAddress || process.env.POLYMARKET_FUNDER_ADDRESS || null;
+
+      // Get funder address from env var if specified
+      this.funderAddress = this.funderAddressEnv
+        ? (process.env[this.funderAddressEnv] ?? null)
+        : null;
 
       logger.info("TradingClient: Initializing with wallet", {
         address: walletAddress,
         funderAddress: this.funderAddress,
         signatureType: SIGNATURE_TYPE,
+        privateKeyEnv: this.privateKeyEnv,
       });
 
       // Create initial client without API creds (for deriving them)
@@ -89,8 +124,11 @@ export class TradingClient {
       this.initialized = true;
       logger.info("TradingClient: Initialization complete");
     } catch (error) {
-      logger.error("TradingClient: Initialization failed", {
-        error: (error as Error).message,
+      const errorLogger = getErrorLogger();
+      await errorLogger.logError(error as Error, "tradingClient.initialize", {
+        errorCode: ERROR_CODES.WALLET_ERROR,
+        severity: "critical",
+        context: { privateKeyEnv: this.privateKeyEnv },
       });
       throw error;
     }
@@ -108,6 +146,13 @@ export class TradingClient {
    */
   getWalletAddress(): string | null {
     return this.wallet?.address ?? null;
+  }
+
+  /**
+   * Get funder address (proxy wallet).
+   */
+  getFunderAddress(): string | null {
+    return this.funderAddress;
   }
 
   /**
@@ -141,9 +186,9 @@ export class TradingClient {
       const allowance = parseFloat(balanceAllowance.allowance ?? "0");
       allowanceOk = allowance > 0;
 
-      if (usdcBalance < BOT_CONFIG.MIN_WALLET_RESERVE) {
+      if (usdcBalance < this.minWalletReserve) {
         issues.push(
-          `USDC balance ($${usdcBalance.toFixed(2)}) below minimum reserve ($${BOT_CONFIG.MIN_WALLET_RESERVE})`,
+          `USDC balance ($${usdcBalance.toFixed(2)}) below minimum reserve ($${this.minWalletReserve})`,
         );
       }
 
@@ -289,7 +334,6 @@ export class TradingClient {
     try {
       const book = await this.client!.getOrderBook(tokenId);
 
-      // Parse order book - SDK returns OrderSummary objects with price/size properties
       return {
         bids: (book.bids ?? []).map((level) => ({
           price: parseFloat(String(level.price)),
@@ -299,6 +343,10 @@ export class TradingClient {
           price: parseFloat(String(level.price)),
           size: parseFloat(String(level.size)),
         })),
+        lastTradePrice:
+          "last_trade_price" in book && book.last_trade_price
+            ? parseFloat(String(book.last_trade_price))
+            : undefined,
       };
     } catch (error) {
       logger.error("TradingClient: Failed to get order book", {
@@ -364,8 +412,14 @@ export class TradingClient {
    * @param tokenId - The outcome token to buy
    * @param usdcAmount - Amount of USDC to spend
    * @param maxPrice - Maximum price to pay (for slippage protection)
+   * @param useMarketOrder - If true, use FOK market order; if false, use limit order
    */
-  async placeBet(tokenId: string, usdcAmount: number, maxPrice: number): Promise<TradeResult> {
+  async placeBet(
+    tokenId: string,
+    usdcAmount: number,
+    maxPrice: number,
+    useMarketOrder: boolean = false,
+  ): Promise<TradeResult> {
     if (!this.isInitialized()) {
       return { success: false, error: "Trading client not initialized" };
     }
@@ -395,46 +449,19 @@ export class TradingClient {
         };
       }
 
-      // Use effective price + 0.1% buffer for the limit order
-      // This ensures we don't pay more than current market + tiny buffer
-      const limitPrice = Math.min(effectivePrice * 1.001, 0.995);
-
-      logger.info("TradingClient: Placing market buy order", {
-        tokenId,
-        usdcAmount,
-        maxPrice,
-        effectivePrice,
-        limitPrice,
-        tokensReceived,
-      });
-
-      // Create and place the order
-      // Using a limit order at the effective price (plus tiny buffer)
-      const order = await this.client!.createOrder({
-        tokenID: tokenId,
-        price: limitPrice,
-        size: tokensReceived,
-        side: Side.BUY,
-      });
-
-      const result = await this.client!.postOrder(order);
-
-      logger.info("TradingClient: Order placed", {
-        orderId: result.orderID,
-        status: result.status,
-      });
-
-      return {
-        success: result.success ?? false,
-        orderId: result.orderID,
-        fillPrice: effectivePrice,
-        fillSize: tokensReceived,
-      };
+      if (useMarketOrder) {
+        return await this.placeMarketBuyOrder(tokenId, usdcAmount, effectivePrice);
+      } else {
+        return await this.placeLimitBuyOrder(tokenId, effectivePrice, tokensReceived);
+      }
     } catch (error) {
       const errorMsg = (error as Error).message;
-      logger.error("TradingClient: Order placement failed", {
+      const errorLogger = getErrorLogger();
+      await errorLogger.logOrderError(error as Error, {
+        marketId: tokenId,
         tokenId,
-        error: errorMsg,
+        side: "BUY",
+        amount: usdcAmount,
       });
 
       return {
@@ -442,6 +469,83 @@ export class TradingClient {
         error: errorMsg,
       };
     }
+  }
+
+  private async placeLimitBuyOrder(
+    tokenId: string,
+    effectivePrice: number,
+    tokensReceived: number,
+  ): Promise<TradeResult> {
+    const limitPrice = Math.min(effectivePrice * 1.001, 0.995);
+    const roundedPrice = Math.floor(limitPrice * 100) / 100;
+    const roundedSize = Math.floor(tokensReceived * 10000) / 10000;
+
+    logger.info("TradingClient: Placing limit buy order", {
+      tokenId,
+      effectivePrice,
+      limitPrice,
+      roundedPrice,
+      tokensReceived,
+      roundedSize,
+    });
+
+    const order = await this.client!.createOrder({
+      tokenID: tokenId,
+      price: roundedPrice,
+      size: roundedSize,
+      side: Side.BUY,
+    });
+
+    const result = await this.client!.postOrder(order);
+
+    logger.info("TradingClient: Limit order placed", {
+      orderId: result.orderID,
+      status: result.status,
+    });
+
+    return {
+      success: result.success ?? false,
+      orderId: result.orderID,
+      fillPrice: effectivePrice,
+      fillSize: roundedSize,
+    };
+  }
+
+  private async placeMarketBuyOrder(
+    tokenId: string,
+    usdcAmount: number,
+    effectivePrice: number,
+  ): Promise<TradeResult> {
+    const roundedAmount = Math.floor(usdcAmount * 100) / 100;
+
+    logger.info("TradingClient: Placing FOK market buy order", {
+      tokenId,
+      usdcAmount,
+      roundedAmount,
+      effectivePrice,
+    });
+
+    const order = await this.client!.createMarketOrder({
+      tokenID: tokenId,
+      amount: roundedAmount,
+      side: Side.BUY,
+    });
+
+    const result = await this.client!.postOrder(order, OrderType.FOK);
+
+    logger.info("TradingClient: Market order placed", {
+      orderId: result.orderID,
+      status: result.status,
+    });
+
+    const tokensReceived = roundedAmount / effectivePrice;
+
+    return {
+      success: result.success ?? false,
+      orderId: result.orderID,
+      fillPrice: effectivePrice,
+      fillSize: tokensReceived,
+    };
   }
 
   /**
@@ -539,6 +643,7 @@ export class TradingClient {
       outcome: string;
       marketSlug?: string;
       conditionId?: string;
+      redeemable: boolean;
     }>
   > {
     try {
@@ -564,6 +669,7 @@ export class TradingClient {
         outcome: string;
         slug?: string;
         conditionId?: string;
+        redeemable?: boolean;
       }>;
 
       // Filter to positions with shares > 0
@@ -577,6 +683,7 @@ export class TradingClient {
           outcome: p.outcome,
           marketSlug: p.slug,
           conditionId: p.conditionId,
+          redeemable: p.redeemable ?? false,
         }));
     } catch (error) {
       logger.error("TradingClient: Failed to get all positions", {
@@ -621,14 +728,13 @@ export class TradingClient {
         minPrice,
       });
 
-      // Create sell order at 0.999 (max CLOB allows)
-      // We only call this when sellPrice >= 0.9995, so 0.999 is always acceptable
       const orderPrice = 0.999;
+      const roundedSize = Math.floor(shares * 10000) / 10000;
 
       const order = await this.client!.createOrder({
         tokenID: tokenId,
         price: orderPrice,
-        size: shares,
+        size: roundedSize,
         side: Side.SELL,
       });
 
@@ -677,12 +783,29 @@ export class TradingClient {
   }
 }
 
-// Singleton instance
-let tradingClientInstance: TradingClient | null = null;
+// Cache of trading client instances by wallet env var name
+const tradingClientInstances: Map<string, TradingClient> = new Map();
 
-export function getTradingClient(): TradingClient {
-  if (!tradingClientInstance) {
-    tradingClientInstance = new TradingClient();
+/**
+ * Get a trading client for a specific wallet.
+ * Uses caching to return the same instance for the same wallet.
+ *
+ * @param privateKeyEnv - Env var name for private key
+ * @param funderAddressEnv - Env var name for funder address
+ * @param minWalletReserve - Minimum wallet reserve
+ */
+export function getTradingClient(
+  privateKeyEnv: string = "POLYMARKET_PRIVATE_KEY",
+  funderAddressEnv?: string,
+  minWalletReserve: number = 10,
+): TradingClient {
+  const cacheKey = `${privateKeyEnv}:${funderAddressEnv ?? ""}`;
+
+  let instance = tradingClientInstances.get(cacheKey);
+  if (!instance) {
+    instance = new TradingClient(privateKeyEnv, funderAddressEnv, minWalletReserve);
+    tradingClientInstances.set(cacheKey, instance);
   }
-  return tradingClientInstance;
+
+  return instance;
 }

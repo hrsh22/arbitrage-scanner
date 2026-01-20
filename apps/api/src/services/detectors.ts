@@ -246,7 +246,9 @@ export const detectNearResolution = (
     // Find the likely outcome (highest odds)
     const likelyIsYes = yesPrice >= noPrice;
     const likelyOutcome = likelyIsYes ? yes : no;
+    const oppositeOutcome = likelyIsYes ? no : yes;
     const likelyName = likelyIsYes ? yes.name || "Yes" : no.name || "No";
+    const oppositeName = likelyIsYes ? no.name || "No" : yes.name || "Yes";
     const likelyOdds = likelyIsYes ? yesPrice : noPrice;
 
     // Skip if odds below threshold
@@ -334,6 +336,12 @@ export const detectNearResolution = (
         bestBid: likelyOutcome.bestBid ?? 0,
         bestAsk: buyPrice,
         liquidity,
+      },
+      oppositeOutcome: {
+        name: oppositeName,
+        tokenId: oppositeOutcome.id,
+        bestBid: oppositeOutcome.bestBid ?? 0,
+        bestAsk: oppositeOutcome.bestAsk ?? oppositeOutcome.midPrice ?? 0,
       },
       closesAt: closeDate,
       hoursUntilClose,

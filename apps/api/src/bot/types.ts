@@ -7,6 +7,9 @@ export interface ScoredOpportunity {
   marketQuestion: string;
   marketSlug?: string;
   tokenId: string;
+  oppositeTokenId?: string;
+  oppositeOutcome?: string;
+  tags?: string[];
   outcome: string; // "Yes" or "No"
   probability: number; // e.g., 0.96
   buyPrice: number; // Effective price after slippage
@@ -40,6 +43,7 @@ export interface Position {
   profitLoss?: number;
   isSimulated: boolean;
   createdAt: Date;
+  parentPositionId?: number;
 }
 
 export interface DailyStats {
@@ -63,7 +67,6 @@ export interface OverallStats {
 }
 
 export interface BotStatus {
-  isRunning: boolean;
   mode: "simulation" | "live";
   lastScanAt?: Date;
   todayBets: number;
@@ -76,7 +79,7 @@ export interface BotStatus {
 
 export interface BotEvent {
   id: number;
-  eventType: "circuit_breaker" | "error" | "trade" | "mode_change" | "info";
+  eventType: "circuit_breaker" | "error" | "trade" | "mode_change" | "info" | "missed_opportunity";
   eventName: string;
   message: string;
   metadata?: Record<string, unknown>;
@@ -91,6 +94,7 @@ export interface OrderBookLevel {
 export interface OrderBook {
   bids: OrderBookLevel[];
   asks: OrderBookLevel[];
+  lastTradePrice?: number;
 }
 
 export interface TradeResult {
