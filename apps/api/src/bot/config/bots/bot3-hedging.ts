@@ -1,10 +1,10 @@
 /**
- * Bot 3: Safe
+ * Bot 3: Hedging
  *
- * High odds, very fast resolution strategy.
+ * Hedging strategy.
  * Targets 98-99.5¢ markets resolving within 1 hour.
  *
- * Lower risk, lower reward per bet, but high confidence.
+ * Hedging strategy.
  */
 
 import { env } from "../../../env.js";
@@ -13,10 +13,10 @@ import type { BotInstanceConfig, BotMode } from "../types.js";
 const config: BotInstanceConfig = {
   // Identity
   id: 3,
-  name: "safe",
-  enabled: false,
+  name: "hedging",
+  enabled: true,
 
-  // Wallet (separate from bot1 and bot2)
+  // Wallet
   walletPrivateKeyEnv: "WALLET_3_PRIVATE_KEY",
   walletFunderAddressEnv: "WALLET_3_FUNDER_ADDRESS",
 
@@ -24,23 +24,23 @@ const config: BotInstanceConfig = {
   betSize: 5.0,
   dailyBudget: Infinity,
 
-  // Market selection: High odds, very fast resolution
-  minOdds: 0.98,
+  // Market selection
+  minOdds: 0.95,
   maxOdds: 0.995,
-  maxHoursGeneral: 1,
+  maxHoursGeneral: 4,
+  maxHoursForHighOdds: 2,
+  highOddsThreshold: 0.99,
   minLiquidity: 50,
-
-  // Disable high-odds special rule (set threshold above maxOdds)
-  highOddsThreshold: 1.0,
-  maxHoursForHighOdds: 1,
 
   // Category-specific time limits
   categoryTimeLimits: {
-    crypto: 0.5, // Crypto: high volatility, 30 min max for safe
+    crypto: 1, // Crypto markets: high volatility, 1 hours max,
+    sports: 1, // Sports markets: high volatility, 1 hours max,
+    esports: 0.5, // Esports markets: high volatility, 0.5 hours max,
   },
 
   // Categories to skip entirely
-  skipCategories: [],
+  skipCategories: ["weather"],
 
   // Safety limits
   minWalletReserve: 0,
@@ -51,21 +51,21 @@ const config: BotInstanceConfig = {
   earlyExitMinPrice: 0.9995,
 
   // Order execution
-  useMarketOrders: false,
+  useMarketOrders: true,
 
   // Wallet tracking
   walletSnapshotRetentionDays: 30,
 
   // Hedging
   hedging: {
-    enabled: false,
+    enabled: true,
     dropThresholdPercent: 60,
     multiplier: 2,
-    spreadTolerance: 0.05,
-    minPositionAgeMinutes: 30,
+    spreadTolerance: 0.1,
+    minPositionAgeMinutes: 0,
     onlyNearResolution: false,
     nearResolutionMinutes: 60,
-    skipCategories: ["sports"],
+    skipCategories: ["sports", "nfl", "nba"],
   },
 
   // Mode - reads from environment

@@ -13,14 +13,14 @@
 import type { BotInstanceConfig } from "../types.js";
 import bot1Default from "./bot1-default.js";
 import bot2Bonding from "./bot2-bonding.js";
-import bot3Safe from "./bot3-safe.js";
+import bot3Hedging from "./bot3-hedging.js";
 
 // ============================================
 // BOT CONFIGURATIONS
 // Add new bots here in order of ID
 // ============================================
 
-export const BOT_CONFIGS: BotInstanceConfig[] = [bot1Default, bot2Bonding, bot3Safe];
+export const BOT_CONFIGS: BotInstanceConfig[] = [bot1Default, bot2Bonding, bot3Hedging];
 
 // ============================================
 // VALIDATION (runs at startup)

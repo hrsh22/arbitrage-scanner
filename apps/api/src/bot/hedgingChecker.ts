@@ -335,19 +335,6 @@ export class HedgingChecker {
     }
   }
 
-  private async getCurrentBidPrice(tokenId: string): Promise<number | null> {
-    try {
-      const orderBook = await this.tradingClient.getOrderBook(tokenId);
-      if (orderBook.bids.length > 0) {
-        const bidPrices = orderBook.bids.map((b) => b.price);
-        return Math.max(...bidPrices);
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
   private async getAskPrice(tokenId: string): Promise<number | null> {
     try {
       const orderBook = await this.tradingClient.getOrderBook(tokenId);

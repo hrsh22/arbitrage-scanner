@@ -14,7 +14,7 @@ const config: BotInstanceConfig = {
   // Identity
   id: 2,
   name: "bonding",
-  enabled: false,
+  enabled: true,
 
   // Wallet (separate from bot1)
   walletPrivateKeyEnv: "WALLET_2_PRIVATE_KEY",
