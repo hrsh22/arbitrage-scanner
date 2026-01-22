@@ -2,9 +2,9 @@
  * Bot 2: Bonding
  *
  * Bonds to long-term markets.
- * Targets 99.5¢ markets resolving within 24 hours.
+ * Targets 99.5¢ markets resolving within 10 minutes.
  *
- * Bonds to long-term markets.
+ * Skips crypto up/down markets (too volatile).
  */
 
 import { env } from "../../../env.js";
@@ -27,7 +27,7 @@ const config: BotInstanceConfig = {
   // Market selection: Lower odds, fast resolution
   minOdds: 0.991,
   maxOdds: 0.998,
-  maxHoursGeneral: 24,
+  maxHoursGeneral: 10 / 60, // 10 minutes
   minLiquidity: 50,
 
   // Disable high-odds special rule (set threshold above maxOdds)
@@ -40,7 +40,7 @@ const config: BotInstanceConfig = {
   },
 
   // Categories to skip entirely
-  skipCategories: [],
+  skipCategories: ["up-or-down"],
 
   // Safety limits
   minWalletReserve: 0,
