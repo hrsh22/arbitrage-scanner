@@ -1,0 +1,1 @@
+ALTER TYPE "public"."sync_event_type" ADD VALUE 'claimed';

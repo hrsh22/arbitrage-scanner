@@ -1,0 +1,406 @@
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { useAccount } from 'wagmi'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
+import {
+  Settings,
+  ArrowLeft,
+  Loader2,
+  AlertCircle,
+  Check,
+  Vault,
+  Eye,
+  EyeOff,
+  Pause,
+  DollarSign,
+  Users,
+  RefreshCw,
+  ExternalLink,
+} from 'lucide-react'
+import { api, type PendingWithdrawal } from '../../lib/api'
+
+export const Route = createFileRoute('/admin/$vaultId')({
+  component: ManageVault,
+})
+
+function ManageVault() {
+  const { address, isConnected } = useAccount()
+  const { vaultId } = Route.useParams()
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+
+  const [navInput, setNavInput] = useState('')
+  const [navError, setNavError] = useState<string | null>(null)
+
+  const {
+    data: vaultResponse,
+    isLoading,
+    error,
+  } = useQuery({
+    queryKey: ['admin', 'vault', vaultId, address],
+    queryFn: () => api.admin.getVault(address!, parseInt(vaultId)),
+    enabled: isConnected && !!address,
+  })
+
+  const { data: withdrawalsResponse, isLoading: withdrawalsLoading } = useQuery(
+    {
+      queryKey: ['admin', 'vault', vaultId, 'withdrawals', address],
+      queryFn: () => api.admin.getWithdrawals(address!, parseInt(vaultId)),
+      enabled: isConnected && !!address,
+    },
+  )
+
+  const updateStatusMutation = useMutation({
+    mutationFn: (status: string) =>
+      api.admin.updateVault(address!, parseInt(vaultId), { status }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin', 'vault', vaultId] })
+    },
+  })
+
+  const updateNavMutation = useMutation({
+    mutationFn: (totalAssetsUsdc: string) =>
+      api.admin.updateNav(address!, parseInt(vaultId), totalAssetsUsdc),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin', 'vault', vaultId] })
+      setNavInput('')
+      setNavError(null)
+    },
+    onError: (err) => {
+      setNavError(err instanceof Error ? err.message : 'Failed to update NAV')
+    },
+  })
+
+  const fulfillMutation = useMutation({
+    mutationFn: (withdrawalId: number) =>
+      api.admin.fulfillWithdrawal(address!, parseInt(vaultId), withdrawalId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['admin', 'vault', vaultId, 'withdrawals'],
+      })
+    },
+  })
+
+  const vault = vaultResponse?.data?.vault
+  const state = vaultResponse?.data?.state
+  const withdrawals = withdrawalsResponse?.data ?? []
+
+  const handleNavUpdate = () => {
+    setNavError(null)
+    const value = parseFloat(navInput)
+    if (isNaN(value) || value < 0) {
+      setNavError('Please enter a valid positive number')
+      return
+    }
+    updateNavMutation.mutate(value.toFixed(6))
+  }
+
+  if (!isConnected || !address) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-slate-900 via-slate-800 to-slate-900">
+        <div className="max-w-4xl mx-auto px-6 py-12">
+          <div className="text-center">
+            <Settings className="w-16 h-16 text-gray-500 mx-auto mb-4" />
+            <h1 className="text-2xl font-bold text-white mb-4">Manage Vault</h1>
+            <p className="text-gray-400 mb-6">
+              Connect your wallet to manage this vault
+            </p>
+            <appkit-button />
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-slate-900 via-slate-800 to-slate-900">
+        <div className="flex items-center justify-center py-32">
+          <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
+          <span className="ml-3 text-gray-400">Loading vault...</span>
+        </div>
+      </div>
+    )
+  }
+
+  if (error || !vault || !state) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-slate-900 via-slate-800 to-slate-900">
+        <div className="max-w-4xl mx-auto px-6 py-12">
+          <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-6 flex items-center gap-4">
+            <AlertCircle className="w-8 h-8 text-red-400 flex-shrink-0" />
+            <div>
+              <h3 className="text-red-400 font-semibold">
+                Unable to load vault
+              </h3>
+              <p className="text-red-300/70 text-sm">
+                {error instanceof Error ? error.message : 'Vault not found'}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const statusColors = {
+    draft: 'bg-gray-500/20 text-gray-400 border-gray-500/30',
+    public: 'bg-green-500/20 text-green-400 border-green-500/30',
+    paused: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-slate-900 via-slate-800 to-slate-900">
+      <div className="max-w-4xl mx-auto px-6 py-12">
+        <button
+          onClick={() => navigate({ to: '/admin' })}
+          className="flex items-center gap-2 text-gray-400 hover:text-white mb-8 transition-colors"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          Back to Admin
+        </button>
+
+        <div className="flex items-center justify-between mb-8">
+          <div className="flex items-center gap-3">
+            <Vault className="w-8 h-8 text-cyan-400" />
+            <div>
+              <h1 className="text-3xl font-bold text-white">{vault.name}</h1>
+              <p className="text-gray-400 text-sm">/vault/{vault.slug}</p>
+            </div>
+          </div>
+          <span
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium border ${statusColors[vault.status]}`}
+          >
+            {vault.status === 'public' && <Eye className="w-4 h-4" />}
+            {vault.status === 'draft' && <EyeOff className="w-4 h-4" />}
+            {vault.status === 'paused' && <Pause className="w-4 h-4" />}
+            {vault.status.charAt(0).toUpperCase() + vault.status.slice(1)}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+          <StatCard
+            label="Total Assets"
+            value={formatUsd(state.totalAssetsUsdc)}
+            icon={<DollarSign className="w-5 h-5 text-green-400" />}
+          />
+          <StatCard
+            label="Total Shares"
+            value={parseFloat(state.totalShares).toLocaleString()}
+            icon={<Users className="w-5 h-5 text-cyan-400" />}
+          />
+          <StatCard
+            label="NAV per Share"
+            value={`$${parseFloat(state.navPerShare).toFixed(4)}`}
+            icon={<RefreshCw className="w-5 h-5 text-purple-400" />}
+          />
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+          <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-6">
+            <h3 className="text-lg font-semibold text-white mb-4">
+              Vault Status
+            </h3>
+            <div className="space-y-3">
+              <button
+                onClick={() => updateStatusMutation.mutate('public')}
+                disabled={
+                  vault.status === 'public' || updateStatusMutation.isPending
+                }
+                className="w-full flex items-center justify-between px-4 py-3 bg-green-500/10 border border-green-500/30 rounded-lg text-green-400 hover:bg-green-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                <span className="flex items-center gap-2">
+                  <Eye className="w-4 h-4" />
+                  Make Public
+                </span>
+                {vault.status === 'public' && <Check className="w-4 h-4" />}
+              </button>
+              <button
+                onClick={() => updateStatusMutation.mutate('paused')}
+                disabled={
+                  vault.status === 'paused' || updateStatusMutation.isPending
+                }
+                className="w-full flex items-center justify-between px-4 py-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-amber-400 hover:bg-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                <span className="flex items-center gap-2">
+                  <Pause className="w-4 h-4" />
+                  Pause
+                </span>
+                {vault.status === 'paused' && <Check className="w-4 h-4" />}
+              </button>
+              <button
+                onClick={() => updateStatusMutation.mutate('draft')}
+                disabled={
+                  vault.status === 'draft' || updateStatusMutation.isPending
+                }
+                className="w-full flex items-center justify-between px-4 py-3 bg-gray-500/10 border border-gray-500/30 rounded-lg text-gray-400 hover:bg-gray-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                <span className="flex items-center gap-2">
+                  <EyeOff className="w-4 h-4" />
+                  Set to Draft
+                </span>
+                {vault.status === 'draft' && <Check className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-6">
+            <h3 className="text-lg font-semibold text-white mb-4">
+              Update NAV
+            </h3>
+            <p className="text-gray-400 text-sm mb-4">
+              Enter the total current value of all vault assets in USDC.
+            </p>
+            {navError && (
+              <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 mb-4 text-red-400 text-sm">
+                {navError}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <input
+                type="number"
+                step="0.01"
+                value={navInput}
+                onChange={(e) => setNavInput(e.target.value)}
+                placeholder={state.totalAssetsUsdc}
+                className="flex-1 px-4 py-3 bg-slate-900 border border-slate-600 rounded-lg text-white placeholder-gray-500 focus:border-cyan-500 focus:outline-none"
+              />
+              <button
+                onClick={handleNavUpdate}
+                disabled={updateNavMutation.isPending || !navInput}
+                className="px-4 py-3 bg-cyan-500 hover:bg-cyan-600 disabled:bg-cyan-500/50 text-white font-semibold rounded-lg transition-colors"
+              >
+                {updateNavMutation.isPending ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  'Update'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-6 mb-8">
+          <h3 className="text-lg font-semibold text-white mb-4">Addresses</h3>
+          <div className="space-y-3">
+            <AddressRow label="Contract" address={vault.contractAddress} />
+            <AddressRow label="Safe (Treasury)" address={vault.safeAddress} />
+            <AddressRow label="Admin" address={vault.adminAddress} />
+          </div>
+        </div>
+
+        <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">
+            Pending Withdrawals ({withdrawals.length})
+          </h3>
+
+          {withdrawalsLoading && (
+            <div className="flex items-center gap-2 text-gray-400">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Loading withdrawals...
+            </div>
+          )}
+
+          {!withdrawalsLoading && withdrawals.length === 0 && (
+            <p className="text-gray-400 text-sm">No pending withdrawals</p>
+          )}
+
+          {withdrawals.length > 0 && (
+            <div className="space-y-3">
+              {withdrawals.map((w) => (
+                <WithdrawalRow
+                  key={w.id}
+                  withdrawal={w}
+                  onFulfill={() => fulfillMutation.mutate(w.id)}
+                  isPending={fulfillMutation.isPending}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function StatCard({
+  label,
+  value,
+  icon,
+}: {
+  label: string
+  value: string
+  icon: React.ReactNode
+}) {
+  return (
+    <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
+      <div className="flex items-center gap-2 mb-2">
+        {icon}
+        <span className="text-gray-400 text-sm">{label}</span>
+      </div>
+      <div className="text-2xl font-bold text-white">{value}</div>
+    </div>
+  )
+}
+
+function AddressRow({ label, address }: { label: string; address: string }) {
+  return (
+    <div className="flex items-center justify-between bg-slate-900/50 rounded-lg px-4 py-3">
+      <span className="text-gray-400 text-sm">{label}</span>
+      <div className="flex items-center gap-2">
+        <code className="text-gray-300 text-sm font-mono">
+          {address.slice(0, 6)}...{address.slice(-4)}
+        </code>
+        <a
+          href={`https://polygonscan.com/address/${address}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-cyan-400 hover:text-cyan-300"
+        >
+          <ExternalLink className="w-4 h-4" />
+        </a>
+      </div>
+    </div>
+  )
+}
+
+function WithdrawalRow({
+  withdrawal,
+  onFulfill,
+  isPending,
+}: {
+  withdrawal: PendingWithdrawal
+  onFulfill: () => void
+  isPending: boolean
+}) {
+  return (
+    <div className="flex items-center justify-between bg-slate-900/50 rounded-lg px-4 py-3">
+      <div>
+        <div className="text-white font-medium">
+          {parseFloat(withdrawal.sharesLocked).toFixed(4)} shares
+        </div>
+        <div className="text-gray-400 text-sm">
+          {parseFloat(withdrawal.ownershipPct).toFixed(2)}% ownership |{' '}
+          {formatUsd(withdrawal.idleUsdcClaim)} idle USDC
+        </div>
+      </div>
+      <button
+        onClick={onFulfill}
+        disabled={isPending}
+        className="px-4 py-2 bg-green-500/20 border border-green-500/30 text-green-400 hover:bg-green-500/30 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors"
+      >
+        {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Fulfill'}
+      </button>
+    </div>
+  )
+}
+
+function formatUsd(value: string | number): string {
+  const num = typeof value === 'string' ? parseFloat(value) : value
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(num)
+}
