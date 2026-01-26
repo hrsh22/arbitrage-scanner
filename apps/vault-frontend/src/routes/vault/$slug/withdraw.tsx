@@ -20,9 +20,10 @@ import {
   Download,
 } from 'lucide-react'
 import { VAULT_ABI, USDC_DECIMALS } from '../../../lib/contracts'
+import { env } from '../../../lib/env'
 import { api, type WithdrawalRecord } from '../../../lib/api'
 
-const LOCK_PERIOD_MS = 7 * 24 * 60 * 60 * 1000 // 7 days in milliseconds
+const LOCK_PERIOD_MS = env.VITE_WITHDRAWAL_LOCK_DAYS * 24 * 60 * 60 * 1000
 
 function formatTimeRemaining(ms: number): string {
   if (ms <= 0) return 'Available now'
@@ -155,9 +156,8 @@ function WithdrawPage() {
     setError(null)
   }
 
-  const pendingWithdrawals = withdrawalsResponse?.data?.filter(
-    (w) => w.status === 'pending' || w.status === 'processing',
-  )
+  // Show all withdrawals (pending, processing, and recently completed)
+  const allWithdrawals = withdrawalsResponse?.data ?? []
 
   if (vaultLoading) {
     return (
@@ -251,18 +251,16 @@ function WithdrawPage() {
           )}
         </div>
 
-        {pendingWithdrawals &&
-          pendingWithdrawals.length > 0 &&
-          vaultAddress && (
-            <PendingWithdrawals
-              withdrawals={pendingWithdrawals}
-              loading={withdrawalsLoading}
-              vaultAddress={vaultAddress}
-              onClaimSuccess={() => {
-                queryClient.invalidateQueries({ queryKey: ['user', slug] })
-              }}
-            />
-          )}
+        {allWithdrawals.length > 0 && vaultAddress && (
+          <WithdrawalsList
+            withdrawals={allWithdrawals}
+            loading={withdrawalsLoading}
+            vaultAddress={vaultAddress}
+            onClaimSuccess={() => {
+              queryClient.invalidateQueries({ queryKey: ['user', slug] })
+            }}
+          />
+        )}
       </div>
     </div>
   )
@@ -340,7 +338,7 @@ function InputStep({
               {estimatedValue.toLocaleString(undefined, {
                 maximumFractionDigits: 2,
               })}{' '}
-              USDC
+              USDC.e
             </span>
           </div>
         </div>
@@ -360,7 +358,7 @@ function InputStep({
             Resolution-Based Withdrawals
           </p>
           <p className="text-amber-300/70">
-            Withdrawals are processed as positions resolve. Your USDC will be
+            Withdrawals are processed as positions resolve. Your USDC.e will be
             released proportionally over time based on your share of the vault.
           </p>
         </div>
@@ -463,7 +461,7 @@ function SuccessStep({
       </h3>
       <p className="text-gray-400 mb-6">
         You've requested to withdraw {shares} shares (~$
-        {estimatedValue.toFixed(2)} USDC). Funds will be released as positions
+        {estimatedValue.toFixed(2)} USDC.e). Funds will be released as positions
         resolve.
       </p>
 
@@ -496,98 +494,139 @@ function SuccessStep({
   )
 }
 
-interface PendingWithdrawalsProps {
+interface WithdrawalsListProps {
   withdrawals: WithdrawalRecord[]
   loading: boolean
   vaultAddress: Address
   onClaimSuccess: () => void
 }
 
-function PendingWithdrawals({
+function WithdrawalsList({
   withdrawals,
   loading,
   vaultAddress,
   onClaimSuccess,
-}: PendingWithdrawalsProps) {
+}: WithdrawalsListProps) {
   if (loading) {
     return (
       <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700 rounded-xl p-6">
         <div className="flex items-center gap-3">
           <Loader2 className="w-5 h-5 text-cyan-400 animate-spin" />
-          <span className="text-gray-400">Loading pending withdrawals...</span>
+          <span className="text-gray-400">Loading withdrawals...</span>
         </div>
       </div>
     )
   }
 
+  const pending = withdrawals.filter(
+    (w) => w.status === 'pending' || w.status === 'processing',
+  )
+  const completed = withdrawals.filter((w) => w.status === 'completed')
+
   return (
-    <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700 rounded-xl p-6">
-      <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-        <Clock className="w-5 h-5 text-amber-400" />
-        Pending Withdrawals
-      </h3>
-      <div className="space-y-4">
-        {withdrawals.map((w) => {
-          const timeRemaining = getTimeUntilClaimable(w.requestedAt)
-          const isClaimable = timeRemaining <= 0
+    <div className="space-y-6">
+      {pending.length > 0 && (
+        <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700 rounded-xl p-6">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <Clock className="w-5 h-5 text-amber-400" />
+            Pending Withdrawals
+          </h3>
+          <div className="space-y-4">
+            {pending.map((w) => {
+              const timeRemaining = getTimeUntilClaimable(w.requestedAt)
+              const isClaimable = timeRemaining <= 0
 
-          return (
-            <div key={w.id} className="bg-slate-700/50 rounded-lg p-4">
-              <div className="flex justify-between items-start mb-2">
-                <div>
-                  <div className="text-white font-medium">
-                    {parseFloat(w.sharesLocked).toLocaleString(undefined, {
-                      maximumFractionDigits: 4,
-                    })}{' '}
-                    shares
+              return (
+                <div key={w.id} className="bg-slate-700/50 rounded-lg p-4">
+                  <div className="flex justify-between items-start mb-2">
+                    <div>
+                      <div className="text-white font-medium">
+                        {parseFloat(w.sharesLocked).toLocaleString(undefined, {
+                          maximumFractionDigits: 4,
+                        })}{' '}
+                        shares
+                      </div>
+                      <div className="text-gray-500 text-sm">
+                        {parseFloat(w.ownershipPct).toFixed(2)}% of vault
+                      </div>
+                    </div>
+                    <span
+                      className={`px-2 py-1 text-xs rounded-full ${
+                        w.status === 'processing'
+                          ? 'bg-blue-500/20 text-blue-400'
+                          : 'bg-amber-500/20 text-amber-400'
+                      }`}
+                    >
+                      {w.status}
+                    </span>
                   </div>
+
                   <div className="text-gray-500 text-sm">
-                    {parseFloat(w.ownershipPct).toFixed(2)}% of vault
+                    Requested {new Date(w.requestedAt).toLocaleDateString()}
                   </div>
+
+                  {!isClaimable && (
+                    <div className="text-amber-400 text-sm mt-1 flex items-center gap-1">
+                      <Clock className="w-3 h-3" />
+                      {formatTimeRemaining(timeRemaining)}
+                    </div>
+                  )}
+
+                  {isClaimable && (
+                    <div className="mt-3">
+                      <ClaimButton
+                        withdrawalId={w.id}
+                        vaultAddress={vaultAddress}
+                        onSuccess={onClaimSuccess}
+                      />
+                    </div>
+                  )}
                 </div>
-                <span
-                  className={`px-2 py-1 text-xs rounded-full ${
-                    w.status === 'processing'
-                      ? 'bg-blue-500/20 text-blue-400'
-                      : w.status === 'completed'
-                        ? 'bg-green-500/20 text-green-400'
-                        : 'bg-amber-500/20 text-amber-400'
-                  }`}
-                >
-                  {w.status}
-                </span>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {completed.length > 0 && (
+        <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700 rounded-xl p-6">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <CheckCircle className="w-5 h-5 text-green-400" />
+            Completed Withdrawals
+          </h3>
+          <div className="space-y-4">
+            {completed.map((w) => (
+              <div key={w.id} className="bg-slate-700/50 rounded-lg p-4">
+                <div className="flex justify-between items-start mb-2">
+                  <div>
+                    <div className="text-white font-medium">
+                      {parseFloat(w.sharesLocked).toLocaleString(undefined, {
+                        maximumFractionDigits: 4,
+                      })}{' '}
+                      shares
+                    </div>
+                    <div className="text-gray-500 text-sm">
+                      {parseFloat(w.ownershipPct).toFixed(2)}% of vault
+                    </div>
+                  </div>
+                  <span className="px-2 py-1 text-xs rounded-full bg-green-500/20 text-green-400">
+                    completed
+                  </span>
+                </div>
+
+                <div className="text-gray-500 text-sm">
+                  Requested {new Date(w.requestedAt).toLocaleDateString()}
+                </div>
+
+                <div className="text-green-400 text-sm mt-2 flex items-center gap-1">
+                  <CheckCircle className="w-4 h-4" />
+                  Claimed ${parseFloat(w.totalClaimedUsdc).toFixed(2)} USDC.e
+                </div>
               </div>
-
-              <div className="text-gray-500 text-sm">
-                Requested {new Date(w.requestedAt).toLocaleDateString()}
-              </div>
-
-              {!isClaimable && (
-                <div className="text-amber-400 text-sm mt-1 flex items-center gap-1">
-                  <Clock className="w-3 h-3" />
-                  {formatTimeRemaining(timeRemaining)}
-                </div>
-              )}
-
-              {parseFloat(w.totalClaimedUsdc) > 0 && (
-                <div className="text-green-400 text-sm mt-1">
-                  ${parseFloat(w.totalClaimedUsdc).toFixed(2)} claimed so far
-                </div>
-              )}
-
-              {isClaimable && w.status !== 'completed' && (
-                <div className="mt-3">
-                  <ClaimButton
-                    withdrawalId={w.id}
-                    vaultAddress={vaultAddress}
-                    onSuccess={onClaimSuccess}
-                  />
-                </div>
-              )}
-            </div>
-          )
-        })}
-      </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -682,14 +721,50 @@ function ClaimButton({
     )
   }
 
-  if (!claimData || parseFloat(claimData.pendingClaimUsdc) <= 0) {
+  // No claim data available yet
+  if (!claimData) {
     return (
-      <button
-        onClick={() => refetch()}
-        className="px-3 py-1.5 bg-slate-600 hover:bg-slate-500 text-gray-300 text-sm rounded-lg"
-      >
-        Check for claims
-      </button>
+      <div className="flex flex-col gap-2">
+        <span className="text-gray-400 text-sm">
+          Claim not ready yet. Waiting for the operator to publish the claim
+          root.
+        </span>
+        <button
+          onClick={() => refetch()}
+          className="px-3 py-1.5 bg-slate-600 hover:bg-slate-500 text-gray-300 text-sm rounded-lg"
+        >
+          Check for claims
+        </button>
+      </div>
+    )
+  }
+
+  // Already fully claimed
+  const pendingAmount = parseFloat(claimData.pendingClaimUsdc)
+  const claimedAmount = parseFloat(claimData.alreadyClaimedUsdc)
+  if (pendingAmount <= 0 && claimedAmount > 0) {
+    return (
+      <div className="flex items-center gap-2 text-green-400 text-sm">
+        <CheckCircle className="w-4 h-4" />
+        Claimed ${claimedAmount.toFixed(2)} USDC.e
+      </div>
+    )
+  }
+
+  // Nothing to claim yet (root submitted but no claimable amount)
+  if (pendingAmount <= 0) {
+    return (
+      <div className="flex flex-col gap-2">
+        <span className="text-gray-400 text-sm">
+          No funds available to claim yet.
+        </span>
+        <button
+          onClick={() => refetch()}
+          className="px-3 py-1.5 bg-slate-600 hover:bg-slate-500 text-gray-300 text-sm rounded-lg"
+        >
+          Check for claims
+        </button>
+      </div>
     )
   }
 

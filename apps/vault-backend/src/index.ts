@@ -7,8 +7,6 @@ import { userRoutes } from "./routes/users.js";
 import { adminRoutes } from "./routes/admin.js";
 import { webhookRoutes } from "./routes/webhooks.js";
 import withdrawalRoutes from "./routes/withdrawals.js";
-import { catchUpAllVaults } from "./services/depositListener.js";
-import { catchUpAllVaultsWithdrawals } from "./services/withdrawalListener.js";
 
 const app = express();
 
@@ -49,20 +47,7 @@ app.listen(PORT, HOST, () => {
     host: HOST,
     port: PORT,
   });
-
-  catchUpAllVaults()
-    .then(() => logger.info("Startup deposit catch-up complete"))
-    .catch((error) =>
-      logger.error("Startup deposit catch-up failed", {
-        error: (error as Error).message,
-      }),
-    );
-
-  catchUpAllVaultsWithdrawals()
-    .then(() => logger.info("Startup withdrawal catch-up complete"))
-    .catch((error) =>
-      logger.error("Startup withdrawal catch-up failed", {
-        error: (error as Error).message,
-      }),
-    );
+  // Deposit and withdrawal sync is handled by cron jobs:
+  // - pnpm cron:reconcile-deposits
+  // - pnpm cron:reconcile-withdrawals
 });

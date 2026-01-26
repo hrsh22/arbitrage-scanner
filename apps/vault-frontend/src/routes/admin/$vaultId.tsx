@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useAccount } from 'wagmi'
+import { useAccount, useSignMessage } from 'wagmi'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Settings,
   ArrowLeft,
@@ -17,7 +17,12 @@ import {
   RefreshCw,
   ExternalLink,
 } from 'lucide-react'
-import { api, type PendingWithdrawal } from '../../lib/api'
+import {
+  api,
+  getAdminSession,
+  setAdminSession,
+  type PendingWithdrawal,
+} from '../../lib/api'
 
 export const Route = createFileRoute('/admin/$vaultId')({
   component: ManageVault,
@@ -28,9 +33,27 @@ function ManageVault() {
   const { vaultId } = Route.useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { signMessageAsync, isPending: isSigning } = useSignMessage()
+
+  const [adminSession, setAdminSessionState] = useState(
+    () => null as ReturnType<typeof getAdminSession>,
+  )
+  const [authError, setAuthError] = useState<string | null>(null)
 
   const [navInput, setNavInput] = useState('')
   const [navError, setNavError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setAdminSessionState(getAdminSession())
+  }, [])
+
+  useEffect(() => {
+    if (!adminSession || !address) return
+    if (adminSession.address.toLowerCase() !== address.toLowerCase()) {
+      setAdminSession(null)
+      setAdminSessionState(null)
+    }
+  }, [address, adminSession])
 
   const {
     data: vaultResponse,
@@ -39,14 +62,14 @@ function ManageVault() {
   } = useQuery({
     queryKey: ['admin', 'vault', vaultId, address],
     queryFn: () => api.admin.getVault(address!, parseInt(vaultId)),
-    enabled: isConnected && !!address,
+    enabled: isConnected && !!address && !!adminSession,
   })
 
   const { data: withdrawalsResponse, isLoading: withdrawalsLoading } = useQuery(
     {
       queryKey: ['admin', 'vault', vaultId, 'withdrawals', address],
       queryFn: () => api.admin.getWithdrawals(address!, parseInt(vaultId)),
-      enabled: isConnected && !!address,
+      enabled: isConnected && !!address && !!adminSession,
     },
   )
 
@@ -71,19 +94,33 @@ function ManageVault() {
     },
   })
 
-  const fulfillMutation = useMutation({
-    mutationFn: (withdrawalId: number) =>
-      api.admin.fulfillWithdrawal(address!, parseInt(vaultId), withdrawalId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ['admin', 'vault', vaultId, 'withdrawals'],
-      })
-    },
-  })
-
   const vault = vaultResponse?.data?.vault
   const state = vaultResponse?.data?.state
   const withdrawals = withdrawalsResponse?.data ?? []
+
+  const [claimRootError, setClaimRootError] = useState<string | null>(null)
+  const [claimRootSuccess, setClaimRootSuccess] = useState<string | null>(null)
+
+  const submitClaimRootMutation = useMutation({
+    mutationFn: () => api.admin.submitClaimRoot(address!, parseInt(vaultId)),
+    onSuccess: (response) => {
+      if (response.success && response.data) {
+        setClaimRootSuccess(
+          `Claim root submitted for ${response.data.requestCount} requests. TX: ${response.data.txHashes[0]?.slice(0, 10)}...`,
+        )
+        setClaimRootError(null)
+        queryClient.invalidateQueries({
+          queryKey: ['admin', 'vault', vaultId, 'withdrawals'],
+        })
+      }
+    },
+    onError: (err) => {
+      setClaimRootError(
+        err instanceof Error ? err.message : 'Failed to submit claim root',
+      )
+      setClaimRootSuccess(null)
+    },
+  })
 
   const handleNavUpdate = () => {
     setNavError(null)
@@ -106,6 +143,78 @@ function ManageVault() {
               Connect your wallet to manage this vault
             </p>
             <appkit-button />
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (!adminSession) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-slate-900 via-slate-800 to-slate-900">
+        <div className="max-w-4xl mx-auto px-6 py-12">
+          <div className="text-center">
+            <Settings className="w-16 h-16 text-gray-500 mx-auto mb-4" />
+            <h1 className="text-2xl font-bold text-white mb-4">Manage Vault</h1>
+            <p className="text-gray-400 mb-6">
+              Sign in with your admin wallet to manage this vault
+            </p>
+            {authError && (
+              <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 mb-6 flex items-center gap-3">
+                <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
+                <p className="text-red-400 text-sm">{authError}</p>
+              </div>
+            )}
+            <button
+              onClick={async () => {
+                if (!address) return
+                setAuthError(null)
+                try {
+                  const nonceResponse = await api.adminAuth.requestNonce(address)
+                  if (!nonceResponse.data) {
+                    throw new Error(
+                      nonceResponse.error || 'Failed to request admin nonce',
+                    )
+                  }
+                  const signature = await signMessageAsync({
+                    message: nonceResponse.data.message,
+                  })
+                  const verifyResponse = await api.adminAuth.verifySignature(
+                    address,
+                    signature,
+                  )
+                  if (!verifyResponse.data) {
+                    throw new Error(
+                      verifyResponse.error || 'Failed to verify signature',
+                    )
+                  }
+                  const session = {
+                    token: verifyResponse.data.token,
+                    address: address.toLowerCase(),
+                  }
+                  setAdminSession(session)
+                  setAdminSessionState(session)
+                  queryClient.invalidateQueries({ queryKey: ['admin'] })
+                } catch (error) {
+                  setAuthError(
+                    error instanceof Error
+                      ? error.message
+                      : 'Failed to sign in',
+                  )
+                }
+              }}
+              disabled={isSigning}
+              className="inline-flex items-center gap-2 px-6 py-3 bg-cyan-500 hover:bg-cyan-600 disabled:bg-cyan-500/50 text-white font-semibold rounded-lg transition-colors"
+            >
+              {isSigning ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  Waiting for signature...
+                </>
+              ) : (
+                'Sign in as Admin'
+              )}
+            </button>
           </div>
         </div>
       </div>
@@ -249,7 +358,8 @@ function ManageVault() {
               Update NAV
             </h3>
             <p className="text-gray-400 text-sm mb-4">
-              Enter the total current value of all vault assets in USDC.
+              Enter the total current value of all vault assets in USDC.e. This
+              submits an on-chain NAV update from the operator wallet.
             </p>
             {navError && (
               <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 mb-4 text-red-400 text-sm">
@@ -293,6 +403,10 @@ function ManageVault() {
           <h3 className="text-lg font-semibold text-white mb-4">
             Pending Withdrawals ({withdrawals.length})
           </h3>
+          <p className="text-gray-500 text-sm mb-4">
+            Claims are submitted on-chain via Merkle roots; users claim directly
+            from the vault contract.
+          </p>
 
           {withdrawalsLoading && (
             <div className="flex items-center gap-2 text-gray-400">
@@ -306,15 +420,66 @@ function ManageVault() {
           )}
 
           {withdrawals.length > 0 && (
-            <div className="space-y-3">
-              {withdrawals.map((w) => (
-                <WithdrawalRow
-                  key={w.id}
-                  withdrawal={w}
-                  onFulfill={() => fulfillMutation.mutate(w.id)}
-                  isPending={fulfillMutation.isPending}
-                />
-              ))}
+            <div className="space-y-4">
+              <div className="space-y-3">
+                {withdrawals.map((w) => (
+                  <WithdrawalRow key={w.id} withdrawal={w} />
+                ))}
+              </div>
+
+              {(() => {
+                const withoutClaimRoot = withdrawals.filter(
+                  (w) => !w.lastMerkleRoot,
+                )
+                const allHaveClaimRoot = withoutClaimRoot.length === 0
+
+                if (allHaveClaimRoot) {
+                  return (
+                    <div className="border-t border-slate-700 pt-4">
+                      <div className="flex items-center gap-2 text-green-400 text-sm">
+                        <Check className="w-4 h-4" />
+                        All withdrawals have claim roots. Users can now claim.
+                      </div>
+                    </div>
+                  )
+                }
+
+                return (
+                  <div className="border-t border-slate-700 pt-4">
+                    <button
+                      onClick={() => submitClaimRootMutation.mutate()}
+                      disabled={submitClaimRootMutation.isPending}
+                      className="w-full py-3 px-4 bg-green-600 hover:bg-green-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-lg flex items-center justify-center gap-2"
+                    >
+                      {submitClaimRootMutation.isPending ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Submitting Claim Root...
+                        </>
+                      ) : (
+                        <>
+                          <Check className="w-4 h-4" />
+                          Submit Claim Root ({withoutClaimRoot.length} pending)
+                        </>
+                      )}
+                    </button>
+
+                    {claimRootError && (
+                      <div className="mt-3 flex items-center gap-2 text-red-400 text-sm">
+                        <AlertCircle className="w-4 h-4" />
+                        {claimRootError}
+                      </div>
+                    )}
+
+                    {claimRootSuccess && (
+                      <div className="mt-3 flex items-center gap-2 text-green-400 text-sm">
+                        <Check className="w-4 h-4" />
+                        {claimRootSuccess}
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
             </div>
           )}
         </div>
@@ -364,15 +529,10 @@ function AddressRow({ label, address }: { label: string; address: string }) {
   )
 }
 
-function WithdrawalRow({
-  withdrawal,
-  onFulfill,
-  isPending,
-}: {
-  withdrawal: PendingWithdrawal
-  onFulfill: () => void
-  isPending: boolean
-}) {
+function WithdrawalRow({ withdrawal }: { withdrawal: PendingWithdrawal }) {
+  const hasClaimRoot = !!withdrawal.lastMerkleRoot
+  const claimableAmount = parseFloat(withdrawal.currentClaimableUsdc || '0')
+
   return (
     <div className="flex items-center justify-between bg-slate-900/50 rounded-lg px-4 py-3">
       <div>
@@ -381,16 +541,25 @@ function WithdrawalRow({
         </div>
         <div className="text-gray-400 text-sm">
           {parseFloat(withdrawal.ownershipPct).toFixed(2)}% ownership |{' '}
-          {formatUsd(withdrawal.idleUsdcClaim)} idle USDC
+          {formatUsd(withdrawal.idleUsdcClaim)} idle USDC.e
         </div>
+        {hasClaimRoot && (
+          <div className="text-green-400 text-sm mt-1">
+            Claim enabled: ${claimableAmount.toFixed(2)} claimable
+          </div>
+        )}
       </div>
-      <button
-        onClick={onFulfill}
-        disabled={isPending}
-        className="px-4 py-2 bg-green-500/20 border border-green-500/30 text-green-400 hover:bg-green-500/30 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors"
-      >
-        {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Fulfill'}
-      </button>
+      <div>
+        {hasClaimRoot ? (
+          <span className="px-2 py-1 bg-green-500/20 text-green-400 text-xs rounded-full">
+            Ready
+          </span>
+        ) : (
+          <span className="px-2 py-1 bg-amber-500/20 text-amber-400 text-xs rounded-full">
+            Pending
+          </span>
+        )}
+      </div>
     </div>
   )
 }

@@ -46,8 +46,8 @@ async function main() {
     console.log("    ✓ TX:", polymarketHash);
 
     if (vaultContractAddress) {
-      console.log("  → Approving native USDC for Vault contract (claim withdrawals)...");
-      const vaultHash = await safeWallet.approveNativeUsdcForSpender(vaultContractAddress);
+      console.log("  → Approving USDC.e for Vault contract (claim withdrawals)...");
+      const vaultHash = await safeWallet.approveUsdcForSpender(vaultContractAddress);
       console.log("    ✓ TX:", vaultHash);
     }
 

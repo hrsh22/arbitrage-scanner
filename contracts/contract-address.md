@@ -1,3 +1,5 @@
 Polymarket Prediction Vault Safe Address: 0x5Eb9f355cCa830Bc1bB928D24509e278A0804B6b
 USDC.e Address: 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
 Operator Address: 0xa40626a1b90030f3f6036dff51e2b23fff0ee259
+
+PredictionVault Contract Address: 0x520174042c6B9d6b4dd2E144b0E50F478A5878c0

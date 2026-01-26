@@ -8,6 +8,7 @@ import { withdrawalRequests, users, vaults } from "../db/schema.js";
 import { eq, and } from "drizzle-orm";
 import { logger } from "../logger.js";
 import { env } from "../env.js";
+import { getVaultContract } from "../services/vaultContractService.js";
 
 const router: RouterType = Router();
 
@@ -155,7 +156,15 @@ router.get("/:requestId/claim-data", async (req: Request, res: Response) => {
 
   try {
     const [request] = await db
-      .select()
+      .select({
+        id: withdrawalRequests.id,
+        vaultId: withdrawalRequests.vaultId,
+        onChainRequestId: withdrawalRequests.onChainRequestId,
+        lastMerkleProof: withdrawalRequests.lastMerkleProof,
+        lastMerkleRoot: withdrawalRequests.lastMerkleRoot,
+        currentClaimableUsdc: withdrawalRequests.currentClaimableUsdc,
+        totalClaimedUsdc: withdrawalRequests.totalClaimedUsdc,
+      })
       .from(withdrawalRequests)
       .where(eq(withdrawalRequests.id, requestId));
 
@@ -164,7 +173,7 @@ router.get("/:requestId/claim-data", async (req: Request, res: Response) => {
       return;
     }
 
-    if (!request.onChainRequestId) {
+    if (request.onChainRequestId === null || request.onChainRequestId === undefined) {
       res.status(400).json({ error: "Request not linked to on-chain transaction" });
       return;
     }
@@ -174,13 +183,28 @@ router.get("/:requestId/claim-data", async (req: Request, res: Response) => {
       return;
     }
 
-    const claimableUsdc = parseFloat(request.currentClaimableUsdc ?? "0");
-    const claimedUsdc = parseFloat(request.totalClaimedUsdc ?? "0");
+    // Get the vault's contract address
+    const [vault] = await db
+      .select({ contractAddress: vaults.contractAddress })
+      .from(vaults)
+      .where(eq(vaults.id, request.vaultId));
+
+    if (!vault?.contractAddress) {
+      res.status(400).json({ error: "Vault contract not deployed" });
+      return;
+    }
+
+    // Fetch on-chain state to get accurate claimed amount
+    const vaultContract = getVaultContract(vault.contractAddress);
+    const onChainRequest = await vaultContract.getWithdrawalRequest(request.onChainRequestId);
+
+    const claimableUsdc = Number(onChainRequest.totalClaimable) / 1e6;
+    const claimedUsdc = Number(onChainRequest.claimed) / 1e6;
     const pendingClaimUsdc = claimableUsdc - claimedUsdc;
 
     res.json({
       onChainRequestId: request.onChainRequestId,
-      cumulativeClaimable: Math.floor(claimableUsdc * 1e6).toString(),
+      cumulativeClaimable: onChainRequest.totalClaimable.toString(),
       merkleProof: deserializeProof(request.lastMerkleProof),
       merkleRoot: request.lastMerkleRoot,
       pendingClaimUsdc: pendingClaimUsdc.toFixed(6),

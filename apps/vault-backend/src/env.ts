@@ -36,11 +36,14 @@ export const env = {
   TRADING_WALLET_PRIVATE_KEY: optionalString("TRADING_WALLET_PRIVATE_KEY", ""),
 
   MIN_DEPOSIT_USDC: optionalNumber("MIN_DEPOSIT_USDC", 10),
+  WITHDRAWAL_LOCK_DAYS: optionalNumber("WITHDRAWAL_LOCK_DAYS", 7),
 
   DEPOSITS_ENABLED: optionalBool("DEPOSITS_ENABLED", true),
   WITHDRAWALS_ENABLED: optionalBool("WITHDRAWALS_ENABLED", true),
 
   ALCHEMY_WEBHOOK_SECRET: optionalString("ALCHEMY_WEBHOOK_SECRET", ""),
+
+  ADMIN_WALLET_ALLOWLIST: optionalString("ADMIN_WALLET_ALLOWLIST", ""),
 } as const;
 
 export type Env = typeof env;

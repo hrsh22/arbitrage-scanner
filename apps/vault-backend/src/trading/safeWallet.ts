@@ -43,9 +43,9 @@ const ERC1155_ABI = [
 ] as const;
 
 const POLYGON_ADDRESSES = {
-  // USDC.e (bridged) - what Polymarket uses
+  // USDC.e (bridged) - Polymarket + vault deposits (current deployment)
   USDC: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174" as Hex,
-  // Native USDC - what vault deposits use
+  // Native USDC (unused unless vault is deployed with native USDC)
   USDC_NATIVE: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359" as Hex,
   // Polymarket contracts
   CTF: "0x4d97dcd97ec945f40cf65f87097ace5ea0476045" as Hex,

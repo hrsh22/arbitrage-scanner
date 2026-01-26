@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { useAccount } from 'wagmi'
-import { useQuery } from '@tanstack/react-query'
+import { useAccount, useSignMessage } from 'wagmi'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useState } from 'react'
 import {
   Settings,
   Plus,
@@ -11,12 +12,36 @@ import {
   EyeOff,
   Pause,
 } from 'lucide-react'
-import { api, type Vault as VaultType } from '../../lib/api'
+import {
+  api,
+  getAdminSession,
+  setAdminSession,
+  type Vault as VaultType,
+} from '../../lib/api'
 
 export const Route = createFileRoute('/admin/')({ component: AdminDashboard })
 
 function AdminDashboard() {
   const { address, isConnected } = useAccount()
+  const queryClient = useQueryClient()
+  const { signMessageAsync, isPending: isSigning } = useSignMessage()
+
+  const [adminSession, setAdminSessionState] = useState(
+    () => null as ReturnType<typeof getAdminSession>,
+  )
+  const [authError, setAuthError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setAdminSessionState(getAdminSession())
+  }, [])
+
+  useEffect(() => {
+    if (!adminSession || !address) return
+    if (adminSession.address.toLowerCase() !== address.toLowerCase()) {
+      setAdminSession(null)
+      setAdminSessionState(null)
+    }
+  }, [address, adminSession])
 
   const {
     data: vaultsResponse,
@@ -25,7 +50,7 @@ function AdminDashboard() {
   } = useQuery({
     queryKey: ['admin', 'vaults', address],
     queryFn: () => api.admin.getVaults(address!),
-    enabled: isConnected && !!address,
+    enabled: isConnected && !!address && !!adminSession,
   })
 
   const vaults = vaultsResponse?.data ?? []
@@ -43,6 +68,80 @@ function AdminDashboard() {
               Connect your wallet to manage vaults
             </p>
             <appkit-button />
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (!adminSession) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-slate-900 via-slate-800 to-slate-900">
+        <div className="max-w-4xl mx-auto px-6 py-12">
+          <div className="text-center">
+            <Settings className="w-16 h-16 text-gray-500 mx-auto mb-4" />
+            <h1 className="text-2xl font-bold text-white mb-4">
+              Admin Dashboard
+            </h1>
+            <p className="text-gray-400 mb-6">
+              Sign in with your admin wallet to manage vaults
+            </p>
+            {authError && (
+              <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 mb-6 flex items-center gap-3">
+                <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
+                <p className="text-red-400 text-sm">{authError}</p>
+              </div>
+            )}
+            <button
+              onClick={async () => {
+                if (!address) return
+                setAuthError(null)
+                try {
+                  const nonceResponse = await api.adminAuth.requestNonce(address)
+                  if (!nonceResponse.data) {
+                    throw new Error(
+                      nonceResponse.error || 'Failed to request admin nonce',
+                    )
+                  }
+                  const signature = await signMessageAsync({
+                    message: nonceResponse.data.message,
+                  })
+                  const verifyResponse = await api.adminAuth.verifySignature(
+                    address,
+                    signature,
+                  )
+                  if (!verifyResponse.data) {
+                    throw new Error(
+                      verifyResponse.error || 'Failed to verify signature',
+                    )
+                  }
+                  const session = {
+                    token: verifyResponse.data.token,
+                    address: address.toLowerCase(),
+                  }
+                  setAdminSession(session)
+                  setAdminSessionState(session)
+                  queryClient.invalidateQueries({ queryKey: ['admin'] })
+                } catch (error) {
+                  setAuthError(
+                    error instanceof Error
+                      ? error.message
+                      : 'Failed to sign in',
+                  )
+                }
+              }}
+              disabled={isSigning}
+              className="inline-flex items-center gap-2 px-6 py-3 bg-cyan-500 hover:bg-cyan-600 disabled:bg-cyan-500/50 text-white font-semibold rounded-lg transition-colors"
+            >
+              {isSigning ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  Waiting for signature...
+                </>
+              ) : (
+                'Sign in as Admin'
+              )}
+            </button>
           </div>
         </div>
       </div>

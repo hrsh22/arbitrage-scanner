@@ -21,6 +21,67 @@ async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json()
 }
 
+const ADMIN_SESSION_KEY = 'vault_admin_session'
+
+interface AdminSession {
+  token: string
+  address: string
+}
+
+export function getAdminSession(): AdminSession | null {
+  if (typeof window === 'undefined') return null
+  const raw = sessionStorage.getItem(ADMIN_SESSION_KEY)
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as AdminSession
+  } catch {
+    return null
+  }
+}
+
+export function setAdminSession(session: AdminSession | null): void {
+  if (typeof window === 'undefined') return
+  if (!session) {
+    sessionStorage.removeItem(ADMIN_SESSION_KEY)
+    return
+  }
+  sessionStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify(session))
+}
+
+async function fetchAdminApi<T>(
+  path: string,
+  options?: RequestInit,
+  adminAddress?: string,
+): Promise<T> {
+  const session = getAdminSession()
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(adminAddress ? { 'x-admin-address': adminAddress } : {}),
+      ...(session?.token ? { Authorization: `Bearer ${session.token}` } : {}),
+      ...options?.headers,
+    },
+  })
+
+  if (!response.ok) {
+    // If we get a 401, clear the session so user can re-authenticate
+    if (response.status === 401) {
+      setAdminSession(null)
+      // Force page reload to show login screen
+      if (typeof window !== 'undefined') {
+        window.location.reload()
+      }
+    }
+    const error = await response
+      .json()
+      .catch(() => ({ error: 'Unknown error' }))
+    throw new Error(error.error || `API error: ${response.status}`)
+  }
+
+  return response.json()
+}
+
 export interface Vault {
   id: number
   name: string
@@ -115,6 +176,8 @@ export interface PendingWithdrawal {
   idleUsdcClaim: string
   status: string
   requestedAt: string
+  lastMerkleRoot: string | null
+  currentClaimableUsdc: string | null
 }
 
 export interface ClaimData {
@@ -124,6 +187,17 @@ export interface ClaimData {
   merkleRoot: string
   pendingClaimUsdc: string
   alreadyClaimedUsdc: string
+}
+
+export interface AdminNonceResponse {
+  nonce: string
+  message: string
+  expiresAt: number
+}
+
+export interface AdminVerifyResponse {
+  token: string
+  expiresAt: number
 }
 
 export interface ApiResponse<T> {
@@ -157,7 +231,7 @@ export const api = {
 
   admin: {
     getVaults: (adminAddress: string) =>
-      fetchApi<ApiResponse<Vault[]>>('/admin/vaults', {
+      fetchAdminApi<ApiResponse<Vault[]>>('/admin/vaults', {
         headers: { 'x-admin-address': adminAddress },
       }),
 
@@ -171,18 +245,23 @@ export const api = {
         safeAddress: string
       },
     ) =>
-      fetchApi<ApiResponse<Vault>>('/admin/vaults', {
-        method: 'POST',
-        headers: { 'x-admin-address': adminAddress },
-        body: JSON.stringify(data),
-      }),
+      fetchAdminApi<ApiResponse<Vault>>(
+        '/admin/vaults',
+        {
+          method: 'POST',
+          headers: { 'x-admin-address': adminAddress },
+          body: JSON.stringify(data),
+        },
+        adminAddress,
+      ),
 
     getVault: (adminAddress: string, vaultId: number) =>
-      fetchApi<ApiResponse<{ vault: Vault; state: VaultState }>>(
+      fetchAdminApi<ApiResponse<{ vault: Vault; state: VaultState }>>(
         `/admin/vaults/${vaultId}`,
         {
           headers: { 'x-admin-address': adminAddress },
         },
+        adminAddress,
       ),
 
     updateVault: (
@@ -190,46 +269,69 @@ export const api = {
       vaultId: number,
       data: { name?: string; description?: string; status?: string },
     ) =>
-      fetchApi<ApiResponse<Vault>>(`/admin/vaults/${vaultId}`, {
-        method: 'PATCH',
-        headers: { 'x-admin-address': adminAddress },
-        body: JSON.stringify(data),
-      }),
+      fetchAdminApi<ApiResponse<Vault>>(
+        `/admin/vaults/${vaultId}`,
+        {
+          method: 'PATCH',
+          headers: { 'x-admin-address': adminAddress },
+          body: JSON.stringify(data),
+        },
+        adminAddress,
+      ),
 
     updateNav: (
       adminAddress: string,
       vaultId: number,
       totalAssetsUsdc: string,
     ) =>
-      fetchApi<ApiResponse<{ navPerShare: string }>>(
+      fetchAdminApi<ApiResponse<{ navPerShare: string; txHash: string }>>(
         `/admin/vaults/${vaultId}/nav`,
         {
           method: 'POST',
           headers: { 'x-admin-address': adminAddress },
           body: JSON.stringify({ totalAssetsUsdc }),
         },
+        adminAddress,
       ),
 
     getWithdrawals: (adminAddress: string, vaultId: number) =>
-      fetchApi<ApiResponse<PendingWithdrawal[]>>(
+      fetchAdminApi<ApiResponse<PendingWithdrawal[]>>(
         `/admin/vaults/${vaultId}/withdrawals`,
         {
           headers: { 'x-admin-address': adminAddress },
         },
+        adminAddress,
       ),
 
-    fulfillWithdrawal: (
-      adminAddress: string,
-      vaultId: number,
-      withdrawalId: number,
-    ) =>
-      fetchApi<ApiResponse<WithdrawalRecord>>(
-        `/admin/vaults/${vaultId}/withdrawals/${withdrawalId}/fulfill`,
+    submitClaimRoot: (adminAddress: string, vaultId: number) =>
+      fetchAdminApi<
+        ApiResponse<{
+          root: string
+          requestCount: number
+          txHashes: string[]
+          claims: { requestId: number; onChainRequestId: number; claimableUsdc: string }[]
+        }>
+      >(
+        `/admin/vaults/${vaultId}/submit-claim-root`,
         {
           method: 'POST',
           headers: { 'x-admin-address': adminAddress },
         },
+        adminAddress,
       ),
+  },
+
+  adminAuth: {
+    requestNonce: (address: string) =>
+      fetchApi<ApiResponse<AdminNonceResponse>>('/admin/auth/nonce', {
+        method: 'POST',
+        body: JSON.stringify({ address }),
+      }),
+    verifySignature: (address: string, signature: string) =>
+      fetchApi<ApiResponse<AdminVerifyResponse>>('/admin/auth/verify', {
+        method: 'POST',
+        body: JSON.stringify({ address, signature }),
+      }),
   },
 
   withdrawals: {

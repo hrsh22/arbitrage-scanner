@@ -39,6 +39,7 @@ function DepositPage() {
   const [amount, setAmount] = useState('')
   const [step, setStep] = useState<DepositStep>('input')
   const [error, setError] = useState<string | null>(null)
+  const [shouldAutoDeposit, setShouldAutoDeposit] = useState(false)
 
   const { data: vaultResponse, isLoading: vaultLoading } = useQuery({
     queryKey: ['vault', slug],
@@ -101,11 +102,14 @@ function DepositPage() {
     useWaitForTransactionReceipt({ hash: depositTxHash })
 
   useEffect(() => {
-    if (isApproveConfirmed) {
-      refetchAllowance()
-      setStep('deposit')
+    if (!isApproveConfirmed) return
+    refetchAllowance()
+    setStep('deposit')
+    if (shouldAutoDeposit) {
+      setShouldAutoDeposit(false)
+      executeDeposit()
     }
-  }, [isApproveConfirmed, refetchAllowance])
+  }, [isApproveConfirmed, refetchAllowance, shouldAutoDeposit])
 
   useEffect(() => {
     if (isDepositConfirmed) {
@@ -128,17 +132,18 @@ function DepositPage() {
 
   const handleContinue = () => {
     setError(null)
+    setShouldAutoDeposit(false)
     if (!vaultAddress) {
       setError('Vault contract not configured')
       return
     }
     if (!hasEnoughBalance) {
-      setError('Insufficient USDC balance')
+      setError('Insufficient USDC.e balance')
       return
     }
     if (!meetsMinDeposit) {
       setError(
-        `Minimum deposit is ${formatUnits(minDeposit!, USDC_DECIMALS)} USDC`,
+        `Minimum deposit is ${formatUnits(minDeposit!, USDC_DECIMALS)} USDC.e`,
       )
       return
     }
@@ -147,6 +152,7 @@ function DepositPage() {
       setStep('deposit')
       executeDeposit()
     } else {
+      setShouldAutoDeposit(true)
       setStep('approve')
       executeApprove()
     }
@@ -185,6 +191,7 @@ function DepositPage() {
     setAmount('')
     setStep('input')
     setError(null)
+    setShouldAutoDeposit(false)
   }
 
   if (vaultLoading) {
@@ -238,7 +245,7 @@ function DepositPage() {
           <div className="flex items-center gap-3 mb-6">
             <ArrowDownToLine className="w-8 h-8 text-cyan-400" />
             <div>
-              <h1 className="text-2xl font-bold text-white">Deposit USDC</h1>
+              <h1 className="text-2xl font-bold text-white">Deposit USDC.e</h1>
               <p className="text-gray-400 text-sm">{vault.name}</p>
             </div>
           </div>
@@ -259,8 +266,8 @@ function DepositPage() {
 
           {step === 'approve' && (
             <TransactionStep
-              title="Approve USDC"
-              description="Allow the vault contract to use your USDC"
+              title="Approve USDC.e"
+              description="Allow the vault contract to use your USDC.e"
               isPending={isApproving}
               isConfirming={isApproveConfirming}
               error={error}
@@ -272,7 +279,7 @@ function DepositPage() {
           {step === 'deposit' && (
             <TransactionStep
               title="Deposit to Vault"
-              description="Depositing USDC and receiving vault shares"
+              description="Depositing USDC.e and receiving vault shares"
               isPending={isDepositing}
               isConfirming={isDepositConfirming}
               error={error}
@@ -341,7 +348,7 @@ function InputStep({
     <>
       <div className="mb-6">
         <label className="block text-gray-400 text-sm mb-2">
-          Amount (USDC)
+          Amount (USDC.e)
         </label>
         <div className="relative">
           <input
@@ -360,9 +367,9 @@ function InputStep({
         </div>
         <div className="flex justify-between text-sm mt-2">
           <span className="text-gray-500">
-            Balance: {parseFloat(formattedBalance).toLocaleString()} USDC
+            Balance: {parseFloat(formattedBalance).toLocaleString()} USDC.e
           </span>
-          <span className="text-gray-500">Min: {formattedMin} USDC</span>
+          <span className="text-gray-500">Min: {formattedMin} USDC.e</span>
         </div>
       </div>
 
@@ -488,7 +495,7 @@ function SuccessStep({ amount, shares, txHash, onDone }: SuccessStepProps) {
         Deposit Successful!
       </h3>
       <p className="text-gray-400 mb-6">
-        You deposited {amount} USDC and received{' '}
+        You deposited {amount} USDC.e and received{' '}
         {parseFloat(formattedShares).toLocaleString(undefined, {
           maximumFractionDigits: 4,
         })}{' '}
@@ -532,7 +539,7 @@ function NotConnectedState({ vaultName }: { vaultName: string }) {
         Connect Your Wallet
       </h3>
       <p className="text-gray-400 mb-6">
-        Connect your wallet to deposit USDC into {vaultName}.
+        Connect your wallet to deposit USDC.e into {vaultName}.
       </p>
       <appkit-button />
     </div>

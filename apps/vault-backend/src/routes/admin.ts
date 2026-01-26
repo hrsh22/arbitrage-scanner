@@ -1,13 +1,17 @@
 import { Router, type Request, type Response, type IRouter } from "express";
+import crypto from "crypto";
 import { z } from "zod";
 import { eq, and } from "drizzle-orm";
+import { verifyMessage } from "viem";
 import { db } from "../db/client";
-import { vaults, withdrawalRequests, type Vault, type NewVault } from "../db/schema";
+import { vaults, withdrawalRequests, vaultState, type Vault, type NewVault } from "../db/schema";
 import { vaultService } from "../services/vaultService";
+import { getVaultContract } from "../services/vaultContractService";
+import { buildClaimTree, serializeProof, type ClaimLeaf } from "../services/merkleService";
 import { logger } from "../logger";
 import type { ApiResponse } from "../types";
 import { getTradingService } from "../trading/tradingService";
-import { hasTradingWallet } from "../env";
+import { env, hasTradingWallet } from "../env";
 
 export const adminRoutes: IRouter = Router();
 
@@ -43,17 +47,155 @@ const placeOrderSchema = z.object({
   feeRateBps: z.number().int().min(0).max(1000).optional(),
 });
 
-const adminAuth = (req: Request, res: Response, next: () => void) => {
-  const adminAddress = req.headers["x-admin-address"] as string | undefined;
+const adminNonceSchema = z.object({
+  address: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+});
 
-  if (!adminAddress) {
-    res.status(401).json({ success: false, error: "Admin address header required" });
+const adminVerifySchema = z.object({
+  address: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+  signature: z.string().min(1),
+});
+
+const ADMIN_MESSAGE_PREFIX = "Polymarket Vault Admin Login";
+const NONCE_TTL_MS = 5 * 60 * 1000;
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+
+const adminAllowlist = new Set(
+  env.ADMIN_WALLET_ALLOWLIST.split(",")
+    .map((address) => address.trim().toLowerCase())
+    .filter((address) => address.length > 0),
+);
+
+const pendingNonces = new Map<string, { nonce: string; expiresAt: number }>();
+const activeSessions = new Map<string, { address: string; expiresAt: number }>();
+
+const normalizeAddress = (address: string): string => address.toLowerCase();
+
+const buildAdminMessage = (address: string, nonce: string): string =>
+  `${ADMIN_MESSAGE_PREFIX}\nAddress: ${address}\nNonce: ${nonce}`;
+
+const adminAuth = (req: Request, res: Response, next: () => void) => {
+  if (adminAllowlist.size === 0) {
+    res.status(503).json({ success: false, error: "Admin allowlist not configured" });
     return;
   }
 
-  (req as Request & { adminAddress: string }).adminAddress = adminAddress.toLowerCase();
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    res.status(401).json({ success: false, error: "Authorization token required" });
+    return;
+  }
+
+  const token = authHeader.slice("Bearer ".length).trim();
+  const session = activeSessions.get(token);
+
+  if (!session) {
+    res.status(401).json({ success: false, error: "Invalid or expired session" });
+    return;
+  }
+
+  if (session.expiresAt < Date.now()) {
+    activeSessions.delete(token);
+    res.status(401).json({ success: false, error: "Session expired" });
+    return;
+  }
+
+  if (!adminAllowlist.has(session.address)) {
+    res.status(403).json({ success: false, error: "Admin address not allowed" });
+    return;
+  }
+
+  const headerAddress = req.headers["x-admin-address"] as string | undefined;
+  if (headerAddress && normalizeAddress(headerAddress) !== session.address) {
+    res.status(403).json({ success: false, error: "Admin address mismatch" });
+    return;
+  }
+
+  (req as Request & { adminAddress: string }).adminAddress = session.address;
   next();
 };
+
+adminRoutes.post("/auth/nonce", async (req: Request, res: Response) => {
+  const parsed = adminNonceSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, error: parsed.error.message });
+    return;
+  }
+
+  if (adminAllowlist.size === 0) {
+    res.status(503).json({ success: false, error: "Admin allowlist not configured" });
+    return;
+  }
+
+  const address = normalizeAddress(parsed.data.address);
+  if (!adminAllowlist.has(address)) {
+    res.status(403).json({ success: false, error: "Admin address not allowed" });
+    return;
+  }
+
+  const nonce = crypto.randomBytes(16).toString("hex");
+  const expiresAt = Date.now() + NONCE_TTL_MS;
+  pendingNonces.set(address, { nonce, expiresAt });
+
+  const response: ApiResponse<{ nonce: string; message: string; expiresAt: number }> = {
+    success: true,
+    data: {
+      nonce,
+      message: buildAdminMessage(address, nonce),
+      expiresAt,
+    },
+  };
+  res.json(response);
+});
+
+adminRoutes.post("/auth/verify", async (req: Request, res: Response) => {
+  const parsed = adminVerifySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, error: parsed.error.message });
+    return;
+  }
+
+  if (adminAllowlist.size === 0) {
+    res.status(503).json({ success: false, error: "Admin allowlist not configured" });
+    return;
+  }
+
+  const address = normalizeAddress(parsed.data.address);
+  if (!adminAllowlist.has(address)) {
+    res.status(403).json({ success: false, error: "Admin address not allowed" });
+    return;
+  }
+
+  const nonceEntry = pendingNonces.get(address);
+  if (!nonceEntry || nonceEntry.expiresAt < Date.now()) {
+    res.status(400).json({ success: false, error: "Nonce expired or not found" });
+    return;
+  }
+
+  const message = buildAdminMessage(address, nonceEntry.nonce);
+  const isValid = await verifyMessage({
+    address: address as `0x${string}`,
+    message,
+    signature: parsed.data.signature as `0x${string}`,
+  });
+
+  if (!isValid) {
+    res.status(401).json({ success: false, error: "Invalid signature" });
+    return;
+  }
+
+  pendingNonces.delete(address);
+
+  const token = crypto.randomBytes(32).toString("hex");
+  const expiresAt = Date.now() + SESSION_TTL_MS;
+  activeSessions.set(token, { address, expiresAt });
+
+  const response: ApiResponse<{ token: string; expiresAt: number }> = {
+    success: true,
+    data: { token, expiresAt },
+  };
+  res.json(response);
+});
 
 adminRoutes.get("/vaults", adminAuth, async (req: Request, res: Response) => {
   try {
@@ -210,15 +352,31 @@ adminRoutes.post("/vaults/:id/nav", adminAuth, async (req: Request, res: Respons
       return;
     }
 
+    if (!hasTradingWallet()) {
+      res.status(503).json({ success: false, error: "Trading wallet not configured" });
+      return;
+    }
+
+    if (!vault.contractAddress) {
+      res.status(400).json({ success: false, error: "Vault contract address missing" });
+      return;
+    }
+
+    const totalAssetsValue = parseFloat(parsed.data.totalAssetsUsdc);
+    const totalAssetsOnChain = BigInt(Math.floor(totalAssetsValue * 1e6));
+    const vaultContract = getVaultContract(vault.contractAddress);
+    const { hash } = await vaultContract.updateNav(totalAssetsOnChain);
+
     const updated = await vaultService.updateNav(vaultId, parsed.data.totalAssetsUsdc);
 
     logger.info("Admin updated NAV", {
       vaultId,
       totalAssetsUsdc: parsed.data.totalAssetsUsdc,
       newNavPerShare: updated.navPerShare,
+      txHash: hash,
     });
 
-    res.json({ success: true, data: { navPerShare: updated.navPerShare } });
+    res.json({ success: true, data: { navPerShare: updated.navPerShare, txHash: hash } });
   } catch (error) {
     res.status(500).json({ success: false, error: (error as Error).message });
   }
@@ -257,66 +415,6 @@ adminRoutes.get("/vaults/:id/withdrawals", adminAuth, async (req: Request, res: 
     res.status(500).json({ success: false, error: (error as Error).message });
   }
 });
-
-adminRoutes.post(
-  "/vaults/:id/withdrawals/:withdrawalId/fulfill",
-  adminAuth,
-  async (req: Request, res: Response) => {
-    try {
-      const adminAddress = (req as Request & { adminAddress: string }).adminAddress;
-      const vaultId = parseInt(req.params.id!, 10);
-      const withdrawalId = parseInt(req.params.withdrawalId!, 10);
-
-      if (isNaN(vaultId) || isNaN(withdrawalId)) {
-        res.status(400).json({ success: false, error: "Invalid vault ID or withdrawal ID" });
-        return;
-      }
-
-      const vault = await vaultService.getVaultById(vaultId);
-      if (!vault) {
-        res.status(404).json({ success: false, error: "Vault not found" });
-        return;
-      }
-
-      if (vault.adminAddress !== adminAddress) {
-        res.status(403).json({ success: false, error: "Not authorized to manage this vault" });
-        return;
-      }
-
-      const [withdrawal] = await db
-        .select()
-        .from(withdrawalRequests)
-        .where(
-          and(eq(withdrawalRequests.id, withdrawalId), eq(withdrawalRequests.vaultId, vaultId)),
-        );
-
-      if (!withdrawal) {
-        res.status(404).json({ success: false, error: "Withdrawal request not found" });
-        return;
-      }
-
-      if (withdrawal.status !== "pending") {
-        res.status(400).json({ success: false, error: "Withdrawal is not pending" });
-        return;
-      }
-
-      const [updated] = await db
-        .update(withdrawalRequests)
-        .set({
-          status: "completed",
-          completedAt: new Date(),
-        })
-        .where(eq(withdrawalRequests.id, withdrawalId))
-        .returning();
-
-      logger.info("Withdrawal fulfilled", { vaultId, withdrawalId });
-
-      res.json({ success: true, data: updated });
-    } catch (error) {
-      res.status(500).json({ success: false, error: (error as Error).message });
-    }
-  },
-);
 
 async function getVaultWithAuth(req: Request, res: Response): Promise<Vault | null> {
   const adminAddress = (req as Request & { adminAddress: string }).adminAddress;
@@ -492,6 +590,128 @@ adminRoutes.get(
       res.json({ success: true, data: orderbook });
     } catch (error) {
       logger.error("Failed to get order book", { error: (error as Error).message });
+      res.status(500).json({ success: false, error: (error as Error).message });
+    }
+  },
+);
+
+// Submit claim root for pending withdrawals
+adminRoutes.post(
+  "/vaults/:id/submit-claim-root",
+  adminAuth,
+  async (req: Request, res: Response) => {
+    try {
+      const vault = await getVaultWithAuth(req, res);
+      if (!vault) return;
+
+      // Get all pending withdrawal requests for this vault
+      const pendingRequests = await db
+        .select()
+        .from(withdrawalRequests)
+        .where(
+          and(
+            eq(withdrawalRequests.vaultId, vault.id),
+            eq(withdrawalRequests.status, "pending"),
+          ),
+        );
+
+      if (pendingRequests.length === 0) {
+        res.status(400).json({ success: false, error: "No pending withdrawal requests" });
+        return;
+      }
+
+      // Get vault state to calculate claimable amounts
+      const [state] = await db
+        .select()
+        .from(vaultState)
+        .where(eq(vaultState.vaultId, vault.id));
+
+      if (!state) {
+        res.status(400).json({ success: false, error: "Vault state not found" });
+        return;
+      }
+
+      const totalAssetsUsdc = parseFloat(state.totalAssetsUsdc);
+
+      // Build claim leaves - each request gets their ownership share of total assets
+      const claims: ClaimLeaf[] = [];
+      const claimDetails: { requestId: number; onChainRequestId: number; claimableUsdc: string }[] = [];
+
+      for (const request of pendingRequests) {
+        if (request.onChainRequestId === null) {
+          continue; // Skip requests not linked to on-chain
+        }
+
+        const ownershipPct = parseFloat(request.ownershipPct);
+        const claimableUsdc = totalAssetsUsdc * ownershipPct;
+        const claimableRaw = BigInt(Math.floor(claimableUsdc * 1e6));
+
+        claims.push({
+          requestId: request.onChainRequestId,
+          cumulativeClaimable: claimableRaw,
+        });
+
+        claimDetails.push({
+          requestId: request.id,
+          onChainRequestId: request.onChainRequestId,
+          claimableUsdc: claimableUsdc.toFixed(6),
+        });
+      }
+
+      if (claims.length === 0) {
+        res.status(400).json({ success: false, error: "No valid withdrawal requests to process" });
+        return;
+      }
+
+      // Build Merkle tree
+      const { root, proofs } = buildClaimTree(claims);
+
+      // Submit to contract for each request
+      const vaultContract = getVaultContract(vault.contractAddress);
+      const txHashes: string[] = [];
+
+      for (const claim of claims) {
+        const { hash } = await vaultContract.submitClaimRoot(
+          claim.requestId,
+          root,
+          claim.cumulativeClaimable,
+        );
+        txHashes.push(hash);
+      }
+
+      // Update database with proofs
+      for (const detail of claimDetails) {
+        const proof = proofs.get(detail.onChainRequestId);
+        if (proof) {
+          await db
+            .update(withdrawalRequests)
+            .set({
+              lastMerkleRoot: root,
+              lastMerkleProof: serializeProof(proof),
+              currentClaimableUsdc: detail.claimableUsdc,
+            })
+            .where(eq(withdrawalRequests.id, detail.requestId));
+        }
+      }
+
+      logger.info("Claim root submitted for vault", {
+        vaultId: vault.id,
+        root,
+        requestCount: claims.length,
+        txHashes,
+      });
+
+      res.json({
+        success: true,
+        data: {
+          root,
+          requestCount: claims.length,
+          txHashes,
+          claims: claimDetails,
+        },
+      });
+    } catch (error) {
+      logger.error("Failed to submit claim root", { error: (error as Error).message });
       res.status(500).json({ success: false, error: (error as Error).message });
     }
   },

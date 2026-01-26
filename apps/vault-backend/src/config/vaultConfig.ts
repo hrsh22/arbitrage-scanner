@@ -1,3 +1,5 @@
+import { env } from "../env.js";
+
 export interface VaultConfig {
   withdrawalLockDays: number;
   minDepositUsdc: number;
@@ -15,7 +17,7 @@ const config: VaultConfig = {
    * After this period, all resolved positions + idle USDC become claimable at once.
    * Default: 7 days
    */
-  withdrawalLockDays: 7,
+  withdrawalLockDays: Math.max(0, env.WITHDRAWAL_LOCK_DAYS),
 
   /**
    * Minimum deposit amount in USDC (whole dollars).

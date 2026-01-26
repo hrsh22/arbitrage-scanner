@@ -14,7 +14,8 @@
     "setup-safe": "tsx src/scripts/setupSafe.ts",
     "cron:reconcile-deposits": "tsx src/cron/reconcileDeposits.ts",
     "cron:reconcile-withdrawals": "tsx src/cron/reconcileWithdrawals.ts",
-    "cron:process-withdrawals": "tsx src/cron/processWithdrawals.ts"
+    "cron:process-withdrawals": "tsx src/cron/processWithdrawals.ts",
+    "reset-sync": "tsx src/scripts/resetSyncState.ts"
   },
   "dependencies": {
     "@openzeppelin/merkle-tree": "^1.0.8",

@@ -11,6 +11,7 @@ import {
 import { buildClaimTree, serializeProof, type ClaimLeaf } from "./merkleService.js";
 import { isClaimable, getClaimableAfter } from "../config/vaultConfig.js";
 import { logger } from "../logger.js";
+import { getVaultContract } from "./vaultContractService.js";
 
 export interface WithdrawalSummary {
   requestId: number;
@@ -240,15 +241,69 @@ export class WithdrawalService {
     const claimableAfterDate = getClaimableAfter(request.requestedAt);
     const nowClaimable = isClaimable(request.requestedAt);
 
+    // Check on-chain state if we have an onChainRequestId
+    let status = request.status;
+    let totalClaimedUsdc = request.totalClaimedUsdc ?? "0";
+    let currentClaimableUsdc = nowClaimable ? (request.currentClaimableUsdc ?? "0") : "0";
+
+    if (request.onChainRequestId !== null && request.vaultId) {
+      try {
+        const [vault] = await db
+          .select({ contractAddress: vaults.contractAddress })
+          .from(vaults)
+          .where(eq(vaults.id, request.vaultId));
+
+        if (vault?.contractAddress) {
+          const vaultContract = getVaultContract(vault.contractAddress);
+          const onChainRequest = await vaultContract.getWithdrawalRequest(request.onChainRequestId);
+
+          const onChainClaimed = Number(onChainRequest.claimed) / 1e6;
+          const onChainTotalClaimable = Number(onChainRequest.totalClaimable) / 1e6;
+
+          totalClaimedUsdc = onChainClaimed.toFixed(6);
+          currentClaimableUsdc = onChainTotalClaimable.toFixed(6);
+
+          // If fully claimed on-chain, mark as completed
+          if (onChainTotalClaimable > 0 && onChainClaimed >= onChainTotalClaimable) {
+            status = "completed";
+            // Update DB in background
+            if (request.status !== "completed") {
+              db.update(withdrawalRequests)
+                .set({
+                  status: "completed",
+                  totalClaimedUsdc: totalClaimedUsdc,
+                  completedAt: new Date(),
+                })
+                .where(eq(withdrawalRequests.id, request.id))
+                .then(() => {
+                  logger.info("Withdrawal auto-marked complete from on-chain state", { requestId });
+                })
+                .catch((err) => {
+                  logger.error("Failed to auto-mark withdrawal complete", {
+                    requestId,
+                    error: (err as Error).message,
+                  });
+                });
+            }
+          }
+        }
+      } catch (error) {
+        logger.warn("Failed to fetch on-chain withdrawal state", {
+          requestId,
+          error: (error as Error).message,
+        });
+      }
+    }
+
     return {
       requestId: request.id,
       onChainRequestId: request.onChainRequestId,
-      status: request.status,
+      status,
       sharesLocked: request.sharesLocked,
       ownershipPct: request.ownershipPct,
       idleUsdcClaim: request.idleUsdcClaim,
-      totalClaimedUsdc: request.totalClaimedUsdc ?? "0",
-      currentClaimableUsdc: nowClaimable ? (request.currentClaimableUsdc ?? "0") : "0",
+      totalClaimedUsdc,
+      currentClaimableUsdc,
       pendingPositions,
       resolvedPositions,
       claimableAfter: claimableAfterDate.toISOString(),

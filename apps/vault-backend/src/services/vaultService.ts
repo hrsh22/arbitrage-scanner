@@ -12,6 +12,7 @@ import {
 import { env } from "../env";
 import { logger } from "../logger";
 import type { VaultStatus, PositionRecord } from "../types";
+import { getVaultContract } from "./vaultContractService.js";
 
 export class VaultService {
   async getVaultById(vaultId: number): Promise<Vault | null> {
@@ -69,11 +70,42 @@ export class VaultService {
       .from(vaultPositions)
       .where(eq(vaultPositions.vaultId, vaultId));
 
+    // Read on-chain state for accurate TVL/NAV
+    let totalAssetsUsdc = state.totalAssetsUsdc;
+    let navPerShare = state.navPerShare;
+    let totalShares = state.totalShares;
+
+    if (vault.contractAddress) {
+      try {
+        const vaultContract = getVaultContract(vault.contractAddress);
+        const onChainStats = await vaultContract.getVaultStats();
+
+        // Use on-chain values for accurate display
+        totalAssetsUsdc = (Number(onChainStats.totalAssets) / 1e6).toFixed(6);
+
+        // NAV per share: if 0 on-chain (no shares), default to 1.0 for new deposits
+        const navFloat = Number(onChainStats.navPerShare) / 1e18;
+        navPerShare = navFloat > 0 ? navFloat.toFixed(8) : "1.00000000";
+
+        // Calculate total shares from on-chain supply minus locked shares
+        if (navFloat > 0) {
+          totalShares = (Number(onChainStats.totalAssets) / 1e6 / navFloat).toFixed(8);
+        } else {
+          totalShares = "0.00000000";
+        }
+      } catch (error) {
+        logger.warn("Failed to fetch on-chain vault stats, using database values", {
+          vaultId,
+          error: (error as Error).message,
+        });
+      }
+    }
+
     return {
-      totalShares: state.totalShares,
-      totalAssetsUsdc: state.totalAssetsUsdc,
+      totalShares,
+      totalAssetsUsdc,
       idleUsdc: state.idleUsdc,
-      navPerShare: state.navPerShare,
+      navPerShare,
       lastNavUpdateAt: state.lastNavUpdateAt.toISOString(),
       depositsEnabled: state.depositsEnabled,
       withdrawalsEnabled: state.withdrawalsEnabled,

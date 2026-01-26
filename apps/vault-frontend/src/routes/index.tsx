@@ -37,7 +37,7 @@ function Dashboard() {
             <h1 className="text-4xl font-bold text-white">Prediction Vault</h1>
           </div>
           <p className="text-gray-400 text-lg max-w-2xl mx-auto">
-            Earn yield from automated prediction market trading. Deposit USDC
+            Earn yield from automated prediction market trading. Deposit USDC.e
             and receive shares representing your ownership.
           </p>
         </div>
@@ -102,7 +102,7 @@ function Dashboard() {
             <div>
               <div className="text-cyan-400 font-medium mb-2">1. Deposit</div>
               <p className="text-gray-400">
-                Deposit USDC and receive vault shares at the current NAV. Your
+                Deposit USDC.e and receive vault shares at the current NAV. Your
                 shares represent ownership in the vault's assets.
               </p>
             </div>
@@ -180,7 +180,7 @@ function VaultCard({
           <div>
             <div className="text-gray-400 text-xs uppercase mb-1">NAV</div>
             <div className="text-green-400 font-semibold">
-              ${parseFloat(status.navPerShare).toFixed(4)}
+              ${(parseFloat(status.navPerShare) || 1).toFixed(4)}
             </div>
           </div>
           <div>
