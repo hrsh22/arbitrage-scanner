@@ -2,7 +2,6 @@ import { Router } from "express";
 import type { Request, Response, Router as RouterType } from "express";
 import { z } from "zod";
 import { withdrawalService } from "../services/withdrawalService.js";
-import { deserializeProof } from "../services/merkleService.js";
 import { db } from "../db/client.js";
 import { withdrawalRequests, users, vaults } from "../db/schema.js";
 import { eq, and } from "drizzle-orm";
@@ -12,10 +11,10 @@ import { getVaultContract } from "../services/vaultContractService.js";
 import { reserveService } from "../services/reserveService.js";
 import { decodeEventLog, parseAbiItem } from "viem";
 import {
-  processWithdrawalRequestedEvent,
-  processClaimedEvent,
-  updateLastSyncedBlock as updateWithdrawalLastSyncedBlock,
-  updateLastClaimSyncedBlock,
+  runProcessWithdrawalRequestedEvent,
+  runProcessClaimedEvent,
+  runUpdateLastSyncedBlock as updateWithdrawalLastSyncedBlock,
+  runUpdateLastClaimSyncedBlock,
   type ClaimedEventData,
 } from "../services/withdrawalListener.js";
 
@@ -145,16 +144,7 @@ router.get("/:requestId", async (req: Request, res: Response) => {
       return;
     }
 
-    const [request] = await db
-      .select()
-      .from(withdrawalRequests)
-      .where(eq(withdrawalRequests.id, requestId));
-
-    res.json({
-      ...summary,
-      merkleProof: request?.lastMerkleProof ? deserializeProof(request.lastMerkleProof) : null,
-      merkleRoot: request?.lastMerkleRoot ?? null,
-    });
+    res.json(summary);
   } catch (error) {
     logger.error("Failed to get withdrawal summary", {
       error: (error as Error).message,
@@ -273,7 +263,7 @@ router.post("/ingest-tx", async (req: Request, res: Response) => {
 
       const onChainRequestId = Number(decoded.args.requestId);
 
-      const result = await processWithdrawalRequestedEvent(vaultId, {
+      const result = await runProcessWithdrawalRequestedEvent(vaultId, {
         userAddress: decoded.args.user as string,
         onChainRequestId,
         shares: decoded.args.shares as bigint,
@@ -345,139 +335,107 @@ router.get("/:requestId/claim-data", async (req: Request, res: Response) => {
     }
 
     const vaultContract = getVaultContract(vault.contractAddress);
-    const isV2 = await vaultContract.isV2();
 
-    if (isV2) {
-      const [onChainRequest, vaultStats] = await Promise.all([
-        vaultContract.getWithdrawalRequestV2(request.onChainRequestId),
-        vaultContract.getVaultStatsV2(),
-      ]);
+    const [onChainRequest, vaultStats] = await Promise.all([
+      vaultContract.getWithdrawalRequest(request.onChainRequestId),
+      vaultContract.getVaultStats(),
+    ]);
 
-      const { isLocked } = await withdrawalService.calculateClaimableForRequest(requestId);
-      if (isLocked) {
-        res.status(400).json({ error: "No claim data available yet" });
-        return;
-      }
-
-      // For v2, avoid relying on DB "idleUsdc" snapshots.
-      // Instead, authorize claimable based on how much of total locked assets is currently covered
-      // by USDC in the treasury. If treasuryBalance >= totalLockedAssets, each request can claim
-      // up to its full assetsReserved.
-      const treasuryBalance = await reserveService.getUsdcBalance(vault.safeAddress);
-      const totalLockedAssets = vaultStats.totalLockedAssets;
-
-      let authorizedCumulative = 0n;
-      if (totalLockedAssets > 0n && onChainRequest.assetsReserved > 0n) {
-        const coveredLockedAssets =
-          treasuryBalance < totalLockedAssets ? treasuryBalance : totalLockedAssets;
-        authorizedCumulative =
-          (onChainRequest.assetsReserved * coveredLockedAssets) / totalLockedAssets;
-      }
-
-      // Preserve monotonicity vs what the contract already reports.
-      if (onChainRequest.cumulativeClaimable > authorizedCumulative) {
-        authorizedCumulative = onChainRequest.cumulativeClaimable;
-      }
-
-      const cappedClaimable =
-        authorizedCumulative > onChainRequest.assetsReserved
-          ? onChainRequest.assetsReserved
-          : authorizedCumulative;
-
-      const claimedUsdc = Number(onChainRequest.claimed) / 1e6;
-      const claimableUsdc = Number(cappedClaimable) / 1e6;
-      const pendingClaimUsdc = claimableUsdc - claimedUsdc;
-
-      if (cappedClaimable <= onChainRequest.claimed) {
-        const onChainClaimedUsdc = Number(onChainRequest.claimed) / 1e6;
-        const dbClaimedUsdc = parseFloat(request.totalClaimedUsdc ?? "0");
-        const isFullyClaimed =
-          onChainRequest.claimed >= onChainRequest.assetsReserved &&
-          onChainRequest.assetsReserved > 0n;
-
-        if (
-          onChainClaimedUsdc > dbClaimedUsdc ||
-          (isFullyClaimed && request.status !== "completed")
-        ) {
-          await db
-            .update(withdrawalRequests)
-            .set({
-              totalClaimedUsdc: onChainClaimedUsdc.toFixed(6),
-              status: isFullyClaimed ? "completed" : request.status,
-              completedAt: isFullyClaimed ? new Date() : request.completedAt,
-            })
-            .where(eq(withdrawalRequests.id, requestId));
-
-          logger.info("Synced fully claimed withdrawal from on-chain state", {
-            requestId,
-            onChainClaimedUsdc,
-            dbClaimedUsdc,
-            isFullyClaimed,
-          });
-        }
-
-        res.status(409).json({
-          error:
-            "Nothing to claim. This withdrawal may already be fully claimed (or was just claimed). Refresh and try again.",
-          details: {
-            claimed: onChainRequest.claimed.toString(),
-            cumulativeClaimable: cappedClaimable.toString(),
-            assetsReserved: onChainRequest.assetsReserved.toString(),
-          },
-        });
-        return;
-      }
-
-      if (cappedClaimable > onChainRequest.assetsReserved) {
-        res.status(500).json({
-          error:
-            "Internal error: computed claimable exceeds assetsReserved. Please contact support or try again later.",
-          details: {
-            cumulativeClaimable: cappedClaimable.toString(),
-            assetsReserved: onChainRequest.assetsReserved.toString(),
-          },
-        });
-        return;
-      }
-
-      const deadline = BigInt(Math.floor(Date.now() / 1000) + env.CLAIM_SIG_TTL_SECONDS);
-      const signature = await vaultContract.signClaimV2({
-        user: onChainRequest.user as `0x${string}`,
-        requestId: request.onChainRequestId,
-        cumulativeClaimable: cappedClaimable,
-        deadline,
-      });
-
-      res.json({
-        claimMode: "v2",
-        onChainRequestId: request.onChainRequestId,
-        cumulativeClaimable: cappedClaimable.toString(),
-        deadline: deadline.toString(),
-        signature,
-        pendingClaimUsdc: pendingClaimUsdc.toFixed(6),
-        alreadyClaimedUsdc: claimedUsdc.toFixed(6),
-      });
-      return;
-    }
-
-    if (!request.lastMerkleProof || !request.lastMerkleRoot) {
+    const { isLocked } = await withdrawalService.calculateClaimableForRequest(requestId);
+    if (isLocked) {
       res.status(400).json({ error: "No claim data available yet" });
       return;
     }
 
-    // V1 (Merkle): Fetch on-chain state to get accurate claimed amount
-    const onChainRequest = await vaultContract.getWithdrawalRequest(request.onChainRequestId);
+    const treasuryBalance = await reserveService.getUsdcBalance(vault.safeAddress);
+    const totalLockedAssets = vaultStats.totalLockedAssets;
 
-    const claimableUsdc = Number(onChainRequest.totalClaimable) / 1e6;
+    let authorizedCumulative = 0n;
+    if (totalLockedAssets > 0n && onChainRequest.assetsReserved > 0n) {
+      const coveredLockedAssets =
+        treasuryBalance < totalLockedAssets ? treasuryBalance : totalLockedAssets;
+      authorizedCumulative =
+        (onChainRequest.assetsReserved * coveredLockedAssets) / totalLockedAssets;
+    }
+
+    if (onChainRequest.cumulativeClaimable > authorizedCumulative) {
+      authorizedCumulative = onChainRequest.cumulativeClaimable;
+    }
+
+    const cappedClaimable =
+      authorizedCumulative > onChainRequest.assetsReserved
+        ? onChainRequest.assetsReserved
+        : authorizedCumulative;
+
     const claimedUsdc = Number(onChainRequest.claimed) / 1e6;
+    const claimableUsdc = Number(cappedClaimable) / 1e6;
     const pendingClaimUsdc = claimableUsdc - claimedUsdc;
 
+    if (cappedClaimable <= onChainRequest.claimed) {
+      const onChainClaimedUsdc = Number(onChainRequest.claimed) / 1e6;
+      const dbClaimedUsdc = parseFloat(request.totalClaimedUsdc ?? "0");
+      const isFullyClaimed =
+        onChainRequest.claimed >= onChainRequest.assetsReserved &&
+        onChainRequest.assetsReserved > 0n;
+
+      if (
+        onChainClaimedUsdc > dbClaimedUsdc ||
+        (isFullyClaimed && request.status !== "completed")
+      ) {
+        await db
+          .update(withdrawalRequests)
+          .set({
+            totalClaimedUsdc: onChainClaimedUsdc.toFixed(6),
+            status: isFullyClaimed ? "completed" : request.status,
+            completedAt: isFullyClaimed ? new Date() : request.completedAt,
+          })
+          .where(eq(withdrawalRequests.id, request.id));
+
+        logger.info("Self-healed withdrawal DB from on-chain state (claim-data)", {
+          requestId,
+          onChainClaimed: onChainClaimedUsdc,
+          dbClaimed: dbClaimedUsdc,
+          isFullyClaimed,
+        });
+      }
+
+      res.status(400).json({
+        error:
+          "Nothing to claim. This withdrawal may already be fully claimed (or was just claimed). Refresh and try again.",
+        details: {
+          claimed: onChainRequest.claimed.toString(),
+          cumulativeClaimable: cappedClaimable.toString(),
+          assetsReserved: onChainRequest.assetsReserved.toString(),
+        },
+      });
+      return;
+    }
+
+    if (cappedClaimable > onChainRequest.assetsReserved) {
+      res.status(500).json({
+        error:
+          "Internal error: computed claimable exceeds assetsReserved. Please contact support or try again later.",
+        details: {
+          cumulativeClaimable: cappedClaimable.toString(),
+          assetsReserved: onChainRequest.assetsReserved.toString(),
+        },
+      });
+      return;
+    }
+
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + env.CLAIM_SIG_TTL_SECONDS);
+    const signature = await vaultContract.signClaim({
+      user: onChainRequest.user as `0x${string}`,
+      requestId: request.onChainRequestId,
+      cumulativeClaimable: cappedClaimable,
+      deadline,
+    });
+
     res.json({
-      claimMode: "v1",
       onChainRequestId: request.onChainRequestId,
-      cumulativeClaimable: onChainRequest.totalClaimable.toString(),
-      merkleProof: deserializeProof(request.lastMerkleProof),
-      merkleRoot: request.lastMerkleRoot,
+      cumulativeClaimable: cappedClaimable.toString(),
+      deadline: deadline.toString(),
+      signature,
       pendingClaimUsdc: pendingClaimUsdc.toFixed(6),
       alreadyClaimedUsdc: claimedUsdc.toFixed(6),
     });
@@ -593,7 +551,7 @@ router.post("/:requestId/ingest-claim", async (req: Request, res: Response) => {
         logIndex: Number(BigInt(log.logIndex)),
       };
 
-      const result = await processClaimedEvent(request.vaultId, event);
+      const result = await runProcessClaimedEvent(request.vaultId, event);
       recordedResults.push({
         ...result,
         onChainRequestId: eventOnChainRequestId,
@@ -608,7 +566,7 @@ router.post("/:requestId/ingest-claim", async (req: Request, res: Response) => {
       return;
     }
 
-    await updateLastClaimSyncedBlock(request.vaultId, blockNumber);
+    await runUpdateLastClaimSyncedBlock(request.vaultId, blockNumber);
 
     res.json({ success: true, results: recordedResults, blockNumber });
   } catch (error) {

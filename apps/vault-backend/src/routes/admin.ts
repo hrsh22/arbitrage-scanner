@@ -1,8 +1,6 @@
 import { Router, type Request, type Response, type IRouter } from "express";
-import crypto from "crypto";
 import { z } from "zod";
 import { eq, and } from "drizzle-orm";
-import { verifyMessage } from "viem";
 import { db } from "../db/client";
 import { vaults, withdrawalRequests, type Vault, type NewVault } from "../db/schema";
 import { vaultService } from "../services/vaultService";
@@ -12,6 +10,13 @@ import type { ApiResponse } from "../types";
 import { getTradingService } from "../trading/tradingService";
 import { createSafeWalletService } from "../trading/safeWallet.js";
 import { env, hasTradingWallet, getChainIdForNetwork, isTestnet } from "../env";
+import {
+  adminAuthMiddleware,
+  handleNonceRequest,
+  handleVerifyRequest,
+  handleLogoutRequest,
+  type AdminRequest,
+} from "../lib/auth/admin.js";
 
 export const adminRoutes: IRouter = Router();
 
@@ -56,150 +61,37 @@ const adminVerifySchema = z.object({
   signature: z.string().min(1),
 });
 
-const ADMIN_MESSAGE_PREFIX = "Polymarket Vault Admin Login";
-const NONCE_TTL_MS = 5 * 60 * 1000;
-const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
-
-const adminAllowlist = new Set(
-  env.ADMIN_WALLET_ALLOWLIST.split(",")
-    .map((address) => address.trim().toLowerCase())
-    .filter((address) => address.length > 0),
-);
-
-const pendingNonces = new Map<string, { nonce: string; expiresAt: number }>();
-const activeSessions = new Map<string, { address: string; expiresAt: number }>();
-
-const normalizeAddress = (address: string): string => address.toLowerCase();
-
-const buildAdminMessage = (address: string, nonce: string): string =>
-  `${ADMIN_MESSAGE_PREFIX}\nAddress: ${address}\nNonce: ${nonce}`;
-
-const adminAuth = (req: Request, res: Response, next: () => void) => {
-  if (adminAllowlist.size === 0) {
-    res.status(503).json({ success: false, error: "Admin allowlist not configured" });
-    return;
-  }
-
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    res.status(401).json({ success: false, error: "Authorization token required" });
-    return;
-  }
-
-  const token = authHeader.slice("Bearer ".length).trim();
-  const session = activeSessions.get(token);
-
-  if (!session) {
-    res.status(401).json({ success: false, error: "Invalid or expired session" });
-    return;
-  }
-
-  if (session.expiresAt < Date.now()) {
-    activeSessions.delete(token);
-    res.status(401).json({ success: false, error: "Session expired" });
-    return;
-  }
-
-  if (!adminAllowlist.has(session.address)) {
-    res.status(403).json({ success: false, error: "Admin address not allowed" });
-    return;
-  }
-
-  const headerAddress = req.headers["x-admin-address"] as string | undefined;
-  if (headerAddress && normalizeAddress(headerAddress) !== session.address) {
-    res.status(403).json({ success: false, error: "Admin address mismatch" });
-    return;
-  }
-
-  (req as Request & { adminAddress: string }).adminAddress = session.address;
-  next();
-};
-
-adminRoutes.post("/auth/nonce", async (req: Request, res: Response) => {
+adminRoutes.post("/auth/nonce", (req: Request, res: Response) => {
   const parsed = adminNonceSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ success: false, error: parsed.error.message });
     return;
   }
-
-  if (adminAllowlist.size === 0) {
-    res.status(503).json({ success: false, error: "Admin allowlist not configured" });
-    return;
-  }
-
-  const address = normalizeAddress(parsed.data.address);
-  if (!adminAllowlist.has(address)) {
-    res.status(403).json({ success: false, error: "Admin address not allowed" });
-    return;
-  }
-
-  const nonce = crypto.randomBytes(16).toString("hex");
-  const expiresAt = Date.now() + NONCE_TTL_MS;
-  pendingNonces.set(address, { nonce, expiresAt });
-
-  const response: ApiResponse<{ nonce: string; message: string; expiresAt: number }> = {
-    success: true,
-    data: {
-      nonce,
-      message: buildAdminMessage(address, nonce),
-      expiresAt,
-    },
-  };
-  res.json(response);
+  handleNonceRequest(parsed.data.address, res);
 });
 
-adminRoutes.post("/auth/verify", async (req: Request, res: Response) => {
+adminRoutes.post("/auth/verify", (req: Request, res: Response) => {
   const parsed = adminVerifySchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ success: false, error: parsed.error.message });
     return;
   }
-
-  if (adminAllowlist.size === 0) {
-    res.status(503).json({ success: false, error: "Admin allowlist not configured" });
-    return;
-  }
-
-  const address = normalizeAddress(parsed.data.address);
-  if (!adminAllowlist.has(address)) {
-    res.status(403).json({ success: false, error: "Admin address not allowed" });
-    return;
-  }
-
-  const nonceEntry = pendingNonces.get(address);
-  if (!nonceEntry || nonceEntry.expiresAt < Date.now()) {
-    res.status(400).json({ success: false, error: "Nonce expired or not found" });
-    return;
-  }
-
-  const message = buildAdminMessage(address, nonceEntry.nonce);
-  const isValid = await verifyMessage({
-    address: address as `0x${string}`,
-    message,
-    signature: parsed.data.signature as `0x${string}`,
-  });
-
-  if (!isValid) {
-    res.status(401).json({ success: false, error: "Invalid signature" });
-    return;
-  }
-
-  pendingNonces.delete(address);
-
-  const token = crypto.randomBytes(32).toString("hex");
-  const expiresAt = Date.now() + SESSION_TTL_MS;
-  activeSessions.set(token, { address, expiresAt });
-
-  const response: ApiResponse<{ token: string; expiresAt: number }> = {
-    success: true,
-    data: { token, expiresAt },
-  };
-  res.json(response);
+  handleVerifyRequest(parsed.data.address, parsed.data.signature, res);
 });
 
-adminRoutes.get("/vaults", adminAuth, async (req: Request, res: Response) => {
+adminRoutes.post("/auth/logout", (req: Request, res: Response) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    res.status(401).json({ success: false, error: "Authorization token required" });
+    return;
+  }
+  const token = authHeader.slice("Bearer ".length).trim();
+  handleLogoutRequest(token, res);
+});
+
+adminRoutes.get("/vaults", adminAuthMiddleware, async (req: Request, res: Response) => {
   try {
-    const adminAddress = (req as Request & { adminAddress: string }).adminAddress;
+    const adminAddress = (req as AdminRequest).adminAddress;
     const adminVaults = await vaultService.getVaultsByAdmin(adminAddress);
 
     const response: ApiResponse<Vault[]> = { success: true, data: adminVaults };
@@ -209,7 +101,7 @@ adminRoutes.get("/vaults", adminAuth, async (req: Request, res: Response) => {
   }
 });
 
-adminRoutes.post("/vaults", adminAuth, async (req: Request, res: Response) => {
+adminRoutes.post("/vaults", adminAuthMiddleware, async (req: Request, res: Response) => {
   try {
     const adminAddress = (req as Request & { adminAddress: string }).adminAddress;
     const parsed = createVaultSchema.safeParse(req.body);
@@ -253,7 +145,7 @@ adminRoutes.post("/vaults", adminAuth, async (req: Request, res: Response) => {
   }
 });
 
-adminRoutes.get("/vaults/:id", adminAuth, async (req: Request, res: Response) => {
+adminRoutes.get("/vaults/:id", adminAuthMiddleware, async (req: Request, res: Response) => {
   try {
     const adminAddress = (req as Request & { adminAddress: string }).adminAddress;
     const vaultId = parseInt(req.params.id!, 10);
@@ -282,7 +174,7 @@ adminRoutes.get("/vaults/:id", adminAuth, async (req: Request, res: Response) =>
   }
 });
 
-adminRoutes.patch("/vaults/:id", adminAuth, async (req: Request, res: Response) => {
+adminRoutes.patch("/vaults/:id", adminAuthMiddleware, async (req: Request, res: Response) => {
   try {
     const adminAddress = (req as Request & { adminAddress: string }).adminAddress;
     const vaultId = parseInt(req.params.id!, 10);
@@ -326,7 +218,7 @@ adminRoutes.patch("/vaults/:id", adminAuth, async (req: Request, res: Response) 
   }
 });
 
-adminRoutes.post("/vaults/:id/nav", adminAuth, async (req: Request, res: Response) => {
+adminRoutes.post("/vaults/:id/nav", adminAuthMiddleware, async (req: Request, res: Response) => {
   try {
     const adminAddress = (req as Request & { adminAddress: string }).adminAddress;
     const vaultId = parseInt(req.params.id!, 10);
@@ -383,121 +275,133 @@ adminRoutes.post("/vaults/:id/nav", adminAuth, async (req: Request, res: Respons
   }
 });
 
-adminRoutes.get("/vaults/:id/withdrawals", adminAuth, async (req: Request, res: Response) => {
-  try {
-    const adminAddress = (req as Request & { adminAddress: string }).adminAddress;
-    const vaultId = parseInt(req.params.id!, 10);
+adminRoutes.get(
+  "/vaults/:id/withdrawals",
+  adminAuthMiddleware,
+  async (req: Request, res: Response) => {
+    try {
+      const adminAddress = (req as Request & { adminAddress: string }).adminAddress;
+      const vaultId = parseInt(req.params.id!, 10);
 
-    if (isNaN(vaultId)) {
-      res.status(400).json({ success: false, error: "Invalid vault ID" });
-      return;
+      if (isNaN(vaultId)) {
+        res.status(400).json({ success: false, error: "Invalid vault ID" });
+        return;
+      }
+
+      const vault = await vaultService.getVaultById(vaultId);
+      if (!vault) {
+        res.status(404).json({ success: false, error: "Vault not found" });
+        return;
+      }
+
+      if (vault.adminAddress !== adminAddress) {
+        res.status(403).json({ success: false, error: "Not authorized to manage this vault" });
+        return;
+      }
+
+      const pending = await db
+        .select()
+        .from(withdrawalRequests)
+        .where(
+          and(eq(withdrawalRequests.vaultId, vaultId), eq(withdrawalRequests.status, "pending")),
+        );
+
+      res.json({ success: true, data: pending });
+    } catch (error) {
+      res.status(500).json({ success: false, error: (error as Error).message });
     }
+  },
+);
 
-    const vault = await vaultService.getVaultById(vaultId);
-    if (!vault) {
-      res.status(404).json({ success: false, error: "Vault not found" });
-      return;
+adminRoutes.get(
+  "/vaults/:id/setup-status",
+  adminAuthMiddleware,
+  async (req: Request, res: Response) => {
+    try {
+      const adminAddress = (req as Request & { adminAddress: string }).adminAddress;
+      const vaultId = parseInt(req.params.id!, 10);
+
+      if (isNaN(vaultId)) {
+        res.status(400).json({ success: false, error: "Invalid vault ID" });
+        return;
+      }
+
+      const vault = await vaultService.getVaultById(vaultId);
+      if (!vault) {
+        res.status(404).json({ success: false, error: "Vault not found" });
+        return;
+      }
+
+      if (vault.adminAddress !== adminAddress) {
+        res.status(403).json({ success: false, error: "Not authorized to manage this vault" });
+        return;
+      }
+
+      if (!hasTradingWallet()) {
+        res.status(503).json({ success: false, error: "Trading wallet not configured" });
+        return;
+      }
+
+      const safeWallet = createSafeWalletService(vault.safeAddress);
+      const setupStatus = await safeWallet.getSetupStatus(vault.contractAddress);
+
+      res.json({ success: true, data: setupStatus });
+    } catch (error) {
+      logger.error("Failed to get setup status", { error: (error as Error).message });
+      res.status(500).json({ success: false, error: (error as Error).message });
     }
+  },
+);
 
-    if (vault.adminAddress !== adminAddress) {
-      res.status(403).json({ success: false, error: "Not authorized to manage this vault" });
-      return;
+adminRoutes.post(
+  "/vaults/:id/approve-vault",
+  adminAuthMiddleware,
+  async (req: Request, res: Response) => {
+    try {
+      const adminAddress = (req as Request & { adminAddress: string }).adminAddress;
+      const vaultId = parseInt(req.params.id!, 10);
+
+      if (isNaN(vaultId)) {
+        res.status(400).json({ success: false, error: "Invalid vault ID" });
+        return;
+      }
+
+      const vault = await vaultService.getVaultById(vaultId);
+      if (!vault) {
+        res.status(404).json({ success: false, error: "Vault not found" });
+        return;
+      }
+
+      if (vault.adminAddress !== adminAddress) {
+        res.status(403).json({ success: false, error: "Not authorized to manage this vault" });
+        return;
+      }
+
+      if (!hasTradingWallet()) {
+        res.status(503).json({ success: false, error: "Trading wallet not configured" });
+        return;
+      }
+
+      const safeWallet = createSafeWalletService(vault.safeAddress);
+      const txHash = await safeWallet.approveUsdcForSpender(vault.contractAddress);
+
+      logger.info("Approved USDC for vault contract via admin API", {
+        vaultId,
+        contractAddress: vault.contractAddress,
+        txHash,
+      });
+
+      res.json({ success: true, data: { txHash } });
+    } catch (error) {
+      logger.error("Failed to approve vault", { error: (error as Error).message });
+      res.status(500).json({ success: false, error: (error as Error).message });
     }
-
-    const pending = await db
-      .select()
-      .from(withdrawalRequests)
-      .where(
-        and(eq(withdrawalRequests.vaultId, vaultId), eq(withdrawalRequests.status, "pending")),
-      );
-
-    res.json({ success: true, data: pending });
-  } catch (error) {
-    res.status(500).json({ success: false, error: (error as Error).message });
-  }
-});
-
-adminRoutes.get("/vaults/:id/setup-status", adminAuth, async (req: Request, res: Response) => {
-  try {
-    const adminAddress = (req as Request & { adminAddress: string }).adminAddress;
-    const vaultId = parseInt(req.params.id!, 10);
-
-    if (isNaN(vaultId)) {
-      res.status(400).json({ success: false, error: "Invalid vault ID" });
-      return;
-    }
-
-    const vault = await vaultService.getVaultById(vaultId);
-    if (!vault) {
-      res.status(404).json({ success: false, error: "Vault not found" });
-      return;
-    }
-
-    if (vault.adminAddress !== adminAddress) {
-      res.status(403).json({ success: false, error: "Not authorized to manage this vault" });
-      return;
-    }
-
-    if (!hasTradingWallet()) {
-      res.status(503).json({ success: false, error: "Trading wallet not configured" });
-      return;
-    }
-
-    const safeWallet = createSafeWalletService(vault.safeAddress);
-    const setupStatus = await safeWallet.getSetupStatus(vault.contractAddress);
-
-    res.json({ success: true, data: setupStatus });
-  } catch (error) {
-    logger.error("Failed to get setup status", { error: (error as Error).message });
-    res.status(500).json({ success: false, error: (error as Error).message });
-  }
-});
-
-adminRoutes.post("/vaults/:id/approve-vault", adminAuth, async (req: Request, res: Response) => {
-  try {
-    const adminAddress = (req as Request & { adminAddress: string }).adminAddress;
-    const vaultId = parseInt(req.params.id!, 10);
-
-    if (isNaN(vaultId)) {
-      res.status(400).json({ success: false, error: "Invalid vault ID" });
-      return;
-    }
-
-    const vault = await vaultService.getVaultById(vaultId);
-    if (!vault) {
-      res.status(404).json({ success: false, error: "Vault not found" });
-      return;
-    }
-
-    if (vault.adminAddress !== adminAddress) {
-      res.status(403).json({ success: false, error: "Not authorized to manage this vault" });
-      return;
-    }
-
-    if (!hasTradingWallet()) {
-      res.status(503).json({ success: false, error: "Trading wallet not configured" });
-      return;
-    }
-
-    const safeWallet = createSafeWalletService(vault.safeAddress);
-    const txHash = await safeWallet.approveUsdcForSpender(vault.contractAddress);
-
-    logger.info("Approved USDC for vault contract via admin API", {
-      vaultId,
-      contractAddress: vault.contractAddress,
-      txHash,
-    });
-
-    res.json({ success: true, data: { txHash } });
-  } catch (error) {
-    logger.error("Failed to approve vault", { error: (error as Error).message });
-    res.status(500).json({ success: false, error: (error as Error).message });
-  }
-});
+  },
+);
 
 adminRoutes.post(
   "/vaults/:id/approve-polymarket",
-  adminAuth,
+  adminAuthMiddleware,
   async (req: Request, res: Response) => {
     try {
       if (isTestnet()) {
@@ -577,7 +481,7 @@ async function getVaultWithAuth(req: Request, res: Response): Promise<Vault | nu
   return vault;
 }
 
-adminRoutes.get("/vaults/:id/orders", adminAuth, async (req: Request, res: Response) => {
+adminRoutes.get("/vaults/:id/orders", adminAuthMiddleware, async (req: Request, res: Response) => {
   try {
     const vault = await getVaultWithAuth(req, res);
     if (!vault) return;
@@ -592,7 +496,7 @@ adminRoutes.get("/vaults/:id/orders", adminAuth, async (req: Request, res: Respo
   }
 });
 
-adminRoutes.post("/vaults/:id/orders", adminAuth, async (req: Request, res: Response) => {
+adminRoutes.post("/vaults/:id/orders", adminAuthMiddleware, async (req: Request, res: Response) => {
   try {
     const vault = await getVaultWithAuth(req, res);
     if (!vault) return;
@@ -630,7 +534,7 @@ adminRoutes.post("/vaults/:id/orders", adminAuth, async (req: Request, res: Resp
 
 adminRoutes.delete(
   "/vaults/:id/orders/:orderId",
-  adminAuth,
+  adminAuthMiddleware,
   async (req: Request, res: Response) => {
     try {
       const vault = await getVaultWithAuth(req, res);
@@ -658,54 +562,62 @@ adminRoutes.delete(
   },
 );
 
-adminRoutes.delete("/vaults/:id/orders", adminAuth, async (req: Request, res: Response) => {
-  try {
-    const vault = await getVaultWithAuth(req, res);
-    if (!vault) return;
+adminRoutes.delete(
+  "/vaults/:id/orders",
+  adminAuthMiddleware,
+  async (req: Request, res: Response) => {
+    try {
+      const vault = await getVaultWithAuth(req, res);
+      if (!vault) return;
 
-    const tradingService = getTradingService(vault.safeAddress);
-    const success = await tradingService.cancelAllOrders();
+      const tradingService = getTradingService(vault.safeAddress);
+      const success = await tradingService.cancelAllOrders();
 
-    if (success) {
-      logger.info("All orders cancelled via admin API", { vaultId: vault.id });
-      res.json({ success: true, data: { cancelledAll: true } });
-    } else {
-      res.status(400).json({ success: false, error: "Failed to cancel orders" });
+      if (success) {
+        logger.info("All orders cancelled via admin API", { vaultId: vault.id });
+        res.json({ success: true, data: { cancelledAll: true } });
+      } else {
+        res.status(400).json({ success: false, error: "Failed to cancel orders" });
+      }
+    } catch (error) {
+      logger.error("Failed to cancel all orders", { error: (error as Error).message });
+      res.status(500).json({ success: false, error: (error as Error).message });
     }
-  } catch (error) {
-    logger.error("Failed to cancel all orders", { error: (error as Error).message });
-    res.status(500).json({ success: false, error: (error as Error).message });
-  }
-});
+  },
+);
 
-adminRoutes.get("/vaults/:id/market/:tokenId", adminAuth, async (req: Request, res: Response) => {
-  try {
-    const vault = await getVaultWithAuth(req, res);
-    if (!vault) return;
+adminRoutes.get(
+  "/vaults/:id/market/:tokenId",
+  adminAuthMiddleware,
+  async (req: Request, res: Response) => {
+    try {
+      const vault = await getVaultWithAuth(req, res);
+      if (!vault) return;
 
-    const { tokenId } = req.params;
-    if (!tokenId) {
-      res.status(400).json({ success: false, error: "Token ID required" });
-      return;
+      const { tokenId } = req.params;
+      if (!tokenId) {
+        res.status(400).json({ success: false, error: "Token ID required" });
+        return;
+      }
+
+      const tradingService = getTradingService(vault.safeAddress);
+      const price = await tradingService.getMarketPrice(tokenId);
+
+      if (price) {
+        res.json({ success: true, data: price });
+      } else {
+        res.status(404).json({ success: false, error: "Could not fetch market price" });
+      }
+    } catch (error) {
+      logger.error("Failed to get market price", { error: (error as Error).message });
+      res.status(500).json({ success: false, error: (error as Error).message });
     }
-
-    const tradingService = getTradingService(vault.safeAddress);
-    const price = await tradingService.getMarketPrice(tokenId);
-
-    if (price) {
-      res.json({ success: true, data: price });
-    } else {
-      res.status(404).json({ success: false, error: "Could not fetch market price" });
-    }
-  } catch (error) {
-    logger.error("Failed to get market price", { error: (error as Error).message });
-    res.status(500).json({ success: false, error: (error as Error).message });
-  }
-});
+  },
+);
 
 adminRoutes.get(
   "/vaults/:id/orderbook/:tokenId",
-  adminAuth,
+  adminAuthMiddleware,
   async (req: Request, res: Response) => {
     try {
       const vault = await getVaultWithAuth(req, res);

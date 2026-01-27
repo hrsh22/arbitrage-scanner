@@ -4,15 +4,15 @@ import { eq } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { vaults } from "../db/schema.js";
 import {
-  processDepositEvent,
-  updateLastSyncedBlock as updateDepositLastSyncedBlock,
+  runProcessDepositEvent,
+  runUpdateLastSyncedBlock as updateDepositLastSyncedBlock,
   type DepositEventData,
 } from "../services/depositListener.js";
 import {
-  processWithdrawalRequestedEvent,
-  processClaimedEvent,
-  updateLastSyncedBlock as updateWithdrawalLastSyncedBlock,
-  updateLastClaimSyncedBlock as updateClaimedLastSyncedBlock,
+  runProcessWithdrawalRequestedEvent,
+  runProcessClaimedEvent,
+  runUpdateLastSyncedBlock as updateWithdrawalLastSyncedBlock,
+  runUpdateLastClaimSyncedBlock as updateClaimedLastSyncedBlock,
   type WithdrawalRequestedEventData,
   type ClaimedEventData,
 } from "../services/withdrawalListener.js";
@@ -207,7 +207,7 @@ webhookRoutes.post("/alchemy/deposit", async (req: Request, res: Response) => {
     }
 
     try {
-      const result = await processDepositEvent(vault.id, depositEvent);
+      const result = await runProcessDepositEvent(vault.id, depositEvent);
       if (result.recorded) {
         processedCount++;
       }
@@ -286,7 +286,7 @@ webhookRoutes.post("/alchemy/withdrawal-requested", async (req: Request, res: Re
     if (!event) continue;
 
     try {
-      const result = await processWithdrawalRequestedEvent(vault.id, event);
+      const result = await runProcessWithdrawalRequestedEvent(vault.id, event);
       if (result.recorded) {
         processedCount++;
       }
@@ -363,7 +363,7 @@ webhookRoutes.post("/alchemy/claimed", async (req: Request, res: Response) => {
     if (!event) continue;
 
     try {
-      const result = await processClaimedEvent(vault.id, event);
+      const result = await runProcessClaimedEvent(vault.id, event);
       if (result.recorded) {
         processedCount++;
       }

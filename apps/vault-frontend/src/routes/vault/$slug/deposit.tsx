@@ -130,12 +130,21 @@ function DepositPage() {
   }, [isApproveConfirmed, refetchAllowance, shouldAutoDeposit])
 
   useEffect(() => {
-    if (isDepositConfirmed) {
-      queryClient.invalidateQueries({ queryKey: ['vault', slug] })
-      queryClient.invalidateQueries({ queryKey: ['user', slug] })
-      setStep('success')
+    if (isDepositConfirmed && depositTxHash) {
+      // Ingest the deposit transaction to sync backend DB immediately
+      api.deposits
+        .ingest({ vaultSlug: slug, txHash: depositTxHash })
+        .catch((err) => {
+          // Non-blocking: self-healing will catch it if this fails
+          console.warn('Deposit ingest failed (will self-heal):', err)
+        })
+        .finally(() => {
+          queryClient.invalidateQueries({ queryKey: ['vault', slug] })
+          queryClient.invalidateQueries({ queryKey: ['user', slug] })
+          setStep('success')
+        })
     }
-  }, [isDepositConfirmed, queryClient, slug])
+  }, [isDepositConfirmed, depositTxHash, queryClient, slug])
 
   useEffect(() => {
     if (approveError) setError(approveError.message)

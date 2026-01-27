@@ -408,4 +408,24 @@ export const api = {
         body: JSON.stringify({ txHash }),
       }),
   },
+
+  deposits: {
+    ingest: (data: { vaultSlug: string; txHash: string }) =>
+      fetchApi<{
+        success: boolean
+        alreadyProcessed?: boolean
+        depositId?: number
+        results?: Array<{
+          recorded: boolean
+          reason?: string
+          userAddress?: string
+          amountUsdc?: string
+          sharesReceived?: string
+        }>
+        blockNumber?: number
+      }>('/deposits/ingest', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+  },
 }

@@ -96,19 +96,13 @@ export class VaultService {
     if (vault.contractAddress) {
       try {
         const vaultContract = getVaultContract(vault.contractAddress);
-        const isV2 = await vaultContract.isV2();
-        const onChainStats = isV2
-          ? await vaultContract.getVaultStatsV2()
-          : await vaultContract.getVaultStats();
+        const onChainStats = await vaultContract.getVaultStats();
 
-        // Use on-chain values for accurate display
         totalAssetsUsdc = (Number(onChainStats.totalAssets) / 1e6).toFixed(6);
 
-        // NAV per share: if 0 on-chain (no shares), default to 1.0 for new deposits
         const navFloat = Number(onChainStats.navPerShare) / 1e6;
         navPerShare = navFloat > 0 ? navFloat.toFixed(8) : "1.00000000";
 
-        // Calculate total shares from on-chain values
         if (navFloat > 0) {
           totalShares = (Number(onChainStats.totalAssets) / 1e6 / navFloat).toFixed(8);
         } else {

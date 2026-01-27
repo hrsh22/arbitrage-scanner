@@ -1,8 +1,8 @@
+import { Effect } from "effect";
 import {
   createPublicClient,
   createWalletClient,
   http,
-  encodeFunctionData,
   type Hex,
   keccak256,
   encodePacked,
@@ -11,78 +11,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { env, getRpcUrl, getChainIdForNetwork } from "../env.js";
 import { getViemChain } from "./chain/chainUtils.js";
 import { logger } from "../logger.js";
-
-const PREDICTION_VAULT_ABI = [
-  {
-    name: "submitClaimRoot",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "requestId", type: "uint256" },
-      { name: "root", type: "bytes32" },
-      { name: "totalClaimable", type: "uint256" },
-    ],
-    outputs: [],
-  },
-  {
-    name: "updateNav",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "newTotalAssets", type: "uint256" }],
-    outputs: [],
-  },
-  {
-    name: "withdrawalRequests",
-    type: "function",
-    stateMutability: "view",
-    inputs: [{ name: "requestId", type: "uint256" }],
-    outputs: [
-      { name: "user", type: "address" },
-      { name: "shares", type: "uint256" },
-      { name: "ownershipBps", type: "uint256" },
-      { name: "assetsReserved", type: "uint256" },
-      { name: "requestedAt", type: "uint256" },
-      { name: "totalClaimable", type: "uint256" },
-      { name: "claimed", type: "uint256" },
-      { name: "finalized", type: "bool" },
-    ],
-  },
-  {
-    name: "claimRoots",
-    type: "function",
-    stateMutability: "view",
-    inputs: [{ name: "requestId", type: "uint256" }],
-    outputs: [{ name: "", type: "bytes32" }],
-  },
-  {
-    name: "navPerShare",
-    type: "function",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    name: "totalAssets",
-    type: "function",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    name: "totalLockedShares",
-    type: "function",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    name: "totalLockedAssets",
-    type: "function",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-] as const;
+import { ContractError, WalletNotConfiguredError } from "../lib/errors/index.js";
 
 const PREDICTION_VAULT_V2_ABI = [
   {
@@ -106,6 +35,13 @@ const PREDICTION_VAULT_V2_ABI = [
     outputs: [],
   },
   {
+    name: "updateNav",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "newTotalAssets", type: "uint256" }],
+    outputs: [],
+  },
+  {
     name: "withdrawalRequests",
     type: "function",
     stateMutability: "view",
@@ -118,13 +54,6 @@ const PREDICTION_VAULT_V2_ABI = [
       { name: "claimed", type: "uint256" },
       { name: "requestedAt", type: "uint256" },
     ],
-  },
-  {
-    name: "VERSION",
-    type: "function",
-    stateMutability: "pure",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
   },
   {
     name: "navPerShare",
@@ -147,7 +76,29 @@ const PREDICTION_VAULT_V2_ABI = [
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],
   },
+  {
+    name: "balanceOf",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
 ] as const;
+
+export interface WithdrawalRequestData {
+  user: string;
+  shares: bigint;
+  assetsReserved: bigint;
+  cumulativeClaimable: bigint;
+  claimed: bigint;
+  requestedAt: bigint;
+}
+
+export interface VaultStats {
+  totalAssets: bigint;
+  totalLockedAssets: bigint;
+  navPerShare: bigint;
+}
 
 export class VaultContractService {
   private contractAddress: Hex;
@@ -179,49 +130,19 @@ export class VaultContractService {
     }
   }
 
-  async submitClaimRoot(
-    requestId: number,
-    root: `0x${string}`,
-    totalClaimable: bigint,
-  ): Promise<{ hash: string; success: boolean }> {
+  private requireWallet(): void {
     if (!this.walletClient) {
       throw new Error("Wallet not configured - TRADING_WALLET_PRIVATE_KEY required");
-    }
-
-    try {
-      const hash = await this.walletClient.writeContract({
-        address: this.contractAddress,
-        abi: PREDICTION_VAULT_ABI,
-        functionName: "submitClaimRoot",
-        args: [BigInt(requestId), root, totalClaimable],
-      });
-
-      logger.info("Claim root submitted to contract", {
-        requestId,
-        root,
-        totalClaimable: totalClaimable.toString(),
-        hash,
-      });
-
-      return { hash, success: true };
-    } catch (error) {
-      logger.error("Failed to submit claim root", {
-        requestId,
-        error: (error as Error).message,
-      });
-      throw error;
     }
   }
 
   async updateNav(newTotalAssets: bigint): Promise<{ hash: string; success: boolean }> {
-    if (!this.walletClient) {
-      throw new Error("Wallet not configured - TRADING_WALLET_PRIVATE_KEY required");
-    }
+    this.requireWallet();
 
     try {
-      const hash = await this.walletClient.writeContract({
+      const hash = await this.walletClient!.writeContract({
         address: this.contractAddress,
-        abi: PREDICTION_VAULT_ABI,
+        abi: PREDICTION_VAULT_V2_ABI,
         functionName: "updateNav",
         args: [newTotalAssets],
       });
@@ -244,9 +165,7 @@ export class VaultContractService {
     requestIds: number[],
     newCumulativeClaimables: bigint[],
   ): Promise<{ hash: string; success: boolean }> {
-    if (!this.walletClient) {
-      throw new Error("Wallet not configured - TRADING_WALLET_PRIVATE_KEY required");
-    }
+    this.requireWallet();
 
     if (requestIds.length !== newCumulativeClaimables.length) {
       throw new Error("requestIds and newCumulativeClaimables length mismatch");
@@ -255,7 +174,7 @@ export class VaultContractService {
     const requestIdsBigInt = requestIds.map((id) => BigInt(id));
 
     try {
-      const hash = await this.walletClient.writeContract({
+      const hash = await this.walletClient!.writeContract({
         address: this.contractAddress,
         abi: PREDICTION_VAULT_V2_ABI,
         functionName: "setCumulativeClaimableBatch",
@@ -276,27 +195,7 @@ export class VaultContractService {
     }
   }
 
-  async isV2(): Promise<boolean> {
-    try {
-      await this.publicClient.readContract({
-        address: this.contractAddress,
-        abi: PREDICTION_VAULT_V2_ABI,
-        functionName: "VERSION",
-      });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  async getWithdrawalRequestV2(requestId: number): Promise<{
-    user: string;
-    shares: bigint;
-    assetsReserved: bigint;
-    cumulativeClaimable: bigint;
-    claimed: bigint;
-    requestedAt: bigint;
-  }> {
+  async getWithdrawalRequest(requestId: number): Promise<WithdrawalRequestData> {
     const result = await this.publicClient.readContract({
       address: this.contractAddress,
       abi: PREDICTION_VAULT_V2_ABI,
@@ -314,48 +213,10 @@ export class VaultContractService {
     };
   }
 
-  async getWithdrawalRequest(requestId: number): Promise<{
-    user: string;
-    shares: bigint;
-    ownershipBps: bigint;
-    assetsReserved: bigint;
-    requestedAt: bigint;
-    totalClaimable: bigint;
-    claimed: bigint;
-    finalized: boolean;
-  }> {
-    const result = await this.publicClient.readContract({
-      address: this.contractAddress,
-      abi: PREDICTION_VAULT_ABI,
-      functionName: "withdrawalRequests",
-      args: [BigInt(requestId)],
-    });
-
-    return {
-      user: result[0],
-      shares: result[1],
-      ownershipBps: result[2],
-      assetsReserved: result[3],
-      requestedAt: result[4],
-      totalClaimable: result[5],
-      claimed: result[6],
-      finalized: result[7],
-    };
-  }
-
-  async getClaimRoot(requestId: number): Promise<`0x${string}`> {
-    return await this.publicClient.readContract({
-      address: this.contractAddress,
-      abi: PREDICTION_VAULT_ABI,
-      functionName: "claimRoots",
-      args: [BigInt(requestId)],
-    });
-  }
-
   async getNavPerShare(): Promise<bigint> {
     return await this.publicClient.readContract({
       address: this.contractAddress,
-      abi: PREDICTION_VAULT_ABI,
+      abi: PREDICTION_VAULT_V2_ABI,
       functionName: "navPerShare",
     });
   }
@@ -363,48 +224,12 @@ export class VaultContractService {
   async getTotalAssets(): Promise<bigint> {
     return await this.publicClient.readContract({
       address: this.contractAddress,
-      abi: PREDICTION_VAULT_ABI,
+      abi: PREDICTION_VAULT_V2_ABI,
       functionName: "totalAssets",
     });
   }
 
-  async getVaultStats(): Promise<{
-    totalAssets: bigint;
-    totalLockedShares: bigint;
-    totalLockedAssets: bigint;
-    navPerShare: bigint;
-  }> {
-    const [totalAssets, totalLockedShares, totalLockedAssets, navPerShare] = await Promise.all([
-      this.publicClient.readContract({
-        address: this.contractAddress,
-        abi: PREDICTION_VAULT_ABI,
-        functionName: "totalAssets",
-      }),
-      this.publicClient.readContract({
-        address: this.contractAddress,
-        abi: PREDICTION_VAULT_ABI,
-        functionName: "totalLockedShares",
-      }),
-      this.publicClient.readContract({
-        address: this.contractAddress,
-        abi: PREDICTION_VAULT_ABI,
-        functionName: "totalLockedAssets",
-      }),
-      this.publicClient.readContract({
-        address: this.contractAddress,
-        abi: PREDICTION_VAULT_ABI,
-        functionName: "navPerShare",
-      }),
-    ]);
-
-    return { totalAssets, totalLockedShares, totalLockedAssets, navPerShare };
-  }
-
-  async getVaultStatsV2(): Promise<{
-    totalAssets: bigint;
-    totalLockedAssets: bigint;
-    navPerShare: bigint;
-  }> {
+  async getVaultStats(): Promise<VaultStats> {
     const [totalAssets, totalLockedAssets, navPerShare] = await Promise.all([
       this.publicClient.readContract({
         address: this.contractAddress,
@@ -426,7 +251,16 @@ export class VaultContractService {
     return { totalAssets, totalLockedAssets, navPerShare };
   }
 
-  async signClaimV2(args: {
+  async balanceOf(account: Hex): Promise<bigint> {
+    return await this.publicClient.readContract({
+      address: this.contractAddress,
+      abi: PREDICTION_VAULT_V2_ABI,
+      functionName: "balanceOf",
+      args: [account],
+    });
+  }
+
+  async signClaim(args: {
     user: `0x${string}`;
     requestId: number;
     cumulativeClaimable: bigint;
@@ -463,11 +297,104 @@ export class VaultContractService {
     return await this.account.signMessage({ message: { raw: messageHash } });
   }
 
-  encodeSubmitClaimRoot(requestId: number, root: `0x${string}`, totalClaimable: bigint): Hex {
-    return encodeFunctionData({
-      abi: PREDICTION_VAULT_ABI,
-      functionName: "submitClaimRoot",
-      args: [BigInt(requestId), root, totalClaimable],
+  getWithdrawalRequestEffect(
+    requestId: number,
+  ): Effect.Effect<WithdrawalRequestData, ContractError> {
+    return Effect.tryPromise({
+      try: () => this.getWithdrawalRequest(requestId),
+      catch: (error) =>
+        new ContractError({
+          contract: this.contractAddress,
+          method: "getWithdrawalRequest",
+          message: (error as Error).message,
+          cause: error,
+        }),
+    });
+  }
+
+  getVaultStatsEffect(): Effect.Effect<VaultStats, ContractError> {
+    return Effect.tryPromise({
+      try: () => this.getVaultStats(),
+      catch: (error) =>
+        new ContractError({
+          contract: this.contractAddress,
+          method: "getVaultStats",
+          message: (error as Error).message,
+          cause: error,
+        }),
+    });
+  }
+
+  updateNavEffect(
+    newTotalAssets: bigint,
+  ): Effect.Effect<{ hash: string; success: boolean }, ContractError | WalletNotConfiguredError> {
+    if (!this.walletClient) {
+      return Effect.fail(
+        new WalletNotConfiguredError({
+          message: "TRADING_WALLET_PRIVATE_KEY required for updateNav",
+        }),
+      );
+    }
+
+    return Effect.tryPromise({
+      try: () => this.updateNav(newTotalAssets),
+      catch: (error) =>
+        new ContractError({
+          contract: this.contractAddress,
+          method: "updateNav",
+          message: (error as Error).message,
+          cause: error,
+        }),
+    });
+  }
+
+  setCumulativeClaimableBatchEffect(
+    requestIds: number[],
+    newCumulativeClaimables: bigint[],
+  ): Effect.Effect<{ hash: string; success: boolean }, ContractError | WalletNotConfiguredError> {
+    if (!this.walletClient) {
+      return Effect.fail(
+        new WalletNotConfiguredError({
+          message: "TRADING_WALLET_PRIVATE_KEY required for setCumulativeClaimableBatch",
+        }),
+      );
+    }
+
+    return Effect.tryPromise({
+      try: () => this.setCumulativeClaimableBatch(requestIds, newCumulativeClaimables),
+      catch: (error) =>
+        new ContractError({
+          contract: this.contractAddress,
+          method: "setCumulativeClaimableBatch",
+          message: (error as Error).message,
+          cause: error,
+        }),
+    });
+  }
+
+  signClaimEffect(args: {
+    user: `0x${string}`;
+    requestId: number;
+    cumulativeClaimable: bigint;
+    deadline: bigint;
+  }): Effect.Effect<`0x${string}`, ContractError | WalletNotConfiguredError> {
+    if (!this.account) {
+      return Effect.fail(
+        new WalletNotConfiguredError({
+          message: "TRADING_WALLET_PRIVATE_KEY required for signClaim",
+        }),
+      );
+    }
+
+    return Effect.tryPromise({
+      try: () => this.signClaim(args),
+      catch: (error) =>
+        new ContractError({
+          contract: this.contractAddress,
+          method: "signClaim",
+          message: (error as Error).message,
+          cause: error,
+        }),
     });
   }
 }

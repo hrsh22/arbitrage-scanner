@@ -8,7 +8,6 @@ import {
   users,
   vaults,
 } from "../db/schema.js";
-import { buildClaimTree, serializeProof, type ClaimLeaf } from "./merkleService.js";
 import { isClaimable, getClaimableAfter } from "../config/vaultConfig.js";
 import { logger } from "../logger.js";
 import { getVaultContract } from "./vaultContractService.js";
@@ -148,78 +147,6 @@ export class WithdrawalService {
     };
   }
 
-  async updateMerkleProofsForVault(vaultId: number): Promise<{
-    requestsUpdated: number;
-    merkleRoot: `0x${string}`;
-  }> {
-    const pendingRequests = await db
-      .select()
-      .from(withdrawalRequests)
-      .where(
-        and(
-          eq(withdrawalRequests.vaultId, vaultId),
-          inArray(withdrawalRequests.status, ["pending", "processing"]),
-        ),
-      );
-
-    if (pendingRequests.length === 0) {
-      return {
-        requestsUpdated: 0,
-        merkleRoot: "0x0000000000000000000000000000000000000000000000000000000000000000",
-      };
-    }
-
-    const claims: ClaimLeaf[] = [];
-    const claimableMap = new Map<number, bigint>();
-
-    for (const request of pendingRequests) {
-      if (request.onChainRequestId === null) continue;
-
-      const { totalClaimable } = await this.calculateClaimableForRequest(request.id);
-      claims.push({
-        requestId: request.onChainRequestId,
-        cumulativeClaimable: totalClaimable,
-      });
-      claimableMap.set(request.id, totalClaimable);
-    }
-
-    if (claims.length === 0) {
-      return {
-        requestsUpdated: 0,
-        merkleRoot: "0x0000000000000000000000000000000000000000000000000000000000000000",
-      };
-    }
-
-    const { root, proofs } = buildClaimTree(claims);
-
-    for (const request of pendingRequests) {
-      if (request.onChainRequestId === null) continue;
-
-      const proof = proofs.get(request.onChainRequestId);
-      const claimable = claimableMap.get(request.id);
-
-      if (proof && claimable !== undefined) {
-        await db
-          .update(withdrawalRequests)
-          .set({
-            lastMerkleRoot: root,
-            lastMerkleProof: serializeProof(proof),
-            currentClaimableUsdc: (Number(claimable) / 1e6).toFixed(6),
-            status: "processing",
-          })
-          .where(eq(withdrawalRequests.id, request.id));
-      }
-    }
-
-    logger.info("Merkle proofs updated for vault", {
-      vaultId,
-      requestsUpdated: claims.length,
-      merkleRoot: root,
-    });
-
-    return { requestsUpdated: claims.length, merkleRoot: root };
-  }
-
   async getWithdrawalSummary(requestId: number): Promise<WithdrawalSummary | null> {
     const [request] = await db
       .select()
@@ -255,75 +182,35 @@ export class WithdrawalService {
 
         if (vault?.contractAddress) {
           const vaultContract = getVaultContract(vault.contractAddress);
-          const isV2 = await vaultContract.isV2();
+          const onChainRequest = await vaultContract.getWithdrawalRequest(request.onChainRequestId);
+          const onChainClaimed = Number(onChainRequest.claimed) / 1e6;
+          const onChainCumulativeClaimable = Number(onChainRequest.cumulativeClaimable) / 1e6;
+          const onChainAssetsReserved = Number(onChainRequest.assetsReserved) / 1e6;
 
-          if (isV2) {
-            const onChainRequest = await vaultContract.getWithdrawalRequestV2(request.onChainRequestId);
-            const onChainClaimed = Number(onChainRequest.claimed) / 1e6;
-            const onChainCumulativeClaimable = Number(onChainRequest.cumulativeClaimable) / 1e6;
-            const onChainAssetsReserved = Number(onChainRequest.assetsReserved) / 1e6;
+          totalClaimedUsdc = onChainClaimed.toFixed(6);
+          currentClaimableUsdc = onChainCumulativeClaimable.toFixed(6);
 
-            totalClaimedUsdc = onChainClaimed.toFixed(6);
-            currentClaimableUsdc = onChainCumulativeClaimable.toFixed(6);
-
-            if (onChainAssetsReserved > 0 && onChainClaimed >= onChainAssetsReserved) {
-              status = "completed";
-              if (request.status !== "completed") {
-                db.update(withdrawalRequests)
-                  .set({
-                    status: "completed",
-                    totalClaimedUsdc: totalClaimedUsdc,
-                    completedAt: new Date(),
-                  })
-                  .where(eq(withdrawalRequests.id, request.id))
-                  .then(() => {
-                    logger.info("Withdrawal auto-marked complete from on-chain state", {
-                      requestId,
-                      contractVersion: "v2",
-                    });
-                  })
-                  .catch((err) => {
-                    logger.error("Failed to auto-mark withdrawal complete", {
-                      requestId,
-                      error: (err as Error).message,
-                    });
+          if (onChainAssetsReserved > 0 && onChainClaimed >= onChainAssetsReserved) {
+            status = "completed";
+            if (request.status !== "completed") {
+              db.update(withdrawalRequests)
+                .set({
+                  status: "completed",
+                  totalClaimedUsdc: totalClaimedUsdc,
+                  completedAt: new Date(),
+                })
+                .where(eq(withdrawalRequests.id, request.id))
+                .then(() => {
+                  logger.info("Withdrawal auto-marked complete from on-chain state", {
+                    requestId,
                   });
-              }
-            }
-          } else {
-            const onChainRequest = await vaultContract.getWithdrawalRequest(request.onChainRequestId);
-
-            const onChainClaimed = Number(onChainRequest.claimed) / 1e6;
-            const onChainTotalClaimable = Number(onChainRequest.totalClaimable) / 1e6;
-
-            totalClaimedUsdc = onChainClaimed.toFixed(6);
-            currentClaimableUsdc = onChainTotalClaimable.toFixed(6);
-
-            // If fully claimed on-chain, mark as completed
-            if (onChainTotalClaimable > 0 && onChainClaimed >= onChainTotalClaimable) {
-              status = "completed";
-              // Update DB in background
-              if (request.status !== "completed") {
-                db.update(withdrawalRequests)
-                  .set({
-                    status: "completed",
-                    totalClaimedUsdc: totalClaimedUsdc,
-                    completedAt: new Date(),
-                  })
-                  .where(eq(withdrawalRequests.id, request.id))
-                  .then(() => {
-                    logger.info("Withdrawal auto-marked complete from on-chain state", {
-                      requestId,
-                      contractVersion: "v1",
-                    });
-                  })
-                  .catch((err) => {
-                    logger.error("Failed to auto-mark withdrawal complete", {
-                      requestId,
-                      error: (err as Error).message,
-                    });
+                })
+                .catch((err) => {
+                  logger.error("Failed to auto-mark withdrawal complete", {
+                    requestId,
+                    error: (err as Error).message,
                   });
-              }
+                });
             }
           }
         }

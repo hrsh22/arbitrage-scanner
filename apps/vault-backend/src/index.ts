@@ -7,6 +7,7 @@ import { userRoutes } from "./routes/users.js";
 import { adminRoutes } from "./routes/admin.js";
 import { webhookRoutes } from "./routes/webhooks.js";
 import withdrawalRoutes from "./routes/withdrawals.js";
+import depositRoutes from "./routes/deposits.js";
 
 const app = express();
 
@@ -33,6 +34,7 @@ app.use("/users", userRoutes);
 app.use("/admin", adminRoutes);
 app.use("/webhooks", webhookRoutes);
 app.use("/withdrawals", withdrawalRoutes);
+app.use("/deposits", depositRoutes);
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   logger.error("Unhandled error", { error: err.message, stack: err.stack });

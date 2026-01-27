@@ -34,14 +34,10 @@ export class ReserveService {
     availableForTrading: bigint;
   }> {
     const vaultContract = getVaultContract(vaultContractAddress);
-    const [treasuryBalance, isV2] = await Promise.all([
+    const [treasuryBalance, vaultStats] = await Promise.all([
       this.getUsdcBalance(treasuryAddress),
-      vaultContract.isV2(),
+      vaultContract.getVaultStats(),
     ]);
-
-    const vaultStats = isV2
-      ? await vaultContract.getVaultStatsV2()
-      : await vaultContract.getVaultStats();
 
     const lockedAssets = vaultStats.totalLockedAssets;
     const availableForTrading =

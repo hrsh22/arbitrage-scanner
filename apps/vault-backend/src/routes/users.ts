@@ -1,9 +1,11 @@
 import { Router, type Request, type Response, type IRouter } from "express";
 import { eq, and } from "drizzle-orm";
+import type { Address } from "viem";
 import { db } from "../db/client";
 import { users, deposits, withdrawalRequests, positionClaims, vaultPositions } from "../db/schema";
 import { vaultService } from "../services/vaultService";
 import { getVaultContract } from "../services/vaultContractService.js";
+import { checkAndHealUserBalance } from "../services/selfHealingService.js";
 import type { ApiResponse, UserPosition, DepositRecord, WithdrawalRequestRecord } from "../types";
 import { logger } from "../logger.js";
 
@@ -33,63 +35,78 @@ userRoutes.get("/:vaultSlug/:walletAddress", async (req: Request, res: Response)
 
     const state = await vaultService.getOrCreateVaultState(vault.id);
 
-    const userDeposits = await db
-      .select()
-      .from(deposits)
-      .where(and(eq(deposits.vaultId, vault.id), eq(deposits.userId, user!.id)));
+    const calculateDbShares = async () => {
+      const userDeposits = await db
+        .select()
+        .from(deposits)
+        .where(and(eq(deposits.vaultId, vault.id), eq(deposits.userId, user!.id)));
 
-    const totalSharesDeposited = userDeposits.reduce(
-      (sum, d) => sum + parseFloat(d.sharesReceived),
-      0,
-    );
-
-    const allWithdrawals = await db
-      .select()
-      .from(withdrawalRequests)
-      .where(
-        and(eq(withdrawalRequests.vaultId, vault.id), eq(withdrawalRequests.userId, user!.id)),
+      const totalSharesDeposited = userDeposits.reduce(
+        (sum, d) => sum + parseFloat(d.sharesReceived),
+        0,
       );
 
-    // Subtract ALL withdrawn shares (pending, processing, AND completed)
-    const totalSharesWithdrawn = allWithdrawals.reduce(
-      (sum, w) => sum + parseFloat(w.sharesLocked),
-      0,
-    );
+      const allWithdrawals = await db
+        .select()
+        .from(withdrawalRequests)
+        .where(
+          and(eq(withdrawalRequests.vaultId, vault.id), eq(withdrawalRequests.userId, user!.id)),
+        );
 
-    // Pending/processing withdrawals are locked but not yet claimed
-    const sharesInPendingWithdrawals = allWithdrawals
-      .filter((w) => w.status === "pending" || w.status === "processing")
-      .reduce((sum, w) => sum + parseFloat(w.sharesLocked), 0);
+      const totalSharesWithdrawn = allWithdrawals.reduce(
+        (sum, w) => sum + parseFloat(w.sharesLocked),
+        0,
+      );
 
-    // Available shares = deposited - all withdrawn
-    const availableShares = Math.max(0, totalSharesDeposited - totalSharesWithdrawn);
+      const sharesInPendingWithdrawals = allWithdrawals
+        .filter((w) => w.status === "pending" || w.status === "processing")
+        .reduce((sum, w) => sum + parseFloat(w.sharesLocked), 0);
 
-    // Get on-chain NAV for accurate valuation
+      const availableShares = Math.max(0, totalSharesDeposited - totalSharesWithdrawn);
+
+      return { availableShares, sharesInPendingWithdrawals };
+    };
+
+    let { availableShares, sharesInPendingWithdrawals } = await calculateDbShares();
+
     let navPerShare = parseFloat(state.navPerShare);
     let totalShares = parseFloat(state.totalShares);
 
     if (vault.contractAddress) {
       try {
         const vaultContract = getVaultContract(vault.contractAddress);
-        const isV2 = await vaultContract.isV2();
-        const onChainStats = isV2
-          ? await vaultContract.getVaultStatsV2()
-          : await vaultContract.getVaultStats();
+        const onChainStats = await vaultContract.getVaultStats();
 
         const onChainNav = Number(onChainStats.navPerShare) / 1e6;
-        navPerShare = onChainNav > 0 ? onChainNav : 1.0; // Default to 1.0 when empty
+        navPerShare = onChainNav > 0 ? onChainNav : 1.0;
 
-        // Derive total shares from on-chain
         if (onChainNav > 0) {
           totalShares = Number(onChainStats.totalAssets) / 1e6 / onChainNav;
         } else {
           totalShares = 0;
         }
+
+        const healResult = await checkAndHealUserBalance(
+          vault.id,
+          vault.contractAddress as Address,
+          normalizedAddress,
+          availableShares,
+        );
+
+        if (healResult.mismatch && healResult.selfHealResult?.healed) {
+          const recalculated = await calculateDbShares();
+          availableShares = recalculated.availableShares;
+          sharesInPendingWithdrawals = recalculated.sharesInPendingWithdrawals;
+          logger.info("User position recalculated after self-heal", {
+            vaultSlug,
+            walletAddress: normalizedAddress,
+            newShares: availableShares,
+          });
+        }
       } catch (error) {
         logger.warn("Failed to fetch on-chain NAV for user position", {
           error: (error as Error).message,
         });
-        // Use default NAV of 1.0 if database NAV is 0
         if (navPerShare === 0) navPerShare = 1.0;
       }
     }
