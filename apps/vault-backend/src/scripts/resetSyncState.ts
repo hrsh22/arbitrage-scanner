@@ -2,35 +2,49 @@ import { db } from "../db/client.js";
 import { syncState } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 
-const VAULT_ID = 1;
-// Reset to before the withdrawal at block 82119172
-const RESET_TO_BLOCK = 82119160;
+type SyncEventType = "deposit" | "withdrawal" | "claimed";
+
+function getArgValue(flag: string): string | undefined {
+  const idx = process.argv.findIndex((a) => a === flag);
+  if (idx === -1) return undefined;
+  return process.argv[idx + 1];
+}
+
+function parseRequiredInt(value: string | undefined, name: string): number {
+  if (!value) throw new Error(`Missing required ${name}`);
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) throw new Error(`Invalid ${name}: ${value}`);
+  return parsed;
+}
+
+function parseEventType(value: string | undefined): SyncEventType {
+  if (!value) throw new Error("Missing required eventType");
+  if (value === "deposit" || value === "withdrawal" || value === "claimed") return value;
+  throw new Error(`Invalid eventType: ${value}`);
+}
 
 async function main() {
-  console.log(`Resetting sync state for vault ${VAULT_ID} to block ${RESET_TO_BLOCK}...`);
-  
-  // Reset withdrawal sync state
-  const withdrawalStateId = `withdrawal:vault:${VAULT_ID}`;
+  const vaultId = parseRequiredInt(getArgValue("--vaultId") ?? process.env.VAULT_ID, "vaultId");
+  const eventType = parseEventType(getArgValue("--eventType") ?? process.env.EVENT_TYPE);
+  const resetToBlock = parseRequiredInt(
+    getArgValue("--resetToBlock") ?? process.env.RESET_TO_BLOCK,
+    "resetToBlock",
+  );
+
+  const stateId = `${eventType}:vault:${vaultId}`;
+
+  console.log(`Resetting sync state '${stateId}' to block ${resetToBlock}...`);
+
   await db
     .update(syncState)
-    .set({ lastSyncedBlock: RESET_TO_BLOCK, updatedAt: new Date() })
-    .where(eq(syncState.id, withdrawalStateId));
-  
-  console.log("Withdrawal sync state reset.");
-  
-  // Also reset claimed sync state
-  const claimedStateId = `claimed:vault:${VAULT_ID}`;
-  await db
-    .update(syncState)
-    .set({ lastSyncedBlock: RESET_TO_BLOCK, updatedAt: new Date() })
-    .where(eq(syncState.id, claimedStateId));
-  
-  console.log("Claimed sync state reset.");
-  
-  // Show current state
-  const states = await db.select().from(syncState);
-  console.log("Current sync states:", states);
-  
+    .set({ lastSyncedBlock: resetToBlock, updatedAt: new Date() })
+    .where(eq(syncState.id, stateId));
+
+  console.log("Sync state reset.");
+
+  const [state] = await db.select().from(syncState).where(eq(syncState.id, stateId));
+  console.log("Current sync state:", state);
+
   process.exit(0);
 }
 

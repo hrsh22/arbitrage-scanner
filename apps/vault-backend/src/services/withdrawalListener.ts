@@ -1,10 +1,17 @@
-import { parseAbiItem, type Address, decodeEventLog } from "viem";
-import { eq } from "drizzle-orm";
+import { parseAbiItem, type Address, decodeEventLog, formatUnits } from "viem";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { vaults, syncState, withdrawalRequests, users } from "../db/schema.js";
+import { claimedEvents, vaults, syncState, withdrawalRequests, users } from "../db/schema.js";
 import { withdrawalService } from "./withdrawalService.js";
 import { logger } from "../logger.js";
-import { env } from "../env.js";
+import { env, getFallbackRpcUrlsForNetwork, getChainIdForNetwork } from "../env.js";
+import { getContractDeploymentBlock } from "./chain/contractDeploymentBlock.js";
+
+function normalizeDecimal(value: string, decimals: number): string {
+  const [whole, frac = ""] = value.split(".");
+  const padded = (frac + "0".repeat(decimals)).slice(0, decimals);
+  return `${whole}.${padded}`;
+}
 
 const WITHDRAWAL_REQUESTED_EVENT = parseAbiItem(
   "event WithdrawalRequested(address indexed user, uint256 indexed requestId, uint256 shares, uint256 ownershipBps)",
@@ -15,10 +22,13 @@ const CLAIMED_EVENT = parseAbiItem(
 );
 
 // Event topic hashes
-const WITHDRAWAL_REQUESTED_TOPIC = "0x38e3d972947cfef94205163d483d6287ef27eb312e20cb8e0b13a49989db232e";
+const WITHDRAWAL_REQUESTED_TOPIC =
+  "0x38e3d972947cfef94205163d483d6287ef27eb312e20cb8e0b13a49989db232e";
 const CLAIMED_TOPIC = "0x47cee97cb7acd717b3c0aa1435d004cd5b3c8c57d70dbceb4e4458bbd60e39d4";
 
-const MAX_LOG_RANGE = 10n;
+// Chunk size for eth_getLogs ranges.
+// Withdrawals/claims are low-frequency events, so using larger ranges is safe and avoids long cron runtimes.
+const MAX_LOG_RANGE = 2000n;
 // Max blocks to process in a single cron run
 const MAX_BLOCKS_PER_RUN = 5000n;
 // Small buffer before vault creation time
@@ -32,12 +42,9 @@ const PROGRESS_LOG_EVERY_CHUNKS = 50;
 
 // RPC endpoints in order of preference
 function getRpcUrls(): string[] {
-  return [
-    "https://polygon-bor-rpc.publicnode.com",
-    "https://polygon.llamarpc.com", 
-    "https://polygon-rpc.com",
-    env.POLYGON_RPC_URL,
-  ].filter((url) => url && url.trim().length > 0);
+  const fallbacks = getFallbackRpcUrlsForNetwork();
+  const urls = [env.POLYGON_RPC_URL, ...fallbacks];
+  return [...new Set(urls)].filter((url) => url && url.trim().length > 0);
 }
 
 // Simple JSON-RPC call with AbortController timeout
@@ -57,7 +64,7 @@ async function rpcCall(url: string, method: string, params: unknown[]): Promise<
       throw new Error(`HTTP ${response.status}`);
     }
 
-    const data = await response.json() as { result?: unknown; error?: { message: string } };
+    const data = (await response.json()) as { result?: unknown; error?: { message: string } };
     if (data.error) {
       throw new Error(data.error.message);
     }
@@ -90,10 +97,10 @@ async function getBlockNumber(): Promise<bigint> {
 }
 
 async function getBlock(blockNumber: bigint): Promise<{ timestamp: bigint }> {
-  const result = await rpcWithFallback("eth_getBlockByNumber", [
+  const result = (await rpcWithFallback("eth_getBlockByNumber", [
     `0x${blockNumber.toString(16)}`,
     false,
-  ]) as { timestamp: string };
+  ])) as { timestamp: string };
   return { timestamp: BigInt(result.timestamp) };
 }
 
@@ -123,23 +130,20 @@ async function getLogs(
   return (result as RpcLog[]) || [];
 }
 
-async function findBlockByTimestamp(
-  targetTimestamp: number,
-  latestBlock: bigint,
-): Promise<bigint> {
+async function findBlockByTimestamp(targetTimestamp: number, latestBlock: bigint): Promise<bigint> {
   // Estimate starting point based on average 2-second block time
   const now = Math.floor(Date.now() / 1000);
   const secondsAgo = now - targetTimestamp;
   const estimatedBlocksAgo = BigInt(Math.floor(secondsAgo / 2));
-  
+
   // Start search from a reasonable range around the estimate
-  let low = latestBlock > estimatedBlocksAgo + 10000n 
-    ? latestBlock - estimatedBlocksAgo - 10000n 
-    : 0n;
-  let high = latestBlock > estimatedBlocksAgo - 10000n 
-    ? latestBlock - estimatedBlocksAgo + 10000n 
-    : latestBlock;
-  
+  let low =
+    latestBlock > estimatedBlocksAgo + 10000n ? latestBlock - estimatedBlocksAgo - 10000n : 0n;
+  let high =
+    latestBlock > estimatedBlocksAgo - 10000n
+      ? latestBlock - estimatedBlocksAgo + 10000n
+      : latestBlock;
+
   if (high > latestBlock) high = latestBlock;
   if (low < 0n) low = 0n;
 
@@ -168,14 +172,27 @@ async function findBlockByTimestamp(
   return low;
 }
 
-async function getInitialSyncBlock(
+async function getInitialSyncBlockFromDeployment(
   vaultCreatedAt: Date,
+  contractAddress: Address,
   latestBlock: bigint,
 ): Promise<bigint> {
-  const targetTimestamp = Math.floor(vaultCreatedAt.getTime() / 1000);
-  const estimatedBlock = await findBlockByTimestamp(targetTimestamp, latestBlock);
-  if (estimatedBlock <= INITIAL_SYNC_BUFFER_BLOCKS) return 0n;
-  return estimatedBlock - INITIAL_SYNC_BUFFER_BLOCKS;
+  try {
+    const deploymentBlock = await getContractDeploymentBlock(contractAddress);
+    if (deploymentBlock > latestBlock) return 0n;
+    return deploymentBlock;
+  } catch (error) {
+    logger.warn("Failed to resolve deployment block; falling back to timestamp heuristic", {
+      contractAddress: contractAddress.toLowerCase(),
+      vaultCreatedAt: vaultCreatedAt.toISOString(),
+      error: (error as Error).message,
+    });
+
+    const targetTimestamp = Math.floor(vaultCreatedAt.getTime() / 1000);
+    const estimatedBlock = await findBlockByTimestamp(targetTimestamp, latestBlock);
+    if (estimatedBlock <= INITIAL_SYNC_BUFFER_BLOCKS) return 0n;
+    return estimatedBlock - INITIAL_SYNC_BUFFER_BLOCKS;
+  }
 }
 
 function getSyncStateId(vaultId: number): string {
@@ -205,7 +222,12 @@ export async function processWithdrawalRequestedEvent(
     const [existingRequest] = await db
       .select()
       .from(withdrawalRequests)
-      .where(eq(withdrawalRequests.onChainRequestId, event.onChainRequestId))
+      .where(
+        and(
+          eq(withdrawalRequests.vaultId, vaultId),
+          eq(withdrawalRequests.onChainRequestId, event.onChainRequestId),
+        ),
+      )
       .limit(1);
 
     if (existingRequest) {
@@ -230,36 +252,24 @@ export async function processWithdrawalRequestedEvent(
       user = newUser;
     }
 
-    // Use on-chain event data directly (more reliable than vault state during sync)
-    const sharesString = (Number(event.shares) / 1e6).toFixed(6);
-    const ownershipPct = Number(event.ownershipBps) / 10000; // bps to decimal
+    // Use on-chain event data for shares (avoids float overflow)
+    const sharesString = normalizeDecimal(formatUnits(event.shares, 6), 6);
 
-    // Insert directly using on-chain data
-    const [request] = await db
-      .insert(withdrawalRequests)
-      .values({
-        vaultId,
-        userId: user.id,
-        onChainRequestId: event.onChainRequestId,
-        sharesLocked: sharesString,
-        ownershipPct: ownershipPct.toFixed(8),
-        idleUsdcClaim: "0.000000", // Will be calculated when claim root is submitted
-        status: "pending",
-        currentClaimableUsdc: "0.000000",
-      })
-      .returning();
-
-    if (!request) {
-      return { recorded: false, reason: "failed_to_create_request" };
-    }
+    // Create a full withdrawal request record (idle claim + position claims)
+    // so claim-data can return non-zero values immediately when WITHDRAWAL_LOCK_DAYS=0.
+    const { requestId } = await withdrawalService.createWithdrawalRequest(
+      vaultId,
+      user.id,
+      sharesString,
+      event.onChainRequestId,
+    );
 
     logger.info("Withdrawal request event processed", {
       vaultId,
       userAddress: event.userAddress,
       onChainRequestId: event.onChainRequestId,
       shares: sharesString,
-      ownershipPct,
-      dbRequestId: request.id,
+      dbRequestId: requestId,
       txHash: event.txHash,
       blockNumber: event.blockNumber,
     });
@@ -299,7 +309,7 @@ export async function updateLastSyncedBlock(vaultId: number, blockNumber: number
     .onConflictDoUpdate({
       target: syncState.id,
       set: {
-        lastSyncedBlock: blockNumber,
+        lastSyncedBlock: sql`GREATEST(${syncState.lastSyncedBlock}, ${blockNumber})`,
         updatedAt: new Date(),
       },
     });
@@ -312,9 +322,8 @@ export async function syncWithdrawalsFromBlock(
   toBlock: bigint,
 ): Promise<{ processed: number; skipped: number; reachedEnd: boolean }> {
   // Cap toBlock to prevent long-running jobs
-  const cappedToBlock = fromBlock + MAX_BLOCKS_PER_RUN < toBlock 
-    ? fromBlock + MAX_BLOCKS_PER_RUN 
-    : toBlock;
+  const cappedToBlock =
+    fromBlock + MAX_BLOCKS_PER_RUN < toBlock ? fromBlock + MAX_BLOCKS_PER_RUN : toBlock;
 
   const totalChunks = Number((cappedToBlock - fromBlock) / MAX_LOG_RANGE) + 1;
 
@@ -410,7 +419,7 @@ export async function catchUpWithdrawals(
   vaultCreatedAt: Date,
 ): Promise<void> {
   logger.info("Fetching latest block number", { vaultId });
-  
+
   const latestBlock = await getBlockNumber();
   const lastSynced = await getLastSyncedBlock(vaultId);
 
@@ -418,11 +427,16 @@ export async function catchUpWithdrawals(
   if (lastSynced) {
     fromBlock = BigInt(lastSynced + 1);
   } else {
-    logger.info("No previous sync state, computing initial block from vault creation time", {
+    logger.info("No previous sync state, resolving initial block from contract deployment", {
       vaultId,
       vaultCreatedAt: vaultCreatedAt.toISOString(),
+      contractAddress: contractAddress.toLowerCase(),
     });
-    fromBlock = await getInitialSyncBlock(vaultCreatedAt, latestBlock);
+    fromBlock = await getInitialSyncBlockFromDeployment(
+      vaultCreatedAt,
+      contractAddress,
+      latestBlock,
+    );
   }
 
   if (fromBlock > latestBlock) {
@@ -461,7 +475,17 @@ export async function catchUpWithdrawals(
 }
 
 export async function catchUpAllVaultsWithdrawals(): Promise<void> {
-  const allVaults = await db.select().from(vaults).where(eq(vaults.status, "public"));
+  // Withdrawals can be requested even when a vault is draft/paused.
+  // If we only sync "public" vaults, users won't see their requests recorded in the DB.
+  const allVaults = await db
+    .select()
+    .from(vaults)
+    .where(
+      and(
+        inArray(vaults.status, ["public", "paused", "draft"]),
+        eq(vaults.chainId, getChainIdForNetwork()),
+      ),
+    );
 
   for (const vault of allVaults) {
     try {
@@ -485,7 +509,10 @@ async function getLastClaimSyncedBlock(vaultId: number): Promise<number | null> 
   return state?.lastSyncedBlock ?? null;
 }
 
-async function updateLastClaimSyncedBlock(vaultId: number, blockNumber: number): Promise<void> {
+export async function updateLastClaimSyncedBlock(
+  vaultId: number,
+  blockNumber: number,
+): Promise<void> {
   const id = getClaimSyncStateId(vaultId);
 
   await db
@@ -500,10 +527,87 @@ async function updateLastClaimSyncedBlock(vaultId: number, blockNumber: number):
     .onConflictDoUpdate({
       target: syncState.id,
       set: {
-        lastSyncedBlock: blockNumber,
+        lastSyncedBlock: sql`GREATEST(${syncState.lastSyncedBlock}, ${blockNumber})`,
         updatedAt: new Date(),
       },
     });
+}
+
+export interface ClaimedEventData {
+  userAddress: string;
+  onChainRequestId: number;
+  amount: bigint;
+  txHash: string;
+  blockNumber: number;
+  logIndex: number;
+}
+
+export async function processClaimedEvent(
+  vaultId: number,
+  event: ClaimedEventData,
+): Promise<{ recorded: boolean; reason?: string }> {
+  const claimedUsdc = Number(event.amount) / 1e6;
+
+  const [request] = await db
+    .select()
+    .from(withdrawalRequests)
+    .where(
+      and(
+        eq(withdrawalRequests.vaultId, vaultId),
+        eq(withdrawalRequests.onChainRequestId, event.onChainRequestId),
+      ),
+    )
+    .limit(1);
+
+  if (!request) {
+    return { recorded: false, reason: "request_not_found" };
+  }
+
+  // Idempotency: only apply once per (txHash, logIndex)
+  // (unique constraint enforced at DB level)
+  const inserted = await db
+    .insert(claimedEvents)
+    .values({
+      vaultId,
+      onChainRequestId: event.onChainRequestId,
+      txHash: event.txHash,
+      logIndex: event.logIndex,
+      amountUsdc: claimedUsdc.toFixed(6),
+    })
+    .onConflictDoNothing()
+    .returning({ id: claimedEvents.id });
+
+  if (inserted.length === 0) {
+    return { recorded: false, reason: "already_processed" };
+  }
+
+  const currentClaimed = parseFloat(request.totalClaimedUsdc ?? "0");
+  const newTotalClaimed = currentClaimed + claimedUsdc;
+  const totalClaimable = parseFloat(request.currentClaimableUsdc ?? "0");
+
+  const isFullyClaimed = newTotalClaimed >= totalClaimable && totalClaimable > 0;
+
+  await db
+    .update(withdrawalRequests)
+    .set({
+      totalClaimedUsdc: newTotalClaimed.toFixed(6),
+      status: isFullyClaimed ? "completed" : request.status,
+      completedAt: isFullyClaimed ? new Date() : request.completedAt,
+    })
+    .where(eq(withdrawalRequests.id, request.id));
+
+  logger.info("Processed Claimed event", {
+    vaultId,
+    requestId: request.id,
+    onChainRequestId: event.onChainRequestId,
+    claimedUsdc,
+    newTotalClaimed,
+    isFullyClaimed,
+    txHash: event.txHash,
+    blockNumber: event.blockNumber,
+  });
+
+  return { recorded: true };
 }
 
 export async function syncClaimedEvents(
@@ -512,7 +616,7 @@ export async function syncClaimedEvents(
   vaultCreatedAt: Date,
 ): Promise<{ processed: number; skipped: number; reachedEnd: boolean }> {
   logger.info("Fetching latest block for claimed events sync", { vaultId });
-  
+
   const latestBlock = await getBlockNumber();
   const lastSynced = await getLastClaimSyncedBlock(vaultId);
 
@@ -520,8 +624,15 @@ export async function syncClaimedEvents(
   if (lastSynced) {
     fromBlock = BigInt(lastSynced + 1);
   } else {
-    logger.info("No previous claim sync state, computing initial block", { vaultId });
-    fromBlock = await getInitialSyncBlock(vaultCreatedAt, latestBlock);
+    logger.info("No previous claim sync state, resolving initial block from contract deployment", {
+      vaultId,
+      contractAddress: contractAddress.toLowerCase(),
+    });
+    fromBlock = await getInitialSyncBlockFromDeployment(
+      vaultCreatedAt,
+      contractAddress,
+      latestBlock,
+    );
   }
 
   if (fromBlock > latestBlock) {
@@ -529,9 +640,8 @@ export async function syncClaimedEvents(
   }
 
   // Cap toBlock to prevent long-running jobs
-  const cappedToBlock = fromBlock + MAX_BLOCKS_PER_RUN < latestBlock 
-    ? fromBlock + MAX_BLOCKS_PER_RUN 
-    : latestBlock;
+  const cappedToBlock =
+    fromBlock + MAX_BLOCKS_PER_RUN < latestBlock ? fromBlock + MAX_BLOCKS_PER_RUN : latestBlock;
 
   const totalChunks = Number((cappedToBlock - fromBlock) / MAX_LOG_RANGE) + 1;
 
@@ -585,47 +695,21 @@ export async function syncClaimedEvents(
         topics: log.topics as [`0x${string}`, ...`0x${string}`[]],
       });
 
-      const onChainRequestId = Number(decoded.args.requestId);
-      const claimedAmount = decoded.args.amount as bigint;
-      const claimedUsdc = Number(claimedAmount) / 1e6;
-
-      const [request] = await db
-        .select()
-        .from(withdrawalRequests)
-        .where(eq(withdrawalRequests.onChainRequestId, onChainRequestId))
-        .limit(1);
-
-      if (!request) {
-        skipped++;
-        continue;
-      }
-
-      const currentClaimed = parseFloat(request.totalClaimedUsdc ?? "0");
-      const newTotalClaimed = currentClaimed + claimedUsdc;
-      const totalClaimable = parseFloat(request.currentClaimableUsdc ?? "0");
-
-      const isFullyClaimed = newTotalClaimed >= totalClaimable && totalClaimable > 0;
-
-      await db
-        .update(withdrawalRequests)
-        .set({
-          totalClaimedUsdc: newTotalClaimed.toFixed(6),
-          status: isFullyClaimed ? "completed" : request.status,
-          completedAt: isFullyClaimed ? new Date() : request.completedAt,
-        })
-        .where(eq(withdrawalRequests.id, request.id));
-
-      logger.info("Processed Claimed event", {
-        vaultId,
-        requestId: request.id,
-        onChainRequestId,
-        claimedUsdc,
-        newTotalClaimed,
-        isFullyClaimed,
+      const event: ClaimedEventData = {
+        userAddress: decoded.args.user as string,
+        onChainRequestId: Number(decoded.args.requestId),
+        amount: decoded.args.amount as bigint,
         txHash: log.transactionHash,
-      });
+        blockNumber: Number(BigInt(log.blockNumber)),
+        logIndex: Number(BigInt(log.logIndex)),
+      };
 
-      processed++;
+      const result = await processClaimedEvent(vaultId, event);
+      if (result.recorded) {
+        processed++;
+      } else {
+        skipped++;
+      }
     }
 
     await updateLastClaimSyncedBlock(vaultId, Number(endBlock));

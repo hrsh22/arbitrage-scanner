@@ -1,17 +1,17 @@
 import { createPublicClient, http, erc20Abi, type Hex } from "viem";
-import { polygon } from "viem/chains";
-import { getRpcUrl } from "../env.js";
+import { getRpcUrl, getUsdcAddressForNetwork } from "../env.js";
+import { getViemChain } from "./chain/chainUtils.js";
 import { getVaultContract } from "./vaultContractService.js";
 import { logger } from "../logger.js";
 
-const USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174" as Hex;
+const USDC_ADDRESS = getUsdcAddressForNetwork();
 
 export class ReserveService {
   private publicClient;
 
   constructor() {
     this.publicClient = createPublicClient({
-      chain: polygon,
+      chain: getViemChain(),
       transport: http(getRpcUrl()),
     });
   }
@@ -33,10 +33,15 @@ export class ReserveService {
     lockedAssets: bigint;
     availableForTrading: bigint;
   }> {
-    const [treasuryBalance, vaultStats] = await Promise.all([
+    const vaultContract = getVaultContract(vaultContractAddress);
+    const [treasuryBalance, isV2] = await Promise.all([
       this.getUsdcBalance(treasuryAddress),
-      getVaultContract(vaultContractAddress).getVaultStats(),
+      vaultContract.isV2(),
     ]);
+
+    const vaultStats = isV2
+      ? await vaultContract.getVaultStatsV2()
+      : await vaultContract.getVaultStats();
 
     const lockedAssets = vaultStats.totalLockedAssets;
     const availableForTrading =

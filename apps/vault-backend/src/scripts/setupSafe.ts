@@ -2,9 +2,9 @@ import "dotenv/config";
 import { ClobClient } from "@polymarket/clob-client";
 import { Wallet } from "ethers";
 import { createSafeWalletService } from "../trading/safeWallet.js";
-import { env, getRpcUrl } from "../env.js";
+import { env, getRpcUrl, getChainIdForNetwork } from "../env.js";
 
-const CHAIN_ID = 137;
+const CHAIN_ID = getChainIdForNetwork();
 const POLYMARKET_CLOB_URL = "https://clob.polymarket.com";
 
 async function main() {

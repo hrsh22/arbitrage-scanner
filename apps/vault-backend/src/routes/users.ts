@@ -71,10 +71,14 @@ userRoutes.get("/:vaultSlug/:walletAddress", async (req: Request, res: Response)
     if (vault.contractAddress) {
       try {
         const vaultContract = getVaultContract(vault.contractAddress);
-        const onChainStats = await vaultContract.getVaultStats();
-        const onChainNav = Number(onChainStats.navPerShare) / 1e18;
+        const isV2 = await vaultContract.isV2();
+        const onChainStats = isV2
+          ? await vaultContract.getVaultStatsV2()
+          : await vaultContract.getVaultStats();
+
+        const onChainNav = Number(onChainStats.navPerShare) / 1e6;
         navPerShare = onChainNav > 0 ? onChainNav : 1.0; // Default to 1.0 when empty
-        
+
         // Derive total shares from on-chain
         if (onChainNav > 0) {
           totalShares = Number(onChainStats.totalAssets) / 1e6 / onChainNav;

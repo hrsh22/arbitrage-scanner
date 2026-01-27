@@ -1,10 +1,10 @@
 import { createAppKit } from '@reown/appkit/react'
 import { WagmiProvider } from 'wagmi'
-import { polygon } from '@reown/appkit/networks'
+import { polygon, polygonAmoy } from '@reown/appkit/networks'
 import type { AppKitNetwork } from '@reown/appkit/networks'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi'
-import { env } from './env'
+import { env, isTestnet } from './env'
 import type { ReactNode } from 'react'
 
 const queryClient = new QueryClient()
@@ -27,12 +27,13 @@ const metadata = {
   icons: ['/logo192.png'],
 }
 
-const networks: [AppKitNetwork, ...AppKitNetwork[]] = [polygon]
+const activeNetwork = isTestnet() ? polygonAmoy : polygon
+const networks: [AppKitNetwork, ...AppKitNetwork[]] = [activeNetwork]
 
 const wagmiAdapter = new WagmiAdapter({
   networks,
   projectId: projectId || 'placeholder',
-  ssr: true,
+  ssr: false,
 })
 
 if (projectId) {

@@ -4,14 +4,14 @@ import { z } from "zod";
 import { eq, and } from "drizzle-orm";
 import { verifyMessage } from "viem";
 import { db } from "../db/client";
-import { vaults, withdrawalRequests, vaultState, type Vault, type NewVault } from "../db/schema";
+import { vaults, withdrawalRequests, type Vault, type NewVault } from "../db/schema";
 import { vaultService } from "../services/vaultService";
 import { getVaultContract } from "../services/vaultContractService";
-import { buildClaimTree, serializeProof, type ClaimLeaf } from "../services/merkleService";
 import { logger } from "../logger";
 import type { ApiResponse } from "../types";
 import { getTradingService } from "../trading/tradingService";
-import { env, hasTradingWallet } from "../env";
+import { createSafeWalletService } from "../trading/safeWallet.js";
+import { env, hasTradingWallet, getChainIdForNetwork, isTestnet } from "../env";
 
 export const adminRoutes: IRouter = Router();
 
@@ -232,6 +232,7 @@ adminRoutes.post("/vaults", adminAuth, async (req: Request, res: Response) => {
       contractAddress: parsed.data.contractAddress.toLowerCase(),
       safeAddress: parsed.data.safeAddress.toLowerCase(),
       adminAddress,
+      chainId: getChainIdForNetwork(),
       status: "draft",
     };
 
@@ -416,6 +417,138 @@ adminRoutes.get("/vaults/:id/withdrawals", adminAuth, async (req: Request, res: 
   }
 });
 
+adminRoutes.get("/vaults/:id/setup-status", adminAuth, async (req: Request, res: Response) => {
+  try {
+    const adminAddress = (req as Request & { adminAddress: string }).adminAddress;
+    const vaultId = parseInt(req.params.id!, 10);
+
+    if (isNaN(vaultId)) {
+      res.status(400).json({ success: false, error: "Invalid vault ID" });
+      return;
+    }
+
+    const vault = await vaultService.getVaultById(vaultId);
+    if (!vault) {
+      res.status(404).json({ success: false, error: "Vault not found" });
+      return;
+    }
+
+    if (vault.adminAddress !== adminAddress) {
+      res.status(403).json({ success: false, error: "Not authorized to manage this vault" });
+      return;
+    }
+
+    if (!hasTradingWallet()) {
+      res.status(503).json({ success: false, error: "Trading wallet not configured" });
+      return;
+    }
+
+    const safeWallet = createSafeWalletService(vault.safeAddress);
+    const setupStatus = await safeWallet.getSetupStatus(vault.contractAddress);
+
+    res.json({ success: true, data: setupStatus });
+  } catch (error) {
+    logger.error("Failed to get setup status", { error: (error as Error).message });
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+});
+
+adminRoutes.post("/vaults/:id/approve-vault", adminAuth, async (req: Request, res: Response) => {
+  try {
+    const adminAddress = (req as Request & { adminAddress: string }).adminAddress;
+    const vaultId = parseInt(req.params.id!, 10);
+
+    if (isNaN(vaultId)) {
+      res.status(400).json({ success: false, error: "Invalid vault ID" });
+      return;
+    }
+
+    const vault = await vaultService.getVaultById(vaultId);
+    if (!vault) {
+      res.status(404).json({ success: false, error: "Vault not found" });
+      return;
+    }
+
+    if (vault.adminAddress !== adminAddress) {
+      res.status(403).json({ success: false, error: "Not authorized to manage this vault" });
+      return;
+    }
+
+    if (!hasTradingWallet()) {
+      res.status(503).json({ success: false, error: "Trading wallet not configured" });
+      return;
+    }
+
+    const safeWallet = createSafeWalletService(vault.safeAddress);
+    const txHash = await safeWallet.approveUsdcForSpender(vault.contractAddress);
+
+    logger.info("Approved USDC for vault contract via admin API", {
+      vaultId,
+      contractAddress: vault.contractAddress,
+      txHash,
+    });
+
+    res.json({ success: true, data: { txHash } });
+  } catch (error) {
+    logger.error("Failed to approve vault", { error: (error as Error).message });
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+});
+
+adminRoutes.post(
+  "/vaults/:id/approve-polymarket",
+  adminAuth,
+  async (req: Request, res: Response) => {
+    try {
+      if (isTestnet()) {
+        res.status(400).json({
+          success: false,
+          error: "Polymarket approvals not available on testnet",
+        });
+        return;
+      }
+
+      const adminAddress = (req as Request & { adminAddress: string }).adminAddress;
+      const vaultId = parseInt(req.params.id!, 10);
+
+      if (isNaN(vaultId)) {
+        res.status(400).json({ success: false, error: "Invalid vault ID" });
+        return;
+      }
+
+      const vault = await vaultService.getVaultById(vaultId);
+      if (!vault) {
+        res.status(404).json({ success: false, error: "Vault not found" });
+        return;
+      }
+
+      if (vault.adminAddress !== adminAddress) {
+        res.status(403).json({ success: false, error: "Not authorized to manage this vault" });
+        return;
+      }
+
+      if (!hasTradingWallet()) {
+        res.status(503).json({ success: false, error: "Trading wallet not configured" });
+        return;
+      }
+
+      const safeWallet = createSafeWalletService(vault.safeAddress);
+      const txHash = await safeWallet.approveAllForPolymarket();
+
+      logger.info("Approved all Polymarket contracts via admin API", {
+        vaultId,
+        safeAddress: vault.safeAddress,
+        txHash,
+      });
+
+      res.json({ success: true, data: { txHash } });
+    } catch (error) {
+      logger.error("Failed to approve Polymarket", { error: (error as Error).message });
+      res.status(500).json({ success: false, error: (error as Error).message });
+    }
+  },
+);
+
 async function getVaultWithAuth(req: Request, res: Response): Promise<Vault | null> {
   const adminAddress = (req as Request & { adminAddress: string }).adminAddress;
   const vaultId = parseInt(req.params.id!, 10);
@@ -590,128 +723,6 @@ adminRoutes.get(
       res.json({ success: true, data: orderbook });
     } catch (error) {
       logger.error("Failed to get order book", { error: (error as Error).message });
-      res.status(500).json({ success: false, error: (error as Error).message });
-    }
-  },
-);
-
-// Submit claim root for pending withdrawals
-adminRoutes.post(
-  "/vaults/:id/submit-claim-root",
-  adminAuth,
-  async (req: Request, res: Response) => {
-    try {
-      const vault = await getVaultWithAuth(req, res);
-      if (!vault) return;
-
-      // Get all pending withdrawal requests for this vault
-      const pendingRequests = await db
-        .select()
-        .from(withdrawalRequests)
-        .where(
-          and(
-            eq(withdrawalRequests.vaultId, vault.id),
-            eq(withdrawalRequests.status, "pending"),
-          ),
-        );
-
-      if (pendingRequests.length === 0) {
-        res.status(400).json({ success: false, error: "No pending withdrawal requests" });
-        return;
-      }
-
-      // Get vault state to calculate claimable amounts
-      const [state] = await db
-        .select()
-        .from(vaultState)
-        .where(eq(vaultState.vaultId, vault.id));
-
-      if (!state) {
-        res.status(400).json({ success: false, error: "Vault state not found" });
-        return;
-      }
-
-      const totalAssetsUsdc = parseFloat(state.totalAssetsUsdc);
-
-      // Build claim leaves - each request gets their ownership share of total assets
-      const claims: ClaimLeaf[] = [];
-      const claimDetails: { requestId: number; onChainRequestId: number; claimableUsdc: string }[] = [];
-
-      for (const request of pendingRequests) {
-        if (request.onChainRequestId === null) {
-          continue; // Skip requests not linked to on-chain
-        }
-
-        const ownershipPct = parseFloat(request.ownershipPct);
-        const claimableUsdc = totalAssetsUsdc * ownershipPct;
-        const claimableRaw = BigInt(Math.floor(claimableUsdc * 1e6));
-
-        claims.push({
-          requestId: request.onChainRequestId,
-          cumulativeClaimable: claimableRaw,
-        });
-
-        claimDetails.push({
-          requestId: request.id,
-          onChainRequestId: request.onChainRequestId,
-          claimableUsdc: claimableUsdc.toFixed(6),
-        });
-      }
-
-      if (claims.length === 0) {
-        res.status(400).json({ success: false, error: "No valid withdrawal requests to process" });
-        return;
-      }
-
-      // Build Merkle tree
-      const { root, proofs } = buildClaimTree(claims);
-
-      // Submit to contract for each request
-      const vaultContract = getVaultContract(vault.contractAddress);
-      const txHashes: string[] = [];
-
-      for (const claim of claims) {
-        const { hash } = await vaultContract.submitClaimRoot(
-          claim.requestId,
-          root,
-          claim.cumulativeClaimable,
-        );
-        txHashes.push(hash);
-      }
-
-      // Update database with proofs
-      for (const detail of claimDetails) {
-        const proof = proofs.get(detail.onChainRequestId);
-        if (proof) {
-          await db
-            .update(withdrawalRequests)
-            .set({
-              lastMerkleRoot: root,
-              lastMerkleProof: serializeProof(proof),
-              currentClaimableUsdc: detail.claimableUsdc,
-            })
-            .where(eq(withdrawalRequests.id, detail.requestId));
-        }
-      }
-
-      logger.info("Claim root submitted for vault", {
-        vaultId: vault.id,
-        root,
-        requestCount: claims.length,
-        txHashes,
-      });
-
-      res.json({
-        success: true,
-        data: {
-          root,
-          requestCount: claims.length,
-          txHashes,
-          claims: claimDetails,
-        },
-      });
-    } catch (error) {
-      logger.error("Failed to submit claim root", { error: (error as Error).message });
       res.status(500).json({ success: false, error: (error as Error).message });
     }
   },

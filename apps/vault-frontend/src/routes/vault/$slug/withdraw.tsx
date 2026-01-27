@@ -22,7 +22,6 @@ import {
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { VAULT_ABI, USDC_DECIMALS } from '../../../lib/contracts'
-import { env } from '../../../lib/env'
 import { api, type WithdrawalRecord } from '../../../lib/api'
 import { Button } from '../../../components/ui/button'
 import { Input } from '../../../components/ui/input'
@@ -34,24 +33,6 @@ import {
   CardTitle,
   CardDescription,
 } from '../../../components/ui/card'
-
-const LOCK_PERIOD_MS = env.VITE_WITHDRAWAL_LOCK_DAYS * 24 * 60 * 60 * 1000
-
-function formatTimeRemaining(ms: number): string {
-  if (ms <= 0) return 'Available now'
-  const days = Math.floor(ms / (24 * 60 * 60 * 1000))
-  const hours = Math.floor((ms % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000))
-  const minutes = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000))
-  if (days > 0) return `${days}d ${hours}h remaining`
-  if (hours > 0) return `${hours}h ${minutes}m remaining`
-  return `${minutes}m remaining`
-}
-
-function getTimeUntilClaimable(requestedAt: string): number {
-  const requestTime = new Date(requestedAt).getTime()
-  const claimableTime = requestTime + LOCK_PERIOD_MS
-  return claimableTime - Date.now()
-}
 
 export const Route = createFileRoute('/vault/$slug/withdraw')({
   component: WithdrawPage,
@@ -73,6 +54,7 @@ function WithdrawPage() {
   const [shares, setShares] = useState('')
   const [step, setStep] = useState<WithdrawStep>('input')
   const [error, setError] = useState<string | null>(null)
+  const [syncWarning, setSyncWarning] = useState<string | null>(null)
 
   const { data: vaultResponse, isLoading: vaultLoading } = useQuery({
     queryKey: ['vault', slug],
@@ -116,12 +98,48 @@ function WithdrawPage() {
     useWaitForTransactionReceipt({ hash: withdrawTxHash })
 
   useEffect(() => {
-    if (isConfirmed) {
-      queryClient.invalidateQueries({ queryKey: ['vault', slug] })
-      queryClient.invalidateQueries({ queryKey: ['user', slug] })
-      setStep('success')
+    if (!isConfirmed) return
+    if (!withdrawTxHash) return
+
+    const ingest = async () => {
+      try {
+        if (vault?.id) {
+          // Best-effort; if the backend can't see the receipt yet, a later poll/cron will catch up.
+          // We retry a few times to reduce UX flakiness right after confirmation.
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+              await api.withdrawals.ingestTx({
+                vaultId: vault.id,
+                txHash: withdrawTxHash,
+              })
+              break
+            } catch (e) {
+              if (attempt === 3) throw e
+              await new Promise((resolve) =>
+                setTimeout(resolve, 1000 * attempt),
+              )
+            }
+          }
+        }
+      } catch (e) {
+        // Best-effort; polling/cron will catch up. Surface a user-visible warning.
+        const message =
+          e instanceof Error && e.message
+            ? e.message
+            : 'We could not sync your withdrawal yet. It should appear shortly.'
+        setSyncWarning(message)
+      } finally {
+        queryClient.invalidateQueries({ queryKey: ['vault', slug] })
+        queryClient.invalidateQueries({ queryKey: ['user', slug] })
+        queryClient.invalidateQueries({
+          queryKey: ['user', slug, address, 'withdrawals'],
+        })
+        setStep('success')
+      }
     }
-  }, [isConfirmed, queryClient, slug])
+
+    void ingest()
+  }, [address, isConfirmed, queryClient, slug, vault?.id, withdrawTxHash])
 
   useEffect(() => {
     if (requestError) setError(requestError.message)
@@ -172,6 +190,7 @@ function WithdrawPage() {
     setShares('')
     setStep('input')
     setError(null)
+    setSyncWarning(null)
   }
 
   const allWithdrawals = withdrawalsResponse?.data ?? []
@@ -298,6 +317,7 @@ function WithdrawPage() {
                         shares={shares}
                         estimatedValue={estimatedValue}
                         txHash={withdrawTxHash}
+                        syncWarning={syncWarning}
                         onDone={resetForm}
                       />
                     </motion.div>
@@ -528,6 +548,7 @@ interface SuccessStepProps {
   shares: string
   estimatedValue: number
   txHash: Address | undefined
+  syncWarning: string | null
   onDone: () => void
 }
 
@@ -535,6 +556,7 @@ function SuccessStep({
   shares,
   estimatedValue,
   txHash,
+  syncWarning,
   onDone,
 }: SuccessStepProps) {
   const explorerUrl = `https://polygonscan.com/tx/${txHash}`
@@ -562,6 +584,13 @@ function SuccessStep({
       <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl text-sm text-amber-200/80">
         Funds will be claimable as positions resolve over the next few days.
       </div>
+
+      {syncWarning && (
+        <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-200/80">
+          <div className="font-medium text-amber-200 mb-1">Sync pending</div>
+          <div className="break-words">{syncWarning}</div>
+        </div>
+      )}
 
       {txHash && (
         <a
@@ -629,9 +658,6 @@ function WithdrawalsList({
           </h3>
           <div className="space-y-4">
             {pending.map((w) => {
-              const timeRemaining = getTimeUntilClaimable(w.requestedAt)
-              const isClaimable = timeRemaining <= 0
-
               return (
                 <Card
                   key={w.id}
@@ -662,35 +688,18 @@ function WithdrawalsList({
                         • {parseFloat(w.ownershipPct).toFixed(2)}% ownership
                       </div>
 
-                      {!isClaimable ? (
-                        <div className="inline-flex items-center gap-1.5 text-amber-400 bg-amber-950/30 px-3 py-1.5 rounded-lg text-sm border border-amber-500/20">
-                          <Clock className="w-3.5 h-3.5" />
-                          {formatTimeRemaining(timeRemaining)}
-                        </div>
-                      ) : (
-                        <div className="inline-flex items-center gap-1.5 text-green-400 bg-green-950/30 px-3 py-1.5 rounded-lg text-sm border border-green-500/20">
-                          <CheckCircle className="w-3.5 h-3.5" />
-                          Ready to Claim
-                        </div>
-                      )}
+                      <div className="inline-flex items-center gap-1.5 text-amber-400 bg-amber-950/30 px-3 py-1.5 rounded-lg text-sm border border-amber-500/20">
+                        <Clock className="w-3.5 h-3.5" />
+                        Check claims for availability
+                      </div>
                     </div>
 
                     <div className="sm:text-right flex items-end sm:justify-end">
-                      {isClaimable ? (
-                        <ClaimButton
-                          withdrawalId={w.id}
-                          vaultAddress={vaultAddress}
-                          onSuccess={onClaimSuccess}
-                        />
-                      ) : (
-                        <Button
-                          disabled
-                          variant="secondary"
-                          className="w-full sm:w-auto bg-white/5 text-gray-500"
-                        >
-                          Pending Unlock
-                        </Button>
-                      )}
+                      <ClaimButton
+                        withdrawalId={w.id}
+                        vaultAddress={vaultAddress}
+                        onSuccess={onClaimSuccess}
+                      />
                     </div>
                   </div>
                 </Card>
@@ -773,11 +782,15 @@ function ClaimButton({
   onSuccess,
 }: ClaimButtonProps) {
   const [error, setError] = useState<string | null>(null)
+  const [isPreparingClaim, setIsPreparingClaim] = useState(false)
   const queryClient = useQueryClient()
 
   const {
     data: claimData,
     isLoading: isLoadingClaimData,
+    isFetching: isFetchingClaimData,
+    isError: isClaimDataError,
+    error: claimDataError,
     refetch,
   } = useQuery({
     queryKey: ['claimData', withdrawalId],
@@ -800,31 +813,68 @@ function ClaimButton({
   }, [claimError])
 
   useEffect(() => {
-    if (isConfirmed) {
-      queryClient.invalidateQueries({ queryKey: ['claimData', withdrawalId] })
-      queryClient.invalidateQueries({ queryKey: ['user'] })
-      onSuccess()
-    }
-  }, [isConfirmed, queryClient, withdrawalId, onSuccess])
+    if (!isConfirmed || !claimTxHash) return
 
-  const handleClaim = () => {
-    if (!claimData) return
+    const ingestClaim = async () => {
+      try {
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            await api.withdrawals.ingestClaim(withdrawalId, claimTxHash)
+            break
+          } catch (e) {
+            if (attempt === 3) throw e
+            await new Promise((resolve) => setTimeout(resolve, 1000 * attempt))
+          }
+        }
+      } catch {
+        await api.withdrawals.getClaimData(withdrawalId).catch(() => {})
+      } finally {
+        queryClient.invalidateQueries({ queryKey: ['claimData', withdrawalId] })
+        queryClient.invalidateQueries({
+          predicate: (query) =>
+            Array.isArray(query.queryKey) && query.queryKey[0] === 'user',
+        })
+        onSuccess()
+      }
+    }
+
+    void ingestClaim()
+  }, [isConfirmed, claimTxHash, queryClient, withdrawalId, onSuccess])
+
+  const handleClaim = async () => {
     setError(null)
-    claimWithdrawal({
-      address: vaultAddress,
-      abi: VAULT_ABI,
-      functionName: 'claim',
-      args: [
-        BigInt(claimData.onChainRequestId),
-        BigInt(claimData.cumulativeClaimable),
-        claimData.merkleProof as `0x${string}`[],
-      ],
-    })
+
+    try {
+      setIsPreparingClaim(true)
+
+      // Fetch fresh signature/deadline right before claiming.
+      const freshClaimData = await api.withdrawals.getClaimData(withdrawalId)
+      queryClient.setQueryData(['claimData', withdrawalId], freshClaimData)
+
+      if (freshClaimData.claimMode === 'v1') return
+
+      claimWithdrawal({
+        address: vaultAddress,
+        abi: VAULT_ABI,
+        functionName: 'claim',
+        args: [
+          BigInt(freshClaimData.onChainRequestId),
+          BigInt(freshClaimData.cumulativeClaimable),
+          BigInt(freshClaimData.deadline),
+          freshClaimData.signature as `0x${string}`,
+        ],
+      })
+    } catch (e) {
+      setError((e as Error).message || 'Failed to fetch claim data')
+    } finally {
+      setIsPreparingClaim(false)
+    }
   }
 
-  const isLoading = isClaiming || isConfirming
+  const isLoading = isPreparingClaim || isClaiming || isConfirming
+  const isCheckingClaims = isLoadingClaimData || isFetchingClaimData
 
-  if (isLoadingClaimData) {
+  if (isCheckingClaims) {
     return (
       <Button disabled variant="outline" size="sm" className="gap-2">
         <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -844,12 +894,31 @@ function ClaimButton({
         >
           Check Claims
         </Button>
+        {isClaimDataError && (
+          <span className="text-amber-300 text-[10px] max-w-[220px] text-right leading-tight">
+            {(claimDataError as Error).message}
+          </span>
+        )}
       </div>
     )
   }
 
   const pendingAmount = parseFloat(claimData.pendingClaimUsdc)
   const claimedAmount = parseFloat(claimData.alreadyClaimedUsdc)
+
+  if (claimData.claimMode === 'v1') {
+    return (
+      <div className="flex flex-col gap-2 items-end">
+        <div className="text-xs text-gray-300">
+          Pending ${pendingAmount.toFixed(2)}
+        </div>
+        <span className="text-amber-300 text-[10px] max-w-[220px] text-right leading-tight">
+          This vault uses Merkle claims (v1). Claiming from the UI isn’t
+          supported yet.
+        </span>
+      </div>
+    )
+  }
 
   if (pendingAmount <= 0 && claimedAmount > 0) {
     return (

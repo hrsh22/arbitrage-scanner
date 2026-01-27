@@ -1,0 +1,20 @@
+{
+  "name": "@workspace/network-config",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@workspace/eslint-config": "workspace:*",
+    "@workspace/typescript-config": "workspace:*",
+    "typescript": "^5.9.2"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./chains": "./src/chains.ts",
+    "./addresses": "./src/addresses.ts"
+  }
+}

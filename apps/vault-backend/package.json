@@ -18,6 +18,7 @@
     "reset-sync": "tsx src/scripts/resetSyncState.ts"
   },
   "dependencies": {
+    "@workspace/network-config": "workspace:*",
     "@openzeppelin/merkle-tree": "^1.0.8",
     "@polymarket/clob-client": "^5.1.2",
     "@safe-global/protocol-kit": "^6.1.2",

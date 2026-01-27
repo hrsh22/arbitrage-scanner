@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db/client";
 import {
   vaults,
@@ -9,29 +9,47 @@ import {
   type VaultPosition,
   type Vault,
 } from "../db/schema";
-import { env } from "../env";
+import { env, getChainIdForNetwork } from "../env";
 import { logger } from "../logger";
 import type { VaultStatus, PositionRecord } from "../types";
 import { getVaultContract } from "./vaultContractService.js";
 
 export class VaultService {
+  private getCurrentChainId(): number {
+    return getChainIdForNetwork();
+  }
+
   async getVaultById(vaultId: number): Promise<Vault | null> {
-    const [vault] = await db.select().from(vaults).where(eq(vaults.id, vaultId));
+    const [vault] = await db
+      .select()
+      .from(vaults)
+      .where(and(eq(vaults.id, vaultId), eq(vaults.chainId, this.getCurrentChainId())));
     return vault ?? null;
   }
 
   async getVaultBySlug(slug: string): Promise<Vault | null> {
-    const [vault] = await db.select().from(vaults).where(eq(vaults.slug, slug));
+    const [vault] = await db
+      .select()
+      .from(vaults)
+      .where(and(eq(vaults.slug, slug), eq(vaults.chainId, this.getCurrentChainId())));
     return vault ?? null;
   }
 
   async getPublicVaults(): Promise<Vault[]> {
-    return db.select().from(vaults).where(eq(vaults.status, "public"));
+    return db
+      .select()
+      .from(vaults)
+      .where(and(eq(vaults.status, "public"), eq(vaults.chainId, this.getCurrentChainId())));
   }
 
   async getVaultsByAdmin(adminAddress: string): Promise<Vault[]> {
     const normalized = adminAddress.toLowerCase();
-    return db.select().from(vaults).where(eq(vaults.adminAddress, normalized));
+    return db
+      .select()
+      .from(vaults)
+      .where(
+        and(eq(vaults.adminAddress, normalized), eq(vaults.chainId, this.getCurrentChainId())),
+      );
   }
 
   async getOrCreateVaultState(vaultId: number): Promise<VaultState> {
@@ -78,16 +96,19 @@ export class VaultService {
     if (vault.contractAddress) {
       try {
         const vaultContract = getVaultContract(vault.contractAddress);
-        const onChainStats = await vaultContract.getVaultStats();
+        const isV2 = await vaultContract.isV2();
+        const onChainStats = isV2
+          ? await vaultContract.getVaultStatsV2()
+          : await vaultContract.getVaultStats();
 
         // Use on-chain values for accurate display
         totalAssetsUsdc = (Number(onChainStats.totalAssets) / 1e6).toFixed(6);
 
         // NAV per share: if 0 on-chain (no shares), default to 1.0 for new deposits
-        const navFloat = Number(onChainStats.navPerShare) / 1e18;
+        const navFloat = Number(onChainStats.navPerShare) / 1e6;
         navPerShare = navFloat > 0 ? navFloat.toFixed(8) : "1.00000000";
 
-        // Calculate total shares from on-chain supply minus locked shares
+        // Calculate total shares from on-chain values
         if (navFloat > 0) {
           totalShares = (Number(onChainStats.totalAssets) / 1e6 / navFloat).toFixed(8);
         } else {

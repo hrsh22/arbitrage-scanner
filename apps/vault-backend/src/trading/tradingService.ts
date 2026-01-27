@@ -1,10 +1,10 @@
 import { ClobClient, Side } from "@polymarket/clob-client";
 import { Wallet } from "ethers";
-import { env } from "../env.js";
+import { env, getChainIdForNetwork, isTestnet } from "../env.js";
 import { logger } from "../logger.js";
 import type { PolymarketOrder, OrderResult } from "./types.js";
 
-const CHAIN_ID = 137;
+const CHAIN_ID = getChainIdForNetwork();
 const POLYMARKET_CLOB_URL = "https://clob.polymarket.com";
 
 export class TradingService {
@@ -14,6 +14,9 @@ export class TradingService {
   private initialized: boolean = false;
 
   constructor(privateKey: string, safeAddress: string) {
+    if (isTestnet()) {
+      throw new Error("TradingService (Polymarket CLOB) is only available on mainnet");
+    }
     this.wallet = new Wallet(privateKey);
     this.safeAddress = safeAddress;
 
@@ -141,6 +144,9 @@ export class TradingService {
 const tradingServiceCache = new Map<string, TradingService>();
 
 export function getTradingService(safeAddress: string): TradingService {
+  if (isTestnet()) {
+    throw new Error("TradingService is only available on mainnet (Polymarket CLOB)");
+  }
   if (!env.TRADING_WALLET_PRIVATE_KEY) {
     throw new Error("TRADING_WALLET_PRIVATE_KEY required for trading");
   }

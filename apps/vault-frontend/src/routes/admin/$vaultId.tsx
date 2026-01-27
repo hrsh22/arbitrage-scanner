@@ -23,6 +23,7 @@ import {
   setAdminSession,
   type PendingWithdrawal,
 } from '../../lib/api'
+import { SetupChecklist } from '../../components/SetupChecklist'
 
 export const Route = createFileRoute('/admin/$vaultId')({
   component: ManageVault,
@@ -98,30 +99,6 @@ function ManageVault() {
   const state = vaultResponse?.data?.state
   const withdrawals = withdrawalsResponse?.data ?? []
 
-  const [claimRootError, setClaimRootError] = useState<string | null>(null)
-  const [claimRootSuccess, setClaimRootSuccess] = useState<string | null>(null)
-
-  const submitClaimRootMutation = useMutation({
-    mutationFn: () => api.admin.submitClaimRoot(address!, parseInt(vaultId)),
-    onSuccess: (response) => {
-      if (response.success && response.data) {
-        setClaimRootSuccess(
-          `Claim root submitted for ${response.data.requestCount} requests. TX: ${response.data.txHashes[0]?.slice(0, 10)}...`,
-        )
-        setClaimRootError(null)
-        queryClient.invalidateQueries({
-          queryKey: ['admin', 'vault', vaultId, 'withdrawals'],
-        })
-      }
-    },
-    onError: (err) => {
-      setClaimRootError(
-        err instanceof Error ? err.message : 'Failed to submit claim root',
-      )
-      setClaimRootSuccess(null)
-    },
-  })
-
   const handleNavUpdate = () => {
     setNavError(null)
     const value = parseFloat(navInput)
@@ -170,7 +147,8 @@ function ManageVault() {
                 if (!address) return
                 setAuthError(null)
                 try {
-                  const nonceResponse = await api.adminAuth.requestNonce(address)
+                  const nonceResponse =
+                    await api.adminAuth.requestNonce(address)
                   if (!nonceResponse.data) {
                     throw new Error(
                       nonceResponse.error || 'Failed to request admin nonce',
@@ -399,13 +377,15 @@ function ManageVault() {
           </div>
         </div>
 
+        <SetupChecklist vaultId={parseInt(vaultId)} adminAddress={address} />
+
         <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-6">
           <h3 className="text-lg font-semibold text-white mb-4">
             Pending Withdrawals ({withdrawals.length})
           </h3>
           <p className="text-gray-500 text-sm mb-4">
-            Claims are submitted on-chain via Merkle roots; users claim directly
-            from the vault contract.
+            Withdrawals are processed automatically. Users can claim from the
+            withdrawal page once funds are available.
           </p>
 
           {withdrawalsLoading && (
@@ -426,60 +406,6 @@ function ManageVault() {
                   <WithdrawalRow key={w.id} withdrawal={w} />
                 ))}
               </div>
-
-              {(() => {
-                const withoutClaimRoot = withdrawals.filter(
-                  (w) => !w.lastMerkleRoot,
-                )
-                const allHaveClaimRoot = withoutClaimRoot.length === 0
-
-                if (allHaveClaimRoot) {
-                  return (
-                    <div className="border-t border-slate-700 pt-4">
-                      <div className="flex items-center gap-2 text-green-400 text-sm">
-                        <Check className="w-4 h-4" />
-                        All withdrawals have claim roots. Users can now claim.
-                      </div>
-                    </div>
-                  )
-                }
-
-                return (
-                  <div className="border-t border-slate-700 pt-4">
-                    <button
-                      onClick={() => submitClaimRootMutation.mutate()}
-                      disabled={submitClaimRootMutation.isPending}
-                      className="w-full py-3 px-4 bg-green-600 hover:bg-green-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-lg flex items-center justify-center gap-2"
-                    >
-                      {submitClaimRootMutation.isPending ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          Submitting Claim Root...
-                        </>
-                      ) : (
-                        <>
-                          <Check className="w-4 h-4" />
-                          Submit Claim Root ({withoutClaimRoot.length} pending)
-                        </>
-                      )}
-                    </button>
-
-                    {claimRootError && (
-                      <div className="mt-3 flex items-center gap-2 text-red-400 text-sm">
-                        <AlertCircle className="w-4 h-4" />
-                        {claimRootError}
-                      </div>
-                    )}
-
-                    {claimRootSuccess && (
-                      <div className="mt-3 flex items-center gap-2 text-green-400 text-sm">
-                        <Check className="w-4 h-4" />
-                        {claimRootSuccess}
-                      </div>
-                    )}
-                  </div>
-                )
-              })()}
             </div>
           )}
         </div>

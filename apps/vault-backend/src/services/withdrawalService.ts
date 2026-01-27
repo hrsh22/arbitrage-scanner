@@ -255,35 +255,75 @@ export class WithdrawalService {
 
         if (vault?.contractAddress) {
           const vaultContract = getVaultContract(vault.contractAddress);
-          const onChainRequest = await vaultContract.getWithdrawalRequest(request.onChainRequestId);
+          const isV2 = await vaultContract.isV2();
 
-          const onChainClaimed = Number(onChainRequest.claimed) / 1e6;
-          const onChainTotalClaimable = Number(onChainRequest.totalClaimable) / 1e6;
+          if (isV2) {
+            const onChainRequest = await vaultContract.getWithdrawalRequestV2(request.onChainRequestId);
+            const onChainClaimed = Number(onChainRequest.claimed) / 1e6;
+            const onChainCumulativeClaimable = Number(onChainRequest.cumulativeClaimable) / 1e6;
+            const onChainAssetsReserved = Number(onChainRequest.assetsReserved) / 1e6;
 
-          totalClaimedUsdc = onChainClaimed.toFixed(6);
-          currentClaimableUsdc = onChainTotalClaimable.toFixed(6);
+            totalClaimedUsdc = onChainClaimed.toFixed(6);
+            currentClaimableUsdc = onChainCumulativeClaimable.toFixed(6);
 
-          // If fully claimed on-chain, mark as completed
-          if (onChainTotalClaimable > 0 && onChainClaimed >= onChainTotalClaimable) {
-            status = "completed";
-            // Update DB in background
-            if (request.status !== "completed") {
-              db.update(withdrawalRequests)
-                .set({
-                  status: "completed",
-                  totalClaimedUsdc: totalClaimedUsdc,
-                  completedAt: new Date(),
-                })
-                .where(eq(withdrawalRequests.id, request.id))
-                .then(() => {
-                  logger.info("Withdrawal auto-marked complete from on-chain state", { requestId });
-                })
-                .catch((err) => {
-                  logger.error("Failed to auto-mark withdrawal complete", {
-                    requestId,
-                    error: (err as Error).message,
+            if (onChainAssetsReserved > 0 && onChainClaimed >= onChainAssetsReserved) {
+              status = "completed";
+              if (request.status !== "completed") {
+                db.update(withdrawalRequests)
+                  .set({
+                    status: "completed",
+                    totalClaimedUsdc: totalClaimedUsdc,
+                    completedAt: new Date(),
+                  })
+                  .where(eq(withdrawalRequests.id, request.id))
+                  .then(() => {
+                    logger.info("Withdrawal auto-marked complete from on-chain state", {
+                      requestId,
+                      contractVersion: "v2",
+                    });
+                  })
+                  .catch((err) => {
+                    logger.error("Failed to auto-mark withdrawal complete", {
+                      requestId,
+                      error: (err as Error).message,
+                    });
                   });
-                });
+              }
+            }
+          } else {
+            const onChainRequest = await vaultContract.getWithdrawalRequest(request.onChainRequestId);
+
+            const onChainClaimed = Number(onChainRequest.claimed) / 1e6;
+            const onChainTotalClaimable = Number(onChainRequest.totalClaimable) / 1e6;
+
+            totalClaimedUsdc = onChainClaimed.toFixed(6);
+            currentClaimableUsdc = onChainTotalClaimable.toFixed(6);
+
+            // If fully claimed on-chain, mark as completed
+            if (onChainTotalClaimable > 0 && onChainClaimed >= onChainTotalClaimable) {
+              status = "completed";
+              // Update DB in background
+              if (request.status !== "completed") {
+                db.update(withdrawalRequests)
+                  .set({
+                    status: "completed",
+                    totalClaimedUsdc: totalClaimedUsdc,
+                    completedAt: new Date(),
+                  })
+                  .where(eq(withdrawalRequests.id, request.id))
+                  .then(() => {
+                    logger.info("Withdrawal auto-marked complete from on-chain state", {
+                      requestId,
+                      contractVersion: "v1",
+                    });
+                  })
+                  .catch((err) => {
+                    logger.error("Failed to auto-mark withdrawal complete", {
+                      requestId,
+                      error: (err as Error).message,
+                    });
+                  });
+              }
             }
           }
         }

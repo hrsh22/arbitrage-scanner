@@ -180,14 +180,27 @@ export interface PendingWithdrawal {
   currentClaimableUsdc: string | null
 }
 
-export interface ClaimData {
+interface ClaimDataBase {
+  claimMode: 'v1' | 'v2'
   onChainRequestId: number
   cumulativeClaimable: string
-  merkleProof: string[]
-  merkleRoot: string
   pendingClaimUsdc: string
   alreadyClaimedUsdc: string
 }
+
+export interface ClaimDataV1 extends ClaimDataBase {
+  claimMode: 'v1'
+  merkleProof: string[]
+  merkleRoot: string
+}
+
+export interface ClaimDataV2 extends ClaimDataBase {
+  claimMode: 'v2'
+  deadline: string
+  signature: string
+}
+
+export type ClaimData = ClaimDataV1 | ClaimDataV2
 
 export interface AdminNonceResponse {
   nonce: string
@@ -198,6 +211,22 @@ export interface AdminNonceResponse {
 export interface AdminVerifyResponse {
   token: string
   expiresAt: number
+}
+
+export interface SetupStatus {
+  treasuryAddress: string
+  isTestnet: boolean
+  vaultApproved: boolean
+  polymarketApproved: boolean
+  polymarketDetails?: {
+    usdcForCtf: boolean
+    usdcForCtfExchange: boolean
+    usdcForNegRiskExchange: boolean
+    usdcForNegRiskAdapter: boolean
+    ctfForCtfExchange: boolean
+    ctfForNegRiskExchange: boolean
+    ctfForNegRiskAdapter: boolean
+  }
 }
 
 export interface ApiResponse<T> {
@@ -303,16 +332,28 @@ export const api = {
         adminAddress,
       ),
 
-    submitClaimRoot: (adminAddress: string, vaultId: number) =>
-      fetchAdminApi<
-        ApiResponse<{
-          root: string
-          requestCount: number
-          txHashes: string[]
-          claims: { requestId: number; onChainRequestId: number; claimableUsdc: string }[]
-        }>
-      >(
-        `/admin/vaults/${vaultId}/submit-claim-root`,
+    getSetupStatus: (adminAddress: string, vaultId: number) =>
+      fetchAdminApi<ApiResponse<SetupStatus>>(
+        `/admin/vaults/${vaultId}/setup-status`,
+        {
+          headers: { 'x-admin-address': adminAddress },
+        },
+        adminAddress,
+      ),
+
+    approveVault: (adminAddress: string, vaultId: number) =>
+      fetchAdminApi<ApiResponse<{ txHash: string }>>(
+        `/admin/vaults/${vaultId}/approve-vault`,
+        {
+          method: 'POST',
+          headers: { 'x-admin-address': adminAddress },
+        },
+        adminAddress,
+      ),
+
+    approvePolymarket: (adminAddress: string, vaultId: number) =>
+      fetchAdminApi<ApiResponse<{ txHash: string }>>(
+        `/admin/vaults/${vaultId}/approve-polymarket`,
         {
           method: 'POST',
           headers: { 'x-admin-address': adminAddress },
@@ -337,5 +378,34 @@ export const api = {
   withdrawals: {
     getClaimData: (requestId: number) =>
       fetchApi<ClaimData>(`/withdrawals/${requestId}/claim-data`),
+
+    ingestTx: (data: { vaultId: number; txHash: string }) =>
+      fetchApi<{
+        success: boolean
+        results: Array<{
+          recorded: boolean
+          reason?: string
+          onChainRequestId?: number
+        }>
+        blockNumber: number
+      }>('/withdrawals/ingest-tx', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+
+    ingestClaim: (requestId: number, txHash: string) =>
+      fetchApi<{
+        success: boolean
+        results: Array<{
+          recorded: boolean
+          reason?: string
+          onChainRequestId?: number
+          claimedUsdc?: number
+        }>
+        blockNumber: number
+      }>(`/withdrawals/${requestId}/ingest-claim`, {
+        method: 'POST',
+        body: JSON.stringify({ txHash }),
+      }),
   },
 }

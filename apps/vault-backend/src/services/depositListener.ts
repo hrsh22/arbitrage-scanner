@@ -1,11 +1,12 @@
 import { parseAbiItem, type Address, decodeEventLog } from "viem";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { vaults, deposits, syncState } from "../db/schema.js";
 import { userService } from "./userService.js";
 import { vaultService } from "./vaultService.js";
 import { logger } from "../logger.js";
-import { env } from "../env.js";
+import { env, getFallbackRpcUrlsForNetwork, getChainIdForNetwork } from "../env.js";
+import { getContractDeploymentBlock } from "./chain/contractDeploymentBlock.js";
 
 const DEPOSIT_EVENT = parseAbiItem(
   "event Deposit(address indexed user, uint256 assets, uint256 shares)",
@@ -14,9 +15,9 @@ const DEPOSIT_EVENT = parseAbiItem(
 // Deposit event topic hash
 const DEPOSIT_TOPIC = "0x90890809c654f11d6e72a28fa60149770a0d11ec6c92319d6ceb2bb0a4ea1a15";
 
-const POLYGON_CHAIN_ID = 137;
-const MAX_LOG_RANGE = 10n;
+const MAX_LOG_RANGE = 2000n;
 const MAX_BLOCKS_PER_RUN = 5000n;
+// Kept for backwards-compatibility fallback (should be unused now that we resolve deployment blocks).
 const INITIAL_SYNC_BUFFER_BLOCKS = 500n;
 const REQUEST_SPACING_MS = 250;
 const REQUEST_TIMEOUT_MS = 8000;
@@ -24,12 +25,9 @@ const PROGRESS_LOG_EVERY_CHUNKS = 10;
 
 // RPC endpoints in order of preference
 function getRpcUrls(): string[] {
-  return [
-    "https://polygon-bor-rpc.publicnode.com",
-    "https://polygon.llamarpc.com",
-    "https://polygon-rpc.com",
-    env.POLYGON_RPC_URL,
-  ].filter((url) => url && url.trim().length > 0);
+  const fallbacks = getFallbackRpcUrlsForNetwork();
+  const urls = [env.POLYGON_RPC_URL, ...fallbacks];
+  return [...new Set(urls)].filter((url) => url && url.trim().length > 0);
 }
 
 // Simple JSON-RPC call with AbortController timeout
@@ -49,7 +47,7 @@ async function rpcCall(url: string, method: string, params: unknown[]): Promise<
       throw new Error(`HTTP ${response.status}`);
     }
 
-    const data = await response.json() as { result?: unknown; error?: { message: string } };
+    const data = (await response.json()) as { result?: unknown; error?: { message: string } };
     if (data.error) {
       throw new Error(data.error.message);
     }
@@ -81,10 +79,10 @@ async function getBlockNumber(): Promise<bigint> {
 }
 
 async function getBlock(blockNumber: bigint): Promise<{ timestamp: bigint }> {
-  const result = await rpcWithFallback("eth_getBlockByNumber", [
+  const result = (await rpcWithFallback("eth_getBlockByNumber", [
     `0x${blockNumber.toString(16)}`,
     false,
-  ]) as { timestamp: string };
+  ])) as { timestamp: string };
   return { timestamp: BigInt(result.timestamp) };
 }
 
@@ -114,20 +112,17 @@ async function getLogs(
   return (result as RpcLog[]) || [];
 }
 
-async function findBlockByTimestamp(
-  targetTimestamp: number,
-  latestBlock: bigint,
-): Promise<bigint> {
+async function findBlockByTimestamp(targetTimestamp: number, latestBlock: bigint): Promise<bigint> {
   const now = Math.floor(Date.now() / 1000);
   const secondsAgo = now - targetTimestamp;
   const estimatedBlocksAgo = BigInt(Math.floor(secondsAgo / 2));
 
-  let low = latestBlock > estimatedBlocksAgo + 10000n
-    ? latestBlock - estimatedBlocksAgo - 10000n
-    : 0n;
-  let high = latestBlock > estimatedBlocksAgo - 10000n
-    ? latestBlock - estimatedBlocksAgo + 10000n
-    : latestBlock;
+  let low =
+    latestBlock > estimatedBlocksAgo + 10000n ? latestBlock - estimatedBlocksAgo - 10000n : 0n;
+  let high =
+    latestBlock > estimatedBlocksAgo - 10000n
+      ? latestBlock - estimatedBlocksAgo + 10000n
+      : latestBlock;
 
   if (high > latestBlock) high = latestBlock;
   if (low < 0n) low = 0n;
@@ -158,12 +153,26 @@ async function findBlockByTimestamp(
 
 async function getInitialSyncBlock(
   vaultCreatedAt: Date,
+  contractAddress: Address,
   latestBlock: bigint,
 ): Promise<bigint> {
-  const targetTimestamp = Math.floor(vaultCreatedAt.getTime() / 1000);
-  const estimatedBlock = await findBlockByTimestamp(targetTimestamp, latestBlock);
-  if (estimatedBlock <= INITIAL_SYNC_BUFFER_BLOCKS) return 0n;
-  return estimatedBlock - INITIAL_SYNC_BUFFER_BLOCKS;
+  try {
+    const deploymentBlock = await getContractDeploymentBlock(contractAddress);
+    // Safety: if deployment block resolves beyond latest (shouldn't happen), fall back to 0.
+    if (deploymentBlock > latestBlock) return 0n;
+    return deploymentBlock;
+  } catch (error) {
+    logger.warn("Failed to resolve deployment block; falling back to timestamp heuristic", {
+      contractAddress: contractAddress.toLowerCase(),
+      vaultCreatedAt: vaultCreatedAt.toISOString(),
+      error: (error as Error).message,
+    });
+
+    const targetTimestamp = Math.floor(vaultCreatedAt.getTime() / 1000);
+    const estimatedBlock = await findBlockByTimestamp(targetTimestamp, latestBlock);
+    if (estimatedBlock <= INITIAL_SYNC_BUFFER_BLOCKS) return 0n;
+    return estimatedBlock - INITIAL_SYNC_BUFFER_BLOCKS;
+  }
 }
 
 function getSyncStateId(vaultId: number): string {
@@ -247,7 +256,7 @@ export async function updateLastSyncedBlock(vaultId: number, blockNumber: number
     .onConflictDoUpdate({
       target: syncState.id,
       set: {
-        lastSyncedBlock: blockNumber,
+        lastSyncedBlock: sql`GREATEST(${syncState.lastSyncedBlock}, ${blockNumber})`,
         updatedAt: new Date(),
       },
     });
@@ -260,9 +269,8 @@ export async function syncDepositsFromBlock(
   toBlock: bigint,
 ): Promise<{ processed: number; skipped: number; reachedEnd: boolean }> {
   // Cap toBlock to prevent long-running jobs
-  const cappedToBlock = fromBlock + MAX_BLOCKS_PER_RUN < toBlock
-    ? fromBlock + MAX_BLOCKS_PER_RUN
-    : toBlock;
+  const cappedToBlock =
+    fromBlock + MAX_BLOCKS_PER_RUN < toBlock ? fromBlock + MAX_BLOCKS_PER_RUN : toBlock;
 
   const totalChunks = Number((cappedToBlock - fromBlock) / MAX_LOG_RANGE) + 1;
 
@@ -362,11 +370,12 @@ export async function catchUpDeposits(
   if (lastSynced) {
     fromBlock = BigInt(lastSynced + 1);
   } else {
-    logger.info("No previous sync state, computing initial block from vault creation time", {
+    logger.info("No previous sync state, resolving initial block from contract deployment", {
       vaultId,
       vaultCreatedAt: vaultCreatedAt.toISOString(),
+      contractAddress: contractAddress.toLowerCase(),
     });
-    fromBlock = await getInitialSyncBlock(vaultCreatedAt, latestBlock);
+    fromBlock = await getInitialSyncBlock(vaultCreatedAt, contractAddress, latestBlock);
   }
 
   if (fromBlock > latestBlock) {
@@ -405,7 +414,15 @@ export async function catchUpDeposits(
 }
 
 export async function catchUpAllVaults(): Promise<void> {
-  const allVaults = await db.select().from(vaults).where(eq(vaults.status, "public"));
+  const allVaults = await db
+    .select()
+    .from(vaults)
+    .where(
+      and(
+        inArray(vaults.status, ["public", "paused", "draft"]),
+        eq(vaults.chainId, getChainIdForNetwork()),
+      ),
+    );
 
   for (const vault of allVaults) {
     try {

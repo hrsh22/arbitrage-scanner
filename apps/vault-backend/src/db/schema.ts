@@ -48,17 +48,20 @@ export const vaults = pgTable(
   {
     id: serial("id").primaryKey(),
     name: text("name").notNull(),
-    slug: text("slug").notNull().unique(),
+    slug: text("slug").notNull(),
     description: text("description"),
     contractAddress: varchar("contract_address", { length: 42 }).notNull(),
     safeAddress: varchar("safe_address", { length: 42 }).notNull(),
     adminAddress: varchar("admin_address", { length: 42 }).notNull(),
+    chainId: integer("chain_id").notNull(),
     status: vaultStatusEnum("status").notNull().default("draft"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    slugIdx: uniqueIndex("vaults_slug_idx").on(table.slug),
+    // Slug is unique per chain (same vault name can exist on mainnet and testnet)
+    slugChainIdx: uniqueIndex("vaults_slug_chain_idx").on(table.slug, table.chainId),
+    chainIdx: index("vaults_chain_idx").on(table.chainId),
     adminIdx: index("vaults_admin_idx").on(table.adminAddress),
     statusIdx: index("vaults_status_idx").on(table.status),
   }),
@@ -239,5 +242,28 @@ export const syncState = pgTable("sync_state", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const claimedEvents = pgTable(
+  "claimed_events",
+  {
+    id: serial("id").primaryKey(),
+    vaultId: integer("vault_id")
+      .notNull()
+      .references(() => vaults.id),
+    onChainRequestId: integer("on_chain_request_id").notNull(),
+    txHash: varchar("tx_hash", { length: 66 }).notNull(),
+    logIndex: integer("log_index").notNull(),
+    amountUsdc: numeric("amount_usdc", { precision: 18, scale: 6 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    vaultIdx: index("claimed_events_vault_idx").on(table.vaultId),
+    requestIdx: index("claimed_events_on_chain_idx").on(table.onChainRequestId),
+    txLogUnique: uniqueIndex("claimed_events_tx_log_idx").on(table.txHash, table.logIndex),
+  }),
+);
+
 export type SyncState = typeof syncState.$inferSelect;
 export type NewSyncState = typeof syncState.$inferInsert;
+
+export type ClaimedEvent = typeof claimedEvents.$inferSelect;
+export type NewClaimedEvent = typeof claimedEvents.$inferInsert;
