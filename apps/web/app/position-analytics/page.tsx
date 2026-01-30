@@ -1032,15 +1032,15 @@ function PeriodComparisonCard({ positions }: { positions: PositionLightweight[] 
         <CardTitle className="text-lg flex items-center gap-2">
           <TrendingUp className="h-5 w-5 text-primary" />
           Period Comparison
-          <InfoTooltip text="Compares performance between $5 bet period (before Jan 14, 2026 12:30 PM) and $25 bet period (after)." />
+          <InfoTooltip text="Compares performance before and after Jan 14, 2026 scale-up point." />
         </CardTitle>
-        <CardDescription>Performance change after scaling from $5 to $25 bets</CardDescription>
+        <CardDescription>Performance comparison across time periods</CardDescription>
       </CardHeader>
       <CardContent className="pt-0">
         <div className="grid grid-cols-2 gap-4">
           <div className="rounded-lg border bg-muted/20 p-4 space-y-3">
             <div className="flex items-center justify-between">
-              <h4 className="font-semibold text-sm">$5 Period</h4>
+              <h4 className="font-semibold text-sm">Pre-Scale</h4>
               <Badge variant="outline" className="text-xs">
                 {before.positions} trades
               </Badge>
@@ -1089,7 +1089,7 @@ function PeriodComparisonCard({ positions }: { positions: PositionLightweight[] 
 
           <div className="rounded-lg border bg-primary/5 border-primary/20 p-4 space-y-3">
             <div className="flex items-center justify-between">
-              <h4 className="font-semibold text-sm">$25 Period</h4>
+              <h4 className="font-semibold text-sm">Post-Scale</h4>
               <Badge variant="default" className="text-xs">
                 {after.positions} trades
               </Badge>
@@ -1166,9 +1166,9 @@ function PeriodComparisonCard({ positions }: { positions: PositionLightweight[] 
         <div className="mt-4 p-3 rounded-md bg-muted/30 text-xs text-muted-foreground">
           <strong className="text-foreground">Summary:</strong>{" "}
           {winRateDelta >= 0 ? (
-            <>Win rate improved by {formatPercent(winRateDelta)} after scaling to $25 bets.</>
+            <>Win rate improved by {formatPercent(winRateDelta)} post-scale.</>
           ) : (
-            <>Win rate decreased by {formatPercent(Math.abs(winRateDelta))} after scaling.</>
+            <>Win rate decreased by {formatPercent(Math.abs(winRateDelta))} post-scale.</>
           )}{" "}
           Average P/L per trade changed by {formatMoney(avgPnlDelta)}.
           {avgHoldDelta < 0 && (
@@ -1334,17 +1334,7 @@ function PositionRow({ position, wallet }: { position: PositionLightweight; wall
               <Badge variant="outline" className="text-[10px] h-5 px-1.5">
                 {position.outcome}
               </Badge>
-              <Badge
-                variant="outline"
-                className={cn(
-                  "text-[10px] h-5 px-1.5 font-mono",
-                  isAfterScaleUp
-                    ? "bg-primary/10 text-primary border-primary/30"
-                    : "bg-muted text-muted-foreground",
-                )}
-              >
-                {isAfterScaleUp ? "$25" : "$5"}
-              </Badge>
+
               {position.category && (
                 <Badge
                   variant="outline"
@@ -1619,7 +1609,7 @@ function PeriodFilter({
             : "text-muted-foreground hover:text-foreground",
         )}
       >
-        $5 Period
+        Pre-Scale
       </button>
       <button
         onClick={() => onChange("after")}
@@ -1630,7 +1620,7 @@ function PeriodFilter({
             : "text-muted-foreground hover:text-foreground",
         )}
       >
-        $25 Period
+        Post-Scale
       </button>
     </div>
   );
@@ -1934,7 +1924,12 @@ export default function PositionAnalyticsPage() {
 
               <MissedOpportunitiesCard events={missedOpportunities} />
 
-              <PeriodComparisonCard positions={positions} />
+              {/* Period comparison only for v1 (archived) bots */}
+              {selectedWallet === "0xabe50375A4064C5d5E0BE39063082e8eeF144097" ||
+              selectedWallet === "0x4884D7cFD4cDaf76C183D974f41D05381DE006DD" ||
+              selectedWallet === "0x3bb59DdB9043d40AeF6a38bb4DF85F74a5Ac899b" ? (
+                <PeriodComparisonCard positions={positions} />
+              ) : null}
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <Card>
@@ -1968,7 +1963,8 @@ export default function PositionAnalyticsPage() {
                     ) : (
                       <div className="text-sm text-muted-foreground p-4 border rounded-md bg-muted/20">
                         <p>
-                          Failed to load {stopLossPeriod === "before" ? "$5" : "$25"} period data
+                          Failed to load {stopLossPeriod === "before" ? "Pre-Scale" : "Post-Scale"}{" "}
+                          period data
                         </p>
                       </div>
                     )}
@@ -2006,7 +2002,8 @@ export default function PositionAnalyticsPage() {
                     ) : (
                       <div className="text-sm text-muted-foreground p-4 border rounded-md bg-muted/20">
                         <p>
-                          Failed to load {hedgingPeriod === "before" ? "$5" : "$25"} period data
+                          Failed to load {hedgingPeriod === "before" ? "Pre-Scale" : "Post-Scale"}{" "}
+                          period data
                         </p>
                       </div>
                     )}
@@ -2043,7 +2040,8 @@ export default function PositionAnalyticsPage() {
                   ) : (
                     <div className="text-sm text-muted-foreground p-4 border rounded-md bg-muted/20">
                       <p>
-                        Failed to load {entryTimingPeriod === "before" ? "$5" : "$25"} period data
+                        Failed to load {entryTimingPeriod === "before" ? "Pre-Scale" : "Post-Scale"}{" "}
+                        period data
                       </p>
                     </div>
                   )}
@@ -2080,7 +2078,10 @@ export default function PositionAnalyticsPage() {
                     />
                   ) : (
                     <div className="text-sm text-muted-foreground p-4 border rounded-md bg-muted/20">
-                      <p>Failed to load {categoryPeriod === "before" ? "$5" : "$25"} period data</p>
+                      <p>
+                        Failed to load {categoryPeriod === "before" ? "Pre-Scale" : "Post-Scale"}{" "}
+                        period data
+                      </p>
                     </div>
                   )}
                 </CardContent>
@@ -2097,8 +2098,8 @@ export default function PositionAnalyticsPage() {
                       <CardDescription>
                         {filteredPositions.length} positions
                         {positionsFilter !== "all" && ` (${positionsFilter})`}
-                        {periodFilter === "before" && " · $5 Period"}
-                        {periodFilter === "after" && " · $25 Period"}
+                        {periodFilter === "before" && " · Pre-Scale"}
+                        {periodFilter === "after" && " · Post-Scale"}
                         {categoryFilter.size > 0 && ` · ${categoryFilter.size} Categories`}
                       </CardDescription>
                     </div>

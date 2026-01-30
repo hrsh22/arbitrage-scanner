@@ -1,7 +1,7 @@
 export const TRACKED_WALLETS = [
-  "0xabe50375A4064C5d5E0BE39063082e8eeF144097", // Default
-  "0x4884D7cFD4cDaf76C183D974f41D05381DE006DD", // Bonding
-  "0x3bb59DdB9043d40AeF6a38bb4DF85F74a5Ac899b", // Hedging
+  "0x7d9Fe5aA506d1128faFaE07A0FC6d0881F239c15", // Bonding V2
+  "0x9E53f8578f9cC704a7B45bF53D2c7B7688ab80D9", // MidRisk V2
+  "0x08cFcA80B1035242aEe5096508b181565B2b70A3", // HighRisk V2
 ] as const;
 
 export type TrackedWallet = (typeof TRACKED_WALLETS)[number];

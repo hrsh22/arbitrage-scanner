@@ -133,12 +133,15 @@ export async function fetchPriceHistory(
   }));
 }
 
-export const DEFAULT_WALLET = "0xabe50375A4064C5d5E0BE39063082e8eeF144097";
+export const DEFAULT_WALLET = "0x7d9Fe5aA506d1128faFaE07A0FC6d0881F239c15";
 
 export const WALLET_OPTIONS = [
-  { label: "Default", value: DEFAULT_WALLET },
-  { label: "Bonding", value: "0x4884D7cFD4cDaf76C183D974f41D05381DE006DD" },
-  { label: "Hedging", value: "0x3bb59DdB9043d40AeF6a38bb4DF85F74a5Ac899b" },
+  { label: "Bonding V2", value: "0x7d9Fe5aA506d1128faFaE07A0FC6d0881F239c15" },
+  { label: "MidRisk V2", value: "0x9E53f8578f9cC704a7B45bF53D2c7B7688ab80D9" },
+  { label: "HighRisk V2", value: "0x08cFcA80B1035242aEe5096508b181565B2b70A3" },
+  { label: "Default (Archived)", value: "0xabe50375A4064C5d5E0BE39063082e8eeF144097" },
+  { label: "Bonding (Archived)", value: "0x4884D7cFD4cDaf76C183D974f41D05381DE006DD" },
+  { label: "Hedging (Archived)", value: "0x3bb59DdB9043d40AeF6a38bb4DF85F74a5Ac899b" },
 ] as const;
 
 export async function fetchEventTags(
