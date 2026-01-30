@@ -1,24 +1,24 @@
 /**
- * Bot 3: Hedging
+ * Bot 5: MidRisk V2
  *
- * Hedging strategy.
- * Targets 98-99.5¢ markets resolving within 1 hour.
+ * Mid-risk trading bot with reduced bet size.
+ * Targets 95-99.5¢ markets resolving within 4 hours.
  *
- * Hedging strategy.
+ * All values are explicitly specified - no inheritance.
  */
 
-import { env } from "../../../env.js";
-import type { BotInstanceConfig, BotMode } from "../types.js";
+import { env } from "../../../../env.js";
+import type { BotInstanceConfig, BotMode } from "../../types.js";
 
 const config: BotInstanceConfig = {
   // Identity
-  id: 3,
-  name: "hedging",
+  id: 5,
+  name: "midrisk-v2",
   enabled: true,
 
   // Wallet
-  walletPrivateKeyEnv: "WALLET_3_PRIVATE_KEY",
-  walletFunderAddressEnv: "WALLET_3_FUNDER_ADDRESS",
+  walletPrivateKeyEnv: "WALLET_5_PRIVATE_KEY",
+  walletFunderAddressEnv: "WALLET_5_FUNDER_ADDRESS",
 
   // Betting
   betSize: 5.0,
@@ -27,10 +27,10 @@ const config: BotInstanceConfig = {
   // Market selection
   minOdds: 0.95,
   maxOdds: 0.995,
-  maxHoursGeneral: 4,
-  maxHoursForHighOdds: 2,
+  maxHoursGeneral: 24,
+  maxHoursForHighOdds: 3,
   highOddsThreshold: 0.99,
-  minLiquidity: 50,
+  minLiquidity: 250,
 
   // Category-specific time limits
   categoryTimeLimits: {
@@ -58,7 +58,7 @@ const config: BotInstanceConfig = {
 
   // Hedging
   hedging: {
-    enabled: true,
+    enabled: false,
     dropThresholdPercent: 60,
     multiplier: 2,
     spreadTolerance: 0.1,

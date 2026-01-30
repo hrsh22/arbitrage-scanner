@@ -5,14 +5,14 @@
  * All values are explicitly specified - no inheritance.
  */
 
-import { env } from "../../../env.js";
-import type { BotInstanceConfig, BotMode } from "../types.js";
+import { env } from "../../../../env.js";
+import type { BotInstanceConfig, BotMode } from "../../types.js";
 
 const config: BotInstanceConfig = {
   // Identity
   id: 1,
   name: "default",
-  enabled: true,
+  enabled: false,
 
   // Wallet
   walletPrivateKeyEnv: "POLYMARKET_PRIVATE_KEY",

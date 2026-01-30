@@ -7,14 +7,14 @@
  * Skips crypto up/down markets (too volatile).
  */
 
-import { env } from "../../../env.js";
-import type { BotInstanceConfig, BotMode } from "../types.js";
+import { env } from "../../../../env.js";
+import type { BotInstanceConfig, BotMode } from "../../types.js";
 
 const config: BotInstanceConfig = {
   // Identity
   id: 2,
   name: "bonding",
-  enabled: true,
+  enabled: false,
 
   // Wallet (separate from bot1)
   walletPrivateKeyEnv: "WALLET_2_PRIVATE_KEY",

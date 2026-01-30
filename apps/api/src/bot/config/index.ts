@@ -19,7 +19,7 @@ export { BOT_CONFIGS } from "./bots/index.js";
 
 import type { BotInstanceConfig } from "./types.js";
 import { BOT_CONFIGS } from "./bots/index.js";
-import bot1Default from "./bots/bot1-default.js";
+import bot1Default from "./bots/v1/bot1-default.js";
 
 /**
  * Default configuration values from bot1.

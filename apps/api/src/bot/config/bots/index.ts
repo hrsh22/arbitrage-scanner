@@ -11,16 +11,19 @@
  */
 
 import type { BotInstanceConfig } from "../types.js";
-import bot1Default from "./bot1-default.js";
-import bot2Bonding from "./bot2-bonding.js";
-import bot3Hedging from "./bot3-hedging.js";
+// import bot1Default from "./v1/bot1-default.js";
+// import bot2Bonding from "./v1/bot2-bonding.js";
+// import bot3Hedging from "./v1/bot3-hedging.js";
+import bot4BondingV2 from "./v2/bot4-bonding-v2.js";
+import bot5MidriskV2 from "./v2/bot5-midrisk-v2.js";
+import bot6HighriskV2 from "./v2/bot6-highrisk-v2.js";
 
 // ============================================
 // BOT CONFIGURATIONS
 // Add new bots here in order of ID
 // ============================================
 
-export const BOT_CONFIGS: BotInstanceConfig[] = [bot1Default, bot2Bonding, bot3Hedging];
+export const BOT_CONFIGS: BotInstanceConfig[] = [bot4BondingV2, bot5MidriskV2, bot6HighriskV2];
 
 // ============================================
 // VALIDATION (runs at startup)
