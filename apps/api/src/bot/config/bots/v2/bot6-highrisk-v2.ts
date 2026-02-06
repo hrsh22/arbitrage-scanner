@@ -25,12 +25,11 @@ const config: BotInstanceConfig = {
   dailyBudget: Infinity,
 
   // Market selection
-  minOdds: 0.90,
+  minOdds: 0.9,
   maxOdds: 0.995,
   maxHoursGeneral: 24,
   maxHoursForHighOdds: 3,
   highOddsThreshold: 0.99,
-  minLiquidity: 25,
 
   // Category-specific time limits
   categoryTimeLimits: {

@@ -11,6 +11,7 @@ import { ClobClient, Side, AssetType, OrderType } from "@polymarket/clob-client"
 import { Wallet, ethers } from "ethers";
 import type { OrderBook, TradeResult, WalletStatus } from "./types.js";
 import { logger } from "../logger.js";
+import { calculateEffectivePrice } from "./orderBookUtils.js";
 import { getErrorLogger, ERROR_CODES } from "./errorLogger.js";
 
 // Polygon mainnet chain ID
@@ -358,55 +359,6 @@ export class TradingClient {
   }
 
   /**
-   * Calculate effective price for a given order size.
-   * Walks the order book to determine average fill price.
-   */
-  calculateEffectivePrice(
-    asks: { price: number; size: number }[],
-    usdcAmount: number,
-  ): { effectivePrice: number; canFill: boolean; tokensReceived: number } {
-    if (asks.length === 0) {
-      return { effectivePrice: 1, canFill: false, tokensReceived: 0 };
-    }
-
-    // Sort asks by price (lowest first)
-    const sortedAsks = [...asks].sort((a, b) => a.price - b.price);
-
-    let remainingUsdc = usdcAmount;
-    let totalTokens = 0;
-    let totalCost = 0;
-
-    for (const ask of sortedAsks) {
-      if (remainingUsdc <= 0) break;
-
-      // How many tokens can we buy at this price level?
-      const maxTokensAtLevel = ask.size;
-      const costForAllTokens = maxTokensAtLevel * ask.price;
-
-      if (costForAllTokens <= remainingUsdc) {
-        // Take entire level
-        totalTokens += maxTokensAtLevel;
-        totalCost += costForAllTokens;
-        remainingUsdc -= costForAllTokens;
-      } else {
-        // Partial fill at this level
-        const tokensWeBuy = remainingUsdc / ask.price;
-        totalTokens += tokensWeBuy;
-        totalCost += remainingUsdc;
-        remainingUsdc = 0;
-      }
-    }
-
-    if (remainingUsdc > 0.001) {
-      // Couldn't fill the entire order
-      return { effectivePrice: 1, canFill: false, tokensReceived: totalTokens };
-    }
-
-    const effectivePrice = totalCost / totalTokens;
-    return { effectivePrice, canFill: true, tokensReceived: totalTokens };
-  }
-
-  /**
    * Place a market buy order.
    *
    * @param tokenId - The outcome token to buy
@@ -428,8 +380,7 @@ export class TradingClient {
       // Get current order book
       const orderBook = await this.getOrderBook(tokenId);
 
-      // Calculate effective price
-      const { effectivePrice, canFill, tokensReceived } = this.calculateEffectivePrice(
+      const { effectivePrice, canFill, tokensReceived } = calculateEffectivePrice(
         orderBook.asks,
         usdcAmount,
       );
@@ -452,7 +403,7 @@ export class TradingClient {
       if (useMarketOrder) {
         return await this.placeMarketBuyOrder(tokenId, usdcAmount, effectivePrice);
       } else {
-        return await this.placeLimitBuyOrder(tokenId, effectivePrice, tokensReceived);
+        return await this.placeLimitBuyOrder(tokenId, effectivePrice, tokensReceived, maxPrice);
       }
     } catch (error) {
       const errorMsg = (error as Error).message;
@@ -475,8 +426,10 @@ export class TradingClient {
     tokenId: string,
     effectivePrice: number,
     tokensReceived: number,
+    maxPrice: number,
   ): Promise<TradeResult> {
-    const limitPrice = Math.min(effectivePrice * 1.001, 0.995);
+    // Add 0.1% buffer for execution, but cap at maxPrice from bot config
+    const limitPrice = Math.min(effectivePrice * 1.001, maxPrice);
     const roundedPrice = Math.floor(limitPrice * 100) / 100;
     const roundedSize = Math.floor(tokensReceived * 10000) / 10000;
 

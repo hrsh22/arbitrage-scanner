@@ -39,14 +39,10 @@ export class TradingBot {
       config.minWalletReserve,
     );
 
-    // Create repository scoped to this bot instance
     this.repository = getBotRepository(String(config.id));
 
-    // Create strategy engine with this bot's config
-    this.strategyEngine = new StrategyEngine(config);
-
-    // Polymarket client is shared (stateless)
     this.polyClient = new PolymarketClient();
+    this.strategyEngine = new StrategyEngine(config, this.polyClient);
   }
 
   /**

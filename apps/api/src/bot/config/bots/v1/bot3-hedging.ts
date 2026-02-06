@@ -30,7 +30,6 @@ const config: BotInstanceConfig = {
   maxHoursGeneral: 4,
   maxHoursForHighOdds: 2,
   highOddsThreshold: 0.99,
-  minLiquidity: 50,
 
   // Category-specific time limits
   categoryTimeLimits: {

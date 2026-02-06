@@ -89,7 +89,6 @@ export interface BotInstanceConfig {
   maxHoursGeneral: number;
   maxHoursForHighOdds: number;
   highOddsThreshold: number;
-  minLiquidity: number;
 
   // Category-specific time limits (hours)
   // Key = tag slug from Polymarket API, Value = max hours until resolution

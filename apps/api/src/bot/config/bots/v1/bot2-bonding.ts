@@ -28,7 +28,6 @@ const config: BotInstanceConfig = {
   minOdds: 0.991,
   maxOdds: 0.998,
   maxHoursGeneral: 10 / 60, // 10 minutes
-  minLiquidity: 50,
 
   // Disable high-odds special rule (set threshold above maxOdds)
   highOddsThreshold: 1.0,

@@ -41,7 +41,6 @@ export const BOT_CONFIG = {
   MAX_HOURS_FOR_HIGH_ODDS:
     defaultConfig?.maxHoursForHighOdds ?? DEFAULT_BOT_CONFIG.maxHoursForHighOdds,
   HIGH_ODDS_THRESHOLD: defaultConfig?.highOddsThreshold ?? DEFAULT_BOT_CONFIG.highOddsThreshold,
-  MIN_LIQUIDITY: defaultConfig?.minLiquidity ?? DEFAULT_BOT_CONFIG.minLiquidity,
 
   // Category-specific time limits
   CATEGORY_TIME_LIMITS: defaultConfig?.categoryTimeLimits ?? DEFAULT_BOT_CONFIG.categoryTimeLimits,

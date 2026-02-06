@@ -122,6 +122,22 @@ export class PolymarketClient {
     }
   }
 
+  async getOrderBook(tokenId: string): Promise<{
+    bids: { price: string; size: string }[];
+    asks: { price: string; size: string }[];
+  }> {
+    try {
+      const url = `${this.clobBase}/book?token_id=${tokenId}`;
+      const book = await this.fetchJson<ClobBook>(url);
+      return {
+        bids: book.bids ?? [],
+        asks: book.asks ?? [],
+      };
+    } catch {
+      return { bids: [], asks: [] };
+    }
+  }
+
   /**
    * Fetch a batch of events (100 per request)
    */

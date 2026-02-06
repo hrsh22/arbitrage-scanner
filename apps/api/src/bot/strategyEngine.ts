@@ -14,6 +14,8 @@ import type { BotInstanceConfig } from "./config/index.js";
 import type { ScoredOpportunity } from "./types.js";
 import type { NearResolutionOpportunity } from "../types.js";
 import { logger } from "../logger.js";
+import { PolymarketClient } from "../clients/polymarketClient.js";
+import { checkEffectivePrice, parseOrderBookEntries } from "./orderBookUtils.js";
 
 /**
  * Get the max hours until resolution for a market based on its tags.
@@ -167,9 +169,11 @@ export function calculateMaxInvestmentStats(
 
 export class StrategyEngine {
   private config: BotInstanceConfig;
+  private polyClient: PolymarketClient;
 
-  constructor(config: BotInstanceConfig) {
+  constructor(config: BotInstanceConfig, polyClient?: PolymarketClient) {
     this.config = config;
+    this.polyClient = polyClient ?? new PolymarketClient();
   }
 
   /**
@@ -253,29 +257,6 @@ export class StrategyEngine {
       };
     }
 
-    // Check liquidity first (quick check)
-    if (likelyOutcome.liquidity < this.config.minLiquidity) {
-      const maxStats = calculateMaxInvestmentStats(buyPrice, likelyOutcome.liquidity);
-      return {
-        marketId,
-        marketQuestion: question,
-        marketSlug: opp.marketSlug,
-        tokenId: likelyOutcome.tokenId,
-        oppositeTokenId,
-        outcome: likelyOutcome.name,
-        probability,
-        buyPrice,
-        hoursUntilClose,
-        closesAt,
-        liquidity: likelyOutcome.liquidity,
-        pphScore: 0,
-        expectedProfit: 0,
-        canBet: false,
-        skipReason: `Liquidity $${likelyOutcome.liquidity.toFixed(0)} below min $${this.config.minLiquidity}`,
-        ...maxStats,
-      };
-    }
-
     // Validate against strategy rules using buyPrice
     const validation = isValidOpportunity(buyPrice, hoursUntilClose, this.config, opp.tags);
     if (!validation.valid) {
@@ -327,6 +308,36 @@ export class StrategyEngine {
       };
     }
 
+    if (likelyOutcome.tokenId) {
+      const priceCheckResult = await this.checkOrderBookPrice(
+        likelyOutcome.tokenId,
+        this.config.betSize,
+        this.config.maxOdds,
+      );
+
+      if (!priceCheckResult.acceptable) {
+        const maxStats = calculateMaxInvestmentStats(buyPrice, likelyOutcome.liquidity);
+        return {
+          marketId,
+          marketQuestion: question,
+          marketSlug: opp.marketSlug,
+          tokenId: likelyOutcome.tokenId,
+          oppositeTokenId,
+          outcome: likelyOutcome.name,
+          probability,
+          buyPrice,
+          hoursUntilClose,
+          closesAt,
+          liquidity: likelyOutcome.liquidity,
+          pphScore,
+          expectedProfit,
+          canBet: false,
+          skipReason: priceCheckResult.reason ?? "Effective price check failed",
+          ...maxStats,
+        };
+      }
+    }
+
     const maxStats = calculateMaxInvestmentStats(buyPrice, likelyOutcome.liquidity);
     return {
       marketId,
@@ -370,5 +381,41 @@ export class StrategyEngine {
     });
 
     return deduplicated.slice(0, maxBets);
+  }
+
+  private async checkOrderBookPrice(
+    tokenId: string,
+    betSize: number,
+    maxOdds: number,
+  ): Promise<{ acceptable: boolean; reason?: string }> {
+    try {
+      const orderBook = await this.polyClient.getOrderBook(tokenId);
+      if (!orderBook.asks || orderBook.asks.length === 0) {
+        return { acceptable: false, reason: "No asks in order book" };
+      }
+
+      const asks = parseOrderBookEntries(orderBook.asks);
+      const result = checkEffectivePrice(asks, betSize, maxOdds);
+
+      if (!result.acceptable) {
+        logger.debug("StrategyEngine: Effective price check failed", {
+          tokenId,
+          betSize,
+          maxOdds,
+          effectivePrice: result.effectivePrice,
+          bestAsk: result.bestAsk,
+          profitIfWin: result.profitIfWin,
+          reason: result.reason,
+        });
+      }
+
+      return { acceptable: result.acceptable, reason: result.reason };
+    } catch (error) {
+      logger.warn("StrategyEngine: Failed to check order book price", {
+        tokenId,
+        error: (error as Error).message,
+      });
+      return { acceptable: false, reason: `Order book fetch failed: ${(error as Error).message}` };
+    }
   }
 }
