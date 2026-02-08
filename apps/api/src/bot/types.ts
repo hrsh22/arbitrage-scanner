@@ -103,6 +103,8 @@ export interface TradeResult {
   fillPrice?: number;
   fillSize?: number;
   error?: string;
+  /** True if the order failed due to insufficient USDC balance (from Polymarket API) */
+  insufficientBalance?: boolean;
 }
 
 export interface WalletStatus {

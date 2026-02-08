@@ -618,6 +618,22 @@ export class BotRepository {
     },
     reason: string,
   ): Promise<void> {
+    const existingMissed = await db
+      .select({ id: botEventLog.id })
+      .from(botEventLog)
+      .where(
+        and(
+          eq(botEventLog.botInstanceId, this.botInstanceId),
+          eq(botEventLog.eventType, "missed_opportunity"),
+          sql`${botEventLog.metadata}->>'marketId' = ${opportunity.marketId}`,
+        ),
+      )
+      .limit(1);
+
+    if (existingMissed.length > 0) {
+      return;
+    }
+
     await this.logEvent({
       eventType: "missed_opportunity",
       eventName: reason,

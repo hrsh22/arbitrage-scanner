@@ -454,13 +454,18 @@ export class TradingClient {
     logger.info("TradingClient: Limit order placed", {
       orderId: result.orderID,
       status: result.status,
+      errorMsg: result.errorMsg,
     });
+
+    const isInsufficientBalance = result.errorMsg?.includes("INVALID_ORDER_NOT_ENOUGH_BALANCE");
 
     return {
       success: result.success ?? false,
       orderId: result.orderID,
       fillPrice: effectivePrice,
       fillSize: roundedSize,
+      error: result.errorMsg || undefined,
+      insufficientBalance: isInsufficientBalance,
     };
   }
 
@@ -489,15 +494,19 @@ export class TradingClient {
     logger.info("TradingClient: Market order placed", {
       orderId: result.orderID,
       status: result.status,
+      errorMsg: result.errorMsg,
     });
 
     const tokensReceived = roundedAmount / effectivePrice;
+    const isInsufficientBalance = result.errorMsg?.includes("INVALID_ORDER_NOT_ENOUGH_BALANCE");
 
     return {
       success: result.success ?? false,
       orderId: result.orderID,
       fillPrice: effectivePrice,
       fillSize: tokensReceived,
+      error: result.errorMsg || undefined,
+      insufficientBalance: isInsufficientBalance,
     };
   }
 

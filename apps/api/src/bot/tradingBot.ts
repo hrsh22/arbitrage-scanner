@@ -225,31 +225,15 @@ export class TradingBot {
       });
 
       if (maxBets === 0) {
-        const bettableOpps = scoredOpps.filter((o) => o.canBet);
         logger.info("TradingBot: Daily budget exhausted", {
           botId: this.config.id,
-          missedOpportunities: bettableOpps.length,
+          bettableOpportunities: scoredOpps.filter((o) => o.canBet).length,
         });
         await this.repository.logEvent({
           eventType: "info",
           eventName: "budget_exhausted",
-          message: `Daily budget exhausted. Missed ${bettableOpps.length} opportunities.`,
+          message: `Daily budget exhausted.`,
         });
-
-        for (const opp of bettableOpps) {
-          await this.repository.logMissedOpportunity(
-            {
-              marketId: opp.marketId,
-              marketQuestion: opp.marketQuestion,
-              outcome: opp.outcome,
-              buyPrice: opp.buyPrice,
-              pphScore: opp.pphScore,
-              expectedProfit: opp.expectedProfit,
-              hoursUntilClose: opp.hoursUntilClose,
-            },
-            "budget_exhausted",
-          );
-        }
 
         this.lastScanAt = new Date();
         return;
@@ -257,51 +241,14 @@ export class TradingBot {
 
       // 6. Get top opportunities and place bets
       const topOpps = this.strategyEngine.getTopOpportunities(scoredOpps, maxBets);
-      let stoppedDueToBalance = false;
 
       for (let i = 0; i < topOpps.length; i++) {
         const opp = topOpps[i]!;
         const result = await this.placeBet(opp);
 
         if (result === "insufficient_balance") {
-          stoppedDueToBalance = true;
-          for (let j = i + 1; j < topOpps.length; j++) {
-            const remainingOpp = topOpps[j]!;
-            await this.repository.logMissedOpportunity(
-              {
-                marketId: remainingOpp.marketId,
-                marketQuestion: remainingOpp.marketQuestion,
-                outcome: remainingOpp.outcome,
-                buyPrice: remainingOpp.buyPrice,
-                pphScore: remainingOpp.pphScore,
-                expectedProfit: remainingOpp.expectedProfit,
-                hoursUntilClose: remainingOpp.hoursUntilClose,
-              },
-              "insufficient_wallet_balance",
-            );
-          }
+          // Stop trying to place more bets - wallet is empty
           break;
-        }
-      }
-
-      if (!stoppedDueToBalance) {
-        const bettableOpps = scoredOpps.filter((o) => o.canBet);
-        const topOppMarketIds = new Set(topOpps.map((o) => o.marketId));
-        const missedDueToBudget = bettableOpps.filter((o) => !topOppMarketIds.has(o.marketId));
-
-        for (const opp of missedDueToBudget) {
-          await this.repository.logMissedOpportunity(
-            {
-              marketId: opp.marketId,
-              marketQuestion: opp.marketQuestion,
-              outcome: opp.outcome,
-              buyPrice: opp.buyPrice,
-              pphScore: opp.pphScore,
-              expectedProfit: opp.expectedProfit,
-              hoursUntilClose: opp.hoursUntilClose,
-            },
-            "insufficient_budget",
-          );
         }
       }
 
@@ -408,14 +355,24 @@ export class TradingBot {
           return "failed";
         }
 
-        // Check wallet balance before attempting bet
-        const balance = await this.tradingClient.getBalance();
-        if (balance < this.config.betSize) {
-          logger.warn("TradingBot: Insufficient balance for bet", {
+        // Calculate max price with slippage, but cap at maxOdds
+        const maxPrice = Math.min(opportunity.buyPrice * 1.02, this.config.maxOdds);
+
+        const result = await this.tradingClient.placeBet(
+          opportunity.tokenId,
+          this.config.betSize,
+          maxPrice,
+          this.config.useMarketOrders,
+        );
+
+        if (result.success) {
+          await this.recordPosition(opportunity, isSimulation);
+          return "success";
+        } else if (result.insufficientBalance) {
+          logger.warn("TradingBot: Insufficient balance from Polymarket API", {
             botId: this.config.id,
-            balance,
-            betSize: this.config.betSize,
             marketId: opportunity.marketId,
+            error: result.error,
           });
 
           await this.repository.logMissedOpportunity(
@@ -432,21 +389,6 @@ export class TradingBot {
           );
 
           return "insufficient_balance";
-        }
-
-        // Calculate max price with slippage, but cap at maxOdds
-        const maxPrice = Math.min(opportunity.buyPrice * 1.02, this.config.maxOdds);
-
-        const result = await this.tradingClient.placeBet(
-          opportunity.tokenId,
-          this.config.betSize,
-          maxPrice,
-          this.config.useMarketOrders,
-        );
-
-        if (result.success) {
-          await this.recordPosition(opportunity, isSimulation);
-          return "success";
         } else {
           logger.error("TradingBot: Trade failed", {
             botId: this.config.id,
