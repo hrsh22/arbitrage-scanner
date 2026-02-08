@@ -459,7 +459,9 @@ export class TradingClient {
     });
 
     const errorField = result.errorMsg || (result as unknown as { error?: string }).error;
-    const isInsufficientBalance = errorField?.includes("INVALID_ORDER_NOT_ENOUGH_BALANCE");
+    const isInsufficientBalance =
+      errorField?.includes("INVALID_ORDER_NOT_ENOUGH_BALANCE") ||
+      errorField?.toLowerCase().includes("not enough balance");
 
     return {
       success: result.success ?? false,
@@ -502,7 +504,9 @@ export class TradingClient {
 
     const tokensReceived = roundedAmount / effectivePrice;
     const errorField = result.errorMsg || (result as unknown as { error?: string }).error;
-    const isInsufficientBalance = errorField?.includes("INVALID_ORDER_NOT_ENOUGH_BALANCE");
+    const isInsufficientBalance =
+      errorField?.includes("INVALID_ORDER_NOT_ENOUGH_BALANCE") ||
+      errorField?.toLowerCase().includes("not enough balance");
 
     return {
       success: result.success ?? false,
