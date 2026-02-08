@@ -425,9 +425,15 @@ export function buildBotRouter(): Router {
       const eventType = req.query.type as string | undefined;
 
       const repository = getBotRepository(String(botId));
-      const events = eventType
-        ? await repository.getEventsByType(eventType, limit)
-        : await repository.getRecentEvents(limit);
+
+      let events;
+      if (eventType === "missed_opportunity") {
+        events = await repository.getMissedOpportunities(limit);
+      } else if (eventType) {
+        events = await repository.getEventsByType(eventType, limit);
+      } else {
+        events = await repository.getRecentEvents(limit);
+      }
 
       res.json({
         events,

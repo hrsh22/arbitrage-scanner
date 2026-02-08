@@ -719,6 +719,54 @@ export class BotRepository {
     }));
   }
 
+  /**
+   * Get missed opportunities deduplicated by marketId (one per market)
+   */
+  async getMissedOpportunities(limit: number = 500): Promise<BotEvent[]> {
+    const rows = await db
+      .select()
+      .from(botEventLog)
+      .where(
+        and(
+          eq(botEventLog.botInstanceId, this.botInstanceId),
+          eq(botEventLog.eventType, "missed_opportunity"),
+        ),
+      )
+      .orderBy(desc(botEventLog.createdAt))
+      .limit(limit * 10);
+
+    const seen = new Set<string>();
+    const unique: BotEvent[] = [];
+
+    for (const row of rows) {
+      const metadata = row.metadata as Record<string, unknown> | undefined;
+      const marketId = metadata?.marketId as string | undefined;
+
+      if (marketId && seen.has(marketId)) {
+        continue;
+      }
+
+      if (marketId) {
+        seen.add(marketId);
+      }
+
+      unique.push({
+        id: row.id,
+        eventType: row.eventType as BotEvent["eventType"],
+        eventName: row.eventName,
+        message: row.message,
+        metadata,
+        createdAt: row.createdAt,
+      });
+
+      if (unique.length >= limit) {
+        break;
+      }
+    }
+
+    return unique;
+  }
+
   // ==========================================
   // POSITION SYNC (for API-first approach)
   // ==========================================
