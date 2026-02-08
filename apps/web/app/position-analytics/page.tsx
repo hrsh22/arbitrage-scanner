@@ -17,7 +17,7 @@ import {
   type EntryTimingItem,
   type ComputedAnalytics,
 } from "@/lib/polymarket-api";
-import { DEFAULT_WALLET, WALLET_OPTIONS } from "@/lib/polymarket-api";
+import { DEFAULT_WALLET, WALLET_OPTIONS, getBotIdForWallet } from "@/lib/polymarket-api";
 import {
   RefreshCw,
   TrendingDown,
@@ -65,7 +65,6 @@ import {
 } from "@workspace/ui/components/tooltip";
 import { cn } from "@workspace/ui/lib/utils";
 import {
-  AreaChart,
   Area,
   Line,
   XAxis,
@@ -542,7 +541,7 @@ function CategoryDetailCard({ category }: { category: CategoryBreakdownItem }) {
               fontSize={11}
               tickLine={false}
               axisLine={false}
-              tickFormatter={(val) => `$${val.toFixed(0)}`}
+              tickFormatter={(val: number) => `$${val.toFixed(0)}`}
               width={50}
             />
             <ChartTooltip
@@ -563,7 +562,7 @@ function CategoryDetailCard({ category }: { category: CategoryBreakdownItem }) {
             />
             <Legend
               wrapperStyle={{ fontSize: "11px", paddingTop: "8px" }}
-              formatter={(value) =>
+              formatter={(value: string) =>
                 value === "stopLoss"
                   ? "Stop-Loss"
                   : value === "hedgeFull"
@@ -1415,7 +1414,7 @@ function PositionRow({ position, wallet }: { position: PositionLightweight; wall
                       fontSize={12}
                       tickLine={false}
                       axisLine={false}
-                      tickFormatter={(val) => `${val.toFixed(0)}¢`}
+                      tickFormatter={(val: number) => `${val.toFixed(0)}¢`}
                       width={45}
                     />
                     <ChartTooltip
@@ -1432,7 +1431,7 @@ function PositionRow({ position, wallet }: { position: PositionLightweight; wall
                     />
                     <Legend
                       wrapperStyle={{ fontSize: "11px", paddingTop: "8px" }}
-                      formatter={(value) =>
+                      formatter={(value: string) =>
                         value === "ourPrice" ? "Our Outcome" : "Opposite (Hedge)"
                       }
                     />
@@ -1741,7 +1740,11 @@ export default function PositionAnalyticsPage() {
         const [analyticsRes, positionsRes, missedRes] = await Promise.all([
           fetchWalletAnalytics(selectedWallet, abortControllerRef.current.signal),
           fetchResolvedPositionsFromDB(selectedWallet, abortControllerRef.current.signal),
-          fetchMissedOpportunities(1, 500, abortControllerRef.current.signal),
+          fetchMissedOpportunities(
+            getBotIdForWallet(selectedWallet),
+            500,
+            abortControllerRef.current.signal,
+          ),
         ]);
 
         setAnalytics(analyticsRes.analytics);
