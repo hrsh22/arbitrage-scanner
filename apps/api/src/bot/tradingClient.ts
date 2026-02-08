@@ -455,16 +455,18 @@ export class TradingClient {
       orderId: result.orderID,
       status: result.status,
       errorMsg: result.errorMsg,
+      error: (result as unknown as { error?: string }).error,
     });
 
-    const isInsufficientBalance = result.errorMsg?.includes("INVALID_ORDER_NOT_ENOUGH_BALANCE");
+    const errorField = result.errorMsg || (result as unknown as { error?: string }).error;
+    const isInsufficientBalance = errorField?.includes("INVALID_ORDER_NOT_ENOUGH_BALANCE");
 
     return {
       success: result.success ?? false,
       orderId: result.orderID,
       fillPrice: effectivePrice,
       fillSize: roundedSize,
-      error: result.errorMsg || undefined,
+      error: errorField || undefined,
       insufficientBalance: isInsufficientBalance,
     };
   }
@@ -495,17 +497,19 @@ export class TradingClient {
       orderId: result.orderID,
       status: result.status,
       errorMsg: result.errorMsg,
+      error: (result as unknown as { error?: string }).error,
     });
 
     const tokensReceived = roundedAmount / effectivePrice;
-    const isInsufficientBalance = result.errorMsg?.includes("INVALID_ORDER_NOT_ENOUGH_BALANCE");
+    const errorField = result.errorMsg || (result as unknown as { error?: string }).error;
+    const isInsufficientBalance = errorField?.includes("INVALID_ORDER_NOT_ENOUGH_BALANCE");
 
     return {
       success: result.success ?? false,
       orderId: result.orderID,
       fillPrice: effectivePrice,
       fillSize: tokensReceived,
-      error: result.errorMsg || undefined,
+      error: errorField || undefined,
       insufficientBalance: isInsufficientBalance,
     };
   }
