@@ -1208,19 +1208,25 @@ function MissedOpportunitiesCard({ events }: { events: MissedOpportunityEvent[] 
           Missed Opportunities
         </CardTitle>
         <CardDescription>
-          {totalMissed} missed · ${totalPotentialProfit.toFixed(2)} potential profit lost
+          {totalMissed} unique markets · ${totalPotentialProfit.toFixed(2)} potential profit lost
         </CardDescription>
       </CardHeader>
       <CardContent className="pt-0">
-        <div className="flex flex-wrap gap-2">
-          {byDate.map((d) => (
-            <div key={d.date} className="bg-muted/50 rounded px-2 py-1 text-xs">
-              <span className="font-medium">{d.date}</span>
-              <span className="text-muted-foreground ml-1">
-                {d.count} missed · ${d.potentialProfit.toFixed(2)}
+        <div className="text-xs text-muted-foreground">
+          Last 7 days:{" "}
+          {byDate.length === 0 ? (
+            <span>No recent missed opportunities</span>
+          ) : (
+            byDate.map((d, i) => (
+              <span key={d.date}>
+                {i > 0 && " · "}
+                <span className="text-foreground">
+                  {new Date(d.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                </span>{" "}
+                ({d.count})
               </span>
-            </div>
-          ))}
+            ))
+          )}
         </div>
       </CardContent>
     </Card>

@@ -613,8 +613,8 @@ export class BotRepository {
       outcome: string;
       buyPrice: number;
       pphScore: number;
-      expectedProfit: number;
       hoursUntilClose: number;
+      betSize: number;
     },
     reason: string,
   ): Promise<void> {
@@ -634,6 +634,11 @@ export class BotRepository {
       return;
     }
 
+    const potentialProfit =
+      opportunity.buyPrice > 0
+        ? opportunity.betSize / opportunity.buyPrice - opportunity.betSize
+        : 0;
+
     await this.logEvent({
       eventType: "missed_opportunity",
       eventName: reason,
@@ -644,9 +649,10 @@ export class BotRepository {
         outcome: opportunity.outcome,
         buyPrice: opportunity.buyPrice,
         pphScore: opportunity.pphScore,
-        expectedProfit: opportunity.expectedProfit,
+        betSize: opportunity.betSize,
         hoursUntilClose: opportunity.hoursUntilClose,
-        potentialProfit: opportunity.expectedProfit,
+        potentialProfit,
+        expectedProfit: potentialProfit,
       },
     });
   }

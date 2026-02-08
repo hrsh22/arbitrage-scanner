@@ -382,8 +382,8 @@ export class TradingBot {
               outcome: opportunity.outcome,
               buyPrice: opportunity.buyPrice,
               pphScore: opportunity.pphScore,
-              expectedProfit: opportunity.expectedProfit,
               hoursUntilClose: opportunity.hoursUntilClose,
+              betSize: this.config.betSize,
             },
             "insufficient_wallet_balance",
           );
@@ -530,8 +530,8 @@ export class TradingBot {
             outcome: opp.outcome,
             buyPrice: opp.buyPrice,
             pphScore: opp.pphScore,
-            expectedProfit: opp.expectedProfit,
             hoursUntilClose: opp.hoursUntilClose,
+            betSize: this.config.betSize,
           },
           reason,
         );
