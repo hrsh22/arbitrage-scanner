@@ -40,7 +40,7 @@ const config: BotInstanceConfig = {
   },
 
   // Categories to skip entirely
-  skipCategories: ["crypto", "up-or-down"],
+  skipCategories: ["crypto", "up-or-down", "weather"],
 
   // Safety limits
   minWalletReserve: 0,
