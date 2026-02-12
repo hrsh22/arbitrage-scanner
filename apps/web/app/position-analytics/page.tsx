@@ -78,7 +78,7 @@ import {
 } from "recharts";
 
 type ResolvedFilter = "all" | "won" | "lost";
-type SortKey = "date" | "entry" | "final" | "pnl" | "maxdd";
+type SortKey = "date" | "entry" | "final" | "pnl" | "roi" | "maxdd";
 type SortDirection = "asc" | "desc";
 
 const SCALE_UP_TIMESTAMP = new Date("2026-01-14T12:30:00Z").getTime();
@@ -697,6 +697,9 @@ function SimpleCategoryTable({ categories }: { categories: SimpleCategoryBreakdo
                 Avg P/L
               </th>
               <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
+                ROI
+              </th>
+              <th className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
                 Avg Drawdown
               </th>
             </tr>
@@ -734,6 +737,15 @@ function SimpleCategoryTable({ categories }: { categories: SimpleCategoryBreakdo
                   )}
                 >
                   {formatMoney(cat.avgPnl)}
+                </td>
+                <td
+                  className={cn(
+                    "p-3 align-middle text-right font-mono",
+                    cat.roi >= 0 ? "text-emerald-500" : "text-rose-500",
+                  )}
+                >
+                  {cat.roi >= 0 ? "+" : ""}
+                  {cat.roi.toFixed(1)}%
                 </td>
                 <td className="p-3 align-middle text-right text-rose-500">
                   {cat.avgDrawdown.toFixed(1)}%
@@ -896,6 +908,8 @@ interface PeriodStats {
   lost: number;
   winRate: number;
   totalPnl: number;
+  totalCost: number;
+  roi: number;
   avgPnl: number;
   avgHoldingHours: number;
 }
@@ -904,6 +918,8 @@ function computePeriodStats(positions: PositionLightweight[]): PeriodStats {
   const won = positions.filter((p) => p.result === "won").length;
   const lost = positions.filter((p) => p.result === "lost").length;
   const totalPnl = positions.reduce((sum, p) => sum + parseFloat(p.profitLoss || "0"), 0);
+  const totalCost = positions.reduce((sum, p) => sum + parseFloat(p.cost || "0"), 0);
+  const roi = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
 
   let totalHours = 0;
   let hoursCount = 0;
@@ -931,6 +947,8 @@ function computePeriodStats(positions: PositionLightweight[]): PeriodStats {
     lost,
     winRate: positions.length > 0 ? won / positions.length : 0,
     totalPnl,
+    totalCost,
+    roi,
     avgPnl: positions.length > 0 ? totalPnl / positions.length : 0,
     avgHoldingHours: hoursCount > 0 ? totalHours / hoursCount : 0,
   };
@@ -954,6 +972,8 @@ type SimpleCategoryBreakdown = {
   lossCount: number;
   winRate: number;
   totalPnl: number;
+  totalCost: number;
+  roi: number;
   avgPnl: number;
   avgDrawdown: number;
 };
@@ -972,6 +992,8 @@ function computeCategoryBreakdown(positions: PositionLightweight[]): SimpleCateg
       const winCount = catPositions.filter((p) => p.result === "won").length;
       const lossCount = catPositions.filter((p) => p.result === "lost").length;
       const totalPnl = catPositions.reduce((s, p) => s + parseFloat(p.profitLoss || "0"), 0);
+      const totalCost = catPositions.reduce((s, p) => s + parseFloat(p.cost || "0"), 0);
+      const roi = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
       const avgDrawdown =
         catPositions.reduce((s, p) => s + parseFloat(p.maxDrawdownPercent || "0"), 0) /
         catPositions.length;
@@ -983,6 +1005,8 @@ function computeCategoryBreakdown(positions: PositionLightweight[]): SimpleCateg
         lossCount,
         winRate: catPositions.length > 0 ? winCount / catPositions.length : 0,
         totalPnl,
+        totalCost,
+        roi,
         avgPnl: catPositions.length > 0 ? totalPnl / catPositions.length : 0,
         avgDrawdown,
       };
@@ -1010,6 +1034,7 @@ function PeriodComparisonCard({ positions }: { positions: PositionLightweight[] 
   const winRateDelta = after.winRate - before.winRate;
   const avgPnlDelta = after.avgPnl - before.avgPnl;
   const avgHoldDelta = after.avgHoldingHours - before.avgHoldingHours;
+  const roiDelta = after.roi - before.roi;
 
   const formatMoney = (val: number) => {
     const prefix = val >= 0 ? (val > 0 ? "+" : "") : "";
@@ -1079,6 +1104,18 @@ function PeriodComparisonCard({ positions }: { positions: PositionLightweight[] 
                   {formatMoney(before.avgPnl)}
                 </p>
               </div>
+              <div>
+                <p className="text-muted-foreground text-xs">ROI</p>
+                <p
+                  className={cn(
+                    "font-mono font-medium",
+                    before.roi >= 0 ? "text-emerald-500" : "text-rose-500",
+                  )}
+                >
+                  {before.roi >= 0 ? "+" : ""}
+                  {before.roi.toFixed(1)}%
+                </p>
+              </div>
               <div className="col-span-2">
                 <p className="text-muted-foreground text-xs">Avg Hold Time</p>
                 <p className="font-mono font-medium">{before.avgHoldingHours.toFixed(1)}h</p>
@@ -1140,6 +1177,24 @@ function PeriodComparisonCard({ positions }: { positions: PositionLightweight[] 
                     )}
                   >
                     ({formatMoney(avgPnlDelta)})
+                  </span>
+                </p>
+              </div>
+              <div>
+                <p className="text-muted-foreground text-xs">ROI</p>
+                <p className="font-mono font-medium flex items-center gap-1">
+                  <span className={after.roi >= 0 ? "text-emerald-500" : "text-rose-500"}>
+                    {after.roi >= 0 ? "+" : ""}
+                    {after.roi.toFixed(1)}%
+                  </span>
+                  <span
+                    className={cn(
+                      "text-[10px]",
+                      roiDelta >= 0 ? "text-emerald-500" : "text-rose-500",
+                    )}
+                  >
+                    ({roiDelta >= 0 ? "+" : ""}
+                    {roiDelta.toFixed(1)}%)
                   </span>
                 </p>
               </div>
@@ -1244,6 +1299,8 @@ function PositionRow({ position, wallet }: { position: PositionLightweight; wall
   const [fullPosition, setFullPosition] = useState<ResolvedPositionFromDB | null>(null);
 
   const pnl = parseFloat(position.profitLoss || "0");
+  const cost = parseFloat(position.cost || "0");
+  const roi = cost > 0 ? (pnl / cost) * 100 : 0;
   const isProfit = pnl >= 0;
   const status = position.result as "won" | "lost";
   const statusColor =
@@ -1378,6 +1435,12 @@ function PositionRow({ position, wallet }: { position: PositionLightweight; wall
             {isProfit ? "+" : ""}${pnl.toFixed(2)}
           </span>
         </td>
+        <td className="p-4 align-middle text-right font-mono">
+          <span className={roi >= 0 ? "text-emerald-500" : "text-rose-500"}>
+            {roi >= 0 ? "+" : ""}
+            {roi.toFixed(1)}%
+          </span>
+        </td>
         <td className="p-4 align-middle">
           <Badge variant="secondary" className={cn("capitalize", statusColor)}>
             {status}
@@ -1389,7 +1452,7 @@ function PositionRow({ position, wallet }: { position: PositionLightweight; wall
       </tr>
       {expanded && (
         <tr className="bg-muted/30 hover:bg-muted/30">
-          <td colSpan={7} className="p-4 align-middle">
+          <td colSpan={8} className="p-4 align-middle">
             <div className="h-[250px] w-full">
               {chartData.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
@@ -1704,6 +1767,17 @@ export default function PositionAnalyticsPage() {
           return (parseFloat(a.finalPrice || "0") - parseFloat(b.finalPrice || "0")) * dir;
         case "pnl":
           return (parseFloat(a.profitLoss || "0") - parseFloat(b.profitLoss || "0")) * dir;
+        case "roi": {
+          const roiA =
+            parseFloat(a.cost || "0") > 0
+              ? parseFloat(a.profitLoss || "0") / parseFloat(a.cost || "1")
+              : 0;
+          const roiB =
+            parseFloat(b.cost || "0") > 0
+              ? parseFloat(b.profitLoss || "0") / parseFloat(b.cost || "1")
+              : 0;
+          return (roiA - roiB) * dir;
+        }
         case "maxdd":
           return (
             (parseFloat(a.maxDrawdownPercent || "0") - parseFloat(b.maxDrawdownPercent || "0")) *
@@ -1814,10 +1888,12 @@ export default function PositionAnalyticsPage() {
   }, [selectedWallet]);
 
   const totalPnl = parseFloat(analytics?.totalPnl || "0");
+  const totalCost = parseFloat(analytics?.totalCost || "0");
   const winCount = parseInt(analytics?.winCount || "0", 10);
   const lossCount = parseInt(analytics?.lossCount || "0", 10);
   const winRate = parseFloat(analytics?.winRate || "0");
   const avgHoldingHours = parseFloat(analytics?.avgHoldingHours || "0");
+  const overallRoi = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
 
   return (
     <>
@@ -1880,8 +1956,8 @@ export default function PositionAnalyticsPage() {
 
           {loading ? (
             <div className="space-y-8">
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                {[1, 2, 3, 4].map((i) => (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+                {[1, 2, 3, 4, 5].map((i) => (
                   <Skeleton key={i} className="h-32 w-full rounded-xl" />
                 ))}
               </div>
@@ -1892,7 +1968,7 @@ export default function PositionAnalyticsPage() {
             </div>
           ) : analytics ? (
             <>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
                 <SummaryCard
                   title="Total Positions"
                   value={winCount + lossCount}
@@ -1928,6 +2004,16 @@ export default function PositionAnalyticsPage() {
                   trendValue="Net Result"
                   colorClass="text-emerald-500"
                   info="Sum of all realized profits and losses."
+                />
+                <SummaryCard
+                  title="ROI"
+                  value={`${overallRoi >= 0 ? "+" : ""}${overallRoi.toFixed(1)}%`}
+                  subtext={`On $${totalCost.toFixed(2)} invested`}
+                  icon={TrendingUp}
+                  trend={overallRoi >= 0 ? "up" : "down"}
+                  trendValue="Return on Investment"
+                  colorClass={overallRoi >= 0 ? "text-emerald-500" : "text-rose-500"}
+                  info="Return on investment: (Total P/L ÷ Total Cost) × 100. Shows percentage return on capital deployed."
                 />
               </div>
 
@@ -2169,6 +2255,15 @@ export default function PositionAnalyticsPage() {
                                 <SortIcon column="pnl" />
                               </div>
                             </th>
+                            <th
+                              className="h-12 px-4 text-right align-middle font-medium text-muted-foreground cursor-pointer hover:text-foreground transition-colors"
+                              onClick={() => handleSort("roi")}
+                            >
+                              <div className="flex items-center justify-end">
+                                ROI
+                                <SortIcon column="roi" />
+                              </div>
+                            </th>
                             <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">
                               Status
                             </th>
@@ -2187,7 +2282,7 @@ export default function PositionAnalyticsPage() {
                           {filteredPositions.length === 0 ? (
                             <tr>
                               <td
-                                colSpan={7}
+                                colSpan={8}
                                 className="p-4 align-middle text-center h-24 text-muted-foreground"
                               >
                                 No positions found matching filter.
