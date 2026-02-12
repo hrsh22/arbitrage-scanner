@@ -149,6 +149,26 @@ export function getBotIdForWallet(walletAddress: string): number {
   return option?.botId ?? 1;
 }
 
+/** Historical deposit records per wallet (manual tracking) */
+export const WALLET_DEPOSITS: Record<string, { amount: number; date: string }[]> = {
+  // Bonding V2
+  "0x7d9Fe5aA506d1128faFaE07A0FC6d0881F239c15": [{ amount: 1648.6, date: "2026-01-30" }],
+  // MidRisk V2
+  "0x9E53f8578f9cC704a7B45bF53D2c7B7688ab80D9": [
+    { amount: 246.39, date: "2026-01-30" },
+    { amount: 229.68, date: "2026-02-08" },
+  ],
+  // HighRisk V2
+  "0x08cFcA80B1035242aEe5096508b181565B2b70A3": [{ amount: 201.4, date: "2026-01-30" }],
+};
+
+/** Get total capital deposited for a wallet. Returns null if no deposit data. */
+export function getCapitalDeposited(walletAddress: string): number | null {
+  const deposits = WALLET_DEPOSITS[walletAddress];
+  if (!deposits || deposits.length === 0) return null;
+  return deposits.reduce((sum, d) => sum + d.amount, 0);
+}
+
 export async function fetchEventTags(
   eventSlugs: string[],
   signal?: AbortSignal,

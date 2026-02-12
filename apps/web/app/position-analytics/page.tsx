@@ -17,7 +17,12 @@ import {
   type EntryTimingItem,
   type ComputedAnalytics,
 } from "@/lib/polymarket-api";
-import { DEFAULT_WALLET, WALLET_OPTIONS, getBotIdForWallet } from "@/lib/polymarket-api";
+import {
+  DEFAULT_WALLET,
+  WALLET_OPTIONS,
+  getBotIdForWallet,
+  getCapitalDeposited,
+} from "@/lib/polymarket-api";
 import {
   RefreshCw,
   TrendingDown,
@@ -1888,12 +1893,13 @@ export default function PositionAnalyticsPage() {
   }, [selectedWallet]);
 
   const totalPnl = parseFloat(analytics?.totalPnl || "0");
-  const totalCost = parseFloat(analytics?.totalCost || "0");
   const winCount = parseInt(analytics?.winCount || "0", 10);
   const lossCount = parseInt(analytics?.lossCount || "0", 10);
   const winRate = parseFloat(analytics?.winRate || "0");
   const avgHoldingHours = parseFloat(analytics?.avgHoldingHours || "0");
-  const overallRoi = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
+  const capitalDeposited = getCapitalDeposited(selectedWallet);
+  const capitalRoi =
+    capitalDeposited !== null && capitalDeposited > 0 ? (totalPnl / capitalDeposited) * 100 : null;
 
   return (
     <>
@@ -2006,14 +2012,28 @@ export default function PositionAnalyticsPage() {
                   info="Sum of all realized profits and losses."
                 />
                 <SummaryCard
-                  title="ROI"
-                  value={`${overallRoi >= 0 ? "+" : ""}${overallRoi.toFixed(1)}%`}
-                  subtext={`On $${totalCost.toFixed(2)} invested`}
+                  title="Capital ROI"
+                  value={
+                    capitalRoi !== null
+                      ? `${capitalRoi >= 0 ? "+" : ""}${capitalRoi.toFixed(1)}%`
+                      : "N/A"
+                  }
+                  subtext={
+                    capitalDeposited !== null
+                      ? `On $${capitalDeposited.toFixed(2)} deposited`
+                      : "No deposit data"
+                  }
                   icon={TrendingUp}
-                  trend={overallRoi >= 0 ? "up" : "down"}
-                  trendValue="Return on Investment"
-                  colorClass={overallRoi >= 0 ? "text-emerald-500" : "text-rose-500"}
-                  info="Return on investment: (Total P/L ÷ Total Cost) × 100. Shows percentage return on capital deployed."
+                  trend={capitalRoi !== null ? (capitalRoi >= 0 ? "up" : "down") : undefined}
+                  trendValue={capitalRoi !== null ? "Return on Capital" : undefined}
+                  colorClass={
+                    capitalRoi !== null
+                      ? capitalRoi >= 0
+                        ? "text-emerald-500"
+                        : "text-rose-500"
+                      : "text-muted-foreground"
+                  }
+                  info="Capital ROI: (Total P/L ÷ Total Deposited) × 100. Shows return on the actual capital you deposited into this wallet."
                 />
               </div>
 
