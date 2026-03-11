@@ -1,0 +1,154 @@
+# Task 16: Scope Diff Clean
+# Generated: 2026-03-04
+# Purpose: Verify scope diff contains only planned surfaces (contract/api/web/docs/evidence)
+
+## Scope Boundary (from plan)
+ALLOWED: contracts/, apps/vault-api/, apps/vault-web/, .sisyphus/evidence/, docs/
+EXCLUDED: lockfiles, cache files, submodules, packages/ui/ components (shared), .gitmodules, metadata files
+
+## File Classification
+
+### IN SCOPE - Contract Files (STAGING RECOMMENDED)
+contracts/src/Constants.sol
+contracts/src/NavSnapshot.sol
+contracts/src/SnapshotTrancheVault.sol
+contracts/src/EpochTrancheVault.sol (NEW - untracked)
+contracts/src/libraries/EpochMath.sol
+contracts/src/interfaces/IAdapter.sol
+contracts/src/interfaces/IPolymarketConditionalTokens.sol
+contracts/src/interfaces/ISnapshotTrancheVault.sol
+contracts/test/EpochMath.t.sol
+contracts/test/NavSnapshot.t.sol
+contracts/test/SnapshotTrancheVaultFreeze.t.sol
+contracts/test/EpochTrancheVault.t.sol (NEW - untracked)
+contracts/test/invariants/SnapshotTrancheVault.invariants.t.sol
+contracts/test/invariants/SnapshotTrancheVaultAccountingHarness.sol
+contracts/foundry.toml
+contracts/remappings.txt
+contracts/scripts/ (all operational scripts)
+contracts/flattened/ (Remix-compatible flattened files)
+
+STATUS: ✓ IN SCOPE - Core remediation contract work
+
+### IN SCOPE - API Files (STAGING RECOMMENDED)
+apps/vault-api/src/ (all source files)
+apps/vault-api/drizzle/ (migrations)
+apps/vault-api/scripts/ (operational scripts)
+apps/vault-api/package.json
+apps/vault-api/tsconfig.json
+apps/vault-api/vitest.config.ts
+apps/vault-api/drizzle.config.ts
+apps/vault-api/.env.example
+apps/vault-api/.sisyphus/evidence/
+
+STATUS: ✓ IN SCOPE - Backend settlement execution and reconciliation
+
+### IN SCOPE - Web Files (STAGING RECOMMENDED)
+apps/vault-web/src/ (all source files)
+apps/vault-web/app/ (Next.js app router)
+apps/vault-web/components/ (UI components)
+apps/vault-web/e2e/ (Playwright tests)
+apps/vault-web/package.json
+apps/vault-web/tsconfig.json
+apps/vault-web/next.config.js
+apps/vault-web/tailwind.config.ts
+apps/vault-web/postcss.config.mjs
+apps/vault-web/eslint.config.js
+apps/vault-web/playwright.config.ts
+apps/vault-web/.env.example
+
+STATUS: ✓ IN SCOPE - Frontend lifecycle UX
+
+### IN SCOPE - Documentation/Evidence (STAGING RECOMMENDED)
+VAULT_KNOWLEDGE.md
+.sisyphus/evidence/ (all task evidence files)
+.sisyphus/plans/epoch-gated-tranche-carry-remediation.md
+.sisyphus/notepads/ (decisions, issues, learnings)
+.sisyphus/notes/ (technical specifications)
+
+STATUS: ✓ IN SCOPE - Operational documentation and evidence
+
+### OUT OF SCOPE - EXCLUDED FROM REMEDIATION
+
+#### Cache/Build Artifacts (EXCLUDE)
+cache/solidity-files-cache.json
+contracts/cache/solidity-files-cache.json
+contracts/cache/test-failures
+contracts/evidence/ (internal contract evidence, not remediation)
+
+STATUS: ✗ EXCLUDED - Generated files, not source
+
+#### Shared UI Components (EXCLUDE)
+packages/ui/src/components/alert.tsx
+packages/ui/src/components/avatar.tsx
+packages/ui/src/components/collapsible.tsx
+packages/ui/src/components/dialog.tsx
+packages/ui/src/components/input.tsx
+packages/ui/src/components/label.tsx
+packages/ui/src/components/progress.tsx
+packages/ui/src/components/table.tsx
+packages/ui/package.json (modified dependency)
+
+STATUS: ✗ EXCLUDED - Shared package, not remediation-specific
+
+#### Package Management (EXCLUDE)
+pnpm-lock.yaml
+contracts/scripts/package-lock.json
+
+STATUS: ✗ EXCLUDED - Lockfiles for dependency resolution
+
+#### Git/Submodules (EXCLUDE)
+.gitmodules
+lib/ (forge-std, openzeppelin-contracts submodules)
+EOF (empty file marker)
+
+STATUS: ✗ EXCLUDED - Git infrastructure, not code
+
+#### Metadata/State (EXCLUDE)
+.sisyphus/boulder.json
+
+STATUS: ✗ EXCLUDED - Internal state tracking
+
+### DEPRECATED/WIP FILES (EXCLUDE FROM MAIN COMMIT)
+contracts/src/WeeklyEpochVault.sol (deleted in unstaged, replaced by EpochTrancheVault)
+contracts/test/WeeklyEpochVault.*.t.sol (deprecated test files)
+contracts/test/WeeklyEpochVault.*.t.sol.bak (backup files)
+contracts/test/WeeklyEpochVault.*.t.sol.incompatible (incompatible tests)
+contracts/test/WeeklyEpochVault.t.sol.backup
+
+STATUS: ✗ EXCLUDED - Superseded by EpochTrancheVault implementation
+
+## Summary Counts
+
+### Files In Scope: ~210
+- Contracts: ~30 files
+- API: ~80 files  
+- Web: ~50 files
+- Docs/Evidence: ~50 files
+
+### Files Out of Scope: ~20
+- Cache files: 4
+- UI components: 9
+- Lockfiles: 2
+- Git/submodules: 3
+- Metadata: 1
+- Deprecated: ~5 (WeeklyEpochVault legacy)
+
+## Verification Commands
+
+# Check all staged files
+git diff --cached --name-only
+
+# Check all unstaged files
+git diff --name-only
+
+# Check untracked files
+git ls-files --others --exclude-standard
+
+## Result
+
+SCOPE CLEANUP STATUS: COMPLETE
+Out-of-scope files identified and classified for exclusion.
+Remediation diff isolated to contract/api/web/docs/evidence surfaces only.
+
+0 out-of-scope files will be included in remediation commit.

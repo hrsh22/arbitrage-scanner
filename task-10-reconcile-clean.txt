@@ -1,0 +1,147 @@
+================================================================================
+TASK 10: RECONCILIATION - CLEAN STATE EVIDENCE
+================================================================================
+Generated: 2026-03-04
+Task: Harden backend reconciliation and remove dual-ledger ambiguity
+
+================================================================================
+1. ZERO UNEXPLAINED DELTAS REQUIREMENT
+================================================================================
+
+The reconciliation system reports zero unexplained deltas when:
+
+1. All canonical fields match their legacy counterparts:
+   - accrued == totalRealizedUsdc
+   - claimed == totalClaimedUsdc
+
+2. carryRemaining is correctly calculated:
+   - carryRemaining == entitlement - claimed
+
+3. No contract/repository mismatches exist (when contract state provided)
+
+================================================================================
+2. RECONCILIATION REPORT STRUCTURE
+================================================================================
+
+{
+  "epochId": "epoch-clean",
+  "timestamp": "2026-03-04T00:00:00.000Z",
+  "totalEntitlements": 3,
+  "matchingCount": 3,
+  "mismatchCount": 0,
+  "mismatches": [],
+  "summary": {
+    "explainedDeltas": 0,
+    "unexplainedDeltas": 0
+  }
+}
+
+================================================================================
+3. EXAMPLE CLEAN RECONCILIATION SCENARIOS
+================================================================================
+
+Scenario A: Single Clean Entitlement
+-------------------------------------
+Entitlement:
+  entitlement:        1000000000 (1000 USDC)
+  accrued:            800000000  (800 USDC)
+  claimed:            200000000  (200 USDC)
+  carryRemaining:     800000000  (1000 - 200 = 800)
+  totalRealizedUsdc:  800000000  (matches accrued)
+  totalClaimedUsdc:   200000000  (matches claimed)
+
+Result: reconciled = true, unexplainedDeltas = 0
+
+
+Scenario B: Multiple Clean Entitlements
+---------------------------------------
+Epoch with 3 entitlements, all synchronized:
+  - req-1: accrued=400M, claimed=100M, carry=400M ✓
+  - req-2: accrued=400M, claimed=0, carry=500M ✓
+  - req-3: accrued=500M, claimed=500M, carry=0 ✓
+
+Result: matchingCount=3, mismatchCount=0, unexplainedDeltas=0
+
+
+Scenario C: Empty Epoch
+-----------------------
+Epoch with no entitlements
+
+Result: reconciled = true (nothing to mismatch)
+
+================================================================================
+4. ISRECONCILED() API
+================================================================================
+
+Method: entitlementRepository.isReconciled(epochId, contractStates?)
+
+Returns:
+{
+  reconciled: boolean,  // true if unexplainedDeltas === 0
+  report: ReconciliationReport
+}
+
+Usage for health checks:
+```typescript
+const { reconciled, report } = await repo.isReconciled("epoch-1");
+if (!reconciled) {
+  alert(`Reconciliation failed: ${report.summary.unexplainedDeltas} unexplained deltas`);
+}
+```
+
+================================================================================
+5. TEST COVERAGE FOR CLEAN RECONCILIATION
+================================================================================
+
+Tests implemented in: apps/vault-api/src/__tests__/reconciliation.test.ts
+
+Test suites:
+✓ Reconciliation - Clean State (Zero Unexplained Deltas)
+  ✓ reports zero unexplained deltas when all fields match
+  ✓ reports zero unexplained deltas for multiple clean entitlements
+  ✓ isReconciled returns true when zero unexplained deltas
+  ✓ handles empty epoch (no entitlements) as reconciled
+
+✓ Reconciliation - Explained vs Unexplained Deltas
+  ✓ correctly categorizes canonical/legacy mismatches as explained
+  ✓ correctly categorizes carry calculation errors as unexplained
+
+================================================================================
+6. DELTA CATEGORIZATION RULES
+================================================================================
+
+Explained Deltas (expected/understood mismatches):
+- CANONICAL_LEGACY_ACCRUED_MISMATCH
+- CANONICAL_LEGACY_CLAIMED_MISMATCH
+
+Unexplained Deltas (require investigation):
+- CARRY_REMAINING_CALCULATION_ERROR
+- NEGATIVE_VALUE_DETECTED
+- LEDGER_INVARIANT_VIOLATION
+- CONTRACT_REPOSITORY_MISMATCH
+
+================================================================================
+7. FILES MODIFIED
+================================================================================
+
+- apps/vault-api/src/repositories/entitlementRepository.ts
+  Added: isReconciled() method, ReconciliationReport type,
+         summary calculation with explained/unexplained categorization
+
+- apps/vault-api/src/__tests__/reconciliation.test.ts
+  Created: Tests for zero unexplained deltas scenarios
+
+================================================================================
+8. VERIFICATION CHECKLIST
+================================================================================
+
+✓ Reconciliation job reports zero unexplained deltas for clean state
+✓ Legacy/new field mapping is explicit and tested
+✓ Mismatches detected and logged with request identifier
+✓ Contract vs repository comparison supported
+✓ No silent auto-correction (all corrections logged)
+✓ Explained vs unexplained delta categorization working
+
+================================================================================
+END OF EVIDENCE FILE
+================================================================================

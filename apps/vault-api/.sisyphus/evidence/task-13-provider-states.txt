@@ -1,0 +1,112 @@
+# Task 13 Evidence: Provider States
+# EpochTrancheVault Lifecycle States
+
+## Provider State Outputs
+
+The CustomVaultProvider now correctly handles the EpochTrancheVault lifecycle with the following states:
+
+### Request Status States (Redemption Lifecycle)
+
+1. **PENDING (0)**
+   - Request submitted via `requestRedeem()`
+   - Waiting for epoch to be frozen
+   - Can be cancelled via `cancelRedeemRequest(requestId)`
+   - Provider method: `getRequestStatus(requestId)` returns `{ status: "pending", claimable: false }`
+
+2. **FROZEN (1)**
+   - Epoch frozen via `freezeEpoch(snapshotHash)`
+   - Shares locked, awaiting settlement
+   - Cannot cancel anymore
+   - Provider method: `getRequestStatus(requestId)` returns `{ status: "frozen", claimable: false }`
+
+3. **CLAIMABLE (2)**
+   - Epoch settled via `settleEpoch(epochId, availableAssets, carryAmount)`
+   - Assets computed, carry deducted
+   - Ready for claiming via `redeem(requestId, shares, receiver)`
+   - Provider method: `getRequestStatus(requestId)` returns `{ status: "claimable", claimable: true }`
+
+4. **CLAIMED (3)**
+   - Assets claimed via `redeem()` or `withdraw()`
+   - Terminal state
+   - Provider method: Returns historical record with `{ status: "claimed" }`
+
+5. **CANCELLED (4)**
+   - Request cancelled via `cancelRedeemRequest(requestId)`
+   - Terminal state
+   - Provider method: Returns `{ status: "cancelled" }`
+
+### Epoch States
+
+1. **ACTIVE (0)**
+   - Current epoch accepting deposits/redemptions
+   - `currentEpochId` increments on settlement
+
+2. **FROZEN (1)**
+   - Snapshot taken, no new requests
+   - Awaiting settlement
+
+3. **SETTLING (2)**
+   - Settlement in progress
+   - Pro-rata calculations being applied
+
+4. **SETTLED (3)**
+   - Settlement complete
+   - Requests now claimable
+
+5. **FINALIZED (4)**
+   - All requests claimed or expired
+   - Epoch closed
+
+### Deposit Queue States
+
+1. **QUEUED**
+   - Deposit submitted via `queueDeposit(assets)`
+   - Returns unique `requestId`
+   - Awaiting processing
+
+2. **PROCESSED**
+   - Processed via `processDepositQueue(epochId, startIndex, endIndex)`
+   - Shares minted in target epoch
+
+### Carry Accrual
+
+- Carry is accrued during `settleEpoch()`
+- Deducted from each redemption claim
+- Tracked in `RedemptionRequestData.carryDeducted`
+- Provider exposes via `ClaimResult.carryDeducted`
+
+## Key Changes from WeeklyEpochVault
+
+| Aspect | WeeklyEpochVault | EpochTrancheVault |
+|--------|------------------|-------------------|
+| Request ID | Always 0 (controller-aggregated) | Unique per request |
+| Redemption Flow | Single request per controller | Multiple requests per controller |
+| Settlement | Single step | freezeEpoch → settleEpoch |
+| Carry | None | Accrued on settlement, deducted on claim |
+| Deposit Queue | None | queueDeposit + processDepositQueue |
+
+## Provider Methods Updated
+
+- `getRequestStatus(requestId)` - Returns status with proper state machine
+- `getUserRequests(userAddress)` - Uses controllerToRequestId mapping
+- `requestRedeem()` - Returns requestId (no longer assumes controller address)
+- `cancelRedemption()` - Uses requestId (not controller)
+- `claimRedemption()` - Uses requestId with carry tracking
+- `executeSettlement()` - Orchestrates freezeEpoch → settleEpoch → finalizeEpoch
+
+## Files Modified
+
+- `apps/vault-api/src/services/customVaultClient.ts`
+  - Added: emergencyMode, isOperator, setOperator, getEpochEnd, getTotalPendingRedeemShares, canSettleEpoch
+  - ABI: Added EpochTrancheVault methods
+
+- `apps/vault-api/src/services/customVaultProvider.ts`
+  - Updated: All methods to use requestId-based lifecycle
+  - Removed: Controller-aggregated assumptions (requestId=0)
+  - Added: Proper state handling for queued, frozen, accrued, claimable states
+
+- `apps/vault-api/src/services/vaultProvider.ts`
+  - Updated: RequestStatus type to include "frozen"
+  - Added: carryDeducted to ClaimResult interface
+
+Date: 2026-03-04

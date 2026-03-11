@@ -1,0 +1,126 @@
+/**
+ * Vault configuration type system for vault instances.
+ */
+
+export type VaultMode = "simulation" | "live";
+export type VaultType = "bot" | "agent" | "custom";
+export type VaultRiskLevel = "low" | "medium" | "high";
+
+export interface VaultFeeConfig {
+  management: number;
+  performance: number;
+  withdrawal: number;
+}
+
+export interface VaultProfile {
+  strategy: string;
+  strategyLabel: string;
+  description: string;
+  longDescription: string;
+  riskLevel: VaultRiskLevel;
+  minDeposit: number;
+  maxDeposit: number;
+  fees: VaultFeeConfig;
+}
+
+export interface HedgingConfig {
+  enabled: boolean;
+  dropThresholdPercent: number;
+  multiplier: number;
+  spreadTolerance: number;
+  minPositionAgeMinutes: number;
+  onlyNearResolution: boolean;
+  nearResolutionMinutes: number;
+  skipCategories: string[];
+}
+
+export interface VaultInstanceConfig {
+  /**
+   * Identity
+   */
+  id: number;
+  slug?: string;
+  name: string;
+  enabled: boolean;
+  type: VaultType;
+  profile?: VaultProfile;
+
+  /**
+   * Contracts (Polygon mainnet)
+   */
+  vaultAddress: string;
+  safeAddress: string;
+
+  /**
+   * Custom vault configuration (for type = "custom")
+   */
+  customVaultConfig?: {
+    /** NavSnapshot contract address */
+    navSnapshotAddress?: string;
+    /** Epoch duration in seconds */
+    epochDurationSeconds?: number;
+    /** NAV staleness threshold in seconds */
+    navStalenessThresholdSeconds?: number;
+    /** Minimum claim threshold in USDC units (6 decimals). Default: 100 USDC */
+    minClaimThresholdUsdc?: number;
+    /** Balanced upfront fee in basis points. Default: 0 */
+    balancedUpfrontBps?: number;
+  };
+
+  /**
+   * Identity (Role-based keys)
+   */
+  allocatorNavSignerKeyEnv: string;
+  safeOperatorKeyEnv: string;
+  tradingSignerKeyEnv: string;
+  settlerKeyEnv?: string;
+  tradingFunderAddressEnv?: string;
+  tradingFunderAddress?: string;
+  tradingSignatureType: 0 | 1 | 2;
+  singleSafeMode?: boolean;
+
+  /**
+   * Trading
+   */
+  betSize: number;
+  vaultReserveUsdc: number;
+  minAllocationAmountUsdc: number;
+  maxDeployedRatio: number; // 0.0 to 1.0 (100%)
+  marketFetchMaxEvents: number;
+
+  /**
+   * Hedging
+   */
+  hedging: HedgingConfig;
+
+  /**
+   * Crons
+   */
+  navRefreshIntervalMin: number;
+  reconciliationIntervalMin: number;
+  tradingScanIntervalMin: number;
+
+  resolutionCheckIntervalMin: number;
+
+  /**
+   * Bot strategy parameters (for bot-type vaults)
+   */
+  minOdds?: number;
+  maxOdds?: number;
+  highOddsThreshold?: number;
+  maxHoursForHighOdds?: number;
+  maxHoursGeneral?: number;
+  categoryTimeLimits?: Record<string, number>;
+  skipCategories?: string[];
+  maxDailyLoss?: number;
+  dailyBudget?: number;
+  minWalletReserve?: number;
+  enableEarlyExit?: boolean;
+  earlyExitMinPrice?: number;
+  useMarketOrders?: boolean;
+
+  /**
+   * Mode
+   */
+  defaultMode: VaultMode;
+}

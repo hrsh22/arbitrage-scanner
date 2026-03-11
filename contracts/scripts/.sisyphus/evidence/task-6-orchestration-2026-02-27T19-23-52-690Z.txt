@@ -1,0 +1,79 @@
+======================================================================
+VAULT POST-DEPLOY EXECUTION EVIDENCE
+======================================================================
+
+Generated: 2026-02-27T19:23:52.690Z
+Run ID: deploy-2026-02-27T19-23-42-426Z
+Verdict: SUCCESS
+
+======================================================================
+CONFIGURATION
+======================================================================
+  vault: 0x066A4678935b78FA4E89e914dBE8F077764F0c74
+  newAdapter: 0x6f167963d0821Da79496EE29Fa3cb62c55A712Ea
+  oldAdapter: 0x29AAe313f2129Fb6bd25f12aaf515d00aa4B3d84
+  rpcUrl: https://polygon-mainnet.g.alchemy.com/v2/XeqbzKzOklvVcN5tsLW5VnSZ5ETutKuc
+  absoluteCap: 340282366920938463463374607431768211455
+  relativeCap: 10000
+  allocator: (not set)
+  dryRun: (not set)
+  confirmDestructive: true
+
+======================================================================
+EXECUTION STEPS
+======================================================================
+
+[1] ⊘ preflight
+    Status: SKIPPED
+    Timestamp: 2026-02-27T19:23:42.454Z
+
+[2] ⊘ addAdapter
+    Status: SKIPPED
+    Timestamp: 2026-02-27T19:23:42.834Z
+
+[3] ⊘ setAbsoluteCap
+    Status: SKIPPED
+    Timestamp: 2026-02-27T19:23:42.835Z
+
+[4] ⊘ setRelativeCap
+    Status: SKIPPED
+    Timestamp: 2026-02-27T19:23:42.836Z
+
+[5] ⊘ setAllocator
+    Status: SKIPPED
+    Timestamp: 2026-02-27T19:23:42.836Z
+
+[6] ⊘ smokeGate
+    Status: SKIPPED
+    Timestamp: 2026-02-27T19:23:42.837Z
+
+[7] ✓ removeAdapter
+    Status: SUCCESS
+    Transaction: 0xfeb8e0495c698ae92c7fe2528f5efdaae063f84937595b6913c31aed408838fc
+    Block: 83550098
+    Gas Used: 53790
+    Timestamp: 2026-02-27T19:23:52.685Z
+
+[8] ✓ complete
+    Status: SUCCESS
+    Timestamp: 2026-02-27T19:23:52.688Z
+    Duration: 10257ms
+
+======================================================================
+SUMMARY STATISTICS
+======================================================================
+  Total Steps:    8
+  Successful:     2
+  Failed:         0
+  Skipped:        6
+
+======================================================================
+RECOVERY INSTRUCTIONS
+======================================================================
+  ✓ Execution completed successfully.
+  ✓ State file has been cleared.
+  ✓ No recovery action required.
+
+======================================================================
+END OF EVIDENCE REPORT
+======================================================================

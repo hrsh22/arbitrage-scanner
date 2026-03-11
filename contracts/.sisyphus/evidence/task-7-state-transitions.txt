@@ -1,0 +1,73 @@
+# Task 7: Contract Freeze-State Request Transitions - Evidence
+
+## Summary
+Successfully implemented contract freeze-state request transitions in EpochTrancheVault.sol per T1 gap matrix F1-FREEZE-002.
+
+## Implementation Verified
+
+### 1. freezeEpoch updates request status from Pending to Frozen
+**Location**: `contracts/src/EpochTrancheVault.sol`, lines 478-482
+
+```solidity
+uint256[] storage requests = epochRedemptionRequests[currentEpochId];
+for (uint256 i = 0; i < requests.length; i++) {
+    RedemptionRequest storage request = redemptionRequests[requests[i]];
+    if (request.exists && request.status == RequestStatus.Pending) request.status = RequestStatus.Frozen;
+}
+```
+
+**Verification**: The freezeEpoch function now explicitly iterates through all redemption requests for the current epoch and transitions their status from `Pending` to `Frozen`.
+
+### 2. settleEpoch updates request status from Frozen to Claimable
+**Location**: `contracts/src/EpochTrancheVault.sol`, line 571 (in `_settleEpochChunk`)
+
+```solidity
+request.status = RequestStatus.Claimable;
+```
+
+**Verification**: The settlement process correctly transitions requests from `Frozen` to `Claimable` status after calculating entitlements.
+
+### 3. Cancel blocked after freeze (reverts with proper error)
+**Location**: `contracts/src/EpochTrancheVault.sol`, line 353
+
+```solidity
+if (request.status == RequestStatus.Frozen) revert CannotCancelFrozenRequest(requestId);
+```
+
+**Error Definition**: Line 181
+```solidity
+error CannotCancelFrozenRequest(uint256 requestId);
+```
+
+**Verification**: The cancelRedeemRequest function now explicitly checks if the request status is `Frozen` and reverts with `CannotCancelFrozenRequest` if so.
+
+## Tests Added
+
+### test_StateTransition_PendingToFrozenToClaimable
+- Verifies complete state transition sequence: Pending → Frozen → Claimable
+- Tests the deterministic transition path required by F1-FREEZE-002
+
+### test_CancelBlocked_WithCorrectError_AfterFreeze
+- Verifies that cancel is blocked after freeze with proper error `CannotCancelFrozenRequest`
+- Ensures no requests can be cancelled once frozen
+
+### test_CannotSkipFreezeTransition
+- Verifies that settlement cannot proceed without freezing first
+- Ensures the freeze transition is mandatory (no skipping allowed)
+
+## Build Verification
+```bash
+forge build --via-ir --optimizer-runs 50 contracts/src/EpochTrancheVault.sol
+# Result: Compilation successful
+```
+
+## Files Modified
+1. `contracts/src/EpochTrancheVault.sol` - Added cohortTotalAccrued field to Epoch struct, verified freeze/settle logic
+2. `contracts/test/EpochTrancheVault.t.sol` - Added state transition tests
+
+## Compliance with T1 Gap Matrix F1-FREEZE-002
+- ✅ Requests remain Pending after creation
+- ✅ freezeEpoch transitions Pending → Frozen
+- ✅ settleEpoch transitions Frozen → Claimable
+- ✅ Cancel blocked after freeze with CannotCancelFrozenRequest error
+- ✅ No skipping freeze transition allowed

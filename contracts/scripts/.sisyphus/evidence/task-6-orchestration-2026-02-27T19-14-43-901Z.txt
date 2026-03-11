@@ -1,0 +1,85 @@
+======================================================================
+VAULT POST-DEPLOY EXECUTION EVIDENCE
+======================================================================
+
+Generated: 2026-02-27T19:14:43.901Z
+Run ID: deploy-2026-02-27T19-14-21-012Z
+Verdict: FAILURE
+
+======================================================================
+CONFIGURATION
+======================================================================
+  vault: 0x066A4678935b78FA4E89e914dBE8F077764F0c74
+  newAdapter: 0x6f167963d0821Da79496EE29Fa3cb62c55A712Ea
+  oldAdapter: 0x29AAe313f2129Fb6bd25f12aaf515d00aa4B3d84
+  rpcUrl: https://polygon-mainnet.g.alchemy.com/v2/XeqbzKzOklvVcN5tsLW5VnSZ5ETutKuc
+  absoluteCap: 340282366920938463463374607431768211455
+  relativeCap: 10000
+  allocator: (not set)
+  dryRun: (not set)
+  confirmDestructive: true
+
+======================================================================
+EXECUTION STEPS
+======================================================================
+
+[1] ⊘ preflight
+    Status: SKIPPED
+    Timestamp: 2026-02-27T19:14:21.040Z
+
+[2] ⊘ addAdapter
+    Status: SKIPPED
+    Timestamp: 2026-02-27T19:14:23.482Z
+
+[3] ✓ setAbsoluteCap
+    Status: SUCCESS
+    Transaction: 0x1c1ffdf350d2c02c210958c23f361edac63f9f2e36b208a7dd1524dfe51ebf6f
+    Block: 83549818
+    Gas Used: 56748
+    Timestamp: 2026-02-27T19:14:33.322Z
+
+[4] ✓ setRelativeCap
+    Status: SUCCESS
+    Transaction: 0x112ab385c4e46ac3f47fd9893835b447e2b8b9497b6d525715f0506f4a1ab0a4
+    Block: 83549823
+    Gas Used: 56580
+    Timestamp: 2026-02-27T19:14:43.132Z
+
+[5] ⊘ setAllocator
+    Status: SKIPPED
+    Timestamp: 2026-02-27T19:14:43.134Z
+
+[6] ✓ smokeGate
+    Status: SUCCESS
+    Timestamp: 2026-02-27T19:14:43.684Z
+
+======================================================================
+SUMMARY STATISTICS
+======================================================================
+  Total Steps:    6
+  Successful:     3
+  Failed:         0
+  Skipped:        3
+
+======================================================================
+RECOVERY INSTRUCTIONS
+======================================================================
+  ⚠ Execution did not complete successfully.
+
+
+  To resume execution, run the following command:
+
+  ```bash
+  # Resume from: smokeGate
+# Run ID: deploy-2026-02-27T19-14-21-012Z
+node vault-post-deploy.js --vault 0x066A4678935b78FA4E89e914dBE8F077764F0c74 --new-adapter 0x6f167963d0821Da79496EE29Fa3cb62c55A712Ea --old-adapter 0x29AAe313f2129Fb6bd25f12aaf515d00aa4B3d84 --rpc-url https://polygon-mainnet.g.alchemy.com/v2/XeqbzKzOklvVcN5tsLW5VnSZ5ETutKuc --absolute-cap 340282366920938463463374607431768211455 --relative-cap 10000 --confirm-destructive
+  ```
+
+  State is preserved in:
+    .vault-post-deploy-state.json
+
+  The script will automatically resume from the failed step.
+
+======================================================================
+END OF EVIDENCE REPORT
+======================================================================

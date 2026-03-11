@@ -1,0 +1,117 @@
+# Task 9 Evidence: Post-Freeze Guard
+## File: contracts/src/EpochTrancheVault.sol
+
+### Frozen Request Immutability
+
+Once an epoch is frozen, redemption requests in that epoch CANNOT be modified.
+
+### Guard 1: Cancellation Prevention
+
+**Function**: `cancelRedeemRequest(uint256 requestId)` (Lines 475-497)
+
+**Protection** (Line 482):
+```solidity
+Epoch storage epoch = epochs[request.epochId];
+if (epoch.status != EpochStatus.Active) revert CannotCancelAfterFreeze(request.epochId);
+```
+
+**Behavior**:
+- Before freeze: `epoch.status = Active` → Cancellation allowed
+- After freeze: `epoch.status = Frozen` → `CannotCancelAfterFreeze` error thrown
+
+**State Check Flow**:
+1. Load request by requestId
+2. Verify request.status = Pending
+3. Load epoch by request.epochId
+4. **CRITICAL**: Check epoch.status == Active
+5. If frozen, revert with `CannotCancelAfterFreeze`
+
+### Guard 2: No Direct Request Modification
+
+**RedemptionRequest struct** (Lines 108-120):
+```solidity
+struct RedemptionRequest {
+    uint256 requestId;      // Immutable after creation
+    address controller;     // Immutable after creation
+    address owner;          // Immutable after creation
+    uint256 shares;         // Only decreases during claim (not cancel after freeze)
+    uint256 assetsClaimable;// Set during settlement (not freeze)
+    uint256 carryDeducted;  // Accumulates during claim
+    uint256 epochId;        // Immutable - cohort assignment
+    RequestStatus status;   // Progresses: Pending → Claimable → Claimed
+    uint256 createdAt;      // Immutable
+    uint256 settledAt;      // Set during settlement
+    bool exists;            // Immutable
+}
+```
+
+**Status Progression After Freeze**:
+```
+Pending (at freeze time)
+    ↓
+  [Settlement Phase]
+    ↓
+Claimable (settleEpoch sets this)
+    ↓
+  [User Claims]
+    ↓
+Claimed (terminal state)
+```
+
+### Guard 3: Shares Are Locked
+
+**During requestRedeem** (Line 465):
+```solidity
+IERC20(address(this)).safeTransferFrom(owner, address(this), shares);
+```
+
+- Shares are transferred from owner to vault
+- Vault holds shares until claim
+- Cannot be returned via cancel after freeze
+
+### Guard 4: Cohort Isolation
+
+**Request-to-Epoch Binding** (Line 452):
+```solidity
+request.epochId = currentEpochId;
+```
+
+- Each request is permanently bound to its creation epoch
+- `epochRedemptionRequests[epochId]` array contains only that cohort's requests
+- No cross-cohort contamination
+
+**Epoch Separation**:
+```solidity
+mapping(uint256 => uint256[]) public epochRedemptionRequests;
+```
+- Keys are epoch IDs
+- Values are arrays of request IDs for that specific epoch
+- Frozen epoch's array is immutable
+
+### Guard 5: Request Status Checks
+
+**cancelRedeemRequest requires** (Line 479):
+```solidity
+if (request.status != RequestStatus.Pending) revert RequestNotPending(requestId);
+```
+
+After settlement, status becomes `Claimable`, so even if someone bypassed the freeze check, the status check would prevent cancellation.
+
+### Attack Scenarios Prevented
+
+| Attack | Prevention Mechanism |
+|--------|---------------------|
+| Cancel after freeze | `CannotCancelAfterFreeze` revert |
+| Modify shares amount | Struct is storage, no setter function |
+| Transfer frozen request | No transfer function exists |
+| Replay request | requestId is unique and consumed |
+| Add to frozen epoch | New requests use `currentEpochId` (now N+1) |
+
+### Summary
+
+Frozen redemption requests are immutable because:
+1. **Epoch status** prevents cancellation
+2. **No setter functions** exist for request fields
+3. **Shares are locked** in the vault
+4. **Epoch isolation** prevents cohort blending
+5. **Status progression** is one-way (Pending → Claimable → Claimed)

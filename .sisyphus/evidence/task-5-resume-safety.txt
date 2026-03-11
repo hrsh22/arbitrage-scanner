@@ -1,0 +1,131 @@
+# Task 5: Resume Safety - Evidence
+
+## Resume Safety Mechanisms Implemented
+
+### 1. Sequential Index Enforcement
+
+The settlement enforces strict sequential processing to prevent gaps or overlaps:
+
+```solidity
+if (progress.processedCount > 0) {
+    uint256 expectedStart = progress.lastProcessedIndex + 1;
+    if (startIndex != expectedStart) {
+        revert SettlementChunkInvalid(startIndex, 0, expectedStart);
+    }
+}
+```
+
+**Test Case:** Attempting to start from index 10 when only index 0-9 have been processed will revert with `SettlementChunkInvalid`.
+
+### 2. Idempotent Processing
+
+Each request is only processed if it hasn't been processed yet:
+
+```solidity
+if (!request.exists || request.status != RequestStatus.Frozen) {
+    continue;  // Skip already processed requests
+}
+```
+
+This prevents double-processing in case of:
+- Retried transactions
+- Overlapping chunks
+- Re-org scenarios
+
+### 3. State Transitions
+
+Request status transitions ensure clear processing boundaries:
+
+```
+Pending -> Frozen (at freezeEpoch)
+Frozen  -> Claimable (at settleEpochChunk)
+```
+
+Only requests with `Frozen` status are processed during settlement.
+
+### 4. Progress Persistence
+
+Settlement progress is stored in contract state:
+
+```solidity
+struct SettlementProgress {
+    uint256 processedCount;     // Cumulative count
+    uint256 totalCount;         // Total expected
+    uint256 lastProcessedIndex; // For resume point
+    bool complete;              // Final state
+}
+```
+
+This enables:
+- Cross-transaction resume
+- Backend monitoring
+- Failure recovery
+
+### 5. Completion Flag
+
+The `complete` flag prevents further processing after settlement finishes:
+
+```solidity
+if (progress.complete) revert SettlementChunkComplete(epochId);
+```
+
+### 6. Epoch State Machine
+
+Epoch status enforces proper settlement flow:
+
+```
+Active -> Frozen (at freezeEpoch)
+Frozen -> Settling (on first settlement chunk)
+Settling -> Settled (on final chunk)
+```
+
+### 7. Resume Settlement Helper
+
+Convenience function for resuming without knowing the index:
+
+```solidity
+function resumeSettlement(uint256 epochId, uint256 carryAmount) external onlyRole(SETTLER_ROLE) nonReentrant {
+    SettlementProgress storage progress = settlementProgress[epochId];
+    if (progress.complete) revert SettlementChunkComplete(epochId);
+    if (progress.processedCount == 0) revert SettlementChunkInvalid(0, 0, 0);
+    
+    uint256 resumeIndex = progress.lastProcessedIndex + 1;
+    emit SettlementResumed(epochId, resumeIndex);
+    _settleEpochChunk(epochId, carryAmount, resumeIndex);
+}
+```
+
+## Safety Invariants
+
+1. **No Gaps:** `startIndex` must equal `lastProcessedIndex + 1`
+2. **No Overlaps:** Each request processed exactly once
+3. **No Re-processing:** `complete` flag prevents additional calls
+4. **Deterministic:** Same inputs always produce same outputs
+5. **Observable:** Events and view functions enable monitoring
+
+## Error Conditions
+
+| Error | Condition |
+|-------|-----------|
+| SettlementChunkInvalid | Wrong startIndex or never started |
+| SettlementChunkComplete | Settlement already finished |
+| EpochNotFrozen | Epoch not in Frozen or Settling state |
+
+## Backend Integration
+
+The `getSettlementProgress` view function enables backend monitoring:
+
+```solidity
+function getSettlementProgress(uint256 epochId) external view returns (
+    uint256 processed,
+    uint256 total,
+    uint256 lastIndex,
+    bool isComplete
+);
+```
+
+Backend can:
+1. Poll progress during settlement
+2. Calculate completion percentage
+3. Detect stalled settlements
+4. Trigger resume if needed

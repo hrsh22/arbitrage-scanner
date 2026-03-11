@@ -1,0 +1,91 @@
+# Task 9 Evidence: Freeze Transition
+## File: contracts/src/EpochTrancheVault.sol
+
+### Freeze Epoch Transition Flow
+
+When `freezeEpoch(bytes32 snapshotHash)` is called:
+
+1. **Authorization Check** (Line 599)
+   ```solidity
+   function freezeEpoch(bytes32 snapshotHash) external onlyRole(SNAPSHOT_ROLE)
+   ```
+   - Only addresses with SNAPSHOT_ROLE can freeze
+
+2. **State Validation** (Line 601)
+   ```solidity
+   if (epoch.status != EpochStatus.Active) revert EpochNotActive(currentEpochId);
+   ```
+   - Epoch must be Active to freeze
+   - Prevents double-freezing
+
+3. **NAV Freshness Check** (Line 603)
+   ```solidity
+   _requireFreshNAV();
+   ```
+   - Ensures NAV was updated within staleness threshold
+
+4. **Epoch State Transition** (Lines 605-607)
+   ```solidity
+   epoch.status = EpochStatus.Frozen;
+   epoch.snapshotNAV = currentNAV;
+   epoch.snapshotTimestamp = block.timestamp;
+   ```
+   - Status changes: Active → Frozen
+   - Snapshot captures current NAV and timestamp
+
+5. **TrancheSnapshot Creation** (Lines 609-615)
+   ```solidity
+   epochSnapshots[currentEpochId] = TrancheSnapshot({
+       snapshotHash: snapshotHash,
+       totalValue: totalAssets(),
+       timestamp: block.timestamp,
+       realizationDeadline: block.timestamp + 30 days,
+       exists: true
+   });
+   ```
+   - Stores snapshot hash for verification
+   - Sets 30-day realization deadline
+
+6. **New Epoch Creation** (Lines 617-632)
+   ```solidity
+   uint256 nextEpochId = currentEpochId + 1;
+   epochs[nextEpochId] = Epoch({...status: EpochStatus.Active...});
+   currentEpochId = nextEpochId;
+   ```
+   - Creates next epoch with Active status
+   - New redemption requests go to next epoch
+
+7. **Event Emission** (Line 634)
+   ```solidity
+   emit EpochFrozen(currentEpochId - 1, snapshotHash, currentNAV, block.timestamp);
+   ```
+   - Emits EpochFrozen with previous epoch ID (now frozen)
+
+### Cohort Separation
+
+Pending redemption requests in the frozen epoch are isolated:
+- `request.epochId` is set at creation time (Line 452)
+- Frozen epoch's `totalSharesPending` is locked (Line 462)
+- New requests automatically go to `currentEpochId + 1` after freeze
+
+### Key State After Freeze
+
+| Field | Value | Purpose |
+|-------|-------|---------|
+| epoch.status | Frozen | Prevents new requests to this epoch |
+| epoch.snapshotNAV | Current NAV | Basis for pro-rata calculations |
+| epoch.snapshotTimestamp | block.timestamp | Freeze timestamp |
+| epoch.totalSharesPending | Locked | Immutable cohort size |
+| epochSnapshots[epochId].exists | true | Snapshot recorded |
+| epochSnapshots[epochId].realizationDeadline | +30 days | Claim deadline |
+
+### Transition Summary
+
+```
+Before Freeze:
+  Epoch N: Active, accepting requests
+  
+After Freeze:
+  Epoch N: Frozen, no new requests, pending requests locked
+  Epoch N+1: Active, accepting new requests
+```

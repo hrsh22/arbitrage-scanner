@@ -1,0 +1,10 @@
+{
+  "name": "vault-scripts",
+  "version": "1.0.0",
+  "description": "Deployment scripts for Polymarket Vault",
+  "main": "add-adapter.js",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.4"
+  }
+}

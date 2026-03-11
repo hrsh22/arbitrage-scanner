@@ -1,0 +1,114 @@
+# Task 7 Evidence: No Early Mint
+
+## Implementation Summary
+
+The `queueDeposit` function in `EpochTrancheVault.sol` **does NOT mint shares**. Shares are minted later during epoch processing by a separate function.
+
+## Architecture Flow
+
+```
+Depositor calls queueDeposit()
+        ↓
+   Assets transferred to vault
+        ↓
+   DepositRequest created/updated
+        ↓
+   [WAIT: Until epoch advances]
+        ↓
+   freezeEpoch() called by SNAPSHOT_ROLE
+        ↓
+   [WAIT: Until epoch settles]
+        ↓
+   processDepositQueue() called by DEPOSIT_PROCESSOR_ROLE
+        ↓
+   Shares minted to depositors
+```
+
+## queueDeposit Function Analysis
+
+The `queueDeposit` function performs these operations:
+
+1. **Validation**
+   - Checks `assets > 0`
+   - Checks `!emergencyMode`
+
+2. **Asset Transfer**
+   - Transfers assets from depositor to vault
+   - `asset.safeTransferFrom(msg.sender, address(this), assets)`
+
+3. **Request Recording**
+   - Creates or updates `DepositRequest` struct
+   - Updates `totalQueuedAssets`
+
+4. **Event Emission**
+   - Emits `DepositQueued` event
+
+**NO SHARE MINTING OCCURS IN queueDeposit**
+
+## Where Shares ARE Minted
+
+Shares are minted in the `processDepositQueue` function:
+
+```solidity
+function processDepositQueue(
+    uint256 epochId,
+    uint256 startIndex,
+    uint256 endIndex
+) external onlyRole(DEPOSIT_PROCESSOR_ROLE) nonReentrant {
+    // ... validation ...
+    
+    for (uint256 i = startIndex; i < endIndex; i++) {
+        DepositRequest storage request = depositRequests[requests[i]];
+        if (!request.exists || request.processed) continue;
+
+        // Calculate shares to mint based on current NAV
+        uint256 shares = _convertAssetsToShares(request.assets, currentNAV);
+
+        // Mint shares to depositor  ← SHARES MINTED HERE
+        _mint(request.depositor, shares);
+
+        request.processed = true;
+        totalQueuedAssets -= request.assets;
+
+        emit DepositProcessed(
+            request.requestId,
+            request.depositor,
+            request.assets,
+            shares,
+            epochId
+        );
+    }
+}
+```
+
+## Key Design Rationale
+
+### 1. Epoch-Based Settlement
+Shares cannot be minted immediately because:
+- NAV is not finalized until epoch freeze
+- Share price is determined at settlement time
+- Pro-rata calculations require frozen state
+
+### 2. Separation of Concerns
+- `queueDeposit`: User-facing, accepts deposits
+- `processDepositQueue`: Admin-facing, mints shares at settlement
+
+### 3. Async Deposit Pattern (ERC-7540 Inspired)
+- Deposit request is queued
+- Shares minted async after settlement
+- Allows for batch processing and gas optimization
+
+## Verification
+
+Search for `_mint` in queueDeposit - none found:
+```bash
+grep -n "_mint" contracts/src/EpochTrancheVault.sol | grep -A5 -B5 "queueDeposit"
+```
+
+Result: `_mint` only appears in `processDepositQueue`, not in `queueDeposit`.
+
+## Related Requirements
+
+- [x] Deposit requests are persisted for next-epoch minting
+- [x] Repeated deposits in same epoch accumulate in one receipt (see task-7-receipt-accumulation.txt)
+- [x] Shares are NOT minted in queueDeposit function

@@ -1,0 +1,136 @@
+# Task 17: Operator Runbook Completeness Check
+# Generated: 2026-03-04
+# File: .sisyphus/evidence/task-17-runbook-completeness.txt
+
+## Summary
+VAULT_KNOWLEDGE.md Section 12 (Operational Runbook) completeness verification.
+
+## Completeness Checklist
+
+### 12.1 Epoch Lifecycle Procedures
+
+| Procedure | Present | Detailed | Verified |
+|-----------|---------|----------|----------|
+| Pre-freeze preparation checklist | YES | 3 steps | YES |
+| Freeze epoch procedure | YES | curl commands + effects | YES |
+| Chunked settlement procedure | YES | Parameters + commands | YES |
+| User claims procedure | YES | Threshold enforcement | YES |
+| Finalize epoch procedure | YES | Effects documented | YES |
+
+### 12.2 Chunked Settlement Procedures
+
+| Item | Present | Content |
+|------|---------|---------|
+| When to use chunked settlement | YES | 3 criteria |
+| Chunking mechanics | YES | 3 bullet points |
+| Monitoring commands | YES | curl + jq examples |
+| Failure recovery table | YES | 3 scenarios |
+
+### 12.3 Dust Override Procedures
+
+| Item | Present | Content |
+|------|---------|---------|
+| Eligibility criteria | YES | Post-finalization only |
+| Status check command | YES | jq example |
+| Claim command | YES | curl example |
+| Finality warning | YES | Explicit note |
+
+### 12.4 Reconciliation Procedures
+
+| Item | Present | Content |
+|------|---------|---------|
+| When to reconcile | YES | 4 scenarios |
+| Reconciliation checks table | YES | 3 checks |
+| Ledger invariant equations | YES | 3 equations |
+| Manual reconciliation command | YES | curl example |
+| Mismatch handling table | YES | 3 types |
+
+### 12.5 Failure Handling and Rollback
+
+| Item | Present | Content |
+|------|---------|---------|
+| Settlement failure scenarios | YES | 4 errors in table |
+| Rollback procedures | YES | Cannot rollback list |
+| Emergency procedures | YES | Enable/disable commands |
+| Escalation path | YES | 3 levels |
+
+### 12.6 Deprecated Behaviors and Replacements
+
+| Item | Present | Content |
+|------|---------|---------|
+| Deprecated behaviors table | YES | 6 items |
+| API endpoint changes table | YES | 2 endpoints |
+| Status value mappings table | YES | 4 status values |
+
+## Coverage Analysis
+
+### Required Procedures (from T17 spec)
+
+| Required | Section | Status |
+|----------|---------|--------|
+| Freeze/settle/finalize procedures | 12.1 | COMPLETE |
+| Reconciliation procedures | 12.4 | COMPLETE |
+| Failure handling | 12.5 | COMPLETE |
+
+### Documentation Quality
+
+| Aspect | Status | Notes |
+|--------|--------|-------|
+| Step-by-step commands | YES | curl examples throughout |
+| Expected outputs | YES | jq filters, field descriptions |
+| Error scenarios | YES | Failure handling section |
+| Rollback notes | YES | Cannot rollback + emergency |
+| Cross-references | YES | Links to notepad learnings |
+
+## Verification Commands
+
+```bash
+# Check all required sections exist
+grep -n "12.1\|12.2\|12.3\|12.4\|12.5\|12.6" VAULT_KNOWLEDGE.md
+
+# Verify freeze/settle/finalize commands
+grep -n "epochs/current/freeze\|epochs/1/settle\|epochs/1/finalize" VAULT_KNOWLEDGE.md
+
+# Verify chunked settlement content
+grep -n "chunked\|chunk\|cursor" VAULT_KNOWLEDGE.md
+
+# Verify dust override content
+grep -n "dust override\|dustOverride" VAULT_KNOWLEDGE.md
+
+# Verify reconciliation content
+grep -n "reconcil\|invariant\|conservation" VAULT_KNOWLEDGE.md
+
+# Verify deprecated behaviors table
+grep -n "Deprecated\|Replacement" VAULT_KNOWLEDGE.md
+```
+
+## Command Output Evidence
+
+```
+$ grep -c "curl" VAULT_KNOWLEDGE.md
+25
+
+$ grep -c "freeze\|settle\|finalize" VAULT_KNOWLEDGE.md
+45
+
+$ grep -c "chunked\|chunk\|cursor" VAULT_KNOWLEDGE.md
+12
+
+$ grep -c "dust override\|dustOverride" VAULT_KNOWLEDGE.md
+8
+
+$ grep -c "reconcil\|invariant" VAULT_KNOWLEDGE.md
+15
+```
+
+## Result: COMPLETE
+
+All required procedures documented:
+- Freeze/settle/finalize with step-by-step commands
+- Chunked settlement with resume procedures
+- Dust override with eligibility rules
+- Reconciliation with invariant checks
+- Failure handling with escalation path
+- Deprecated behaviors with replacements
+
+Runbook is operator-ready.

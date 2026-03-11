@@ -1,0 +1,73 @@
+Task 4: Normalize Test Harness for Deterministic Timestamp/Revert Assertions
+==========================================================================
+
+ISSUE IDENTIFIED
+----------------
+NavSnapshot tests were failing with timestamp argument mismatches in revert expectations.
+
+Problem pattern (BEFORE):
+```solidity
+function testEnforceFreshNavRevertsWhenNoSnapshot() public {
+    // WRONG: Using block.timestamp directly in expectRevert captures stale value
+    vm.expectRevert(
+        abi.encodeWithSelector(NavSnapshot.NavStale.selector, 0, block.timestamp)
+    );
+    navSnapshot.enforceFreshNav();  // Contract reads fresh block.timestamp here
+}
+```
+
+The test expected `NavStale(0, 21661)` but contract returned `NavStale(0, 21662)`
+because block.timestamp advanced between the expectRevert setup and the actual call.
+
+SOLUTION IMPLEMENTED
+--------------------
+1. Created `contracts/test/helpers/TestHelper.sol` with deterministic patterns:
+   - `expectNavStaleRevert()` - Captures timestamp immediately before expectRevert
+   - `expectNavStaleRevertStatic()` - For view functions that revert
+   - `expectRevertWithArgs()` - Standard pattern for custom error assertions
+   - `captureAssertionTimestamp()` - Helper to capture timestamp at assertion time
+   - `decodeErrorData()` - Extract error selector and arguments from revert data
+
+2. Updated `NavSnapshot.t.sol` with standardized patterns:
+   - Changed inheritance from `Test` to `TestHelper`
+   - Fixed 4 tests with deterministic timestamp capture:
+     * testEnforceFreshNavRevertsWhenNoSnapshot
+     * testEnforceFreshNavRevertsAfter6h01m
+     * testSettlementPrecheckRevertsWhenNoSnapshot
+     * testSettlementPrecheckRevertsAfter6h01m
+     * testStaleNavBlocksSettlement
+
+Pattern applied (AFTER):
+```solidity
+function testEnforceFreshNavRevertsWhenNoSnapshot() public {
+    // CORRECT: Capture timestamp immediately before expectRevert
+    uint256 currentTime = block.timestamp;
+    
+    vm.expectRevert(
+        abi.encodeWithSelector(NavSnapshot.NavStale.selector, 0, currentTime)
+    );
+    navSnapshot.enforceFreshNav();
+}
+```
+
+KEY PRINCIPLES
+--------------
+1. CAPTURE FIRST: Always capture block.timestamp into a local variable BEFORE vm.expectRevert
+2. USE CAPTURED VALUE: Reference the captured variable in the expectRevert, not block.timestamp
+3. DOCUMENT PATTERN: Add comments explaining the deterministic pattern for future maintainers
+
+TEST RESULTS
+------------
+All 31 NavSnapshot tests pass after normalization.
+
+HELPERS AVAILABLE FOR REUSE
+---------------------------
+- TestHelper.expectNavStaleRevert(target, callData, expectedLastUpdate)
+- TestHelper.expectNavStaleRevertStatic(target, callData, expectedLastUpdate)
+- TestHelper.expectRevertWithArgs(target, callData, errorSelector, expectedArgs)
+- TestHelper.expectRevertWithSelector(target, callData, errorSelector)
+- TestHelper.captureAssertionTimestamp() returns uint256
+- TestHelper.recordSnapshotWithTimestamp(target, callData) returns uint256
+- TestHelper.tryStaticCall(target, callData) returns (bool, bytes memory)
+- TestHelper.decodeErrorData(data) returns (bytes4, bytes memory)
+- TestHelper.assertTimestampFresh(capturedTimestamp, toleranceSeconds)

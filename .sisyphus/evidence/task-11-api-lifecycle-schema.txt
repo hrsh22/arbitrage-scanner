@@ -1,0 +1,140 @@
+================================================================================
+TASK 11 EVIDENCE: API LIFECYCLE SCHEMA - CORRECTED FIELDS
+================================================================================
+Date: 2026-03-04
+Wave: 2
+Task: T11 - Update API contract for corrected lifecycle semantics
+Dependencies: T6, T9, T10
+Blocks: T13, T14, T16, T17
+================================================================================
+
+CORRECTED LIFECYCLE FIELD SEMANTICS
+--------------------------------------------------------------------------------
+
+Per T1 gap matrix analysis, the API now exposes the following corrected lifecycle
+fields aligned with the cohort-carry contract semantics:
+
+1. ENTITLEMENT
+   - Field: entitlement
+   - Description: Total USDC amount entitled to the user at epoch settlement
+   - Source: epoch_redemption_entitlements.entitlement
+   - Type: string (USDC in 6 decimals)
+   - Format: entitlementFormatted (human-readable)
+
+2. ACCRUED
+   - Field: accrued  
+   - Description: Total USDC accrued from position realizations
+   - Source: epoch_redemption_entitlements.accrued
+   - Type: string (USDC in 6 decimals)
+   - Format: accruedFormatted (human-readable)
+   - Invariant: accrued <= entitlement
+
+3. CLAIMED
+   - Field: claimed
+   - Description: Total USDC already claimed by the user
+   - Source: epoch_redemption_entitlements.claimed
+   - Type: string (USDC in 6 decimals)
+   - Format: claimedFormatted (human-readable)
+   - Invariant: claimed <= accrued
+
+4. CARRY REMAINING
+   - Field: carryRemaining
+   - Description: Remaining amount to be carried forward (entitlement - claimed)
+   - Source: epoch_redemption_entitlements.carryRemaining
+   - Type: string (USDC in 6 decimals)
+   - Format: carryRemainingFormatted (human-readable)
+   - Calculation: carryRemaining = entitlement - claimed
+
+5. CLAIMABLE NOW
+   - Field: claimableNow
+   - Description: USDC available to claim right now (accrued - claimed)
+   - Type: string (USDC in 6 decimals)
+   - Format: claimableNowFormatted (human-readable)
+   - Calculation: claimableNow = accrued - claimed
+
+6. MINIMUM CLAIM THRESHOLD
+   - Field: minClaimThreshold
+   - Description: Minimum claim amount required to prevent dust attacks
+   - Value: 1000000 (1 USDC in 6 decimals)
+   - Type: string
+   - Format: minClaimThresholdFormatted ("1.0")
+
+7. DUST OVERRIDE ELIGIBLE
+   - Field: dustOverrideEligible
+   - Description: Whether user can claim despite being below threshold
+   - Type: boolean
+   - Condition: claimableNow > 0 && claimableNow < minClaimThreshold
+
+8. MEETS THRESHOLD
+   - Field: meetsThreshold
+   - Description: Whether claimableNow meets minimum threshold
+   - Type: boolean
+   - Condition: claimableNow >= minClaimThreshold
+
+API ENDPOINTS UPDATED
+--------------------------------------------------------------------------------
+
+1. GET /api/vaults/:vaultId/requests/:requestId
+   - Uses formatRedemptionRequest() helper
+   - Returns all corrected lifecycle fields
+
+2. GET /api/vaults/:vaultId/redemptions
+   - Returns user redemption state with lifecycle fields
+   - Aggregates across all user entitlements
+
+3. GET /api/vaults/:vaultId/tranche-status
+   - Returns tranche position with:
+     * entitlement, accrued, claimed, carryRemaining
+     * claimableNow, minClaimThreshold, dustOverrideEligible
+
+4. GET /api/vaults/:vaultId/carry-eligibility
+   - Returns detailed eligibility with all lifecycle fields
+   - Supports both single requestId and aggregated view
+
+DEPRECATED FIELDS (REMOVED)
+--------------------------------------------------------------------------------
+
+The following stale fields are NO LONGER returned:
+- totalRealizedUsdc (use 'accrued' instead)
+- totalClaimedUsdc (use 'claimed' instead)
+
+LEDGER INVARIANTS ENFORCED
+--------------------------------------------------------------------------------
+
+The corrected semantics enforce these invariants:
+1. 0 <= claimed <= accrued <= entitlement
+2. carryRemaining = entitlement - claimed (loss-aware)
+3. claimableNow = accrued - claimed
+
+See entitlementRepository.validateLedgerInvariants() for validation logic.
+
+EXAMPLE API RESPONSE (formatRedemptionRequest)
+--------------------------------------------------------------------------------
+
+{
+  "id": "req-123",
+  "requestId": "req-123",
+  "vaultId": 1,
+  "userAddress": "0x...",
+  "status": "claimable",
+  
+  // Corrected lifecycle fields
+  "entitlement": "1000000000",          // 1000 USDC entitled
+  "entitlementFormatted": "1000.0",
+  "accrued": "750000000",                // 750 USDC accrued
+  "accruedFormatted": "750.0",
+  "claimed": "500000000",                // 500 USDC claimed
+  "claimedFormatted": "500.0",
+  "carryRemaining": "500000000",         // 500 USDC remaining
+  "carryRemainingFormatted": "500.0",
+  "claimableNow": "250000000",           // 250 USDC available now
+  "claimableNowFormatted": "250.0",
+  "minClaimThreshold": "1000000",
+  "minClaimThresholdFormatted": "1.0",
+  "dustOverrideEligible": false,
+  "meetsThreshold": true
+}
+
+================================================================================
+END OF EVIDENCE FILE
+================================================================================

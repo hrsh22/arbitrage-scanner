@@ -1,0 +1,24 @@
+        Epoch storage epoch = epochs[epochId];
+        if (!epoch.exists) return (false, "Epoch does not exist");
+
+        // Invariant 1: cohortTotalClaimed >= 0 (always true for uint256)
+        // Invariant 2: cohortTotalClaimed <= cohortTotalAccrued
+        if (epoch.cohortTotalClaimed > epoch.cohortTotalAccrued) {
+            return (false, "Cohort invariant violated: cohortTotalClaimed > cohortTotalAccrued");
+        }
+
+        // Invariant 3: cohortTotalAccrued <= cohortTotalEntitlement
+        if (epoch.cohortTotalAccrued > epoch.cohortTotalEntitlement) {
+            return (false, "Cohort invariant violated: cohortTotalAccrued > cohortTotalEntitlement");
+        }
+
+        // Invariant 4: cohortCarryRemaining <= cohortTotalAccrued
+        if (epoch.cohortCarryRemaining > epoch.cohortTotalAccrued) {
+            return (false, "Cohort invariant violated: cohortCarryRemaining > cohortTotalAccrued");
+        }
+
+        return (true, "");
+    }
+
+    uint256[50] private __gap;
+}

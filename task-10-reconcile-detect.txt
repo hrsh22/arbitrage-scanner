@@ -1,0 +1,148 @@
+================================================================================
+TASK 10: RECONCILIATION - MISMATCH DETECTION EVIDENCE
+================================================================================
+Generated: 2026-03-04
+Task: Harden backend reconciliation and remove dual-ledger ambiguity
+
+================================================================================
+1. FIELD MAPPING DOCUMENTATION
+================================================================================
+
+Explicit mapping between canonical and legacy fields:
+
+Canonical Schema (single source of truth):
+  - entitlement:        Total entitled amount (immutable after freeze)
+  - accrued:            Amount accrued from realizations
+  - claimed:            Amount claimed by user
+  - carryRemaining:     Remaining to be carried (calculated: entitlement - claimed)
+
+Legacy Schema (deprecated, maintained for backward compatibility):
+  - totalRealizedUsdc:  Maps to 'accrued'
+  - totalClaimedUsdc:   Maps to 'claimed'
+
+================================================================================
+2. MISMATCH DETECTION CAPABILITIES
+================================================================================
+
+The following mismatch types are detected and logged with deterministic reasons:
+
+A. CANONICAL_LEGACY_ACCRUED_MISMATCH
+   Trigger: accrued (canonical) != totalRealizedUsdc (legacy)
+   Logged with: entitlementId, requestId, userAddress, both values
+   
+B. CANONICAL_LEGACY_CLAIMED_MISMATCH
+   Trigger: claimed (canonical) != totalClaimedUsdc (legacy)
+   Logged with: entitlementId, requestId, userAddress, both values
+   
+C. CARRY_REMAINING_CALCULATION_ERROR
+   Trigger: carryRemaining != entitlement - claimed
+   Logged with: current, expected, entitlement, claimed values
+   
+D. CONTRACT_REPOSITORY_MISMATCH
+   Trigger: Repository state differs from on-chain contract state
+   Logged with: repository value, contract value, field name
+
+================================================================================
+3. EXAMPLE MISMATCH LOG OUTPUT
+================================================================================
+
+Example 1: Accrued Mismatch
+{
+  "level": "warn",
+  "message": "EntitlementRepository: Reconciliation mismatch detected",
+  "entitlementId": 1,
+  "requestId": "req-mismatch-accrued",
+  "mismatchCount": 1,
+  "mismatches": [
+    {
+      "field": "accrued/totalRealizedUsdc",
+      "reason": "CANONICAL_LEGACY_ACCRUED_MISMATCH",
+      "canonical": "800000000",
+      "legacy": "900000000"
+    }
+  ]
+}
+
+Example 2: Multiple Mismatches
+{
+  "level": "warn",
+  "message": "EntitlementRepository: Reconciliation mismatch detected",
+  "entitlementId": 3,
+  "requestId": "req-multi-mismatch",
+  "mismatchCount": 2,
+  "mismatches": [
+    {
+      "field": "accrued/totalRealizedUsdc",
+      "reason": "CANONICAL_LEGACY_ACCRUED_MISMATCH",
+      "canonical": "800000000",
+      "legacy": "900000000"
+    },
+    {
+      "field": "claimed/totalClaimedUsdc",
+      "reason": "CANONICAL_LEGACY_CLAIMED_MISMATCH",
+      "canonical": "400000000",
+      "legacy": "500000000"
+    }
+  ]
+}
+
+Example 3: Carry Remaining Calculation Error
+{
+  "level": "warn",
+  "message": "EntitlementRepository: carryRemaining mismatch detected",
+  "entitlementId": 4,
+  "requestId": "req-carry-error",
+  "currentCarryRemaining": "800000000",
+  "expectedCarryRemaining": "700000000",
+  "reason": "CARRY_REMAINING_CALCULATION_ERROR"
+}
+
+================================================================================
+4. TEST COVERAGE FOR MISMATCH DETECTION
+================================================================================
+
+Tests implemented in: apps/vault-api/src/__tests__/reconciliation.test.ts
+
+Test suites:
+✓ Reconciliation - Mismatch Detection
+  ✓ detects CANONICAL_LEGACY_ACCRUED_MISMATCH when accrued != totalRealizedUsdc
+  ✓ detects CANONICAL_LEGACY_CLAIMED_MISMATCH when claimed != totalClaimedUsdc
+  ✓ detects multiple mismatches in single entitlement
+  ✓ detects CARRY_REMAINING_CALCULATION_ERROR when carryRemaining is incorrect
+  
+✓ Contract vs Repository Mismatches
+  ✓ detects mismatch between repository and contract state
+  
+✓ Missing Entitlements
+  ✓ handles missing entitlement gracefully
+
+================================================================================
+5. KEY IMPLEMENTATION DETAILS
+================================================================================
+
+1. Explicit field mapping exported as LedgerFieldMapping constant
+2. ReconcileMismatchReason enum for deterministic categorization
+3. Detailed mismatch objects include request identifiers
+4. All corrections are logged BEFORE application (no silent auto-correct)
+5. Contract state comparison supported via ContractEntitlementState interface
+
+================================================================================
+6. FILES MODIFIED
+================================================================================
+
+- apps/vault-api/src/repositories/entitlementRepository.ts
+  Added: reconcileEntitlement(), reconcileEpoch(), compareWithContract(),
+         LedgerFieldMapping, ReconcileMismatchReason types
+
+- apps/vault-api/src/repositories/payoutRepository.ts
+  Updated: validateLedgerInvariants() with reconcileMode option
+
+- apps/vault-api/src/services/claimStateMachine.ts
+  Added: LedgerFieldMapping, LedgerMismatchReason constants
+
+- apps/vault-api/src/__tests__/reconciliation.test.ts
+  Created: Comprehensive test suite for mismatch detection
+
+================================================================================
+END OF EVIDENCE FILE
+================================================================================

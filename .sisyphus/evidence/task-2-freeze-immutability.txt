@@ -1,0 +1,118 @@
+================================================================================
+TASK 2 EVIDENCE: FREEZE IMMUTABILITY (F1-FREEZE-001)
+================================================================================
+Task: Implement boundary-locked freeze economics model in EpochTrancheVault.sol
+Requirement: Freeze must record immutable economic inputs used by settlement
+Status: COMPLETE
+
+================================================================================
+1. IMPLEMENTATION SUMMARY
+================================================================================
+
+Modified Epoch struct to include immutable snapshot fields:
+  - uint256 totalSharesPendingAtFreeze
+  - uint256 totalAssetsAvailableAtFreeze
+
+Modified freezeEpoch() to capture and store:
+  1. sharesPending = epoch.totalSharesPending (at freeze time)
+  2. assetsAvailable = totalAssets() (at freeze time)
+  3. Store both values in epoch.{totalSharesPendingAtFreeze, totalAssetsAvailableAtFreeze}
+
+Modified settleEpoch() to use frozen values:
+  - uint256 totalShares = epoch.totalSharesPendingAtFreeze (not runtime value)
+  - uint256 availableAssets = epoch.totalAssetsAvailableAtFreeze (not passed param)
+  - Calculate proRataRatio using frozen values only
+
+Modified redeem() and withdraw() to use frozen values:
+  - assets = (shares * epoch.totalAssetsAvailableAtFreeze) / epoch.totalSharesPendingAtFreeze
+  - shares = (grossAssets * epoch.totalSharesPendingAtFreeze) / epoch.totalAssetsAvailableAtFreeze
+
+================================================================================
+2. CODE LOCATIONS
+================================================================================
+
+Contract: contracts/src/EpochTrancheVault.sol
+
+Epoch struct (lines 44-56):
+  struct Epoch {
+      uint256 epochId;
+      uint256 startTime;
+      uint256 endTime;
+      uint256 snapshotNAV;
+      uint256 snapshotTimestamp;
+      uint256 totalSharesPending;
+      uint256 totalSharesPendingAtFreeze;      // Immutable: shares pending at freeze
+      uint256 totalAssetsAvailableAtFreeze;     // Immutable: assets available at freeze
+      uint256 proRataRatio;
+      uint256 carryAccrued;
+      EpochStatus status;
+      bool exists;
+  }
+
+freezeEpoch() (lines 302-340):
+  // Capture immutable economic snapshot at freeze boundary
+  uint256 sharesPending = epoch.totalSharesPending;
+  uint256 assetsAvailable = totalAssets();
+
+  epoch.status = EpochStatus.Frozen;
+  epoch.snapshotNAV = currentNAV;
+  epoch.snapshotTimestamp = block.timestamp;
+  epoch.totalSharesPendingAtFreeze = sharesPending;
+  epoch.totalAssetsAvailableAtFreeze = assetsAvailable;
+
+settleEpoch() (lines 342-373):
+  // Use FROZEN snapshot values for settlement calculations
+  uint256 totalShares = epoch.totalSharesPendingAtFreeze;
+  uint256 availableAssets = epoch.totalAssetsAvailableAtFreeze;
+
+redeem() (lines 262-283):
+  // Use FROZEN snapshot values for calculation
+  assets = (shares * epoch.totalAssetsAvailableAtFreeze) / epoch.totalSharesPendingAtFreeze;
+
+================================================================================
+3. VERIFICATION COMMANDS
+================================================================================
+
+Build verification:
+  cd contracts && forge build
+
+Test verification (evidence of immutability):
+  cd contracts && forge test --match-path "test/EpochTrancheVault.t.sol"
+
+Key test: test_Settle_UsesFrozenSnapshotValues()
+  - Verifies that additional assets transferred after freeze don't affect settlement
+  - Proves settlement uses frozen snapshot, not current vault balance
+
+================================================================================
+4. SAFETY PROPERTIES
+================================================================================
+
+P1: Deterministic Settlement
+    Settlement calculation is deterministic based on frozen snapshot values.
+    No external parameter can alter the economic outcome after freeze.
+
+P2: Mutation Resistance
+    Runtime changes to totalAssets() or totalSharesPending do NOT affect
+    settlement of frozen epochs. Each epoch is economically isolated.
+
+P3: Audit Trail
+    Both snapshot values are stored on-chain and publicly verifiable:
+    - epochs[epochId].totalSharesPendingAtFreeze
+    - epochs[epochId].totalAssetsAvailableAtFreeze
+
+================================================================================
+5. GAP MATRIX COMPLIANCE
+================================================================================
+
+F1-FREEZE-001: Settlement uses frozen snapshot values
+  BEFORE: settleEpoch accepted availableAssets as parameter
+  AFTER:  settleEpoch reads epoch.totalAssetsAvailableAtFreeze (immutable)
+  
+  BEFORE: settleEpoch used epoch.totalSharesPending (mutable runtime value)
+  AFTER:  settleEpoch uses epoch.totalSharesPendingAtFreeze (immutable)
+
+Status: RESOLVED
+
+================================================================================
+END OF EVIDENCE
+================================================================================

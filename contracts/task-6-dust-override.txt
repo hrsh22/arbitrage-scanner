@@ -1,0 +1,65 @@
+# Task 6: Finalized-Tranche Dust Override - Evidence
+
+## Changes Made to EpochTrancheVault.sol
+
+### 1. Added DustClaimed Event
+```solidity
+event DustClaimed(uint256 indexed requestId, address indexed controller, uint256 assets);
+```
+
+### 2. Added New Errors
+```solidity
+error EpochNotFinalized(uint256 epochId);
+error NotDust(uint256 amount, uint256 threshold);
+```
+
+### 3. Added claimDust() Function
+```solidity
+function claimDust(uint256 requestId) external nonReentrant returns (uint256 assets) {
+    RedemptionRequest storage request = redemptionRequests[requestId];
+    if (!request.exists) revert InvalidRequest(requestId);
+    if (request.controller != msg.sender) revert NotController(request.controller, msg.sender);
+    if (request.status != RequestStatus.Claimable) revert RequestNotClaimable(requestId);
+    
+    Epoch storage epoch = epochs[request.epochId];
+    if (epoch.status != EpochStatus.Finalized) revert EpochNotFinalized(request.epochId);
+    
+    assets = request.assetsClaimable;
+    if (assets >= MIN_CLAIM_THRESHOLD) revert NotDust(assets, MIN_CLAIM_THRESHOLD);
+    
+    // Update ledger tracking for dust claim
+    request.shares = 0;
+    request.assetsClaimable = 0;
+    request.carryDeducted += request.carryRemaining;
+    request.claimed += assets;
+    request.carryRemaining = 0;
+    request.status = RequestStatus.Claimed;
+    epoch.cohortTotalClaimed += assets;
+    epoch.cohortCarryRemaining -= request.carryRemaining;
+    
+    asset.safeTransfer(request.controller, assets);
+    emit DustClaimed(requestId, request.controller, assets);
+    return assets;
+}
+```
+
+### 4. Updated redeem() to Allow Dust When Finalized
+```solidity
+// Line ~330: Allow dust claims when epoch is finalized
+if (epoch.status != EpochStatus.Finalized && assets < MIN_CLAIM_THRESHOLD) 
+    revert BelowClaimThreshold(assets, MIN_CLAIM_THRESHOLD);
+```
+
+### 5. Updated withdraw() to Allow Dust When Finalized
+```solidity
+// Line ~357: Allow dust claims when epoch is finalized
+if (epoch.status != EpochStatus.Finalized && assets < MIN_CLAIM_THRESHOLD) 
+    revert BelowClaimThreshold(assets, MIN_CLAIM_THRESHOLD);
+```
+
+## Verification
+
+- Threshold enforced while tranche open (Active/Frozen/Settling/Settled) ✓
+- Finalized tranche enables dust claim override ✓
+- claimDust() function callable only after finalization ✓
+- Dust amounts (< MIN_CLAIM_THRESHOLD) can be claimed after finalization ✓

@@ -1,0 +1,61 @@
+Task 4: Regression Check - Test Harness Normalization
+======================================================
+
+SMOKE TESTS EXECUTED
+--------------------
+Test Suite: NavSnapshot.t.sol
+Result: PASS (31/31 tests passed)
+
+Tests Verified:
+- testConstructorRevertsZeroAddress
+- testConstructorSetsNavUpdater
+- testEnforceFreshNavRevertsAfter6h01m
+- testEnforceFreshNavRevertsWhenNoSnapshot
+- testEnforceFreshNavSucceedsAt5h59m
+- testEnforceFreshNavSucceedsImmediatelyAfterSnapshot
+- testEpochHistoryTracking
+- testFreshNavAllowsSettlement
+- testGetEpochAtIndexRevertsOutOfBounds
+- testGetEpochCountEmpty
+- testGetNavByEpochReturnsCorrectData
+- testGetNavByEpochReturnsEmptyForUnknownEpoch
+- testIsNavStaleFreshAt5h59m
+- testIsNavStaleReturnsFalseAtThresholdBoundary
+- testIsNavStaleReturnsFalseImmediatelyAfterSnapshot
+- testIsNavStaleReturnsTrueAfterThreshold
+- testIsNavStaleReturnsTrueWhenNoSnapshot
+- testRecordNavSnapshotMultipleEpochs
+- testRecordNavSnapshotOnlyNavUpdater
+- testRecordNavSnapshotRevertsZeroEpoch
+- testRecordNavSnapshotRevertsZeroTotalAssets
+- testRecordNavSnapshotSuccess
+- testSetNavUpdaterOnlyCurrentUpdater
+- testSetNavUpdaterRevertsZeroAddress
+- testSetNavUpdaterSuccess
+- testSettlementPrecheckRevertsAfter6h01m
+- testSettlementPrecheckRevertsWhenNoSnapshot
+- testSettlementPrecheckSucceedsAt5h59m
+- testSettlementPrecheckSucceedsImmediatelyAfterSnapshot
+- testStaleNavBlocksSettlement
+- testStaleNavExplicitRevertReason
+
+REGRESSION CHECK: PASSED
+------------------------
+No regressions introduced in NavSnapshot test suite.
+
+NOTES ON EXISTING ISSUES
+------------------------
+The following test files have pre-existing stack-too-deep compilation issues
+that are UNRELATED to this task's changes:
+- EpochTrancheVault.t.sol (contract-level stack issue)
+- EpochMath.t.sol (line 1043)
+- SnapshotTrancheVault.invariants.t.sol (line 451)
+
+These files were temporarily excluded during testing but have been restored.
+The issues predate this task and do not affect the timestamp/revert assertion
+normalization work.
+
+FILES MODIFIED
+--------------
+- contracts/test/helpers/TestHelper.sol (NEW)
+- contracts/test/NavSnapshot.t.sol (MODIFIED)

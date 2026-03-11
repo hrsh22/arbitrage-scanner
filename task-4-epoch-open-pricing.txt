@@ -1,0 +1,102 @@
+# Task 4: Epoch-Open Snapshot Pricing Evidence
+
+## Summary
+Successfully implemented epoch-open snapshot pricing for delayed mint in EpochTrancheVault.sol.
+
+## Changes Made
+
+### 1. Added epochOpenNAV field to Epoch struct (Line 50)
+```solidity
+struct Epoch {
+    uint256 epochId;
+    uint256 startTime;
+    uint256 endTime;
+    uint256 snapshotNAV;
+    uint256 snapshotTimestamp;
+    uint256 epochOpenNAV;                    // NAV snapshot at epoch open for mint pricing
+    uint256 totalSharesPending;
+    uint256 totalAssetsAvailable;
+    uint256 proRataRatio;
+    uint256 carryAccrued;
+    EpochStatus status;
+    bool exists;
+}
+```
+
+### 2. Initialize epoch 0 with epochOpenNAV (Line 274)
+```solidity
+epochs[0] = Epoch({
+    epochId: 0,
+    startTime: block.timestamp,
+    endTime: block.timestamp + _epochDuration,
+    snapshotNAV: 0,
+    snapshotTimestamp: 0,
+    epochOpenNAV: 1e18,          // Initial NAV for first epoch minting
+    totalSharesPending: 0,
+    totalAssetsAvailable: 0,
+    proRataRatio: PRORATA_PRECISION,
+    carryAccrued: 0,
+    status: EpochStatus.Active,
+    exists: true
+});
+```
+
+### 3. Set epochOpenNAV when creating next epoch in freezeEpoch (Line 489)
+```solidity
+epochs[nextEpochId] = Epoch({
+    epochId: nextEpochId,
+    startTime: epoch.endTime,
+    endTime: epoch.endTime + EPOCH_DURATION,
+    snapshotNAV: 0,
+    snapshotTimestamp: 0,
+    epochOpenNAV: currentNAV,    // Snapshot NAV at epoch open for mint pricing
+    totalSharesPending: 0,
+    totalAssetsAvailable: 0,
+    proRataRatio: PRORATA_PRECISION,
+    carryAccrued: 0,
+    status: EpochStatus.Active,
+    exists: true
+});
+```
+
+### 4. Modified processDepositQueue to use epoch-open snapshot (Lines 333-347)
+```solidity
+function processDepositQueue(
+    uint256 epochId,
+    uint256 startIndex,
+    uint256 endIndex
+) external onlyRole(DEPOSIT_PROCESSOR_ROLE) nonReentrant {
+    Epoch storage epoch = epochs[epochId];
+    if (!epoch.exists) revert InvalidRequest(epochId);
+    
+    // Guard: epoch must have opened (epochOpenNAV set) to process mints
+    if (epoch.epochOpenNAV == 0) revert EpochNotActive(epochId);
+    
+    if (epoch.status != EpochStatus.Active && epoch.status != EpochStatus.Frozen) {
+        revert EpochNotActive(epochId);
+    }
+    // ...
+    for (uint256 i = startIndex; i < endIndex; i++) {
+        DepositRequest storage request = depositRequests[requests[i]];
+        if (!request.exists || request.processed) continue;
+        
+        // Calculate shares based on epoch-open NAV snapshot (not current NAV)
+        uint256 shares = _convertAssetsToShares(request.assets, epoch.epochOpenNAV);
+        
+        _mint(request.depositor, shares);
+        // ...
+    }
+}
+```
+
+## Verification
+- Contract compiles successfully with `forge build --via-ir`
+- All mint conversion uses persisted epoch-open snapshot values (epoch.epochOpenNAV)
+- Guard prevents minting before epoch open (checks epochOpenNAV != 0)
+- Same snapshot used in all mint finalization paths
+
+## Key Behaviors
+1. **Epoch-Open Pricing**: When an epoch is created (via freezeEpoch), the current NAV is snapshotted into epochOpenNAV
+2. **Consistent Minting**: All deposits queued for that epoch are minted using the same epochOpenNAV value
+3. **No Pre-Epoch Minting**: The guard ensures minting cannot occur before the target epoch has opened
+4. **Fairness**: All depositors in the same epoch get the same price per share, regardless of when their deposit is processed within the epoch

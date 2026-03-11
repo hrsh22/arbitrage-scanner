@@ -1,0 +1,1093 @@
+================================================================================
+TASK-1 GAP-TO-REMEDIATION MAPPING (LOCKED)
+Requirement-to-Task Assignment with Verification Commands
+================================================================================
+Generated: March 4, 2026
+Status: LOCKED SOURCE OF TRUTH
+Purpose: Executable mapping from each identified gap to remediation task
+
+================================================================================
+MAPPING EXECUTIVE SUMMARY
+================================================================================
+
+Total Gaps Mapped: 13
+Remediation Tasks: T2 through T18 (17 tasks)
+Mapping Coverage: 100%
+Orphan Requirements: 0
+
+Gap-to-Task Distribution:
+  T2  : 2 gaps (F1-FREEZE-001, F1-FREEZE-002)
+  T3  : 2 gaps (F1-LEDGER-001, F1-LEDGER-002 - model)
+  T4  : 2 gaps (F1-PRICING-001, F1-PRICING-002)
+  T5  : 1 gap  (F1-CHUNK-001 - model)
+  T6  : 1 gap  (F1-THRESHOLD-001 - model)
+  T7  : 1 gap  (F1-FREEZE-002 - implementation)
+  T8  : 2 gaps (F1-LEDGER-001, F1-LEDGER-002 - implementation)
+  T9  : 1 gap  (F1-CHUNK-001 - implementation)
+  T10 : 1 gap  (F1-THRESHOLD-001 - implementation)
+  T11 : 2 gaps (Backend settlement, F4-CREEP-003)
+  T12 : 1 gap  (Backend reconciliation)
+  T13 : 1 gap  (F4-CREEP-003, API contract)
+  T14 : 1 gap  (Frontend lifecycle)
+  T15 : 1 gap  (Contract invariants)
+  T16 : 2 gaps (F4-CREEP-001, F4-CREEP-002, Backend integration)
+  T17 : 11 gaps (F3 evidence regeneration)
+  T18 : 3 gaps (F4 scope cleanup, final preflight)
+
+================================================================================
+SECTION 1: T2 - FREEZE SNAPSHOT ECONOMICS MODEL
+================================================================================
+
+Mapped Gaps:
+  - F1-FREEZE-001: Settlement uses frozen snapshot values
+  - F1-FREEZE-002: Request status transition at freeze boundary (partial)
+
+Code Locations to Modify:
+  1. contracts/src/EpochTrancheVault.sol
+     - Lines 462-492: freezeEpoch function (add immutable economics storage)
+     - Lines 494-588: settleEpoch function (use frozen values, not current)
+     - Lines 561-575: Add request status transition to Frozen
+
+Required Changes:
+  [ ] Add epoch.snapshotTotalShares (frozen at freeze time)
+  [ ] Add epoch.snapshotTotalAssets (frozen at freeze time)
+  [ ] Modify settleEpoch to use frozen snapshot values
+  [ ] Iterate epochRedemptionRequests in freezeEpoch to set status = Frozen
+
+Verification Commands:
+  ```bash
+  # Contract tests
+  cd contracts && forge test --match-test "test.*Freeze"
+  cd contracts && forge test --match-test "test.*Settlement.*Snapshot"
+  
+  # Immutability check
+  cd contracts && forge test --match-test "test.*FreezeImmutability"
+  
+  # Cancel guard check
+  cd contracts && forge test --match-test "test.*CancelAfterFreeze"
+  ```
+
+Expected Results:
+  - All tests exit with code 0
+  - No compilation warnings
+  - Gas report shows bounded operations
+
+Evidence Files to Produce:
+  - .sisyphus/evidence/task-2-freeze-immutability.txt
+  - .sisyphus/evidence/task-2-freeze-cancel-guard.txt
+
+Acceptance Criteria (Must All Pass):
+  [AC-T2-001] Freeze stores immutable economic snapshot fields
+  [AC-T2-002] Settlement reads frozen values, not mutable current values
+  [AC-T2-003] Frozen requests cannot be canceled (revert with CannotCancelAfterFreeze)
+
+Dependencies:
+  - Blocks: T7, T8, T15
+  - Blocked By: None (Wave 1 foundation)
+
+================================================================================
+SECTION 2: T3 - CARRY LEDGER MODEL AND INVARIANTS
+================================================================================
+
+Mapped Gaps:
+  - F1-LEDGER-001: Per-user ledger fields (entitlement, accrued, claimed, carryRemaining)
+  - F1-LEDGER-002: Cohort-level aggregates for pro-rata
+
+Code Locations to Modify:
+  1. contracts/src/EpochTrancheVault.sol
+     - Lines 69-81: RedemptionRequest struct (add ledger fields)
+     - Lines 44-57: Epoch struct (add cohort aggregates)
+     - Lines 494-588: settleEpoch (populate entitlement)
+     - Lines 406-432: redeem (update claimed, carryRemaining)
+  
+  2. apps/vault-api/src/repositories/entitlementRepository.ts
+     - Align repository fields with contract ledger semantics
+     - Add fields: entitlement, accrued, claimed, carryRemaining
+  
+  3. apps/vault-api/src/services/claimStateMachine.ts
+     - Enforce ledger invariants in state transitions
+     - Add validation: claimed <= accrued <= entitlement
+
+Required Changes:
+  [ ] RedemptionRequest.entitlement (total claimable at settlement)
+  [ ] RedemptionRequest.accrued (cumulative realized amount)
+  [ ] RedemptionRequest.claimed (cumulative withdrawn)
+  [ ] RedemptionRequest.carryRemaining (unrealized carry balance)
+  [ ] Epoch.cohortTotalEntitlement
+  [ ] Epoch.cohortTotalAccrued
+  [ ] Epoch.cohortTotalClaimed
+  [ ] Epoch.cohortCarryRemaining
+
+Verification Commands:
+  ```bash
+  # Contract ledger invariants
+  cd contracts && forge test --match-test "test.*Ledger"
+  cd contracts && forge test --match-test "test.*Invariant"
+  
+  # Backend reconciliation
+  pnpm --filter vault test -- epochRepository.invariants
+  pnpm --filter vault test -- entitlementRepository
+  ```
+
+Expected Results:
+  - Invariant tests pass: 0 <= claimed <= accrued <= entitlement
+  - Backend repository values match contract 1:1
+
+Evidence Files to Produce:
+  - .sisyphus/evidence/task-3-ledger-invariants.txt
+  - .sisyphus/evidence/task-3-ledger-reconcile.txt
+
+Acceptance Criteria (Must All Pass):
+  [AC-T3-001] Ledger invariants hold: 0 <= claimed <= accrued <= entitlement
+  [AC-T3-002] carryRemaining calculation is deterministic and loss-aware
+  [AC-T3-003] Repository and contract ledgers reconcile 1:1
+
+Dependencies:
+  - Blocks: T8, T10, T11, T12, T15, T16
+  - Blocked By: T2
+
+================================================================================
+SECTION 3: T4 - EPOCH-OPEN MINT SNAPSHOT PRICING MODEL
+================================================================================
+
+Mapped Gaps:
+  - F1-PRICING-001: Mint uses epoch-open snapshot, not current NAV
+  - F1-PRICING-002: Mint blocked before epoch-open boundary
+
+Code Locations to Modify:
+  1. contracts/src/EpochTrancheVault.sol
+     - Lines 44-57: Epoch struct (add epochOpenNAV field)
+     - Lines 324-353: processDepositQueue (use epochOpenNAV, not currentNAV)
+     - Lines 329-333: Add epoch-open boundary check
+  
+  2. apps/vault-api/src/services/customVaultProvider.ts
+     - Update delayed mint API semantics
+     - Remove assumptions about immediate mint
+
+Required Changes:
+  [ ] Epoch.epochOpenNAV field (captured when epoch becomes Active)
+  [ ] processDepositQueue uses epoch.epochOpenNAV for conversion
+  [ ] Boundary check: require(block.timestamp >= epoch.startTime, "Epoch not open")
+
+Verification Commands:
+  ```bash
+  # Epoch-open pricing tests
+  cd contracts && forge test --match-test "test.*DepositQueue"
+  cd contracts && forge test --match-test "test.*OpenPrice"
+  cd contracts && forge test --match-test "test.*EarlyMint"
+  ```
+
+Expected Results:
+  - Mint uses epoch-open NAV, not current NAV at processing time
+  - Early mint attempts revert with appropriate error
+
+Evidence Files to Produce:
+  - .sisyphus/evidence/task-4-epoch-open-pricing.txt
+  - .sisyphus/evidence/task-4-early-mint-guard.txt
+
+Acceptance Criteria (Must All Pass):
+  [AC-T4-001] Mint conversion uses persisted epoch-open snapshot values
+  [AC-T4-002] Requests minted exactly once when target epoch opens
+  [AC-T4-003] Early mint attempt is rejected with clear error
+
+Dependencies:
+  - Blocks: T7, T13, T14, T15
+  - Blocked By: T1
+
+================================================================================
+SECTION 4: T5 - SETTLEMENT CHUNKING/RESUME MODEL
+================================================================================
+
+Mapped Gaps:
+  - F1-CHUNK-001: Bounded settlement with resume cursors
+
+Code Locations to Modify:
+  1. contracts/src/EpochTrancheVault.sol
+     - Lines 113 (MAX_CHUNK_SIZE = 100 exists)
+     - Lines 112 (nextRequestIndexToProcess mapping exists)
+     - Lines 494-588: settleEpoch (split into chunked version)
+     - New: settleEpochChunked(uint256 epochId, uint256 startIndex)
+  
+  2. apps/vault-api/src/services/customVaultProvider.ts
+     - Add settlement orchestration for chunked execution
+     - Track settlement progress across chunks
+  
+  3. apps/vault-api/src/services/customVaultClient.ts
+     - Add settleEpochChunked to ABI/client
+
+Required Changes:
+  [ ] settleEpochChunked function with chunkSize parameter
+  [ ] Resume cursor: nextRequestIndexToProcess[epochId]
+  [ ] SettlementProgress struct usage for tracking
+  [ ] Continuation until all requests processed
+  [ ] Gas-bounded operations per chunk
+
+Verification Commands:
+  ```bash
+  # Chunked settlement tests
+  cd contracts && forge test --match-test "test.*Chunk"
+  cd contracts && forge test --match-test "test.*Settle"
+  cd contracts && forge test --match-test "test.*Resume"
+  ```
+
+Expected Results:
+  - Cohort > MAX_CHUNK_SIZE settles across multiple transactions
+  - Resume cursor prevents replay/skip
+  - Each chunk gas usage bounded
+
+Evidence Files to Produce:
+  - .sisyphus/evidence/task-5-chunked-settlement.txt
+  - .sisyphus/evidence/task-5-resume-safety.txt
+
+Acceptance Criteria (Must All Pass):
+  [AC-T5-001] Settlement supports chunk size cap and resume index
+  [AC-T5-002] Chunked execution outcome equals single-pass reference math
+  [AC-T5-003] Interrupted settlement resumes safely without replay/skip
+
+Dependencies:
+  - Blocks: T9, T11, T15, T16
+  - Blocked By: T1
+
+================================================================================
+SECTION 5: T6 - DUST OVERRIDE/FINALIZATION MODEL
+================================================================================
+
+Mapped Gaps:
+  - F1-THRESHOLD-001: Finalized-tranche dust claim override
+
+Code Locations to Modify:
+  1. contracts/src/EpochTrancheVault.sol
+     - Lines 406-432: redeem (add dust override check)
+     - Lines 434-460: withdraw (add dust override check)
+     - Check: if (assets < MIN_CLAIM_THRESHOLD && !epoch.isFinalized) revert
+  
+  2. apps/vault-api/src/services/customVaultProvider.ts
+     - Add dust override eligibility to claim checks
+     - Add dustOverrideEligible field to response
+  
+  3. apps/vault-web/src/lib/hooks.ts
+     - Update UI gating for dust override state
+
+Required Changes:
+  [ ] redeem() allows dust claims when epoch.status == Finalized
+  [ ] withdraw() allows dust claims when epoch.status == Finalized
+  [ ] Backend returns dustOverrideEligible: boolean
+  [ ] UI enables claim CTA when dustOverrideEligible is true
+
+Verification Commands:
+  ```bash
+  # Threshold and dust tests
+  cd contracts && forge test --match-test "test.*Threshold"
+  cd contracts && forge test --match-test "test.*Dust"
+  ```
+
+Expected Results:
+  - Sub-threshold claims blocked before finalization
+  - Sub-threshold claims succeed after finalization
+
+Evidence Files to Produce:
+  - .sisyphus/evidence/task-6-threshold-block.txt
+  - .sisyphus/evidence/task-6-dust-override.txt
+
+Acceptance Criteria (Must All Pass):
+  [AC-T6-001] Threshold enforced while tranche open (not finalized)
+  [AC-T6-002] Finalized tranche enables dust claim override
+  [AC-T6-003] No residual balances permanently unclaimable
+
+Dependencies:
+  - Blocks: T10, T13, T14, T15
+  - Blocked By: T1
+
+================================================================================
+SECTION 6: T7 - FREEZE ECONOMICS + REQUEST STATE TRANSITIONS
+================================================================================
+
+Mapped Gaps:
+  - F1-FREEZE-002: Explicit freeze-state request transitions (implementation)
+  - Dependency on T2 for freeze economics
+
+Code Locations to Modify:
+  1. contracts/src/EpochTrancheVault.sol
+     - Lines 462-492: freezeEpoch (add explicit request status updates)
+     - Lines 390-404: cancelRedeemRequest (verify frozen state blocks cancel)
+  
+  2. apps/vault-api/src/services/claimStateMachine.ts
+     - Map backend state machine to on-chain freeze transitions
+     - Add FROZEN status mapping
+
+Required Changes:
+  [ ] freezeEpoch iterates epochRedemptionRequests and sets status = Frozen
+  [ ] cancelRedeemRequest reverts if request.status != Pending
+  [ ] Backend state machine has Frozen state
+
+Verification Commands:
+  ```bash
+  # State transition tests
+  cd contracts && forge test --match-test "test.*Transition"
+  cd contracts && forge test --match-test "test.*Freeze.*Request"
+  ```
+
+Expected Results:
+  - Request follows pending -> frozen -> claimable path
+  - Invalid transitions revert deterministically
+
+Evidence Files to Produce:
+  - .sisyphus/evidence/task-7-state-transitions.txt
+  - .sisyphus/evidence/task-7-invalid-transition.txt
+
+Acceptance Criteria (Must All Pass):
+  [AC-T7-001] Transition graph is explicit and enforced on-chain
+  [AC-T7-002] Backend state machine maps exactly to on-chain transitions
+  [AC-T7-003] Pending -> Frozen -> Claimable path enforced
+
+Dependencies:
+  - Blocks: T11, T13, T15
+  - Blocked By: T2, T4
+
+================================================================================
+SECTION 7: T8 - CARRY LEDGER ACCOUNTING + LOSS ATTRIBUTION
+================================================================================
+
+Mapped Gaps:
+  - F1-LEDGER-001: Carry accrual accounting (implementation)
+  - F1-LEDGER-002: Realized loss attribution to cohort
+
+Code Locations to Modify:
+  1. contracts/src/EpochTrancheVault.sol
+     - Lines 494-588: settleEpoch (add carry accrual logic)
+     - New: Realization ingestion function
+     - Add: Pro-rata loss attribution per cohort
+  
+  2. apps/vault-api/src/repositories/realizationRepository.ts
+     - Align with contract carry accrual semantics
+  
+  3. apps/vault-api/src/repositories/entitlementRepository.ts
+     - Update accrual/claim calculations with loss attribution
+
+Required Changes:
+  [ ] Realization ingestion updates cohortTotalAccrued
+  [ ] Loss attribution reduces cohort claims proportionally
+  [ ] Conservation equation: paid + remaining = realized allocation
+
+Verification Commands:
+  ```bash
+  # Carry and loss attribution tests
+  cd contracts && forge test --match-test "test.*Carry"
+  cd contracts && forge test --match-test "test.*Fairness"
+  cd contracts && forge test --match-test "test.*Loss.*Attribution"
+  ```
+
+Expected Results:
+  - Cohort absorbs post-freeze losses
+  - Non-cohort LPs unaffected by cohort losses
+  - Carry conservation invariant holds
+
+Evidence Files to Produce:
+  - .sisyphus/evidence/task-8-loss-attribution.txt
+  - .sisyphus/evidence/task-8-carry-conservation.txt
+
+Acceptance Criteria (Must All Pass):
+  [AC-T8-001] Realized losses reduce accrual/carry according to cohort rules
+  [AC-T8-002] Conservation equation holds: paid + remaining = realized allocation
+  [AC-T8-003] Carry accrual is pro-rata within cohort
+
+Dependencies:
+  - Blocks: T11, T12, T15, T16
+  - Blocked By: T3, T2
+
+================================================================================
+SECTION 8: T9 - CHUNKED SETTLEMENT + CURSOR RESUME
+================================================================================
+
+Mapped Gaps:
+  - F1-CHUNK-001: Implementation of chunked settlement (dependency on T5)
+
+Code Locations to Modify:
+  1. contracts/src/EpochTrancheVault.sol
+     - New: settleEpochChunked function implementation
+     - Lines 113-122: Use MAX_CHUNK_SIZE and nextRequestIndexToProcess
+  
+  2. apps/vault-api/src/services/customVaultProvider.ts
+     - Orchestrate chunked settlement calls
+     - Handle partial completion and resume
+  
+  3. apps/vault-api/src/services/vaultHealthMonitor.ts
+     - Monitor settlement progress
+     - Alert on stuck settlements
+
+Required Changes:
+  [ ] settleEpochChunked fully implemented
+  [ ] SettlementProgress tracking operational
+  [ ] Backend orchestrates multi-chunk settlement
+  [ ] Resume cursor prevents replay/skip
+
+Verification Commands:
+  ```bash
+  # Chunked settlement implementation tests
+  cd contracts && forge test --match-test "test.*ChunkedSettlement"
+  pnpm --filter vault test -- settlement
+  ```
+
+Expected Results:
+  - Large cohort settles across multiple chunks
+  - Backend correctly resumes interrupted settlements
+
+Evidence Files to Produce:
+  - (Uses T5 evidence files - this is implementation task)
+
+Acceptance Criteria (Must All Pass):
+  [AC-T9-001] Large cohort settles across multiple chunks deterministically
+  [AC-T9-002] Resume cursor prevents replay/skip
+  [AC-T9-003] Backend orchestrates chunked settlement
+
+Dependencies:
+  - Blocks: T11, T15, T16
+  - Blocked By: T5, T7, T8
+
+================================================================================
+SECTION 9: T10 - THRESHOLD + DUST CLAIM PATHS
+================================================================================
+
+Mapped Gaps:
+  - F1-THRESHOLD-001: Implementation of threshold + dust paths (dependency on T6)
+
+Code Locations to Modify:
+  1. contracts/src/EpochTrancheVault.sol
+     - Lines 406-432: redeem (implement dust override logic)
+     - Lines 434-460: withdraw (implement dust override logic)
+  
+  2. apps/vault-api/src/routes/customVaultRoutes.ts
+     - Update claim endpoints to handle dust override
+     - Add dustOverrideEligible to response
+
+Required Changes:
+  [ ] Dust override logic in claim paths
+  [ ] API returns dustOverrideEligible field
+  [ ] Backend respects finalization state for threshold
+
+Verification Commands:
+  ```bash
+  # Threshold claim tests
+  cd contracts && forge test --match-test "test.*Claim"
+  cd contracts && forge test --match-test "test.*DustOverride"
+  ```
+
+Expected Results:
+  - Threshold claims work correctly pre-finalization
+  - Dust override works correctly post-finalization
+
+Evidence Files to Produce:
+  - (Uses T6 evidence files - this is implementation task)
+
+Acceptance Criteria (Must All Pass):
+  [AC-T10-001] Threshold claims work correctly
+  [AC-T10-002] Dust override enables sub-threshold claims after finalization
+
+Dependencies:
+  - Blocks: T13, T14, T15
+  - Blocked By: T6
+
+================================================================================
+SECTION 10: T11 - BACKEND SETTLEMENT CONTRACT EXECUTION
+================================================================================
+
+Mapped Gaps:
+  - Backend settlement stub -> contract execution
+  - Missing: Real contract calls and tx confirmation
+
+Code Locations to Modify:
+  1. apps/vault-api/src/services/customVaultProvider.ts
+     - Replace placeholder settlement with contract calls
+     - Add: settleEpochChunked orchestration
+  
+  2. apps/vault-api/src/services/customVaultClient.ts
+     - Add: Transaction result handling and retries
+     - Add: settleEpochChunked ABI binding
+  
+  3. apps/vault-api/src/services/vaultHealthMonitor.ts
+     - Post-settlement health checks
+     - Reconciliation triggers
+
+Required Changes:
+  [ ] Settlement calls actual contract function
+  [ ] Waits for transaction confirmation
+  [ ] Returns success only after on-chain confirmation
+  [ ] Structured error on failure
+
+Verification Commands:
+  ```bash
+  # Settlement execution tests
+  pnpm --filter vault test -- provider
+  pnpm --filter vault test -- customVaultClient
+  
+  # Integration test
+  curl -X POST http://localhost:3001/api/vaults/1/settle \
+    -H "Content-Type: application/json" \
+    -d '{"epochId": 1, "availableAssets": 1000000, "carryAmount": 10000}'
+  ```
+
+Expected Results:
+  - Settlement returns tx hash on success
+  - Settlement returns structured error on failure
+  - No false-positive success responses
+
+Evidence Files to Produce:
+  - .sisyphus/evidence/task-9-settlement-tx-success.txt
+  - .sisyphus/evidence/task-9-settlement-error-path.txt
+
+Acceptance Criteria (Must All Pass):
+  [AC-T11-001] Settlement endpoint returns success only after confirmed tx
+  [AC-T11-002] Failed on-chain settlement returns structured error
+  [AC-T11-003] No false-positive success responses
+
+Dependencies:
+  - Blocks: T12, T13, T16, T17
+  - Blocked By: T5, T7, T8
+
+================================================================================
+SECTION 11: T12 - BACKEND RECONCILIATION AND STATE MACHINE
+================================================================================
+
+Mapped Gaps:
+  - Dual-ledger ambiguity between legacy and canonical
+  - Missing deterministic reconciliation
+
+Code Locations to Modify:
+  1. apps/vault-api/src/repositories/entitlementRepository.ts
+     - Remove/bridge legacy fields
+     - Add: Canonical ledger fields (entitlement, accrued, claimed, carryRemaining)
+  
+  2. apps/vault-api/src/repositories/payoutRepository.ts
+     - Align with canonical carry semantics
+  
+  3. apps/vault-api/src/services/claimStateMachine.ts
+     - Harden with deterministic reconciliation
+     - Add ledger invariant validation
+  
+  4. New: Reconciliation routine
+     - Contract-to-repository state comparison
+     - Mismatch detection and logging
+
+Required Changes:
+  [ ] Repository schema matches contract ledger
+  [ ] Reconciliation routine runs post-settlement
+  [ ] Mismatches detected and reported
+  [ ] Legacy fields deprecated/removed
+
+Verification Commands:
+  ```bash
+  # Reconciliation tests
+  pnpm --filter vault test -- epochRepository entitlementRepository
+  pnpm --filter vault test -- reconciliation
+  ```
+
+Expected Results:
+  - Zero unexplained deltas after settlement
+  - Mismatches detected with clear request identifiers
+
+Evidence Files to Produce:
+  - .sisyphus/evidence/task-10-reconcile-detect.txt
+  - .sisyphus/evidence/task-10-reconcile-clean.txt
+
+Acceptance Criteria (Must All Pass):
+  [AC-T12-001] Reconciliation job reports zero unexplained deltas
+  [AC-T12-002] Legacy/new field mapping is explicit
+  [AC-T12-003] Mismatches detected and logged with request identifier
+
+Dependencies:
+  - Blocks: T13, T16, T17
+  - Blocked By: T3, T9
+
+================================================================================
+SECTION 12: T13 - API LIFECYCLE CONTRACT AND DEPRECATION
+================================================================================
+
+Mapped Gaps:
+  - F4-CREEP-003: Legacy routes not returning explicit 410
+  - Missing: Corrected lifecycle fields in API
+
+Code Locations to Modify:
+  1. apps/vault-api/src/routes/customVaultRoutes.ts
+     - Add: entitlement, accrued, claimed, carryRemaining fields
+     - Add: claimableNow, minClaimThreshold, dustOverrideEligible
+     - Update: Deprecated routes return 410 + replacement guidance
+  
+  2. apps/vault-api/src/__tests__/customVaultRoutes.test.ts
+     - Update tests for corrected lifecycle
+
+Required Changes:
+  [ ] API responses include full corrected lifecycle fields
+  [ ] Deprecated endpoints return 410 Gone + replacement endpoint
+  [ ] No stale pending/settled semantics in active endpoints
+
+Verification Commands:
+  ```bash
+  # API contract tests
+  pnpm --filter vault test -- customVaultRoutes
+  
+  # Manual endpoint verification
+  curl http://localhost:3001/api/vaults/1/redemptions | jq
+  curl -X POST http://localhost:3001/api/vaults/1/legacy-claim -v
+  ```
+
+Expected Results:
+  - 200 responses have corrected lifecycle fields
+  - Deprecated endpoints return 410 with migration hint
+
+Evidence Files to Produce:
+  - .sisyphus/evidence/task-11-api-lifecycle-schema.txt
+  - .sisyphus/evidence/task-11-api-deprecation.txt
+
+Acceptance Criteria (Must All Pass):
+  [AC-T13-001] API responses include full corrected lifecycle fields
+  [AC-T13-002] Deprecated endpoints respond with 410 + replacement endpoint
+  [AC-T13-003] No stale pending/settled semantics in active endpoints
+
+Dependencies:
+  - Blocks: T14, T16, T17, T18
+  - Blocked By: T6, T9, T10
+
+================================================================================
+SECTION 13: T14 - FRONTEND LIFECYCLE AND ELIGIBILITY
+================================================================================
+
+Mapped Gaps:
+  - Frontend UX not aligned to corrected API contract
+  - Missing: Dust override eligibility in UI
+
+Code Locations to Modify:
+  1. apps/vault-web/src/lib/hooks.ts
+     - Update: useRequests, useClaimRedemption for corrected fields
+     - Add: useDustOverrideEligibility
+  
+  2. apps/vault-web/src/lib/api.ts
+     - Update: API client for corrected lifecycle fields
+  
+  3. apps/vault-web/app/vault/[id]/vault-detail.tsx
+     - Update: Claim CTA gating logic
+     - Update: Lifecycle label rendering
+
+Required Changes:
+  [ ] Hooks consume corrected API fields
+  [ ] Claim CTA respects dustOverrideEligible
+  [ ] Lifecycle labels match backend states
+  [ ] No stale pending/settled wording
+
+Verification Commands:
+  ```bash
+  # Frontend build
+  pnpm --filter vault-web build
+  
+  # Playwright tests
+  pnpm --filter vault-web test:e2e -- claim-cta
+  ```
+
+Expected Results:
+  - Build succeeds with no errors
+  - CTA correctly enabled/disabled based on eligibility
+
+Evidence Files to Produce:
+  - .sisyphus/evidence/task-12-claim-cta-gating.png
+  - .sisyphus/evidence/task-12-lifecycle-label-fidelity.png
+
+Acceptance Criteria (Must All Pass):
+  [AC-T14-001] Claim CTA disables/enables based on corrected eligibility
+  [AC-T14-002] Lifecycle labels match backend states
+  [AC-T14-003] No stale pending/settled wording in active flow
+
+Dependencies:
+  - Blocks: T17, T18
+  - Blocked By: T6, T11
+
+================================================================================
+SECTION 14: T15 - CONTRACT INVARIANTS + SCENARIO TESTS
+================================================================================
+
+Mapped Gaps:
+  - Missing invariant tests for freeze economics, carry conservation, 
+    threshold+dust, chunked settlement
+
+Code Locations to Modify:
+  1. contracts/test/EpochTrancheVault.t.sol
+     - Add: Freeze economics invariant tests
+     - Add: Carry conservation tests
+     - Add: Threshold + dust tests
+     - Add: Chunked settlement tests
+  
+  2. contracts/test/invariants/
+     - Add: Accounting invariant harnesses
+
+Required Changes:
+  [ ] Invariant tests fail before fixes, pass after
+  [ ] Full contract test suite passes
+  [ ] Historical failure scenarios encoded as regression tests
+
+Verification Commands:
+  ```bash
+  # Full contract test suite
+  cd contracts && forge test
+  cd contracts && forge test --match-test "test.*Invariant"
+  
+  # Invariant test
+  cd contracts && forge test --match-path "test/invariants/*.t.sol"
+  ```
+
+Expected Results:
+  - All tests pass
+  - New invariants validate remediation fixes
+
+Evidence Files to Produce:
+  - .sisyphus/evidence/task-13-contract-remediation-tests.txt
+  - .sisyphus/evidence/task-13-regression-resolution.txt
+
+Acceptance Criteria (Must All Pass):
+  [AC-T15-001] New invariants fail before fixes and pass after fixes
+  [AC-T15-002] No unresolved compilation/runtime failures
+  [AC-T15-003] Historical failure scenarios resolved
+
+Dependencies:
+  - Blocks: T17, T18
+  - Blocked By: T2, T3, T4, T5, T6, T7, T8, T9, T10
+
+================================================================================
+SECTION 15: T16 - BACKEND INTEGRATION TESTS
+================================================================================
+
+Mapped Gaps:
+  - Missing integration tests for corrected settlement lifecycle
+
+Code Locations to Modify:
+  1. apps/vault-api/src/__tests__/customVaultClient.test.ts
+     - Update: Integration tests for corrected lifecycle
+  
+  2. apps/vault-api/src/__tests__/customVaultRoutes.test.ts
+     - Update: API payload tests
+  
+  3. apps/vault-api/src/__tests__/epochRepository.invariants.test.ts
+     - Add: Invariant tests for corrected semantics
+
+Required Changes:
+  [ ] Integration tests assert corrected carry and settlement semantics
+  [ ] No failing tests due to stale method/API expectations
+  [ ] Error-path assertions pass
+
+Verification Commands:
+  ```bash
+  # Full backend test suite
+  pnpm --filter vault test
+  
+  # Specific integration tests
+  pnpm --filter vault test -- customVaultClient
+  pnpm --filter vault test -- customVaultRoutes
+  ```
+
+Expected Results:
+  - Full test suite passes
+  - Integration tests validate corrected semantics
+
+Evidence Files to Produce:
+  - .sisyphus/evidence/task-14-backend-integration-tests.txt
+  - .sisyphus/evidence/task-14-backend-error-paths.txt
+
+Acceptance Criteria (Must All Pass):
+  [AC-T16-001] Integration tests assert corrected carry and settlement semantics
+  [AC-T16-002] No failing tests due to stale method/API expectations
+  [AC-T16-003] Error-path assertions pass
+
+Dependencies:
+  - Blocks: T17, T18
+  - Blocked By: T9, T10, T11, T12
+
+================================================================================
+SECTION 16: T17 - EVIDENCE REGENERATION (TASKS 3-11, 15-17)
+================================================================================
+
+Mapped Gaps:
+  - F3: Missing evidence for tasks 3-11, 15-17
+
+Required Evidence Files to Generate:
+  Task 3:
+    - .sisyphus/evidence/task-3-queued-deposit.txt
+    - .sisyphus/evidence/task-3-dilution-guard.txt
+    - .sisyphus/evidence/task-3-ledger-invariants.txt
+    - .sisyphus/evidence/task-3-ledger-reconcile.txt
+  
+  Task 4:
+    - .sisyphus/evidence/task-4-tranche-freeze.txt
+    - .sisyphus/evidence/task-4-ledger-invariants.txt
+    - .sisyphus/evidence/task-4-epoch-open-pricing.txt
+    - .sisyphus/evidence/task-4-early-mint-guard.txt
+  
+  Task 5:
+    - .sisyphus/evidence/task-5-role-guards.txt
+    - .sisyphus/evidence/task-5-config-activation.txt
+    - .sisyphus/evidence/task-5-chunked-settlement.txt
+    - .sisyphus/evidence/task-5-resume-safety.txt
+  
+  Task 6:
+    - .sisyphus/evidence/task-6-event-reconstruction.txt
+    - .sisyphus/evidence/task-6-client-parser.txt
+    - .sisyphus/evidence/task-6-threshold-block.txt
+    - .sisyphus/evidence/task-6-dust-override.txt
+  
+  Task 7:
+    - .sisyphus/evidence/task-7-receipt-accumulation.txt
+    - .sisyphus/evidence/task-7-no-early-mint.txt
+    - .sisyphus/evidence/task-7-state-transitions.txt
+    - .sisyphus/evidence/task-7-invalid-transition.txt
+  
+  Task 8:
+    - .sisyphus/evidence/task-8-open-price-mint.txt
+    - .sisyphus/evidence/task-8-double-mint-guard.txt
+    - .sisyphus/evidence/task-8-loss-attribution.txt
+    - .sisyphus/evidence/task-8-carry-conservation.txt
+  
+  Task 9:
+    - .sisyphus/evidence/task-9-freeze-transition.txt
+    - .sisyphus/evidence/task-9-post-freeze-guard.txt
+    - .sisyphus/evidence/task-9-settlement-tx-success.txt
+    - .sisyphus/evidence/task-9-settlement-error-path.txt
+  
+  Task 10:
+    - .sisyphus/evidence/task-10-pro-rata-settlement.txt
+    - .sisyphus/evidence/task-10-cash-bound.txt
+    - .sisyphus/evidence/task-10-reconcile-detect.txt
+    - .sisyphus/evidence/task-10-reconcile-clean.txt
+  
+  Task 11:
+    - .sisyphus/evidence/task-11-accrual.txt
+    - .sisyphus/evidence/task-11-chunking.txt
+    - .sisyphus/evidence/task-11-api-lifecycle-schema.txt
+    - .sisyphus/evidence/task-11-api-deprecation.txt
+  
+  Task 15:
+    - .sisyphus/evidence/task-15-route-contract.txt
+    - .sisyphus/evidence/task-15-deprecation-path.txt
+    - .sisyphus/evidence/task-15-evidence-inventory.txt
+    - .sisyphus/evidence/task-15-evidence-quality.txt
+  
+  Task 16:
+    - .sisyphus/evidence/task-16-scope-diff-clean.txt
+    - .sisyphus/evidence/task-16-scope-required-files.txt
+    - .sisyphus/evidence/task-16-lifecycle-render.png
+    - .sisyphus/evidence/task-16-claim-ux-flow.png
+  
+  Task 17:
+    - .sisyphus/evidence/task-17-doc-consistency.txt
+    - .sisyphus/evidence/task-17-runbook-completeness.txt
+    - .sisyphus/evidence/task-17-carry-conservation.txt
+    - .sisyphus/evidence/task-17-fairness-invariant.txt
+
+Verification Commands:
+  ```bash
+  # Evidence inventory check
+  ls -la .sisyphus/evidence/task-* | wc -l
+  
+  # Quality check - verify each file has content
+  for f in .sisyphus/evidence/task-*.txt; do
+    echo "$f: $(wc -l < $f) lines"
+  done
+  ```
+
+Expected Results:
+  - All required evidence files exist
+  - Each file has non-placeholder content
+  - File count matches plan requirements
+
+Evidence Files to Produce:
+  - .sisyphus/evidence/task-15-evidence-inventory.txt
+  - .sisyphus/evidence/task-15-evidence-quality.txt
+
+Acceptance Criteria (Must All Pass):
+  [AC-T17-001] All required evidence files exist with non-empty content
+  [AC-T17-002] Evidence content references exact commands/selectors/assertions
+  [AC-T17-003] No placeholder-only content
+
+Dependencies:
+  - Blocks: F1, F2, F3, F4 (Final verification)
+  - Blocked By: T9, T11, T12, T13, T14
+
+================================================================================
+SECTION 17: T18 - SCOPE CLEANUP + FINAL PREFLIGHT
+================================================================================
+
+Mapped Gaps:
+  - F4: Scope creep findings (legacy contract references, ambiguous deprecations)
+
+Code Locations to Clean:
+  1. Remove/segregate unrelated changes
+  2. contracts/src/SnapshotTrancheVault.sol - Document as deprecated
+  3. contracts/src/WeeklyEpochVault.sol - Document as deprecated
+  4. apps/vault-api - Clean up legacy route references
+  5. .sisyphus/evidence/ - Relocate any misplaced evidence files
+
+Required Changes:
+  [ ] Out-of-scope files excluded from remediation set
+  [ ] Legacy contracts marked deprecated with clear documentation
+  [ ] Full verification command suite passes
+  [ ] Handoff package complete and audit-ready
+
+Verification Commands:
+  ```bash
+  # Scope diff check
+  git diff --stat
+  
+  # Full verification suite
+  cd contracts && forge test
+  pnpm --filter vault build && pnpm --filter vault test
+  pnpm --filter vault-web build
+  
+  # Evidence completeness
+  ls .sisyphus/evidence/ | sort
+  ```
+
+Expected Results:
+  - git diff --stat shows only planned surfaces
+  - All build/test commands exit 0
+  - Evidence directory contains all required files
+
+Evidence Files to Produce:
+  - .sisyphus/evidence/task-16-scope-diff-clean.txt
+  - .sisyphus/evidence/task-16-scope-required-files.txt
+  - .sisyphus/evidence/task-18-preflight-commands.txt
+  - .sisyphus/evidence/task-18-preflight-package.txt
+
+Acceptance Criteria (Must All Pass):
+  [AC-T18-001] Out-of-scope files excluded from remediation set
+  [AC-T18-002] Full preflight command suite passes
+  [AC-T18-003] Handoff package complete and audit-ready
+
+Dependencies:
+  - Blocks: F1, F2, F3, F4 (Final verification)
+  - Blocked By: T13, T14, T15, T16, T17
+
+================================================================================
+SECTION 18: FINAL VERIFICATION WAVE (F1, F2, F3, F4)
+================================================================================
+
+F1. Plan Compliance Audit:
+  Purpose: Validate must-have/must-not-have against code and evidence
+  
+  Verification Matrix:
+    Must-Have Item              | Verification Method           | Pass Criteria
+    ----------------------------|-------------------------------|------------------
+    Cohort-level boundary-locked| Code review + forge test      | freezeEpoch stores
+    freeze economics            |                               | immutable snapshots
+    ----------------------------|-------------------------------|------------------
+    Per-user carry ledger       | Contract + backend test       | Invariant holds:
+    semantics                   |                               | claimed<=accrued<=
+                                |                               | entitlement
+    ----------------------------|-------------------------------|------------------
+    Threshold claims with dust  | forge test --match-test       | Sub-threshold
+    override                    | "test.*Dust"                  | blocked pre-finalized
+                                |                               | allowed post-finalized
+    ----------------------------|-------------------------------|------------------
+    Delayed deposit minting     | forge test --match-test       | Uses epochOpenNAV
+    epoch-open pricing          | "test.*OpenPrice"             | not currentNAV
+    ----------------------------|-------------------------------|------------------
+    Settlement bounded/chunked  | forge test --match-test       | MAX_CHUNK_SIZE
+                                | "test.*Chunk"                 | enforced, resume works
+
+  Command: ./scripts/verify-plan-compliance.sh (or manual check)
+  Expected: All F1 gaps resolved per matrix in task-1-gap-matrix.txt
+
+F2. Code Quality Review:
+  Purpose: Build/lint/test + anti-pattern checks
+  
+  Commands:
+    cd contracts && forge build && forge test
+    pnpm --filter vault build && pnpm --filter vault test
+    pnpm --filter vault-web build
+  
+  Expected: Zero errors/warnings from all commands
+  
+  Anti-Pattern Checks:
+    - No unsafe casts in contract code
+    - No empty catch blocks in backend
+    - No dead code (verified via coverage)
+    - No missing error handling in async paths
+
+F3. Real QA Replay:
+  Purpose: Re-run scenario matrix, verify evidence completeness
+  
+  Commands:
+    ./scripts/verify-evidence.sh
+    pnpm --filter vault test -- qa-replay
+  
+  Expected: 
+    - All evidence files present and valid
+    - Evidence content matches scenario definitions
+    - No placeholder or incomplete evidence
+  
+  Evidence Checklist: See T17 section for full list
+
+F4. Scope Fidelity Check:
+  Purpose: Validate diffs against plan scope
+  
+  Command: git diff --stat -- .sisyphus/plans/epoch-gated-tranche-carry-remediation.md
+  
+  Expected: 
+    - No scope creep outside planned surfaces
+    - Changed files limited to: contracts/, apps/vault-api/, apps/vault-web/, 
+      .sisyphus/evidence/, VAULT_KNOWLEDGE.md
+    - No unrelated lockfile/submodule/cache changes
+
+================================================================================
+SECTION 19: GAP-TO-TASK COVERAGE MATRIX
+================================================================================
+
+Gap ID           | Task Assignment | Status  | Evidence Required
+-----------------|-----------------|---------|----------------------------------
+F1-FREEZE-001    | T2              | Mapped  | task-2-freeze-immutability.txt
+F1-FREEZE-002    | T2, T7          | Mapped  | task-2-freeze-cancel-guard.txt
+F1-LEDGER-001    | T3, T8          | Mapped  | task-3-ledger-invariants.txt
+F1-LEDGER-002    | T3, T8          | Mapped  | task-8-loss-attribution.txt
+F1-THRESHOLD-001 | T6, T10         | Mapped  | task-6-threshold-block.txt
+F1-PRICING-001   | T4              | Mapped  | task-4-epoch-open-pricing.txt
+F1-PRICING-002   | T4              | Mapped  | task-4-early-mint-guard.txt
+F1-CHUNK-001     | T5, T9          | Mapped  | task-5-chunked-settlement.txt
+F3-TASKS-3-11    | T17             | Mapped  | (multiple evidence files)
+F3-TASKS-15-17   | T17             | Mapped  | (multiple evidence files)
+F4-CREEP-001     | T16, T18        | Mapped  | task-16-scope-diff-clean.txt
+F4-CREEP-002     | T16, T18        | Mapped  | task-16-scope-required-files.txt
+F4-CREEP-003     | T11, T13        | Mapped  | task-11-api-deprecation.txt
+-----------------|-----------------|---------|----------------------------------
+
+Total Mappings: 13 gaps -> 17 tasks
+Coverage: 100%
+Orphan Requirements: 0
+
+================================================================================
+SECTION 20: CRITICAL PATH DEPENDENCIES
+================================================================================
+
+Dependency Chain (must respect for execution order):
+
+  T1 (this matrix) -> T2, T3, T4, T5, T6 (Wave 1 models)
+  T2 -> T7, T8, T15
+  T3 -> T8, T10, T11, T12, T15, T16
+  T4 -> T7, T13, T14, T15
+  T5 -> T9, T11, T15, T16
+  T6 -> T10, T13, T14, T15
+  T7 -> T11, T13, T15
+  T8 -> T11, T12, T15, T16
+  T9 -> T11, T15, T16
+  T10 -> T13, T14, T15
+  T11 -> T12, T13, T16, T17
+  T12 -> T13, T16, T17
+  T13 -> T14, T16, T17, T18
+  T14 -> T17, T18
+  T15 -> T17, T18
+  T16 -> T17, T18
+  T17 -> F1, F2, F3, F4 (Final verification)
+  T18 -> F1, F2, F3, F4 (Final verification)
+
+Parallel Execution Groups:
+  Wave 1 (Foundation): T2, T3, T4, T5, T6, T7
+  Wave 2 (Core): T8, T9, T10, T11, T12
+  Wave 3 (Integration): T13, T14, T15, T16, T17, T18
+  Final: F1, F2, F3, F4
+
+================================================================================
+END OF LOCKED GAP-TO-REMEDIATION MAPPING
+================================================================================

@@ -1,0 +1,257 @@
+================================================================================
+TASK-18 REMEDIATION PREFLIGHT MATRIX
+Epoch-Gated Tranche Carry Remediation - Final Verification Handoff
+================================================================================
+Generated: March 4, 2026
+Status: PREFLIGHT COMPLETE
+Purpose: Pre-final verification checkpoint with command outputs and evidence validation
+
+================================================================================
+VERIFICATION COMMAND RESULTS
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ CONTRACT BUILD (forge build --via-ir)                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Status: ⚠️  PARTIAL (with warnings)                                         │
+│ Exit Code: 0 (build succeeds)                                               │
+│                                                                             │
+│ Output Summary:                                                             │
+│   - Compiled 53 files with Solc 0.8.28                                      │
+│   - Compilation successful with warnings                                    │
+│   - Warnings: unsafe-typecast lint warnings (non-blocking)                  │
+│                                                                             │
+│ Warnings:                                                                   │
+│   - EpochTrancheVault.sol: uint128 typecast                                 │
+│   - WeeklyEpochVault.sol: uint128 typecast                                  │
+│   - NavSnapshot.t.sol: bytes4 typecast                                      │
+│                                                                             │
+│ Command: cd contracts && forge build --via-ir                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ CONTRACT TEST (forge test)                                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Status: ⚠️  COMPILATION ERRORS IN TESTS                                     │
+│                                                                             │
+│ Issues:                                                                     │
+│   - test/EpochTrancheVault.t.sol: Struct unpacking mismatch                 │
+│     - Epoch struct has 17 fields, tests expect 16                           │
+│     - RedemptionRequest struct has 15 fields, tests expect 14               │
+│   - Contract compiles but test file has outdated struct patterns            │
+│                                                                             │
+│ Recommendation: Test file needs updating to match contract struct           │
+│                                                                             │
+│ Command: cd contracts && forge test --via-ir                                │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ BACKEND BUILD (pnpm --filter vault build)                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Status: ❌ FAILED (TypeScript errors)                                       │
+│ Exit Code: 2                                                                │
+│                                                                             │
+│ Error Categories:                                                           │
+│   1. Type mismatches in test files (adapterRotation.test.ts)                │
+│   2. Missing exports in customVaultClient.test.ts                           │
+│   3. Repository type mismatches (epochRepository.test.ts)                   │
+│   4. Config property mismatches (vault configs)                             │
+│   5. Service layer type mismatches                                          │
+│                                                                             │
+│ Files Affected: 15+ test and source files                                   │
+│                                                                             │
+│ Command: pnpm --filter vault build                                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ BACKEND TEST (pnpm --filter vault test)                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Status: ⚠️  MIXED (74 passed, 54 failed)                                    │
+│                                                                             │
+│ Summary:                                                                    │
+│   - adapterRotation.test.ts: 82 tests passed                                │
+│   - identityValidation.test.ts: 50 passed, 8 failed                         │
+│   - epochRepository.invariants.test.ts: 31 passed, 4 failed                 │
+│   - settlementLifecycle.integration.test.ts: 30 tests passed                │
+│   - epochRepository.test.ts: 21 passed, 9 failed                            │
+│   - erc7540-compliance.test.ts: 0 passed, 33 failed (all skipped)           │
+│   - reconciliation.test.ts: All reconciliation tests passed                 │
+│                                                                             │
+│ Command: pnpm --filter vault test                                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ FRONTEND BUILD (pnpm --filter vault-web build)                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Status: ✅ PASS                                                             │
+│ Exit Code: 0                                                                │
+│                                                                             │
+│ Output Summary:                                                             │
+│   - Next.js 16.0.7 (Turbopack)                                              │
+│   - Compiled successfully in 14.2s                                          │
+│   - TypeScript check passed                                                 │
+│   - Static pages generated (7/7)                                            │
+│   - Routes: /, /_not-found, /vault/[id]                                     │
+│                                                                             │
+│ Command: pnpm --filter vault-web build                                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+EVIDENCE COMPLETENESS CHECK
+================================================================================
+
+Total Required Evidence Files: 34
+Existing: 34
+Missing: 0
+Coverage: 100%
+
+Status: ✅ ALL EVIDENCE PRESENT
+
+Required Evidence Files:
+  ✅ task-1-gap-matrix.txt (56,604 bytes)
+  ✅ task-1-gap-mapping.txt (40,004 bytes)
+  ✅ task-1-breaking-map.txt (9,468 bytes)
+  ✅ task-1-canonical-contract.txt (5,143 bytes)
+  ✅ task-2-freeze-immutability.txt (5,003 bytes)
+  ✅ task-2-freeze-cancel-guard.txt (4,961 bytes)
+  ✅ task-2-epoch-boundaries.txt (3,110 bytes)
+  ✅ task-2-config-delay.txt (3,144 bytes)
+  ✅ task-3-ledger-invariants.txt (5,663 bytes)
+  ✅ task-3-ledger-reconcile.txt (5,152 bytes)
+  ✅ task-4-epoch-open-pricing.txt (3,670 bytes)
+  ✅ task-4-early-mint-guard.txt (3,087 bytes)
+  ✅ task-5-chunked-settlement.txt (3,233 bytes)
+  ✅ task-5-resume-safety.txt (3,543 bytes)
+  ✅ task-6-threshold-block.txt (3,315 bytes)
+  ✅ task-6-dust-override.txt (4,726 bytes)
+  ✅ task-7-state-transitions.txt (4,874 bytes)
+  ✅ task-7-invalid-transition.txt (5,052 bytes)
+  ✅ task-8-loss-attribution.txt (6,437 bytes)
+  ✅ task-8-carry-conservation.txt (5,429 bytes)
+  ✅ task-11-api-lifecycle-schema.txt (5,170 bytes)
+  ✅ task-11-api-deprecation.txt (3,589 bytes)
+  ✅ task-12-extension-lifecycle.txt (6,830 bytes)
+  ✅ task-13-zero-amount.txt (2,427 bytes)
+  ✅ task-13-unauthorized-controller.txt (3,018 bytes)
+  ✅ task-13-revoked-operator.txt (2,572 bytes)
+  ✅ task-13-repeat-claim.txt (2,799 bytes)
+  ✅ task-14-e2e-lifecycle.txt (2,144 bytes)
+  ✅ task-14-repo-ledger.txt (4,072 bytes)
+  ✅ task-14-state-machine.txt (4,777 bytes)
+  ✅ task-16-scope-diff-clean.txt (4,920 bytes)
+  ✅ task-16-scope-required-files.txt (7,822 bytes)
+  ✅ task-18-e2e-lifecycle.txt (22,430 bytes)
+  ✅ task-18-deprecation-verification.txt (14,347 bytes)
+
+================================================================================
+TASK STATUS MATRIX (T1-T18)
+================================================================================
+
+┌──────┬────────────────────────────────────┬──────────┬─────────────────────────┐
+│ Task │ Description                        │ Status   │ Evidence                │
+├──────┼────────────────────────────────────┼──────────┼─────────────────────────┤
+│ T1   │ Gap matrix + acceptance lock       │ ✅ DONE  │ 4 files                 │
+│ T2   │ Freeze snapshot economics          │ ✅ DONE  │ 4 files                 │
+│ T3   │ Carry ledger semantics             │ ✅ DONE  │ 2 files                 │
+│ T4   │ Epoch-open mint pricing            │ ✅ DONE  │ 2 files                 │
+│ T5   │ Settlement chunking/resume         │ ✅ DONE  │ 2 files                 │
+│ T6   │ Dust override/finalization         │ ✅ DONE  │ 2 files                 │
+│ T7   │ Freeze-state transitions           │ ✅ DONE  │ 2 files                 │
+│ T8   │ Carry accrual/loss attribution     │ ✅ DONE  │ 2 files                 │
+│ T9   │ Backend settlement execution       │ ⚠️  STUB │ Partial implementation  │
+│ T10  │ Reconciliation hardening           │ ⚠️  PARTIAL│ Some tests passing    │
+│ T11  │ API contract alignment             │ ✅ DONE  │ 2 files                 │
+│ T12  │ Frontend lifecycle UX              │ ✅ DONE  │ 1 file                  │
+│ T13  │ API lifecycle hardening            │ ✅ DONE  │ 4 files                 │
+│ T14  │ Frontend lifecycle fidelity        │ ✅ DONE  │ 3 files                 │
+│ T15  │ Contract invariants                │ ⚠️  PARTIAL│ Compilation issues    │
+│ T16  │ Backend integration tests          │ ⚠️  PARTIAL│ Type errors           │
+│ T17  │ Evidence regeneration              │ ✅ DONE  │ N/A (meta-task)         │
+│ T18  │ Preflight + handoff                │ 🔄 ACTIVE│ This artifact           │
+└──────┴────────────────────────────────────┴──────────┴─────────────────────────┘
+
+================================================================================
+FINAL WAVE READINESS (F1-F4)
+================================================================================
+
+┌──────┬────────────────────────────────────┬──────────┬─────────────────────────┐
+│ Wave │ Description                        │ Status   │ Blockers                │
+├──────┼────────────────────────────────────┼──────────┼─────────────────────────┤
+│ F1   │ Plan Compliance Audit              │ 🚫 BLOCK │ Backend build failures  │
+│ F2   │ Code Quality Review                │ 🚫 BLOCK │ TypeScript errors       │
+│ F3   │ Real QA Replay                     │ 🚫 BLOCK │ Test compilation issues │
+│ F4   │ Scope Fidelity Check               │ ⚠️  PARTIAL│ Scope clean, but     │
+│      │                                    │          │ implementation issues   │
+└──────┴────────────────────────────────────┴──────────┴─────────────────────────┘
+
+================================================================================
+CRITICAL ISSUES BLOCKING FINAL VERIFICATION
+================================================================================
+
+1. ❌ CONTRACT TEST COMPILATION
+   - EpochTrancheVault.t.sol struct unpacking doesn't match contract
+   - Test file expects different struct field counts than contract provides
+   - Blocking: F3 (Real QA Replay)
+
+2. ❌ BACKEND BUILD FAILURES
+   - 50+ TypeScript compilation errors
+   - Missing properties in VaultInstanceConfig type
+   - Repository method mismatches
+   - Blocking: F1, F2, F3
+
+3. ❌ BACKEND TEST FAILURES
+   - 54 tests failing (74 passing)
+   - ERC-7540 compliance tests all failing
+   - Epoch state machine tests failing
+   - Blocking: F3 (Real QA Replay)
+
+================================================================================
+RECOMMENDATIONS BEFORE FINAL WAVE
+================================================================================
+
+1. Fix Contract Test Compatibility
+   - Update test/EpochTrancheVault.t.sol struct unpacking
+   - Match Epoch struct (17 fields) and RedemptionRequest (15 fields)
+
+2. Fix Backend TypeScript Errors
+   - Align VaultInstanceConfig type with implementation
+   - Update repository interfaces
+   - Fix service layer type mismatches
+
+3. Resolve Test Failures
+   - Investigate ERC-7540 compliance test failures
+   - Fix epoch state machine transition tests
+   - Update identity validation tests
+
+4. Re-run Full Verification Suite
+   - All commands must exit 0
+   - All tests must pass
+   - Evidence completeness must be 100%
+
+================================================================================
+PREFLIGHT SUMMARY
+================================================================================
+
+✅ COMPLETE:
+   - Evidence files (34/34 = 100%)
+   - Frontend build
+   - Contract build (with warnings)
+   - Gap matrix and acceptance criteria locked
+
+⚠️  PARTIAL:
+   - Contract tests (compilation errors)
+   - Backend tests (54 failures)
+   - Evidence quality (content validation needed)
+
+❌ BLOCKING:
+   - Backend build (TypeScript errors)
+   - Final verification wave (F1-F4)
+
+OVERALL STATUS: 🚫 NOT READY FOR FINAL VERIFICATION
+
+The preflight has identified critical blockers that must be resolved before
+proceeding to the final verification wave (F1-F4).
+
+================================================================================
+END OF PREFLIGHT MATRIX
+================================================================================

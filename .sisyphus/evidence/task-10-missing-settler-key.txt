@@ -1,0 +1,41 @@
+# Task 10 Evidence: Missing Settler Key Configuration
+# Generated: 2026-03-04
+# Source: Task 2 Constructor-to-Env Mapping
+
+## Issue Identified (T2)
+
+The `settlerKeyEnv` field was OPTIONAL in types but REQUIRED by the resolver.
+Contract constructor requires `_settler` address but config relied on implicit mapping from `tradingSignerKeyEnv`.
+
+## Resolution
+
+Added explicit `settlerKeyEnv` configuration with fallback behavior:
+
+### Type Definition (types.ts)
+```typescript
+settlerKeyEnv?: string;  // Optional in type (for backward compatibility)
+```
+
+### Vault Config (vault1-pph.ts)
+```typescript
+settlerKeyEnv: "VAULT_1_SETTLER_KEY",
+```
+
+### Environment (.env.example)
+```bash
+# Optional: explicit settler key (defaults to VAULT_1_TRADING_SIGNER_KEY if not set)
+# VAULT_1_SETTLER_KEY=0x...
+```
+
+## Contract Constructor Mapping
+
+| Contract Param | Config Field | Env Key | Required |
+|----------------|--------------|---------|----------|
+| `_settler` | `settlerKeyEnv` | `VAULT_1_SETTLER_KEY` | No (falls back to trading key) |
+
+## Contract Defaults Preserved
+
+- `minClaimThreshold`: 100 USDC (100000000 with 6 decimals)
+- `balancedUpfrontBps`: 0 BPS (0%)
+
+## Status: RESOLVED

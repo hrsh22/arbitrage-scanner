@@ -1,0 +1,94 @@
+================================================================================
+TASK 11 EVIDENCE: API DEPRECATION - 410 GONE RESPONSES
+================================================================================
+Date: 2026-03-04
+Wave: 2
+Task: T11 - Update API contract for corrected lifecycle semantics
+================================================================================
+
+DEPRECATED ROUTES
+--------------------------------------------------------------------------------
+
+The following routes return HTTP 410 Gone status with replacement guidance:
+
+1. POST /api/vaults/:vaultId/legacy-claim
+   Status: 410 Gone
+   Replacement: POST /api/vaults/:vaultId/requests/:requestId/claim
+   Reason: New claim flow with lifecycle fields and proper state machine
+
+2. GET /api/vaults/:vaultId/legacy-status
+   Status: 410 Gone
+   Replacement: GET /api/vaults/:vaultId/redemptions
+   Reason: New redemption state with corrected lifecycle fields
+
+410 RESPONSE FORMAT
+--------------------------------------------------------------------------------
+
+All deprecated routes return the following JSON structure:
+
+{
+  "error": "Gone",
+  "message": "This endpoint has been deprecated. Use {replacement} instead.",
+  "deprecated": true,
+  "replacementEndpoint": "{new_endpoint_path}",
+  "documentation": "See API docs for new {feature} with lifecycle fields"
+}
+
+IMPLEMENTATION DETAILS
+--------------------------------------------------------------------------------
+
+File: apps/vault-api/src/routes/customVaultRoutes.ts
+
+router.post("/:vaultId/legacy-claim", requireAuth, async (req, res) => {
+  res.status(410).json({
+    error: "Gone",
+    message: "This endpoint has been deprecated. Use POST /api/vaults/:vaultId/requests/:requestId/claim instead.",
+    deprecated: true,
+    replacementEndpoint: "/api/vaults/:vaultId/requests/:requestId/claim",
+    documentation: "See API docs for new claim flow with lifecycle fields",
+  });
+});
+
+router.get("/:vaultId/legacy-status", async (req, res) => {
+  res.status(410).json({
+    error: "Gone",
+    message: "This endpoint has been deprecated. Use GET /api/vaults/:vaultId/redemptions instead.",
+    deprecated: true,
+    replacementEndpoint: "/api/vaults/:vaultId/redemptions",
+    documentation: "See API docs for new redemption state with lifecycle fields",
+  });
+});
+
+RATIONALE
+--------------------------------------------------------------------------------
+
+The legacy endpoints used stale lifecycle semantics:
+- pending/settled terminology (replaced with cohort-carry lifecycle)
+- totalRealizedUsdc/totalClaimedUsdc (replaced with accrued/claimed/entitlement)
+- No support for dust override or threshold policies
+
+The new endpoints enforce:
+- Corrected lifecycle: entitlement -> accrued -> claimed -> carryRemaining
+- Minimum claim threshold (1 USDC) to prevent dust attacks
+- Dust override eligibility for edge cases
+- Proper claim state machine validation
+
+CLIENT MIGRATION GUIDE
+--------------------------------------------------------------------------------
+
+FROM: POST /api/vaults/1/legacy-claim
+TO:   POST /api/vaults/1/requests/{requestId}/claim
+
+FROM: GET /api/vaults/1/legacy-status
+TO:   GET /api/vaults/1/redemptions
+
+Key field mappings:
+- totalRealizedUsdc -> accrued
+- totalClaimedUsdc -> claimed
+- NEW: entitlement (total entitled amount)
+- NEW: carryRemaining (remaining to be carried)
+- NEW: dustOverrideEligible (threshold bypass flag)
+
+================================================================================
+END OF EVIDENCE FILE
+================================================================================

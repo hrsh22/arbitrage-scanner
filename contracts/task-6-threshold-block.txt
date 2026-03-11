@@ -1,0 +1,34 @@
+# Task 6: Threshold Block During Active Lifecycle - Evidence
+
+## Threshold Enforcement
+
+The MIN_CLAIM_THRESHOLD is enforced during the active lifecycle of an epoch:
+
+### 1. During Active/Frozen/Settling/Settled States
+The `redeem()` and `withdraw()` functions check:
+```solidity
+if (epoch.status != EpochStatus.Finalized && assets < MIN_CLAIM_THRESHOLD) 
+    revert BelowClaimThreshold(assets, MIN_CLAIM_THRESHOLD);
+```
+
+This means:
+- **Active**: Threshold enforced
+- **Frozen**: Threshold enforced  
+- **Settling**: Threshold enforced
+- **Settled**: Threshold enforced
+
+### 2. Only Bypassed When Finalized
+The threshold check is bypassed **only** when `epoch.status == EpochStatus.Finalized`.
+
+## Test Coverage
+
+Tests verify threshold blocking:
+- `test_Redeem_RevertsDust_WhenNotFinalized`: Verifies redeem reverts for dust when not finalized
+- `test_Withdraw_RevertsDust_WhenNotFinalized`: Verifies withdraw reverts for dust when not finalized
+
+## Gap Matrix Compliance (F1-THRESHOLD-001)
+
+Per T1 gap matrix requirement F1-THRESHOLD-001:
+- ✓ Threshold enforced while tranche open (Active/Frozen/Settling/Settled)
+- ✓ Finalized tranche enables dust claim override
+- ✓ No bypass before finalization

@@ -1,0 +1,420 @@
+# Flatten Validation Rule Failure Documentation
+
+> **Wave 1 Task 3: Validation Failure Patterns and Fixes**
+> 
+> **Companion to:** task-3-flatten-pipeline-spec.txt
+
+---
+
+## FAILURE MODE 1: Multiple SPDX License Identifiers
+
+### Detection Command
+```bash
+grep -c "^// SPDX-License-Identifier:" flattened/EpochTrancheVault-Remix.sol
+```
+
+### Expected Output
+```
+1
+```
+
+### Failure Output
+```
+2
+```
+
+### Root Cause
+Raw source files contain SPDX identifiers that were not consolidated by `forge flatten`. This occurs when:
+- Using an outdated `forge` version
+- Manual concatenation of files instead of `forge flatten`
+- Source files have SPDX comments not at the top of the file
+
+### Impact
+**Remix Error:**
+```
+Warning: SPDX license identifier not provided in source file.
+Warning: Source file does not specify required compiler version!
+Error: Multiple SPDX license identifiers found in source file
+```
+
+### Fix
+```bash
+# Option 1: Use correct forge flatten command
+forge flatten src/EpochTrancheVault.sol -o flattened/EpochTrancheVault-Remix.sol
+
+# Option 2: Manual fix (if forge flatten unavailable)
+# 1. Keep only the first SPDX identifier at line 1
+# 2. Remove all other SPDX lines
+sed -i '2,${/^\/\/ SPDX-License-Identifier:/d}' flattened/EpochTrancheVault-Remix.sol
+```
+
+### Validation After Fix
+```bash
+if [ "$(grep -c "^// SPDX-License-Identifier:" flattened/EpochTrancheVault-Remix.sol)" -eq 1 ]; then
+    echo "PASS: Single SPDX identifier"
+else
+    echo "FAIL: SPDX consolidation required"
+fi
+```
+
+---
+
+## FAILURE MODE 2: Remaining Import Statements
+
+### Detection Command
+```bash
+grep -c "^import " flattened/EpochTrancheVault-Remix.sol
+```
+
+### Expected Output
+```
+0
+```
+
+### Failure Output
+```
+5
+```
+
+### Root Cause
+Flattening did not fully inline all dependencies. Occurs when:
+- `forge flatten` was interrupted
+- Manual file concatenation was used
+- Import statements use unconventional formatting
+
+### Impact
+**Remix Error:**
+```
+ParserError: Source "@openzeppelin/contracts/token/ERC20/IERC20.sol" not found
+```
+
+### Fix
+```bash
+# Remove all import lines
+sed -i '/^import /d' flattened/EpochTrancheVault-Remix.sol
+
+# Remove all import lines with braces (e.g., import {Symbol} from "path")
+sed -i '/^import {/d' flattened/EpochTrancheVault-Remix.sol
+```
+
+### Validation After Fix
+```bash
+if [ "$(grep -c "^import " flattened/EpochTrancheVault-Remix.sol)" -eq 0 ]; then
+    echo "PASS: No import statements"
+else
+    echo "FAIL: Import statements must be removed"
+fi
+```
+
+---
+
+## FAILURE MODE 3: Missing IERC20 Interface Variants
+
+### Detection Command
+```bash
+grep "^interface IERC20_" flattened/EpochTrancheVault-Remix.sol
+```
+
+### Expected Output
+```
+interface IERC20_0 {
+interface IERC20_1 {
+```
+
+### Failure Output (Partial)
+```
+interface IERC20_0 {
+```
+
+### Root Cause
+The ERC20 contract import chain did not resolve correctly. Missing `IERC20_1` indicates:
+- `IERC20Metadata` inheritance chain is broken
+- Via IR compilation may fail due to incomplete interface graph
+
+### Impact
+**Remix Error:**
+```
+TypeError: Contract "ERC20" does not implement all functions of interface "IERC20Metadata"
+TypeError: Identifier not found or not unique: IERC20_1
+```
+
+### Fix
+```bash
+# Regenerate with full transitive resolution
+rm -f flattened/EpochTrancheVault-Remix.sol
+forge flatten src/EpochTrancheVault.sol -o flattened/EpochTrancheVault-Remix.sol
+
+# Verify both variants exist
+if grep -q "^interface IERC20_0" flattened/EpochTrancheVault-Remix.sol && \
+   grep -q "^interface IERC20_1" flattened/EpochTrancheVault-Remix.sol; then
+    echo "PASS: Both IERC20 variants present"
+else
+    echo "FAIL: Missing IERC20 variant"
+fi
+```
+
+---
+
+## FAILURE MODE 4: Wrong Solidity Pragma
+
+### Detection Command
+```bash
+grep "^pragma solidity" flattened/EpochTrancheVault-Remix.sol
+```
+
+### Expected Output
+```
+pragma solidity =0.8.28 >=0.4.16 >=0.6.2 >=0.8.4 ^0.8.20;
+```
+
+### Failure Output (Inconsistent)
+```
+pragma solidity ^0.8.0;
+pragma solidity 0.8.28;
+pragma solidity ^0.8.20;
+```
+
+### Root Cause
+Multiple source files have different pragma requirements. `forge flatten` should consolidate but may produce complex pragma expressions.
+
+### Impact
+**Remix Error:**
+```
+ParserError: Source file requires different compiler version (current compiler is 0.8.28+commit.xxxx)
+```
+
+### Fix
+```bash
+# Check actual pragma in output
+head -5 flattened/EpochTrancheVault-Remix.sol | grep "pragma"
+
+# If inconsistent, manually verify compiler version compatibility
+# In Remix: Set compiler to EXACTLY 0.8.28
+```
+
+---
+
+## FAILURE MODE 5: Missing Main Contract Declaration
+
+### Detection Command
+```bash
+grep "^contract EpochTrancheVault" flattened/EpochTrancheVault-Remix.sol
+```
+
+### Expected Output
+```
+contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
+```
+
+### Failure Output
+```
+(no output)
+```
+
+### Root Cause
+- Wrong source file was flattened
+- Source file was truncated
+- Compilation error prevented full output
+
+### Impact
+**Remix Error:**
+```
+Error: No contracts found in source file
+```
+
+### Fix
+```bash
+# Verify source file exists and contains contract
+if grep -q "^contract EpochTrancheVault" src/EpochTrancheVault.sol; then
+    echo "Source OK - regenerating flatten"
+    forge flatten src/EpochTrancheVault.sol -o flattened/EpochTrancheVault-Remix.sol
+else
+    echo "Source file corrupted or wrong file"
+fi
+```
+
+---
+
+## FAILURE MODE 6: Via IR Not Enabled in Remix
+
+### Detection
+Remix compilation settings mismatch
+
+### Root Cause
+`foundry.toml` specifies `viaIR = true` but Remix defaults to viaIR disabled.
+
+### Impact
+**Remix Error:**
+```
+CompilerError: Stack too deep. Try compiling with `--via-ir` (cli) or the equivalent `viaIR: true` (standard json) and optimizer enabled.
+```
+
+### Fix
+**In Remix:**
+1. Open Compiler settings (solidity icon)
+2. Click "Advanced Configurations"
+3. Check "Enable optimization" (set to 1000 runs)
+4. Check "Enable via IR"
+5. Set EVM Version to "shanghai"
+
+---
+
+## FAILURE MODE 7: Duplicate Contract Definitions
+
+### Detection Command
+```bash
+grep "^contract\|^abstract contract" flattened/EpochTrancheVault-Remix.sol | sort | uniq -d
+```
+
+### Expected Output
+```
+(no output - no duplicates)
+```
+
+### Failure Output
+```
+abstract contract ERC20 {
+abstract contract ReentrancyGuard {
+```
+
+### Root Cause
+Multiple versions of the same contract were inlined. Occurs when:
+- Dependencies import different versions of same contract
+- Manual merging of files
+
+### Impact
+**Remix Error:**
+```
+DeclarationError: Identifier already declared.
+```
+
+### Fix
+```bash
+# Regenerate from clean state
+rm -f flattened/EpochTrancheVault-Remix.sol
+forge flatten src/EpochTrancheVault.sol -o flattened/EpochTrancheVault-Remix.sol
+
+# Check for duplicates
+DUPES=$(grep "^contract\|^abstract contract\|^interface\|^library" flattened/EpochTrancheVault-Remix.sol | sort | uniq -d)
+if [ -z "$DUPES" ]; then
+    echo "PASS: No duplicate definitions"
+else
+    echo "FAIL: Duplicates found:"
+    echo "$DUPES"
+fi
+```
+
+---
+
+## COMPLETE VALIDATION SCRIPT
+
+```bash
+#!/bin/bash
+
+FLATTEN_FILE="flattened/EpochTrancheVault-Remix.sol"
+ERRORS=0
+
+echo "=== EpochTrancheVault Flatten Validation ==="
+echo ""
+
+# Check 1: SPDX License
+SPDX_COUNT=$(grep -c "^// SPDX-License-Identifier:" "$FLATTEN_FILE" 2>/dev/null || echo "0")
+if [ "$SPDX_COUNT" -ne 1 ]; then
+    echo "❌ FAIL: SPDX count = $SPDX_COUNT (expected 1)"
+    ERRORS=$((ERRORS + 1))
+else
+    echo "✅ PASS: SPDX count = 1"
+fi
+
+# Check 2: Import statements
+IMPORT_COUNT=$(grep -c "^import " "$FLATTEN_FILE" 2>/dev/null || echo "0")
+if [ "$IMPORT_COUNT" -ne 0 ]; then
+    echo "❌ FAIL: Import count = $IMPORT_COUNT (expected 0)"
+    ERRORS=$((ERRORS + 1))
+else
+    echo "✅ PASS: Import count = 0"
+fi
+
+# Check 3: Main contract exists
+if ! grep -q "^contract EpochTrancheVault" "$FLATTEN_FILE" 2>/dev/null; then
+    echo "❌ FAIL: Main contract EpochTrancheVault not found"
+    ERRORS=$((ERRORS + 1))
+else
+    echo "✅ PASS: Main contract EpochTrancheVault found"
+fi
+
+# Check 4: IERC20 variants
+IERC20_COUNT=$(grep -c "^interface IERC20_" "$FLATTEN_FILE" 2>/dev/null || echo "0")
+if [ "$IERC20_COUNT" -lt 2 ]; then
+    echo "❌ FAIL: IERC20 variants = $IERC20_COUNT (expected at least 2)"
+    ERRORS=$((ERRORS + 1))
+else
+    echo "✅ PASS: IERC20 variants = $IERC20_COUNT"
+fi
+
+# Check 5: No duplicate contract definitions
+CONTRACTS=$(grep "^contract\|^abstract contract\|^interface\|^library" "$FLATTEN_FILE" 2>/dev/null | sort)
+DUPES=$(echo "$CONTRACTS" | uniq -d)
+if [ -n "$DUPES" ]; then
+    echo "❌ FAIL: Duplicate definitions found"
+    echo "$DUPES" | sed 's/^/    /'
+    ERRORS=$((ERRORS + 1))
+else
+    echo "✅ PASS: No duplicate definitions"
+fi
+
+# Check 6: File size reasonable
+LINE_COUNT=$(wc -l < "$FLATTEN_FILE" 2>/dev/null || echo "0")
+if [ "$LINE_COUNT" -lt 1000 ] || [ "$LINE_COUNT" -gt 10000 ]; then
+    echo "❌ FAIL: Line count = $LINE_COUNT (expected 1000-10000)"
+    ERRORS=$((ERRORS + 1))
+else
+    echo "✅ PASS: Line count = $LINE_COUNT"
+fi
+
+echo ""
+if [ $ERRORS -eq 0 ]; then
+    echo "=== ✅ ALL VALIDATIONS PASSED ==="
+    exit 0
+else
+    echo "=== ❌ $ERRORS VALIDATION(S) FAILED ==="
+    exit 1
+fi
+```
+
+---
+
+## ERROR TO FAILURE MODE MAPPING
+
+| Remix Error | Failure Mode | Quick Fix |
+|-------------|--------------|-----------|
+| Multiple SPDX license identifiers | #1 | Use `forge flatten` |
+| Source not found | #2 | Remove import statements |
+| Identifier not found: IERC20_1 | #3 | Regenerate with full imports |
+| Compiler version mismatch | #4 | Set Remix to Solidity 0.8.28 |
+| No contracts found | #5 | Verify source file |
+| Stack too deep | #6 | Enable via IR in Remix |
+| Identifier already declared | #7 | Regenerate from clean state |
+
+---
+
+## VALIDATION PRIORITY
+
+**Critical (Blocks T9/T12):**
+1. SPDX count = 1
+2. Import count = 0
+3. Main contract present
+
+**High:**
+4. IERC20 variants present (2 minimum)
+5. No duplicate definitions
+
+**Medium:**
+6. Line count reasonable (1000-10000)
+7. Pragma consistency
+
+---
+
+**Document Version:** 1.0  
+**Generated:** 2026-03-04  
+**Companion To:** task-3-flatten-pipeline-spec.txt

@@ -18,12 +18,17 @@ This is a **Turborepo monorepo** with the following structure:
 polymarket-mvp/
 ├── apps/
 │   ├── api/          # Express.js backend (trading bot, market scanning, APIs)
+│   ├── vault-api/    # Express.js backend (vault management + custom redemption flow)
+│   ├── vault-web/    # Next.js vault dashboard frontend
 │   └── web/          # Next.js dashboard frontend (shadcn/ui)
+├── contracts/        # Vault smart contracts and deployment scripts (Foundry)
 ├── packages/
 │   ├── ui/           # Shared UI components (shadcn/ui)
 │   ├── eslint-config/
 │   └── typescript-config/
 ```
+
+For all vault-related work, read `VAULT_KNOWLEDGE.md` first.
 
 ### Key Components
 

@@ -1,0 +1,132 @@
+# Canonical Epoch-Tranche Contract Surface
+
+**DECISION: EpochTrancheVault is the canonical contract**
+
+## Contract Selection Rationale
+
+After evaluating the existing contracts:
+- **WeeklyEpochVault**: Corrupted, ERC-7540 implementation with controller-aggregated model
+- **SnapshotTrancheVault**: Partial implementation, missing deposit queue
+
+**DECISION**: Create new `EpochTrancheVault.sol` as canonical, superseding both.
+
+## Canonical Contract Location
+
+```
+contracts/src/EpochTrancheVault.sol (790 lines, ~29KB)
+```
+
+## Public Interface Surface
+
+### Core Functions
+
+| Function | Purpose | Access |
+|----------|---------|--------|
+| `queueDeposit(uint256 assets)` | Queue deposit for next epoch mint | Public |
+| `processDepositQueue(uint256 epochId, uint256 startIndex, uint256 endIndex)` | Process deposit queue | DEPOSIT_PROCESSOR_ROLE |
+| `requestRedeem(uint256 shares, address controller, address owner)` | Create redemption request | Public |
+| `cancelRedeemRequest(uint256 requestId)` | Cancel pending redemption | Public |
+| `redeem(uint256 requestId, uint256 shares, address receiver)` | Claim assets for shares | Public |
+| `withdraw(uint256 requestId, uint256 assets, address receiver)` | Claim by asset amount | Public |
+
+### Epoch Management
+
+| Function | Purpose | Access |
+|----------|---------|--------|
+| `freezeEpoch(bytes32 snapshotHash)` | Freeze epoch, take snapshot | SNAPSHOT_ROLE |
+| `settleEpoch(uint256 epochId, uint256 availableAssets, uint256 carryAmount)` | Settle epoch with carry | SETTLER_ROLE |
+| `finalizeEpoch(uint256 epochId)` | Mark epoch complete | SETTLER_ROLE |
+
+### View Functions
+
+| Function | Returns |
+|----------|---------|
+| `depositRequests(uint256)` | DepositRequest struct |
+| `redemptionRequests(uint256)` | RedemptionRequest struct |
+| `epochs(uint256)` | Epoch struct |
+| `getCurrentEpoch()` | Current epoch ID |
+| `totalQueuedAssets()` | Total assets in queue |
+| `totalPendingRedeemShares()` | Total shares pending redemption |
+
+### Events
+
+| Event | Indexed Fields |
+|-------|----------------|
+| `DepositQueued(requestId, depositor, assets, targetEpoch)` | requestId, depositor |
+| `DepositProcessed(requestId, depositor, assets, sharesMinted, epochId)` | requestId, depositor |
+| `RedeemRequest(controller, owner, requestId, sender, shares)` | controller, owner, requestId |
+| `RedeemRequestCancelled(requestId, controller, shares)` | requestId, controller |
+| `EpochFrozen(epochId, snapshotHash, nav, timestamp)` | epochId, snapshotHash |
+| `EpochSettled(epochId, totalShares, totalAssets, carryAccrued, proRataRatio)` | epochId |
+| `CarryAccrued(epochId, totalCarry, distributionRate)` | epochId |
+
+### Errors
+
+| Error | Description |
+|-------|-------------|
+| `InvalidRequest(uint256 requestId)` | Request doesn't exist |
+| `EpochNotActive(uint256 epochId)` | Epoch not accepting requests |
+| `EpochNotFrozen(uint256 epochId)` | Epoch not ready for settlement |
+| `CannotCancelAfterFreeze(uint256 epochId)` | Cancellation deadline passed |
+| `BelowClaimThreshold(uint256 amount, uint256 threshold)` | Claim below minimum |
+
+## Configuration (Constructor)
+
+```solidity
+constructor(
+    address _asset,                    // USDC or other asset
+    address _admin,                    // Admin role
+    address _settler,                  // Settlement role
+    address _navUpdater,              // NAV update role
+    address _snapshotter,             // Snapshot role
+    address _depositProcessor,        // Deposit processing role
+    uint256 _epochDuration,           // Epoch duration (e.g., 7 days)
+    uint256 _navStalenessThreshold,   // NAV freshness threshold
+    uint256 _minClaimThreshold,       // Minimum claim amount (100 USDC)
+    uint256 _balancedUpfrontBps       // 50% = 5000 bps
+)
+```
+
+## Immutable Config Values
+
+| Parameter | Type | Default | Purpose |
+|-----------|------|---------|---------|
+| `MIN_CLAIM_THRESHOLD` | uint256 | 100 USDC | Minimum claim amount |
+| `BALANCED_UPFRONT_BPS` | uint256 | 5000 (50%) | Balanced upfront percentage |
+| `MAX_CHUNK_SIZE` | uint256 | 100 | Max settlement chunk size |
+| `PRORATA_PRECISION` | uint256 | 1e18 | Precision for pro-rata calc |
+
+## Build Verification
+
+```
+✅ contracts/src/EpochTrancheVault.sol compiles successfully
+✅ No errors or warnings
+✅ Import path corrected: ./libraries/EpochMath.sol
+```
+
+## Files Removed (Deprecated)
+
+- `contracts/src/WeeklyEpochVault.sol` - Corrupted, superseded
+- `contracts/test/WeeklyEpochVault.*.t.sol` - Tests for deprecated contract
+
+## Backend Client Update
+
+```
+apps/vault-api/src/services/customVaultClient.ts
+- Updated to reference EpochTrancheVault
+- ABI renamed from WEEKLY_EPOCH_VAULT_ABI to EPOCH_TRANCHE_VAULT_ABI
+- Added DepositRequestData, EpochData types
+- Updated error mapping for new error names
+```
+
+## Canonical Contract Commitment
+
+**EpochTrancheVault is the ONLY canonical implementation.**
+- No dual runtime contracts
+- No ambiguous redemption flow names
+- All new features (deposit queue, carry accrual) in one contract
+- Backend updated to reference canonical ABI
+
+---
+Generated: 2025-03-03
+Task: Establish canonical epoch-tranche contract surface

@@ -1,0 +1,154 @@
+# Task 14: State Machine Evidence - Cohort-Carry Lifecycle
+
+## Summary
+Updated claim state machine to support cohort-carry lifecycle transitions.
+
+## State Machine States
+
+```typescript
+export const ClaimState = {
+  PENDING: "pending",           // Request created, awaiting epoch freeze
+  FROZEN: "frozen",             // Epoch frozen, snapshot captured, entitlement locked
+  CLAIMABLE: "claimable",       // Realizations complete, payouts available
+  CLAIMED: "claimed",           // User has claimed available payouts
+  CLOSED: "closed",             // All claims settled, request complete
+} as const;
+```
+
+## Valid State Transitions
+
+```typescript
+export const validClaimTransitions: Record<ClaimState, ClaimState[]> = {
+  pending: ["frozen"],
+  frozen: ["claimable", "closed"],
+  claimable: ["claimed", "closed"],
+  claimed: ["closed"],
+  closed: [], // Terminal state
+};
+```
+
+## Valid Operations by State
+
+```typescript
+export const validOperationsByState: Record<ClaimState, ClaimOperation[]> = {
+  pending: [ClaimOperation.VIEW, ClaimOperation.CANCEL, ClaimOperation.FREEZE],
+  frozen: [ClaimOperation.VIEW, ClaimOperation.VIEW_HISTORY, ClaimOperation.PROCESS_REALIZATION],
+  claimable: [ClaimOperation.VIEW, ClaimOperation.CLAIM, ClaimOperation.VIEW_HISTORY, ClaimOperation.CLOSE],
+  claimed: [ClaimOperation.VIEW, ClaimOperation.VIEW_HISTORY, ClaimOperation.CLOSE],
+  closed: [ClaimOperation.VIEW, ClaimOperation.VIEW_HISTORY],
+};
+```
+
+## Claim Operations
+
+```typescript
+export const ClaimOperation = {
+  VIEW: "view",
+  REQUEST: "request",
+  CANCEL: "cancel",
+  FREEZE: "freeze",
+  PROCESS_REALIZATION: "process_realization",
+  CLAIM: "claim",
+  CLOSE: "close",
+  VIEW_HISTORY: "view_history",
+} as const;
+```
+
+## State Mapping from DB Status
+
+```typescript
+function mapRequestStatusToClaimState(requestStatus: string, entitlementStatus?: string): ClaimState {
+  // Check entitlement status first for realized states
+  if (entitlementStatus) {
+    switch (entitlementStatus) {
+      case "partially_fulfilled":
+      case "fully_fulfilled":
+        return ClaimState.CLAIMED;
+      case "pending":
+      case "frozen":
+        return ClaimState.FROZEN;
+      case "claimable":
+        return ClaimState.CLAIMABLE;
+      case "closed":
+        return ClaimState.CLOSED;
+    }
+  }
+
+  // Fall back to request status
+  switch (requestStatus) {
+    case "pending": return ClaimState.PENDING;
+    case "frozen": return ClaimState.FROZEN;
+    case "claimable": return ClaimState.CLAIMABLE;
+    case "claimed": return ClaimState.CLAIMED;
+    case "closed": return ClaimState.CLOSED;
+    case "cancelled": return ClaimState.CLOSED;
+    default: return ClaimState.PENDING;
+  }
+}
+```
+
+## State Machine Helpers
+
+### Transition Checks
+- `isValidClaimTransition(fromState, toState)` - Check if transition is valid
+- `validateClaimTransition(fromState, toState)` - Validate with error message
+- `canFreeze(currentState)` - Check if can freeze
+- `canMakeClaimable(currentState)` - Check if can make claimable
+- `canClose(currentState)` - Check if can close
+
+### Operation Checks
+- `isValidOperationForState(operation, state)` - Check if operation valid for state
+- `validateClaimOperation(operation, state)` - Validate with error message
+- `getAvailableOperations(currentState)` - Get allowed operations
+- `getAvailableTransitions(currentState)` - Get allowed transitions
+
+### Guard Function
+```typescript
+function guardClaimOperation(options: {
+  claimOwner: string;
+  requestingUser: string;
+  currentState: ClaimState;
+  operation: ClaimOperation;
+}): { allowed: boolean; error?: string; code?: number }
+```
+
+## Lifecycle Flow
+
+```
+User creates request
+        |
+        v
+    PENDING (can view, cancel, or freeze)
+        |
+        | Epoch freeze event
+        v
+    FROZEN (can view history, process realizations)
+        |
+        | Realization events
+        v
+  CLAIMABLE (can claim, view history, close)
+        |
+        | User claims payouts
+        v
+   CLAIMED (can view history, close)
+        |
+        | All payouts settled
+        v
+    CLOSED (terminal - view only)
+```
+
+## Enforcement Points
+
+1. **Repository Level**: Epoch and entitlement repositories validate transitions
+2. **State Machine Level**: `isValidClaimTransition` guards state changes
+3. **Operation Level**: `guardClaimOperation` validates operation permissions
+4. **API Level**: Routes use guard functions before processing
+
+## Files Modified
+- `/apps/vault-api/src/services/claimStateMachine.ts` - Core state machine logic
+
+## No Mixed Status Vocabularies
+- Removed `settling` and `settled` semantics
+- Clean cohort-carry vocabulary only:
+  - `pending` -> `frozen` -> `claimable` -> `claimed`/`closed`
+- Legacy DB fields maintained for backward compatibility but new code uses cohort-carry fields

@@ -1,0 +1,337 @@
+================================================================================
+TASK 5: CARRY-ACCOUNTING CORRECTNESS FIX DESIGN
+================================================================================
+Contract: EpochTrancheVault.sol
+Issue: cohortTotalAccrued not initialized during settlement
+Target: T6 Implementation | Blocks: T6, T11
+================================================================================
+
+1. EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+The EpochTrancheVault contract has a critical accounting bug where 
+`cohortTotalAccrued` is not initialized when carry is first accrued during 
+settlement. This breaks the conservation invariant:
+    cohortTotalClaimed + cohortCarryRemaining == cohortTotalAccrued
+
+Initially, when cohortTotalClaimed = 0, we expect:
+    cohortCarryRemaining == cohortTotalAccrued
+
+But currently we get:
+    cohortCarryRemaining = 250000000000  (example)
+    cohortTotalAccrued = 0
+
+This is a HIGH-RISK bug affecting economic correctness of cohort accounting.
+
+================================================================================
+
+2. ROOT CAUSE ANALYSIS
+--------------------------------------------------------------------------------
+
+2.1 Affected Code Location
+---------------------------
+File: contracts/src/EpochTrancheVault.sol
+Function: _settleEpochChunk (lines 526-600)
+Specific Location: Lines 565-588 (settlement loop)
+
+2.2 Current Buggy Behavior
+---------------------------
+In the settlement loop (lines 565-588), when processing each redemption request:
+
+    Line 574: uint256 carry = (entitlement * carryAmount) / PRORATA_PRECISION;
+    Line 579: request.accrued = carry;
+    Line 580: request.carryRemaining = carry;
+    Line 585: epoch.cohortCarryRemaining += carry;   // ← Cohort carry accumulated
+    
+    // BUG: cohortTotalAccrued is NEVER initialized here!
+
+The `cohortTotalAccrued` field remains 0 (from epoch initialization at lines 
+247, 504), while `cohortCarryRemaining` correctly accumulates the total carry.
+
+2.3 Where cohortTotalAccrued IS Updated (Too Late)
+---------------------------------------------------
+The only place `cohortTotalAccrued` is currently set is in `realizeLoss()`:
+    Line 677: epoch.cohortTotalAccrued = epoch.cohortTotalClaimed + epoch.cohortCarryRemaining;
+
+This is called ONLY during loss realization, which is an exceptional path, not 
+the normal settlement flow.
+
+2.4 Test Failure
+----------------
+Test: testCarryConservationInvariant (EpochTrancheVault.t.sol, line 103)
+Assertion: Line 143
+    assertEq(cohortCarryRemaining, cohortTotalAccrued, 
+             "INVARIANT: cohortCarryRemaining must equal cohortTotalAccrued initially");
+
+Expected: cohortCarryRemaining == cohortTotalAccrued (both should be non-zero)
+Actual:   cohortCarryRemaining = 250000000000, cohortTotalAccrued = 0
+
+================================================================================
+
+3. PROPOSED FIX
+--------------------------------------------------------------------------------
+
+3.1 Fix Location
+----------------
+File: contracts/src/EpochTrancheVault.sol
+Function: _settleEpochChunk
+Line: After line 585 (inside the settlement loop)
+
+3.2 Code Change
+---------------
+ADD the following line at line 586 (after epoch.cohortCarryRemaining += carry):
+
+    // Update cohort aggregates
+    epoch.cohortTotalEntitlement += entitlement;
+    epoch.cohortCarryRemaining += carry;
+    epoch.cohortTotalAccrued += carry;        // ← ADD THIS LINE
+
+3.3 Complete Context (Lines 583-588 after fix)
+-----------------------------------------------
+```solidity
+    // Update cohort aggregates
+    epoch.cohortTotalEntitlement += entitlement;
+    epoch.cohortCarryRemaining += carry;
+    epoch.cohortTotalAccrued += carry;        // FIX: Initialize cohortTotalAccrued
+
+    processedInChunk++;
+```
+
+================================================================================
+
+4. INVARIANT VERIFICATION
+--------------------------------------------------------------------------------
+
+4.1 Conservation Invariant Proof
+---------------------------------
+After fix, at settlement completion:
+    cohortTotalAccrued = Σ(carry for all requests) = total carry accrued
+    cohortCarryRemaining = Σ(carry for all requests) = total carry accrued
+    cohortTotalClaimed = 0 (no claims yet)
+
+Therefore:
+    cohortTotalClaimed + cohortCarryRemaining = 0 + total carry = total carry
+    cohortTotalAccrued = total carry
+    
+    ∴ cohortTotalClaimed + cohortCarryRemaining == cohortTotalAccrued ✓
+
+4.2 State Transition Verification
+----------------------------------
+Let's trace through the lifecycle:
+
+SETTLEMENT (initial state):
+    cohortTotalAccrued = C    (non-zero, initialized by fix)
+    cohortCarryRemaining = C
+    cohortTotalClaimed = 0
+    Invariant: 0 + C == C ✓
+
+AFTER PARTIAL CLAIM (redeem/withdraw):
+    assets claimed = A
+    carry deducted = K
+    State updates:
+        cohortTotalClaimed += A     (line 397, 432)
+        cohortCarryRemaining -= K   (line 398, 433)
+    cohortTotalAccrued unchanged (C)
+    Invariant: A + (C - K) ≈ C ? 
+    Note: A + K ≈ entitlement, so this holds by design
+
+AFTER DUST CLAIM (claimDust):
+    assets claimed = A
+    remainingCarry deducted = R
+    State updates:
+        cohortTotalClaimed += A     (line 461)
+        cohortCarryRemaining -= R   (line 462)
+    cohortTotalAccrued unchanged (C)
+    Invariant: A + (C - R) ≈ C ? 
+    Note: For dust claims, R = remaining carry, so A + (C - R) ≈ C ✓
+
+AFTER LOSS REALIZATION (realizeLoss):
+    lossAmount = L
+    State updates:
+        cohortCarryRemaining -= L   (line 669)
+        cohortTotalAccrued = cohortTotalClaimed + cohortCarryRemaining (line 677)
+    
+    The realizeLoss function RECALCULATES cohortTotalAccrued to match the 
+    current state. This is correct behavior for loss scenarios.
+    
+    After recalculation:
+        cohortTotalAccrued = cohortTotalClaimed + (cohortCarryRemaining_before - L)
+        cohortCarryRemaining = cohortCarryRemaining_before - L
+        cohortTotalClaimed unchanged
+    
+    Invariant: cohortTotalClaimed + cohortCarryRemaining == cohortTotalAccrued ✓
+
+================================================================================
+
+5. EDGE CASE ANALYSIS
+--------------------------------------------------------------------------------
+
+5.1 Zero Carry Amount
+----------------------
+If carryAmount = 0, then carry = 0 for all requests.
+    cohortTotalAccrued = 0
+    cohortCarryRemaining = 0
+    cohortTotalClaimed = 0
+    
+Invariant: 0 + 0 == 0 ✓
+No change needed, but fix handles this correctly (0 += 0).
+
+5.2 Empty Settlement (No Requests)
+-----------------------------------
+At lines 542-548, if totalRequests == 0:
+    epoch.status = EpochStatus.Settled
+    epoch.carryAccrued = carryAmount
+    (no loop execution)
+    
+In this case:
+    cohortTotalAccrued = 0 (never touched)
+    cohortCarryRemaining = 0 (never touched)
+    cohortTotalClaimed = 0
+    
+This is ACCEPTABLE because no carry was actually accrued to any requests.
+The invariant still holds: 0 + 0 == 0 ✓
+
+5.3 Chunked Settlement
+-----------------------
+The fix accumulates cohortTotalAccrued += carry for each request processed.
+Since chunked settlement processes each request exactly once (tracked by
+settlementProgress), the accumulation is correct across all chunks.
+
+First chunk:
+    cohortTotalAccrued = carry_1 + carry_2 + ... + carry_n
+    
+Second chunk:
+    cohortTotalAccrued = (previous) + carry_{n+1} + ... + carry_m
+    
+Final result same as single-chunk settlement.
+
+5.4 Resume Settlement
+----------------------
+The resumeSettlement function (lines 602-609) calls _settleEpochChunk again.
+Since settlementProgress tracks processedCount, already-processed requests
+are skipped (line 568: if (!request.exists || request.status != RequestStatus.Frozen) continue).
+Therefore, no double-counting occurs.
+
+================================================================================
+
+6. COMPATIBILITY ANALYSIS
+--------------------------------------------------------------------------------
+
+6.1 External API Impact
+------------------------
+- No function signatures changed
+- No new parameters added
+- No return values modified
+- Event emissions unchanged
+
+6.2 Event Semantics
+--------------------
+- EpochSettled event (line 595-597): No change
+- SettlementChunkProcessed event (line 599): No change
+- All cohort fields are internal accounting, not exposed in events
+
+6.3 State Machine Transitions
+------------------------------
+The fix maintains all state transitions:
+    Frozen → Settling → Settled → Finalized
+
+No transitions are affected; only the initialization of an accounting field.
+
+6.4 Existing Data Compatibility
+--------------------------------
+For epochs that were settled BEFORE the fix:
+    - cohortTotalAccrued will be 0 (incorrect)
+    - cohortCarryRemaining will be correct
+    - cohortTotalClaimed will be correct
+    
+This is acceptable because:
+    1. These epochs are historical
+    2. realizeLoss can recalculate cohortTotalAccrued if needed (line 677)
+    3. The invariant is not strictly required for completed epochs
+
+================================================================================
+
+7. TEST CASE EXPECTATIONS
+--------------------------------------------------------------------------------
+
+7.1 Existing Test: testCarryConservationInvariant
+--------------------------------------------------
+Location: EpochTrancheVault.t.sol, lines 103-164
+
+Expected behavior after fix:
+    Line 143: assertEq(cohortCarryRemaining, cohortTotalAccrued, ...) ✓ PASSES
+    
+    Line 145-146: 
+        leftSide = cohortTotalClaimed + cohortCarryRemaining
+                 = 0 + cohortTotalAccrued
+                 ≈ cohortTotalEntitlement ✓ PASSES
+
+7.2 Additional Test Cases Recommended
+--------------------------------------
+T6 should add:
+
+a) testCohortTotalAccruedInitializedOnSettlement
+   - Settle epoch with non-zero carry
+   - Assert cohortTotalAccrued > 0
+   - Assert cohortTotalAccrued == cohortCarryRemaining
+
+b) testCohortTotalAccruedAccumulatesAcrossChunks
+   - Create 150 redemption requests (exceeds MAX_CHUNK_SIZE = 100)
+   - Settle in 2 chunks
+   - Assert cohortTotalAccrued equals sum of all carry amounts
+
+c) testInvariantHoldsAfterPartialClaims
+   - Settle with carry
+   - Partial redeem
+   - Assert cohortTotalClaimed + cohortCarryRemaining == cohortTotalAccrued
+
+d) testInvariantHoldsAfterDustClaim
+   - Settle with carry
+   - Finalize epoch
+   - Claim dust
+   - Assert cohortTotalClaimed + cohortCarryRemaining == cohortTotalAccrued
+
+e) testInvariantHoldsAfterLoss
+   - Settle with carry
+   - Realize loss
+   - Assert cohortTotalClaimed + cohortCarryRemaining == cohortTotalAccrued
+
+================================================================================
+
+8. IMPLEMENTATION CHECKLIST FOR T6
+--------------------------------------------------------------------------------
+[ ] Add line 586: epoch.cohortTotalAccrued += carry;
+[ ] Run testCarryConservationInvariant - should PASS
+[ ] Run testFreezeEconomicsInvariants - should PASS
+[ ] Run testThresholdDustInvariant - should PASS
+[ ] Run testChunkedSettlementInvariant - should PASS
+[ ] Verify no compiler warnings
+[ ] Run full test suite
+
+================================================================================
+
+9. RISK ASSESSMENT
+--------------------------------------------------------------------------------
+Severity: HIGH (economic correctness)
+Complexity: LOW (single line addition)
+Test Coverage: EXISTING (testCarryConservationInvariant already exists)
+Rollback Risk: LOW (no breaking changes)
+
+================================================================================
+
+10. REFERENCES
+--------------------------------------------------------------------------------
+Contract: contracts/src/EpochTrancheVault.sol
+Test: contracts/test/EpochTrancheVault.t.sol
+Invariant Design: contracts/evidence/task-8-carry-conservation.txt
+
+Key Line Numbers:
+- Epoch struct definition: lines 43-61
+- _settleEpochChunk function: lines 526-600
+- Settlement loop: lines 565-588
+- cohortTotalAccrued initialization in constructor: line 247
+- cohortTotalAccrued initialization in freezeEpoch: line 504
+- realizeLoss cohortTotalAccrued recalculation: line 677
+
+================================================================================
+END OF DESIGN DOCUMENT
+================================================================================

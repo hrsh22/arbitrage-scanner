@@ -1,0 +1,1455 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+pragma solidity 0.8.28;
+
+import {Test} from "forge-std/Test.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {WeeklyEpochVault} from "../src/WeeklyEpochVault.sol";
+import {Constants} from "../src/Constants.sol";
+
+/// @notice Mock ERC20 token for testing
+contract MockERC20 {
+    string public name;
+    string public symbol;
+    uint8 public decimals;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    uint256 public totalSupply;
+    
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    
+    constructor(string memory _name, string memory _symbol, uint8 _decimals) {
+        name = _name;
+        symbol = _symbol;
+        decimals = _decimals;
+    }
+    
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+        totalSupply += amount;
+        emit Transfer(address(0), to, amount);
+    }
+    
+    function transfer(address to, uint256 amount) external returns (bool) {
+        require(balanceOf[msg.sender] >= amount, "insufficient balance");
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+        emit Transfer(msg.sender, to, amount);
+        return true;
+    }
+    
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+    
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        require(balanceOf[from] >= amount, "insufficient balance");
+        require(allowance[from][msg.sender] >= amount, "insufficient allowance");
+        allowance[from][msg.sender] -= amount;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+        emit Transfer(from, to, amount);
+        return true;
+    }
+}
+
+/// @title WeeklyEpochVaultTest
+/// @notice TDD test suite for WeeklyEpochVault guardrails and role-based access
+contract WeeklyEpochVaultTest is Test {
+    uint256 internal constant FORK_BLOCK = 68_000_000;
+    uint256 internal constant ONE_USDC_E = 1e6;
+    uint256 internal constant WAD = 1e18;
+    
+    // Expected immutable values
+    uint256 internal constant EXPECTED_EPOCH_DURATION = 604800; // 7 days in seconds
+    uint256 internal constant EXPECTED_NAV_STALENESS_THRESHOLD = 6 hours;
+    
+    WeeklyEpochVault internal vault;
+    MockERC20 internal mockAsset;
+    
+    address internal admin;
+    address internal settler;
+    address internal navUpdater;
+    address internal depositor;
+    address internal attacker;
+    
+    function setUp() public {
+        // Create test addresses
+        admin = makeAddr("admin");
+        settler = makeAddr("settler");
+        navUpdater = makeAddr("navUpdater");
+        depositor = makeAddr("depositor");
+        attacker = makeAddr("attacker");
+        
+        // Deploy mock asset (USDC.e-like with 6 decimals)
+        mockAsset = new MockERC20("Mock USDC", "mUSDC", 6);
+        
+        // Deploy vault with immutable parameters
+        vault = new WeeklyEpochVault(
+            address(mockAsset),
+            admin,
+            settler,
+            navUpdater,
+            EXPECTED_EPOCH_DURATION,
+            EXPECTED_NAV_STALENESS_THRESHOLD
+        );
+    }
+    
+    // ============================================================================
+    // IMMUTABLE GUARDRAILS TESTS (RED PHASE - These should fail initially)
+    // ============================================================================
+    
+    /// @notice Test that epoch duration is correctly set and immutable
+    function testImmutableGuardrails() public view {
+        // Assert immutable epoch duration matches constructor input
+        assertEq(vault.EPOCH_DURATION(), EXPECTED_EPOCH_DURATION, "epoch duration must be 7 days");
+        
+        // Assert asset is correctly set and immutable
+        assertEq(address(vault.asset()), address(mockAsset), "asset must match constructor");
+        
+        // Assert roles are correctly assigned
+        assertTrue(vault.hasRole(vault.ADMIN_ROLE(), admin), "admin must have ADMIN_ROLE");
+        assertTrue(vault.hasRole(vault.SETTLER_ROLE(), settler), "settler must have SETTLER_ROLE");
+        assertTrue(vault.hasRole(vault.NAV_UPDATER_ROLE(), navUpdater), "navUpdater must have NAV_UPDATER_ROLE");
+
+        // Assert staleness threshold is set correctly (6 hours default)
+        assertEq(
+            vault.NAV_STALENESS_THRESHOLD(),
+            EXPECTED_NAV_STALENESS_THRESHOLD,
+            "staleness threshold must be 6 hours"
+        );
+    }
+    
+    /// @notice Test that constructor validates all inputs
+    function testConstructorValidation() public {
+        // Test zero address asset reverts
+        vm.expectRevert(WeeklyEpochVault.InvalidAddress.selector);
+        new WeeklyEpochVault(
+            address(0),
+            admin,
+            settler,
+            navUpdater,
+            EXPECTED_EPOCH_DURATION,
+            EXPECTED_NAV_STALENESS_THRESHOLD
+        );
+        
+        // Test zero address admin reverts
+        vm.expectRevert(WeeklyEpochVault.InvalidAddress.selector);
+        new WeeklyEpochVault(
+            address(mockAsset),
+            address(0),
+            settler,
+            navUpdater,
+            EXPECTED_EPOCH_DURATION,
+            EXPECTED_NAV_STALENESS_THRESHOLD
+        );
+        
+        // Test zero address settler reverts
+        vm.expectRevert(WeeklyEpochVault.InvalidAddress.selector);
+        new WeeklyEpochVault(
+            address(mockAsset),
+            admin,
+            address(0),
+            navUpdater,
+            EXPECTED_EPOCH_DURATION,
+            EXPECTED_NAV_STALENESS_THRESHOLD
+        );
+        
+        // Test zero address navUpdater reverts
+        vm.expectRevert(WeeklyEpochVault.InvalidAddress.selector);
+        new WeeklyEpochVault(
+            address(mockAsset),
+            admin,
+            settler,
+            address(0),
+            EXPECTED_EPOCH_DURATION,
+            EXPECTED_NAV_STALENESS_THRESHOLD
+        );
+        
+        // Test zero epoch duration reverts
+        vm.expectRevert(WeeklyEpochVault.InvalidAddress.selector);
+        new WeeklyEpochVault(
+            address(mockAsset),
+            admin,
+            settler,
+            navUpdater,
+            0,
+            EXPECTED_NAV_STALENESS_THRESHOLD
+        );
+
+        vm.expectRevert(WeeklyEpochVault.InvalidAddress.selector);
+        new WeeklyEpochVault(
+            address(mockAsset),
+            admin,
+            settler,
+            navUpdater,
+            EXPECTED_EPOCH_DURATION,
+            0
+        );
+    }
+    
+    // ============================================================================
+    // ROLE-BASED ACCESS CONTROL TESTS (RED PHASE)
+    // ============================================================================
+    
+    /// @notice Test unauthorized admin calls fail with correct error
+    function testUnauthorizedAdminReverts() public {
+        // Test that attacker cannot call admin-only functions (setEmergencyMode requires ADMIN_ROLE)
+        vm.prank(attacker);
+        vm.expectRevert();
+        vault.setEmergencyMode(true);
+    }
+    
+    /// @notice Test unauthorized DEFAULT_ADMIN_ROLE calls fail
+    function testUnauthorizedDefaultAdminReverts() public {
+        // Test attacker cannot grant roles (requires DEFAULT_ADMIN_ROLE)
+        bytes32 settlerRole = vault.SETTLER_ROLE();
+        vm.prank(attacker);
+        vm.expectRevert();
+        vault.grantRole(settlerRole, attacker);
+    }
+    
+    /// @notice Test unauthorized settler calls fail with correct error
+    function testUnauthorizedSettlerReverts() public {
+        // Test that attacker cannot settle epochs
+        vm.prank(attacker);
+        vm.expectRevert();
+        vault.settleEpoch(1, 1000 * ONE_USDC_E);
+    }
+    
+    /// @notice Test unauthorized navUpdater calls fail with correct error
+    function testUnauthorizedNavUpdaterReverts() public {
+        // Test that attacker cannot update NAV
+        vm.prank(attacker);
+        vm.expectRevert();
+        vault.updateNAV(1000 * ONE_USDC_E);
+    }
+    
+    /// @notice Test that authorized roles can perform their functions
+    function testAuthorizedRolesCanPerformFunctions() public {
+        // Admin can set emergency mode
+        vm.prank(admin);
+        vault.setEmergencyMode(true);
+        assertTrue(vault.emergencyMode(), "emergency mode should be active");
+        
+        // NavUpdater can update NAV
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+        assertEq(vault.currentNAV(), 1000 * ONE_USDC_E, "NAV should be updated");
+        assertEq(vault.lastNAVUpdate(), block.timestamp, "timestamp should be updated");
+    }
+    
+    // ============================================================================
+    // NAV STALENESS GUARD TESTS (RED PHASE)
+    // ============================================================================
+    
+    /// @notice Test fresh NAV allows operations
+    function testFreshNAVAllowsSettlement() public {
+        // Update NAV as navUpdater
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+        
+        // Should be able to check settlement readiness with fresh NAV
+        // This will be used by settlement functions
+        assertTrue(vault.isNAVFresh(), "NAV should be fresh after update");
+    }
+    
+    /// @notice Test stale NAV blocks operations
+    function testStaleNAVBlocksSettlement() public {
+        // Update NAV first
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+        
+        // Warp past staleness threshold
+        vm.warp(block.timestamp + vault.NAV_STALENESS_THRESHOLD() + 1);
+        
+        // NAV should now be stale
+        assertFalse(vault.isNAVFresh(), "NAV should be stale after threshold");
+    }
+    
+    // ============================================================================
+    // REDEMPTION REQUEST QUEUE TESTS (Task 3 - RED Phase)
+    // ============================================================================
+
+    /// @notice Test request redemption creates proper request with unique ID
+    function testRequestRedemptionCreatesUniqueRequestId() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        // Mint and approve shares for depositor
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        
+        // Request redemption
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+        
+        // Assert request ID starts at 1 (0 is invalid)
+        assertEq(requestId, 1, "First request ID should be 1");
+        
+        // Get request details
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId);
+        
+        // Assert request fields
+        assertEq(request.requestId, requestId, "Request ID should match");
+        assertEq(request.user, depositor, "User should be depositor");
+        assertEq(request.shares, shares, "Shares should match");
+        assertEq(uint256(request.status), uint256(WeeklyEpochVault.RequestStatus.Pending), "Status should be Pending");
+        assertGt(request.createdAt, 0, "CreatedAt should be set");
+    }
+
+    /// @notice Test request redemption assigns correct epoch based on timestamp
+    function testRequestRedemptionAssignsCorrectEpoch() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+        
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId);
+        
+        // Request should be assigned to current epoch
+        assertEq(request.epochId, currentEpoch, "Epoch ID should match current epoch");
+    }
+
+    /// @notice Test per-user request indexing
+    function testUserRequestIndexing() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        mockAsset.mint(depositor, shares * 2);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares * 2);
+        
+        // Create two requests
+        vm.prank(depositor);
+        uint256 requestId1 = vault.requestRedeem(shares);
+        
+        vm.prank(depositor);
+        uint256 requestId2 = vault.requestRedeem(shares);
+        
+        // Get user requests
+        uint256[] memory userRequestList = vault.getUserRequests(depositor);
+        
+        // Assert both requests are indexed
+        assertEq(userRequestList.length, 2, "User should have 2 requests"); 
+        assertEq(userRequestList[0], requestId1, "First request ID should match");
+        assertEq(userRequestList[1], requestId2, "Second request ID should match");
+    }
+
+    /// @notice Test per-epoch request aggregation
+    function testEpochRequestAggregation() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        mockAsset.mint(depositor, shares * 2);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares * 2);
+        
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        
+        // Create two requests in same epoch
+        vm.prank(depositor);
+        uint256 requestId1 = vault.requestRedeem(shares);
+        
+        vm.prank(depositor);
+        uint256 requestId2 = vault.requestRedeem(shares);
+        
+        // Get epoch requests
+        uint256[] memory epochRequestList = vault.getEpochRequests(currentEpoch);
+        
+        // Assert both requests are aggregated for epoch
+        assertEq(epochRequestList.length, 2, "Epoch should have 2 requests");
+        assertEq(epochRequestList[0], requestId1, "First request ID should match");
+        assertEq(epochRequestList[1], requestId2, "Second request ID should match");
+    }
+
+    /// @notice Test cancel redemption before settlement cutoff returns shares
+    function testCancelBeforeCutoffReturnsShares() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        
+        // Create request
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+        
+        // Verify shares were transferred to vault
+        assertEq(mockAsset.balanceOf(address(vault)), shares, "Vault should hold shares");
+        assertEq(mockAsset.balanceOf(depositor), 0, "Depositor should have 0 shares");
+        
+        // Cancel request before epoch ends
+        vm.prank(depositor);
+        vault.cancelRedemption(requestId);
+        
+        // Verify shares were returned
+        assertEq(mockAsset.balanceOf(depositor), shares, "Depositor should have shares returned");
+        assertEq(mockAsset.balanceOf(address(vault)), 0, "Vault should hold 0 shares");
+        
+        // Verify request status is cancelled
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId);
+        assertEq(uint256(request.status), uint256(WeeklyEpochVault.RequestStatus.Cancelled), "Status should be Cancelled");
+    }
+
+    /// @notice Test cancel after settlement cutoff reverts
+    function testCancelAfterCutoffReverts() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        
+        // Create request
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+        
+        // Get the request to find its epoch
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId);
+        uint256 epochEnd = vault.getEpochEnd(request.epochId);
+        
+        // Warp to after epoch ends
+        vm.warp(epochEnd + 1);
+        
+        // Try to cancel - should revert
+        vm.prank(depositor);
+        vm.expectRevert(WeeklyEpochVault.CannotCancelAfterSettlement.selector);
+        vault.cancelRedemption(requestId);
+    }
+
+    /// @notice Test only request owner can cancel
+    function testOnlyOwnerCanCancel() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+        
+        // Attacker tries to cancel
+        vm.prank(attacker);
+        vm.expectRevert(WeeklyEpochVault.NotRequestOwner.selector);
+        vault.cancelRedemption(requestId);
+    }
+
+    /// @notice Test cannot cancel already cancelled request
+    function testCannotCancelAlreadyCancelledRequest() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+        
+        // Cancel once
+        vm.prank(depositor);
+        vault.cancelRedemption(requestId);
+        
+        // Try to cancel again
+        vm.prank(depositor);
+        vm.expectRevert(WeeklyEpochVault.RequestAlreadyCancelled.selector);
+        vault.cancelRedemption(requestId);
+    }
+
+    /// @notice Test cannot cancel non-existent request
+    function testCannotCancelNonExistentRequest() public {
+        vm.prank(depositor);
+        vm.expectRevert(WeeklyEpochVault.RequestNotFound.selector);
+        vault.cancelRedemption(999);
+    }
+
+    /// @notice Test cross-user requests don't interfere
+    function testCrossUserRequestsIndependent() public {
+        address user1 = makeAddr("user1");
+        address user2 = makeAddr("user2");
+        
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        // Setup both users
+        mockAsset.mint(user1, shares);
+        mockAsset.mint(user2, shares);
+        
+        vm.prank(user1);
+        mockAsset.approve(address(vault), shares);
+        
+        vm.prank(user2);
+        mockAsset.approve(address(vault), shares);
+        
+        // Both users create requests
+        vm.prank(user1);
+        uint256 requestId1 = vault.requestRedeem(shares);
+        
+        vm.prank(user2);
+        uint256 requestId2 = vault.requestRedeem(shares);
+        
+        // Verify independent indexing
+        uint256[] memory user1Requests = vault.getUserRequests(user1);
+        uint256[] memory user2Requests = vault.getUserRequests(user2);
+        
+        assertEq(user1Requests.length, 1, "User1 should have 1 request");
+        assertEq(user2Requests.length, 1, "User2 should have 1 request");
+        assertEq(user1Requests[0], requestId1, "User1 request ID should match");
+        assertEq(user2Requests[0], requestId2, "User2 request ID should match");
+        
+        // User1 cancels - shouldn't affect user2
+        vm.prank(user1);
+        vault.cancelRedemption(requestId1);
+        
+        WeeklyEpochVault.RedemptionRequest memory request2 = vault.getRequest(requestId2);
+        assertEq(uint256(request2.status), uint256(WeeklyEpochVault.RequestStatus.Pending), "User2 request should still be pending");
+    }
+
+    /// @notice Test emergency mode blocks new requests
+    function testEmergencyModeBlocksNewRequests() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        
+        // Enable emergency mode
+        vm.prank(admin);
+        vault.setEmergencyMode(true);
+        
+        // Try to create request
+        vm.prank(depositor);
+        vm.expectRevert(WeeklyEpochVault.EmergencyModeActive.selector);
+        vault.requestRedeem(shares);
+    }
+
+    /// @notice Test RequestCreated event is emitted
+    function testRequestCreatedEventEmitted() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        
+        vm.expectEmit(true, true, true, true);
+        emit WeeklyEpochVault.RequestCreated(1, depositor, shares, currentEpoch);
+        
+        vm.prank(depositor);
+        vault.requestRedeem(shares);
+    }
+
+    /// @notice Test RequestCancelled event is emitted
+    function testRequestCancelledEventEmitted() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+        
+        vm.expectEmit(true, true, false, true);
+        emit WeeklyEpochVault.RequestCancelled(requestId, depositor, shares);
+        
+        vm.prank(depositor);
+        vault.cancelRedemption(requestId);
+    }
+
+    /// @notice Test request ID 0 is invalid (returns empty request)
+    function testRequestIdZeroIsInvalid() public {
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(0);
+        assertEq(request.requestId, 0, "Request ID 0 should return empty request");
+        assertEq(request.user, address(0), "Empty request should have zero address user");
+    }
+
+    /// @notice Test epoch boundary bucketing (exact epoch end maps to next epoch)
+    function testEpochBoundaryBucketing() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        uint256 epochEnd = vault.getEpochEnd(currentEpoch);
+        
+        // Warp to exact epoch end
+        vm.warp(epochEnd);
+        
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+        
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId);
+        
+        // Request at exact boundary should bucket to next epoch
+        assertEq(request.epochId, currentEpoch + 1, "Request at boundary should bucket to next epoch");
+    }
+    
+    // ============================================================================
+    // EVENTS TESTS (RED PHASE)
+    // ============================================================================
+    
+    /// @notice Test that events are emitted correctly
+    function testEventsEmitted() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        uint256 epochId = vault.getCurrentEpoch();
+        
+        // Test EmergencyModeSet event
+        vm.expectEmit(true, false, false, true);
+        emit WeeklyEpochVault.EmergencyModeSet(true);
+        vm.prank(admin);
+        vault.setEmergencyMode(true);
+        
+        // Test NAVUpdated event
+        vm.expectEmit(true, false, false, true);
+        emit WeeklyEpochVault.NAVUpdated(1000 * ONE_USDC_E, block.timestamp);
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+    }
+
+    // ============================================================================
+    // EPOCH SETTLEMENT TESTS (Task 7)
+    // ============================================================================
+
+
+    // ============================================================================
+    // EPOCH SETTLEMENT TESTS (Task 7)
+    // ============================================================================
+
+
+    // ============================================================================
+    // EPOCH SETTLEMENT TESTS (Task 7)
+    // ============================================================================
+
+    /// @notice Test full settlement with sufficient liquidity (no pro-rata)
+    function testFullSettlementWithSufficientLiquidity() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        // Create a redemption request
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+        
+        // Get the request details
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId);
+        uint256 epochEnd = vault.getEpochEnd(request.epochId);
+        
+        // Warp to after epoch ends
+        vm.warp(epochEnd + 1);
+        
+        // Update NAV as fresh
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+        
+        // Settle epoch with sufficient liquidity (100 assets for 100 shares)
+        uint256 availableAssets = 100 * ONE_USDC_E;
+        vm.prank(settler);
+        vault.settleEpoch(request.epochId, availableAssets);
+        
+        // Check request is settled with full claimable amount
+        request = vault.getRequest(requestId);
+        assertEq(uint256(request.status), uint256(WeeklyEpochVault.RequestStatus.Settled), "Status should be Settled");
+        assertEq(request.claimableAssets, shares, "Should receive full shares as claimable assets");
+        
+        // Check settlement status
+        (WeeklyEpochVault.SettlementStatus memory status, , ) = vault.getSettlementStatus(request.epochId);
+        assertTrue(status.settled, "Settlement should be complete");
+        assertEq(status.proRataRatio, 1e18, "Pro-rata ratio should be 1e18 (100%)");
+    }
+
+    /// @notice Test pro-rata settlement when liquid assets are insufficient
+    function testProRataSettlementLimitedLiquidity() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        // Create a redemption request for 100 shares
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+        
+        // Get the request details
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId);
+        uint256 epochEnd = vault.getEpochEnd(request.epochId);
+        
+        // Warp to after epoch ends
+        vm.warp(epochEnd + 1);
+        
+        // Update NAV as fresh
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+        
+        // Settle with only 50 assets available (50% of obligation)
+        uint256 availableAssets = 50 * ONE_USDC_E;
+        vm.prank(settler);
+        vault.settleEpoch(request.epochId, availableAssets);
+        
+        // Check request is settled with pro-rata claimable amount
+        request = vault.getRequest(requestId);
+        assertEq(uint256(request.status), uint256(WeeklyEpochVault.RequestStatus.Settled), "Status should be Settled");
+        assertEq(request.claimableAssets, 50 * ONE_USDC_E, "Should receive 50% pro-rata");
+        
+        // Check settlement status shows pro-rata ratio
+        (WeeklyEpochVault.SettlementStatus memory status, , ) = vault.getSettlementStatus(request.epochId);
+        assertTrue(status.settled, "Settlement should be complete");
+        assertEq(status.proRataRatio, 0.5e18, "Pro-rata ratio should be 50%");
+    }
+
+    /// @notice Test pro-rata settlement with multiple users
+    function testProRataSettlementMultipleUsers() public {
+        address user1 = makeAddr("user1");
+        address user2 = makeAddr("user2");
+        
+        uint256 shares1 = 100 * ONE_USDC_E; // User1 has 100 shares
+        uint256 shares2 = 100 * ONE_USDC_E; // User2 has 100 shares
+        
+        // Setup user1
+        mockAsset.mint(user1, shares1);
+        vm.prank(user1);
+        mockAsset.approve(address(vault), shares1);
+        vm.prank(user1);
+        uint256 requestId1 = vault.requestRedeem(shares1);
+        
+        // Setup user2
+        mockAsset.mint(user2, shares2);
+        vm.prank(user2);
+        mockAsset.approve(address(vault), shares2);
+        vm.prank(user2);
+        uint256 requestId2 = vault.requestRedeem(shares2);
+        
+        // Get epoch details
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId1);
+        uint256 epochEnd = vault.getEpochEnd(request.epochId);
+        
+        // Warp to after epoch ends
+        vm.warp(epochEnd + 1);
+        
+        // Update NAV as fresh
+        vm.prank(navUpdater);
+        vault.updateNAV(2000 * ONE_USDC_E);
+        
+        // Settle with only 100 assets (50% of total 200 shares obligation)
+        uint256 availableAssets = 100 * ONE_USDC_E;
+        vm.prank(settler);
+        vault.settleEpoch(request.epochId, availableAssets);
+        
+        // Both users should get 50% pro-rata (50 assets each)
+        WeeklyEpochVault.RedemptionRequest memory req1 = vault.getRequest(requestId1);
+        WeeklyEpochVault.RedemptionRequest memory req2 = vault.getRequest(requestId2);
+        
+        assertEq(req1.claimableAssets, 50 * ONE_USDC_E, "User1 should get 50% pro-rata");
+        assertEq(req2.claimableAssets, 50 * ONE_USDC_E, "User2 should get 50% pro-rata");
+        
+        // Total should not exceed available
+        assertEq(req1.claimableAssets + req2.claimableAssets, availableAssets, "Total should equal available");
+    }
+
+    /// @notice Test chunked settlement is required for large request volumes
+    function testSettlementChunkingRequired() public {
+        uint256 sharesPerUser = 1 * ONE_USDC_E;
+        uint256 numUsers = 150; // More than MAX_CHUNK_SIZE (100)
+        
+        // Create many users with redemption requests
+        for (uint256 i = 0; i < numUsers; i++) {
+            address user = makeAddr(string.concat("bulkUser", vm.toString(i)));
+            mockAsset.mint(user, sharesPerUser);
+            vm.prank(user);
+            mockAsset.approve(address(vault), sharesPerUser);
+            vm.prank(user);
+            vault.requestRedeem(sharesPerUser);
+        }
+        
+        // Get the epoch details (all requests in same epoch)
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        uint256 epochEnd = vault.getEpochEnd(currentEpoch);
+        
+        // Warp to after epoch ends
+        vm.warp(epochEnd + 1);
+        
+        // Update NAV as fresh
+        vm.prank(navUpdater);
+        vault.updateNAV(10000 * ONE_USDC_E);
+        
+        // Initial settlement call should not complete (too many requests)
+        uint256 availableAssets = 150 * ONE_USDC_E;
+        vm.prank(settler);
+        vault.settleEpoch(currentEpoch, availableAssets);
+        
+        // Check settlement is not yet complete
+        (WeeklyEpochVault.SettlementStatus memory status, uint256 nextIndex, ) = vault.getSettlementStatus(currentEpoch);
+        assertFalse(status.settled, "Settlement should not be complete yet");
+        assertEq(nextIndex, 0, "Next index should be 0 initially (waiting for chunked calls)");
+        
+        // Need to call settleEpochChunked to finish processing
+        vm.prank(settler);
+        vault.settleEpochChunked(currentEpoch);
+        
+        // Check progress after first chunk
+        (status, nextIndex, ) = vault.getSettlementStatus(currentEpoch);
+        assertEq(nextIndex, 100, "Should have processed first 100 requests");
+        assertFalse(status.settled, "Settlement should still not be complete");
+        
+        // Call again to finish remaining requests
+        vm.prank(settler);
+        vault.settleEpochChunked(currentEpoch);
+        
+        // Now settlement should be complete
+        (status, nextIndex, ) = vault.getSettlementStatus(currentEpoch);
+        assertTrue(status.settled, "Settlement should be complete");
+        assertEq(status.totalProcessed, 150, "Should have processed all 150 requests");
+    }
+
+    /// @notice Test settlement without gas limit failure for 1000 requests
+    function testLargeSettlementNoGasFailure() public {
+        uint256 sharesPerUser = 1 * ONE_USDC_E;
+        uint256 numUsers = 1000;
+        
+        // Create 1000 users with redemption requests
+        for (uint256 i = 0; i < numUsers; i++) {
+            address user = makeAddr(string.concat("user", vm.toString(i)));
+            mockAsset.mint(user, sharesPerUser);
+            vm.prank(user);
+            mockAsset.approve(address(vault), sharesPerUser);
+            vm.prank(user);
+            vault.requestRedeem(sharesPerUser);
+        }
+        
+        // Get epoch details
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        uint256 epochEnd = vault.getEpochEnd(currentEpoch);
+        
+        // Warp to after epoch ends
+        vm.warp(epochEnd + 1);
+        
+        // Update NAV as fresh
+        vm.prank(navUpdater);
+        vault.updateNAV(50000 * ONE_USDC_E);
+        
+        // Settle with sufficient liquidity
+        uint256 availableAssets = 1000 * ONE_USDC_E;
+        vm.prank(settler);
+        vault.settleEpoch(currentEpoch, availableAssets);
+        
+        // Process in chunks until complete
+        uint256 chunks = 0;
+        (WeeklyEpochVault.SettlementStatus memory status,,) = vault.getSettlementStatus(currentEpoch);
+        
+        while (!status.settled && chunks < 20) {
+            vm.prank(settler);
+            vault.settleEpochChunked(currentEpoch);
+            (status,,) = vault.getSettlementStatus(currentEpoch);
+            chunks++;
+        }
+        
+        // Should complete within 10 chunks (1000 requests / 100 per chunk)
+        assertLe(chunks, 10, "Should complete within 10 chunks");
+        assertTrue(status.settled, "Settlement should be complete");
+        assertEq(status.totalProcessed, 1000, "Should have processed all 1000 requests");
+    }
+
+    /// @notice Test settlement reverts if epoch has not ended
+    function testSettlementRevertsIfEpochNotEnded() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        vm.prank(depositor);
+        vault.requestRedeem(shares);
+        
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        
+        // Don't warp - try to settle current epoch immediately
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+        
+        // Should revert with EpochNotEnded
+        vm.prank(settler);
+        vm.expectRevert(WeeklyEpochVault.EpochNotEnded.selector);
+        vault.settleEpoch(currentEpoch, 100 * ONE_USDC_E);
+    }
+
+    /// @notice Test settlement reverts with stale NAV
+    function testSettlementRevertsWithStaleNAV() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        vm.prank(depositor);
+        vault.requestRedeem(shares);
+        
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(1);
+        uint256 epochEnd = vault.getEpochEnd(request.epochId);
+        
+        // Warp to after epoch
+        vm.warp(epochEnd + 1);
+        
+        // Update NAV first
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+        
+        // Then warp past staleness threshold
+        vm.warp(block.timestamp + vault.NAV_STALENESS_THRESHOLD() + 1);
+        
+        // Should revert with NAVStale
+        vm.prank(settler);
+        vm.expectRevert(WeeklyEpochVault.NAVStale.selector);
+        vault.settleEpoch(request.epochId, 100 * ONE_USDC_E);
+    }
+
+    /// @notice Test settlement reverts if already settled
+    function testSettlementRevertsIfAlreadySettled() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        vm.prank(depositor);
+        vault.requestRedeem(shares);
+        
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(1);
+        uint256 epochEnd = vault.getEpochEnd(request.epochId);
+        
+        vm.warp(epochEnd + 1);
+        
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+        
+        // First settlement succeeds
+        vm.prank(settler);
+        vault.settleEpoch(request.epochId, 100 * ONE_USDC_E);
+        
+        // Second settlement should revert with AlreadySettled
+        vm.prank(settler);
+        vm.expectRevert(WeeklyEpochVault.AlreadySettled.selector);
+        vault.settleEpoch(request.epochId, 100 * ONE_USDC_E);
+    }
+
+    /// @notice Test settlement reverts with NoPendingRequests
+    function testSettlementRevertsWithNoPendingRequests() public {
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        uint256 epochEnd = vault.getEpochEnd(currentEpoch);
+        
+        vm.warp(epochEnd + 1);
+        
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+        
+        // Try to settle epoch with no requests
+        vm.prank(settler);
+        vm.expectRevert(WeeklyEpochVault.NoPendingRequests.selector);
+        vault.settleEpoch(currentEpoch, 100 * ONE_USDC_E);
+    }
+
+    /// @notice Test only settler can call settlement functions
+    function testSettlementUnauthorizedReverts() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        vm.prank(depositor);
+        vault.requestRedeem(shares);
+        
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(1);
+        uint256 epochEnd = vault.getEpochEnd(request.epochId);
+        
+        vm.warp(epochEnd + 1);
+        
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+        
+        // Attacker tries to settle
+        vm.prank(attacker);
+        vm.expectRevert();
+        vault.settleEpoch(request.epochId, 100 * ONE_USDC_E);
+        
+        // Attacker tries to settle chunked
+        vm.prank(attacker);
+        vm.expectRevert();
+        vault.settleEpochChunked(request.epochId);
+    }
+
+    /// @notice Test getSettlementStatus returns correct data
+    function testGetSettlementStatus() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+        
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId);
+        uint256 epochEnd = vault.getEpochEnd(request.epochId);
+        
+        vm.warp(epochEnd + 1);
+        
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+        
+        // Before settlement
+        (WeeklyEpochVault.SettlementStatus memory status, uint256 nextIndex, uint256 totalRequests) = 
+            vault.getSettlementStatus(request.epochId);
+        
+        assertEq(totalRequests, 1, "Should have 1 request");
+        assertEq(status.totalShares, 0, "Should have 0 shares before settlement");
+        assertFalse(status.settled, "Should not be settled yet");
+        
+        // After settlement
+        uint256 availableAssets = 100 * ONE_USDC_E;
+        vm.prank(settler);
+        vault.settleEpoch(request.epochId, availableAssets);
+        
+        (status, nextIndex, totalRequests) = vault.getSettlementStatus(request.epochId);
+        
+        assertEq(totalRequests, 1, "Should still have 1 request");
+        assertEq(status.totalShares, shares, "Should track total shares");
+        assertEq(status.availableAssets, availableAssets, "Should track available assets");
+        assertTrue(status.settled, "Should be settled");
+    }
+
+    /// @notice Test EpochSettled event is emitted
+    function testEpochSettledEventEmitted() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        vm.prank(depositor);
+        vault.requestRedeem(shares);
+        
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(1);
+        uint256 epochEnd = vault.getEpochEnd(request.epochId);
+        
+        vm.warp(epochEnd + 1);
+        
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+        
+        vm.expectEmit(true, false, false, true);
+        emit WeeklyEpochVault.EpochSettled(request.epochId, shares, 100 * ONE_USDC_E, 1000 * ONE_USDC_E);
+        
+        vm.prank(settler);
+        vault.settleEpoch(request.epochId, 100 * ONE_USDC_E);
+    }
+
+    /// @notice Test cancelled requests are not included in settlement
+    function testCancelledRequestsNotIncludedInSettlement() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+        
+        // Cancel the request
+        vm.prank(depositor);
+        vault.cancelRedemption(requestId);
+        
+        // Verify cancellation
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId);
+        assertEq(uint256(request.status), uint256(WeeklyEpochVault.RequestStatus.Cancelled), "Should be cancelled");
+        
+        // Move to next epoch
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        uint256 epochEnd = vault.getEpochEnd(currentEpoch);
+        vm.warp(epochEnd + 1);
+        
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+        
+        // Settlement should revert because no pending requests
+        vm.prank(settler);
+        vm.expectRevert(WeeklyEpochVault.NoPendingRequests.selector);
+        vault.settleEpoch(currentEpoch, 100 * ONE_USDC_E);
+    }
+
+    // ============================================================================
+    // CLAIM TESTS (Task 8)
+    // ============================================================================
+
+    /// @notice Test claiming a settled request transfers assets
+    function testClaimSettledRequestTransfersAssets() public {
+        uint256 shares = 100 * ONE_USDC_E;
+
+        // Create a redemption request
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+
+        // Get request details
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId);
+        uint256 epochEnd = vault.getEpochEnd(request.epochId);
+
+        // Warp to after epoch ends
+        vm.warp(epochEnd + 1);
+
+        // Update NAV
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        // Settle epoch
+        uint256 availableAssets = 100 * ONE_USDC_E;
+        vm.prank(settler);
+        vault.settleEpoch(request.epochId, availableAssets);
+
+        // Record balance before claim
+        uint256 balanceBefore = mockAsset.balanceOf(depositor);
+
+        // Claim the request
+        vm.prank(depositor);
+        vault.claim(requestId);
+
+        // Verify assets were transferred
+        uint256 balanceAfter = mockAsset.balanceOf(depositor);
+        assertEq(balanceAfter - balanceBefore, shares, "Should receive claimable assets");
+
+        // Verify request status is Claimed
+        request = vault.getRequest(requestId);
+        assertEq(uint256(request.status), uint256(WeeklyEpochVault.RequestStatus.Claimed), "Status should be Claimed");
+        assertEq(request.claimableAssets, 0, "Claimable assets should be cleared");
+    }
+
+    /// @notice Test claiming before settlement reverts with RequestNotSettled
+    function testClaimBeforeMaturityReverts() public {
+        uint256 shares = 100 * ONE_USDC_E;
+
+        // Create a redemption request
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+
+        // Try to claim before settlement - should revert
+        vm.prank(depositor);
+        vm.expectRevert(WeeklyEpochVault.RequestNotSettled.selector);
+        vault.claim(requestId);
+    }
+
+    /// @notice Test claiming is idempotent (second claim is no-op)
+    function testClaimIdempotentSecondClaimIsNoOp() public {
+        uint256 shares = 100 * ONE_USDC_E;
+
+        // Create a redemption request
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+
+        // Get request details
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId);
+        uint256 epochEnd = vault.getEpochEnd(request.epochId);
+
+        // Warp to after epoch ends
+        vm.warp(epochEnd + 1);
+
+        // Update NAV
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        // Settle epoch
+        vm.prank(settler);
+        vault.settleEpoch(request.epochId, shares);
+
+        // First claim
+        vm.prank(depositor);
+        vault.claim(requestId);
+
+        // Record balance after first claim
+        uint256 balanceAfterFirstClaim = mockAsset.balanceOf(depositor);
+
+        // Second claim should be idempotent (no-op, no revert)
+        vm.prank(depositor);
+        vault.claim(requestId);
+
+        // Balance should not change on second claim
+        uint256 balanceAfterSecondClaim = mockAsset.balanceOf(depositor);
+        assertEq(balanceAfterSecondClaim, balanceAfterFirstClaim, "Second claim should not transfer additional assets");
+    }
+
+    /// @notice Test only request owner can claim
+    function testOnlyRequestOwnerCanClaim() public {
+        uint256 shares = 100 * ONE_USDC_E;
+
+        // Create a redemption request
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+
+        // Get request details
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId);
+        uint256 epochEnd = vault.getEpochEnd(request.epochId);
+
+        // Warp to after epoch ends
+        vm.warp(epochEnd + 1);
+
+        // Update NAV
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        // Settle epoch
+        vm.prank(settler);
+        vault.settleEpoch(request.epochId, shares);
+
+        // Attacker tries to claim
+        vm.prank(attacker);
+        vm.expectRevert(WeeklyEpochVault.NotRequestOwner.selector);
+        vault.claim(requestId);
+    }
+
+    /// @notice Test emergency mode does NOT block claims
+    function testEmergencyModeDoesNotBlockClaims() public {
+        uint256 shares = 100 * ONE_USDC_E;
+
+        // Create a redemption request
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+
+        // Get request details
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId);
+        uint256 epochEnd = vault.getEpochEnd(request.epochId);
+
+        // Warp to after epoch ends
+        vm.warp(epochEnd + 1);
+
+        // Update NAV
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        // Settle epoch
+        vm.prank(settler);
+        vault.settleEpoch(request.epochId, shares);
+
+        // Enable emergency mode AFTER settlement
+        vm.prank(admin);
+        vault.setEmergencyMode(true);
+
+        // Claim should still succeed (emergency mode doesn't block settled claims)
+        uint256 balanceBefore = mockAsset.balanceOf(depositor);
+        vm.prank(depositor);
+        vault.claim(requestId);
+        uint256 balanceAfter = mockAsset.balanceOf(depositor);
+
+        assertEq(balanceAfter - balanceBefore, shares, "Should be able to claim during emergency mode");
+    }
+
+    /// @notice Test ClaimProcessed event is emitted
+    function testClaimProcessedEventEmitted() public {
+        uint256 shares = 100 * ONE_USDC_E;
+
+        // Create a redemption request
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+
+        // Get request details
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId);
+        uint256 epochEnd = vault.getEpochEnd(request.epochId);
+
+        // Warp to after epoch ends
+        vm.warp(epochEnd + 1);
+
+        // Update NAV
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        // Settle epoch
+        vm.prank(settler);
+        vault.settleEpoch(request.epochId, shares);
+
+        // Expect ClaimProcessed event
+        vm.expectEmit(true, true, false, true);
+        emit WeeklyEpochVault.ClaimProcessed(requestId, depositor, shares);
+
+        vm.prank(depositor);
+        vault.claim(requestId);
+    }
+
+    /// @notice Test rollover of partially settled request
+    function testRolloverUnsettledPartiallySettledRequest() public {
+        uint256 shares = 100 * ONE_USDC_E;
+
+        // Create a redemption request
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+
+        // Get request details
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId);
+        uint256 epochEnd = vault.getEpochEnd(request.epochId);
+
+        // Warp to after epoch ends
+        vm.warp(epochEnd + 1);
+
+        // Update NAV
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        // Settle with only 50% of required assets (pro-rata settlement)
+        uint256 availableAssets = 50 * ONE_USDC_E;
+        vm.prank(settler);
+        vault.settleEpoch(request.epochId, availableAssets);
+
+        // Verify request is settled with partial claimable amount
+        request = vault.getRequest(requestId);
+        assertEq(request.claimableAssets, 50 * ONE_USDC_E, "Should have 50% claimable");
+
+        // Rollover the unfilled portion
+        vm.prank(depositor);
+        uint256 newRequestId = vault.rolloverUnsettled(requestId);
+
+        // Verify old request is now Claimed
+        request = vault.getRequest(requestId);
+        assertEq(uint256(request.status), uint256(WeeklyEpochVault.RequestStatus.Claimed), "Old request should be Claimed");
+        assertEq(request.claimableAssets, 0, "Old request claimable should be cleared");
+
+        // Verify new rollover request
+        WeeklyEpochVault.RedemptionRequest memory newRequest = vault.getRequest(newRequestId);
+        assertEq(newRequest.user, depositor, "New request should have same user");
+        assertEq(newRequest.shares, 50 * ONE_USDC_E, "New request should have unfilled shares");
+        assertEq(newRequest.epochId, request.epochId + 1, "New request should be in next epoch");
+        assertEq(uint256(newRequest.status), uint256(WeeklyEpochVault.RequestStatus.Pending), "New request should be Pending");
+    }
+
+    /// @notice Test rollover reverts for fully settled request
+    function testRolloverFullySettledRequestReverts() public {
+        uint256 shares = 100 * ONE_USDC_E;
+
+        // Create a redemption request
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+
+        // Get request details
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId);
+        uint256 epochEnd = vault.getEpochEnd(request.epochId);
+
+        // Warp to after epoch ends
+        vm.warp(epochEnd + 1);
+
+        // Update NAV
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        // Settle with full assets (100% settlement)
+        vm.prank(settler);
+        vault.settleEpoch(request.epochId, shares);
+
+        // Try to rollover - should revert since fully settled
+        vm.prank(depositor);
+        vm.expectRevert(WeeklyEpochVault.NothingToRollover.selector);
+        vault.rolloverUnsettled(requestId);
+    }
+
+    /// @notice Test rollover reverts if not owner
+    function testRolloverNotOwnerReverts() public {
+        uint256 shares = 100 * ONE_USDC_E;
+
+        // Create a redemption request
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+
+        // Get request details
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId);
+        uint256 epochEnd = vault.getEpochEnd(request.epochId);
+
+        // Warp to after epoch ends
+        vm.warp(epochEnd + 1);
+
+        // Update NAV
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        // Settle with partial assets
+        vm.prank(settler);
+        vault.settleEpoch(request.epochId, 50 * ONE_USDC_E);
+
+        // Attacker tries to rollover
+        vm.prank(attacker);
+        vm.expectRevert(WeeklyEpochVault.NotRequestOwner.selector);
+        vault.rolloverUnsettled(requestId);
+    }
+
+    /// @notice Test rollover reverts if not settled
+    function testRolloverNotSettledReverts() public {
+        uint256 shares = 100 * ONE_USDC_E;
+
+        // Create a redemption request
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+
+        // Try to rollover before settlement
+        vm.prank(depositor);
+        vm.expectRevert(WeeklyEpochVault.RequestNotSettled.selector);
+        vault.rolloverUnsettled(requestId);
+    }
+
+    /// @notice Test rollover event is emitted
+    function testRolloverEventEmitted() public {
+        uint256 shares = 100 * ONE_USDC_E;
+
+        // Create a redemption request
+        mockAsset.mint(depositor, shares);
+        vm.prank(depositor);
+        mockAsset.approve(address(vault), shares);
+        vm.prank(depositor);
+        uint256 requestId = vault.requestRedeem(shares);
+
+        // Get request details
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId);
+        uint256 epochEnd = vault.getEpochEnd(request.epochId);
+
+        // Warp to after epoch ends
+        vm.warp(epochEnd + 1);
+
+        // Update NAV
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        // Settle with partial assets
+        vm.prank(settler);
+        vault.settleEpoch(request.epochId, 50 * ONE_USDC_E);
+
+        // Expect RequestRolledOver event
+        vm.expectEmit(true, false, false, true);
+        emit WeeklyEpochVault.RequestRolledOver(requestId, request.epochId, request.epochId + 1, 50 * ONE_USDC_E);
+
+        vm.prank(depositor);
+        vault.rolloverUnsettled(requestId);
+    }
+}
