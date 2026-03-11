@@ -2,7 +2,6 @@ import { Router } from "express";
 import { desc } from "drizzle-orm";
 import type { Address, Hex } from "viem";
 import { createPublicClient, formatUnits, parseUnits } from "viem";
-import { polygon } from "viem/chains";
 import { getAllVaultConfigs, getVaultConfig } from "../config/index.js";
 import { resolveVaultIdentity } from "../config/identityResolver.js";
 import type { VaultInstanceConfig } from "../config/types.js";
@@ -27,7 +26,8 @@ import { createVaultTradingClient } from "../services/tradingClient.js";
 import { navCalculator } from "../services/navCalculator.js";
 import { createNavOracle } from "../services/navOracle.js";
 import { positionFetcher } from "../services/positionFetcher.js";
-import { createPolygonTransport } from "../rpcTransport.js";
+import { createNetworkTransport } from "../rpcTransport.js";
+import { getNetworkConfigFromEnv } from "../config/network.js";
 import { pendingTxRegistry } from "../services/pendingTxRegistry.js";
 import { LiquidityManager } from "../services/liquidityManager.js";
 import { VaultProviderFactory } from "../services/vaultProviderFactory.js";
@@ -114,6 +114,19 @@ const VAULT_TOTAL_SUPPLY_ABI = [
 
 // previewRedeem removed - no dependency on Morpho adapter semantics
 // Use share price based calculation instead
+// ABI for reading boundary NAV from custom vaults (excludes queued/reserved)
+const CUSTOM_VAULT_NAV_ABI = [
+  {
+    type: "function",
+    name: "currentNAV",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
+// Legacy vault share price calculation (totalAssets / totalSupply)
+// DEPRECATED: Use boundary NAV from contract for custom vaults
 const VAULT_SHARE_PRICE_ABI = [
   {
     type: "function",
@@ -132,7 +145,7 @@ const VAULT_SHARE_PRICE_ABI = [
 ] as const;
 
 const USDC_DECIMALS = 6;
-const VAULT_SHARE_DECIMALS = 18;
+const VAULT_SHARE_DECIMALS = 6;
 
 const DEFAULT_VAULT_PROFILE = {
   strategy: "custom",
@@ -273,43 +286,94 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<{
   let sharePrice = 1;
 
   try {
+    const networkConfig = getNetworkConfigFromEnv();
     const publicClient = createPublicClient({
-      chain: polygon,
-      transport: createPolygonTransport(env.POLYGON_RPC_URL),
+      chain: networkConfig.chain,
+      transport: createNetworkTransport(),
     });
 
-    const [vaultUsdcRaw, safeUsdcRaw, totalSupplyRaw] = await Promise.all([
-      publicClient.readContract({
-        address: USDC_E_ADDRESS as Address,
-        abi: ERC20_BALANCE_ABI,
-        functionName: "balanceOf",
-        args: [config.vaultAddress as Address],
-      }),
-      publicClient.readContract({
-        address: USDC_E_ADDRESS as Address,
-        abi: ERC20_BALANCE_ABI,
-        functionName: "balanceOf",
-        args: [config.safeAddress as Address],
-      }),
-      publicClient.readContract({
-        address: config.vaultAddress as Address,
-        abi: VAULT_TOTAL_SUPPLY_ABI,
-        functionName: "totalSupply",
-      }),
-    ]);
+    // For custom vaults, use boundary NAV from contract (excludes queued/reserved)
+    if (config.type === "custom") {
+      try {
+        // Read boundary NAV directly from contract - this excludes queued deposits
+        // and reserved redemption liabilities per the contract's NAV semantics
+        const currentNAV = await publicClient.readContract({
+          address: config.vaultAddress as Address,
+          abi: CUSTOM_VAULT_NAV_ABI,
+          functionName: "currentNAV",
+        });
 
-    vaultUsdc = Number(formatUnits(vaultUsdcRaw, USDC_DECIMALS));
-    safeUsdc = Number(formatUnits(safeUsdcRaw, USDC_DECIMALS));
-    const totalSupply = Number(formatUnits(totalSupplyRaw, VAULT_SHARE_DECIMALS));
+        // currentNAV is in 18 decimals, represents assets per share
+        sharePrice = Number(formatUnits(currentNAV, 18));
+        
+        // Also read totalSupply for totalAssets calculation
+        const totalSupplyRaw = await publicClient.readContract({
+          address: config.vaultAddress as Address,
+          abi: VAULT_TOTAL_SUPPLY_ABI,
+          functionName: "totalSupply",
+        });
+        const totalSupply = Number(formatUnits(totalSupplyRaw, VAULT_SHARE_DECIMALS));
+        
+        // Calculate totalAssets from boundary NAV and totalSupply
+        totalAssets = totalSupply * sharePrice;
+        
+        logger.debug("Vault API: Using boundary NAV for custom vault status", {
+          vaultId: config.id,
+          currentNAV: currentNAV.toString(),
+          sharePrice,
+          totalAssets,
+        });
+      } catch (error) {
+        logger.warn("Vault API: Failed to read boundary NAV for custom vault, falling back", {
+          vaultId: config.id,
+          error: (error as Error).message,
+        });
+        // Fall through to legacy calculation
+      }
+    }
 
-    idleAssets = vaultUsdc + safeUsdc;
-    deployedCostBasis = openPositions.reduce((sum, position) => sum + position.costBasis, 0);
-    redeemableCostBasis = redeemablePositions.reduce(
-      (sum, position) => sum + position.costBasis,
-      0,
-    );
-    totalAssets = idleAssets + deployedCostBasis;
-    sharePrice = totalSupply > 0 ? totalAssets / totalSupply : 1;
+    // For legacy vaults OR if custom vault boundary NAV read failed
+    if (config.type !== "custom" || totalAssets === 0) {
+      const [vaultUsdcRaw, safeUsdcRaw, totalSupplyRaw] = await Promise.all([
+        publicClient.readContract({
+          address: USDC_E_ADDRESS as Address,
+          abi: ERC20_BALANCE_ABI,
+          functionName: "balanceOf",
+          args: [config.vaultAddress as Address],
+        }),
+        publicClient.readContract({
+          address: USDC_E_ADDRESS as Address,
+          abi: ERC20_BALANCE_ABI,
+          functionName: "balanceOf",
+          args: [config.safeAddress as Address],
+        }),
+        publicClient.readContract({
+          address: config.vaultAddress as Address,
+          abi: VAULT_TOTAL_SUPPLY_ABI,
+          functionName: "totalSupply",
+        }),
+      ]);
+
+      vaultUsdc = Number(formatUnits(vaultUsdcRaw, USDC_DECIMALS));
+      safeUsdc = Number(formatUnits(safeUsdcRaw, USDC_DECIMALS));
+      const totalSupply = Number(formatUnits(totalSupplyRaw, VAULT_SHARE_DECIMALS));
+
+      idleAssets = vaultUsdc + safeUsdc;
+      deployedCostBasis = openPositions.reduce((sum, position) => sum + position.costBasis, 0);
+      redeemableCostBasis = redeemablePositions.reduce(
+        (sum, position) => sum + position.costBasis,
+        0,
+      );
+      totalAssets = idleAssets + deployedCostBasis;
+      sharePrice = totalSupply > 0 ? totalAssets / totalSupply : 1;
+      
+      logger.debug("Vault API: Using raw ratio for legacy vault status", {
+        vaultId: config.id,
+        totalAssets,
+        totalSupply,
+        sharePrice,
+      });
+    }
   } catch (error) {
     logger.warn("Vault API: Falling back to NAV snapshot values for status", {
       vaultId: config.id,
@@ -317,6 +381,7 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<{
     });
   }
 
+  // Fallback to NAV snapshot if on-chain reads failed
   if (totalAssets <= 0 && latestTotalAssets > 0) {
     totalAssets = latestTotalAssets;
     idleAssets = latestIdleAssets;
@@ -971,7 +1036,12 @@ export function buildVaultRouter(): Router {
   const DEFAULT_SLIPPAGE_THRESHOLD = 0.01;
 
   /**
-   * Helper to estimate redeemable assets using share price (no previewRedeem)
+   * Helper to estimate redeemable assets using boundary NAV for custom vaults
+   * or share price for legacy vaults.
+   *
+   * CRITICAL: For custom vaults, uses currentNAV from contract which excludes
+   * queued deposits and reserved redemption liabilities (boundary NAV semantics).
+   * Falls back to raw totalAssets/totalSupply for legacy vaults only.
    */
   async function estimateRedeemAssets(
     vaultAddress: string,
@@ -981,30 +1051,66 @@ export function buildVaultRouter(): Router {
     error?: string;
   }> {
     try {
+      const networkConfig = getNetworkConfigFromEnv();
       const publicClient = createPublicClient({
-        chain: polygon,
-        transport: createPolygonTransport(env.POLYGON_RPC_URL),
+        chain: networkConfig.chain,
+        transport: createNetworkTransport(),
       });
 
       const sharesUnits = parseUnits(shares, VAULT_SHARE_DECIMALS);
 
-      // Calculate assets from share price (totalAssets / totalSupply)
-      const [totalAssetsRaw, totalSupplyRaw] = await Promise.all([
-        publicClient.readContract({
+      // Try to get boundary NAV from custom vault first (excludes queued/reserved)
+      let currentNAV: bigint | null = null;
+      try {
+        currentNAV = await publicClient.readContract({
           address: vaultAddress as Address,
-          abi: VAULT_SHARE_PRICE_ABI,
-          functionName: "totalAssets",
-        }),
-        publicClient.readContract({
-          address: vaultAddress as Address,
-          abi: VAULT_SHARE_PRICE_ABI,
-          functionName: "totalSupply",
-        }),
-      ]);
+          abi: CUSTOM_VAULT_NAV_ABI,
+          functionName: "currentNAV",
+        });
+      } catch {
+        // currentNAV not available on legacy vaults - will fall back to raw ratio
+        currentNAV = null;
+      }
 
-      const totalAssets = Number(formatUnits(totalAssetsRaw, USDC_DECIMALS));
-      const totalSupply = Number(formatUnits(totalSupplyRaw, VAULT_SHARE_DECIMALS));
-      const sharePrice = totalSupply > 0 ? totalAssets / totalSupply : 1;
+      let sharePrice: number;
+
+      if (currentNAV !== null && currentNAV > 0n) {
+        // Use boundary NAV from contract (custom vault semantics)
+        // currentNAV is in 18 decimals, represents assets per share excluding liabilities
+        sharePrice = Number(formatUnits(currentNAV, 18));
+        logger.debug("estimateRedeemAssets: Using boundary NAV", {
+          vaultAddress,
+          currentNAV: currentNAV.toString(),
+          sharePrice,
+        });
+      } else {
+        // Fall back to raw totalAssets/totalSupply for legacy vaults
+        // WARNING: This does not exclude queued deposits or reserved liabilities
+        const [totalAssetsRaw, totalSupplyRaw] = await Promise.all([
+          publicClient.readContract({
+            address: vaultAddress as Address,
+            abi: VAULT_SHARE_PRICE_ABI,
+            functionName: "totalAssets",
+          }),
+          publicClient.readContract({
+            address: vaultAddress as Address,
+            abi: VAULT_SHARE_PRICE_ABI,
+            functionName: "totalSupply",
+          }),
+        ]);
+
+        const totalAssets = Number(formatUnits(totalAssetsRaw, USDC_DECIMALS));
+        const totalSupply = Number(formatUnits(totalSupplyRaw, VAULT_SHARE_DECIMALS));
+        sharePrice = totalSupply > 0 ? totalAssets / totalSupply : 1;
+        
+        logger.debug("estimateRedeemAssets: Using raw ratio (legacy vault)", {
+          vaultAddress,
+          totalAssets,
+          totalSupply,
+          sharePrice,
+        });
+      }
+
       const assets = Number(formatUnits(sharesUnits, VAULT_SHARE_DECIMALS)) * sharePrice;
 
       if (!Number.isFinite(assets) || assets <= 0) {

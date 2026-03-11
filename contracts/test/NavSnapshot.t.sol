@@ -163,7 +163,7 @@ contract NavSnapshotTest is TestHelper {
         navSnapshot.recordNavSnapshot(1, 1000e6, 1000e18);
         
         // IMPORTANT: Capture timestamp AFTER recording but BEFORE warping
-        uint256 snapshotTime = block.timestamp;
+        uint256 snapshotTime = navSnapshot.getLatestNav().timestamp;
         
         // Warp to 6h 1m = 21660 seconds
         vm.warp(block.timestamp + STALENESS_THRESHOLD + 60);
@@ -216,7 +216,7 @@ contract NavSnapshotTest is TestHelper {
         navSnapshot.recordNavSnapshot(1, 1000e6, 1000e18);
         
         // IMPORTANT: Capture timestamp AFTER recording but BEFORE warping
-        uint256 snapshotTime = block.timestamp;
+        uint256 snapshotTime = navSnapshot.getLatestNav().timestamp;
         
         // Warp to 6h 1m
         vm.warp(block.timestamp + STALENESS_THRESHOLD + 60);
@@ -334,7 +334,7 @@ contract NavSnapshotTest is TestHelper {
         navSnapshot.recordNavSnapshot(1, 1000e6, 1000e18);
         
         // IMPORTANT: Capture timestamp AFTER recording but BEFORE warping
-        uint256 snapshotTime = block.timestamp;
+        uint256 snapshotTime = navSnapshot.getLatestNav().timestamp;
         
         // Advance time: 6h 1m (stale)
         vm.warp(block.timestamp + STALENESS_THRESHOLD + 60);
@@ -354,7 +354,7 @@ contract NavSnapshotTest is TestHelper {
         vm.prank(navUpdater);
         navSnapshot.recordNavSnapshot(1, 1000e6, 1000e18);
         
-        uint256 snapshotTime = block.timestamp;
+        uint256 snapshotTime = navSnapshot.getLatestNav().timestamp;
         
         // Advance time: 12 hours (clearly stale)
         vm.warp(block.timestamp + 12 hours);

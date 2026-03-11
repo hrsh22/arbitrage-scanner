@@ -1,29 +1,39 @@
 /**
- * Custom Vault Routes (ERC7540-style Weekly Epoch with Tranche Support)
+ * Custom Vault Routes (ERC7540-style Weekly Epoch with Boundary Settlement)
  *
  * API endpoints for redemption request, status, settlement, and claim operations
- * for the new custom vault with weekly epochs.
+ * for the custom vault with weekly epochs.
+ *
+ * SUPPORTED ECONOMIC MODEL: Boundary Settlement Only
+ * - Redemption requests are processed at epoch settlement boundary
+ * - Full entitlement realization at settlement (no gradual realization)
+ * - Cancellation is disabled - requests are irreversible once submitted
+ * - Cross-epoch open positions are unsupported
  *
  * New Lifecycle Fields:
  * - queued: Assets waiting in deposit queue
  * - frozen: Assets frozen in pending epochs
- * - accrued: Total realized USDC accrued for user
+ * - accrued: Total realized USDC accrued for user (settlement boundary only)
  * - claimed: Total USDC already claimed by user
  * - claimableNow: USDC available to claim right now
  * - minClaimThreshold: Minimum claim amount required
  *
  * Routes:
- * - POST /api/vaults/:vaultId/redeem - Create redemption request
+ * - POST /api/vaults/:vaultId/redeem - Create redemption request (irreversible)
  * - GET /api/vaults/:vaultId/requests/:requestId - Get request status
  * - GET /api/vaults/:vaultId/deposit-queue - Get deposit queue status (NEW)
  * - GET /api/vaults/:vaultId/tranche-status - Get tranche progress (NEW)
  * - GET /api/vaults/:vaultId/carry-eligibility - Get carry claim eligibility (NEW)
  * - POST /api/vaults/:vaultId/requests/:requestId/claim - Claim settled request
- * - POST /api/vaults/:vaultId/requests/:requestId/cancel - Cancel pending request
  * - GET /api/vaults/:vaultId/epochs/current - Current epoch status
  * - GET /api/vaults/:vaultId/epochs/:epochId - Specific epoch details
  * - GET /api/vaults/:vaultId/redemptions - User's redemption state
  * - GET /api/vaults/:vaultId/info - Vault metadata and capabilities
+ *
+ * UNSUPPORTED OPERATIONS (not implemented):
+ * - Cancellation of pending requests (disabled at contract level)
+ * - Gradual/partial realization between settlement boundaries
+ * - Cross-epoch position accounting without settlement
  */
 
 import { Router } from "express";
@@ -83,12 +93,6 @@ function validateClaimRequest(body: unknown): { signature?: string } {
   return { signature: typeof signature === "string" ? signature : undefined };
 }
 
-function validateCancelRequest(body: unknown): { reason?: string } {
-  if (typeof body !== "object" || body === null) return {};
-  const { reason } = body as Record<string, unknown>;
-  return { reason: typeof reason === "string" ? reason : undefined };
-}
-
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -134,7 +138,7 @@ async function formatRedemptionRequest(
   },
   includeLifecycleFields = true,
 ): Promise<Record<string, unknown>> {
-  const VAULT_SHARE_DECIMALS = 18;
+  const VAULT_SHARE_DECIMALS = 6;
   const USDC_DECIMALS = 6;
 
   const baseResponse = {
@@ -212,13 +216,13 @@ async function formatRedemptionRequest(
     const claimed = BigInt(entitlement.claimed);
     const carryRemaining = BigInt(entitlement.carryRemaining);
     const claimableNow = accrued - claimed;
-    
+
     // Minimum claim threshold (1 USDC = 1000000 in 6 decimals)
     const minClaimThreshold = 1000000n;
-    
+
     // Check if dust override is eligible (when claimable is below threshold but user wants to claim anyway)
     const dustOverrideEligible = claimableNow > 0n && claimableNow < minClaimThreshold;
-    
+
     // Check if meets threshold for normal claim
     const meetsThreshold = claimableNow >= minClaimThreshold;
 
@@ -296,7 +300,7 @@ function formatEpochStatus(epochStatus: {
   proRataRatio?: bigint;
   availableAssets?: bigint;
 }) {
-  const VAULT_SHARE_DECIMALS = 18;
+  const VAULT_SHARE_DECIMALS = 6;
   const USDC_DECIMALS = 6;
 
   const now = new Date();
@@ -322,6 +326,58 @@ function formatEpochStatus(epochStatus: {
     availableAssetsFormatted: epochStatus.availableAssets
       ? formatUnits(epochStatus.availableAssets, USDC_DECIMALS)
       : undefined,
+  };
+}
+
+function formatEpochHistoryItem(epoch: {
+  epochId: bigint;
+  startTime: bigint;
+  endTime: bigint;
+  epochOpenNAV: bigint;
+  snapshotNAV: bigint;
+  snapshotTimestamp: bigint;
+  totalSharesPending: bigint;
+  frozenShares: bigint;
+  frozenAssets: bigint;
+  proRataRatio: bigint;
+  carryAccrued: bigint;
+  cohortTotalEntitlement: bigint;
+  cohortTotalAccrued: bigint;
+  cohortTotalClaimed: bigint;
+  cohortCarryRemaining: bigint;
+  status: string;
+}): Record<string, unknown> {
+  return {
+    epochId: Number(epoch.epochId),
+    startTime: new Date(Number(epoch.startTime) * 1000).toISOString(),
+    endTime: new Date(Number(epoch.endTime) * 1000).toISOString(),
+    epochOpenNAV: epoch.epochOpenNAV.toString(),
+    epochOpenNAVFormatted: formatUnits(epoch.epochOpenNAV, 18),
+    snapshotNAV: epoch.snapshotNAV.toString(),
+    snapshotNAVFormatted: formatUnits(epoch.snapshotNAV, 18),
+    snapshotTimestamp:
+      epoch.snapshotTimestamp > 0n
+        ? new Date(Number(epoch.snapshotTimestamp) * 1000).toISOString()
+        : null,
+    totalSharesPending: epoch.totalSharesPending.toString(),
+    totalSharesPendingFormatted: formatUnits(epoch.totalSharesPending, 6),
+    frozenShares: epoch.frozenShares.toString(),
+    frozenSharesFormatted: formatUnits(epoch.frozenShares, 6),
+    frozenAssets: epoch.frozenAssets.toString(),
+    frozenAssetsFormatted: formatUnits(epoch.frozenAssets, 6),
+    proRataRatio: epoch.proRataRatio.toString(),
+    proRataRatioFormatted: (Number(epoch.proRataRatio) / 1e18).toFixed(6),
+    carryAccrued: epoch.carryAccrued.toString(),
+    carryAccruedFormatted: formatUnits(epoch.carryAccrued, 6),
+    cohortTotalEntitlement: epoch.cohortTotalEntitlement.toString(),
+    cohortTotalEntitlementFormatted: formatUnits(epoch.cohortTotalEntitlement, 6),
+    cohortTotalAccrued: epoch.cohortTotalAccrued.toString(),
+    cohortTotalAccruedFormatted: formatUnits(epoch.cohortTotalAccrued, 6),
+    cohortTotalClaimed: epoch.cohortTotalClaimed.toString(),
+    cohortTotalClaimedFormatted: formatUnits(epoch.cohortTotalClaimed, 6),
+    cohortCarryRemaining: epoch.cohortCarryRemaining.toString(),
+    cohortCarryRemainingFormatted: formatUnits(epoch.cohortCarryRemaining, 6),
+    status: epoch.status,
   };
 }
 
@@ -387,7 +443,7 @@ export function buildCustomVaultRouter(): Router {
         return;
       }
 
-      const sharesUnits = parseUnits(shares, 18);
+      const sharesUnits = parseUnits(shares, 6);
       if (sharesUnits <= 0n) {
         res.status(400).json({ error: "Shares must be greater than zero" });
         return;
@@ -406,13 +462,12 @@ export function buildCustomVaultRouter(): Router {
         });
       }
 
-      const vaultInfo = await provider.getVaultInfo();
-      const totalAssets = Number(vaultInfo.totalAssets);
-      const totalSupply = Number(vaultInfo.totalSupply);
-      const sharePrice = totalSupply > 0n ? totalAssets / totalSupply : 1;
-      const sharesFloat = Number(formatUnits(sharesUnits, 18));
-      const assetsEstimatedFloat = sharesFloat * sharePrice;
-      const assetsEstimated = BigInt(Math.floor(assetsEstimatedFloat * 1e6));
+      const [vaultInfo, assetsEstimated] = await Promise.all([
+        provider.getVaultInfo(),
+        provider.previewRedeem(sharesUnits),
+      ]);
+      const sharesFloat = Number(formatUnits(sharesUnits, 6));
+      const assetsEstimatedFloat = Number(formatUnits(assetsEstimated, 6));
 
       if (clientAssetsEstimated) {
         const clientEstimateUnits = parseUnits(clientAssetsEstimated, 6);
@@ -751,114 +806,6 @@ export function buildCustomVaultRouter(): Router {
     }
   });
 
-  router.post("/:vaultId/requests/:requestId/cancel", requireAuth, async (req, res) => {
-    try {
-      const vaultIdParam = req.params.vaultId;
-      if (!vaultIdParam) {
-        res.status(400).json({ error: "Vault ID is required" });
-        return;
-      }
-      const vaultId = parseInt(vaultIdParam, 10);
-      const requestId = req.params.requestId!;
-      const userAddress = req.session!.address as Address;
-
-      if (isNaN(vaultId)) {
-        res.status(400).json({ error: "Invalid vault ID" });
-        return;
-      }
-
-      if (!requestId) {
-        res.status(400).json({ error: "Request ID is required" });
-        return;
-      }
-
-      validateCancelRequest(req.body);
-
-      const provider = await getCustomVaultProvider(vaultId);
-      if (!provider) {
-        res.status(404).json({
-          error: `Custom vault ${vaultId} not found`,
-        });
-        return;
-      }
-
-      const statusResult = await provider.getRequestStatus(requestId);
-      const request = statusResult.request;
-
-      const isOwner = request.userAddress.toLowerCase() === userAddress.toLowerCase();
-      const isController = request.controller?.toLowerCase() === userAddress.toLowerCase();
-      const isOperator = request.operator?.toLowerCase() === userAddress.toLowerCase();
-
-      const isAuthorized = isOwner || isController || isOperator;
-
-      if (!isAuthorized) {
-        logger.warn("CustomVault API: Unauthorized cancel attempt blocked", {
-          vaultId,
-          requestId,
-          requestOwner: request.userAddress,
-          requestController: request.controller,
-          requestOperator: request.operator,
-          attemptingUser: userAddress,
-        });
-        res.status(403).json({
-          success: false,
-          error:
-            "Not authorized: You are not the owner, controller, or authorized operator for this request",
-          requestId,
-          vaultId,
-        });
-        return;
-      }
-
-      const result = await provider.cancelRedemption(requestId, userAddress);
-
-      if (!result.success) {
-        const statusCode = result.error?.includes("Settlement cutoff")
-          ? 409
-          : result.error?.includes("Not authorized")
-            ? 403
-            : 400;
-
-        res.status(statusCode).json({
-          success: false,
-          error: result.error,
-          requestId,
-          vaultId,
-        });
-        return;
-      }
-
-      logger.info("CustomVault API: Redemption request cancelled", {
-        vaultId,
-        requestId,
-        userAddress,
-        cancelledBy: userAddress,
-        isOwner,
-        isController,
-        isOperator,
-      });
-
-      res.json({
-        success: true,
-        requestId,
-        vaultId,
-        userAddress,
-        cancelledBy: userAddress,
-        message: "Redemption request cancelled. Shares have been returned to your wallet.",
-      });
-    } catch (error) {
-      logger.error("CustomVault API: Failed to cancel redemption request", {
-        error: (error as Error).message,
-        vaultId: req.params.vaultId,
-        requestId: req.params.requestId,
-      });
-      res.status(500).json({
-        error: "Failed to cancel redemption request",
-        message: (error as Error).message,
-      });
-    }
-  });
-
   router.get("/:vaultId/epochs/current", async (req, res) => {
     try {
       const vaultId = parseInt(req.params.vaultId, 10);
@@ -899,6 +846,57 @@ export function buildCustomVaultRouter(): Router {
       });
       res.status(500).json({
         error: "Failed to get current epoch",
+        message: (error as Error).message,
+      });
+    }
+  });
+
+  router.get("/:vaultId/epochs", async (req, res) => {
+    try {
+      const vaultId = parseInt(req.params.vaultId, 10);
+      const limitParam = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : 6;
+      const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 20) : 6;
+
+      if (isNaN(vaultId)) {
+        res.status(400).json({ error: "Invalid vault ID" });
+        return;
+      }
+
+      const provider = await getCustomVaultProvider(vaultId);
+      if (!provider) {
+        res.status(404).json({ error: `Custom vault ${vaultId} not found` });
+        return;
+      }
+
+      const client = provider.getClient();
+      const currentEpoch = Number(await client.getCurrentEpoch());
+      const minEpoch = Math.max(0, currentEpoch - limit + 1);
+      const epochIds: number[] = [];
+
+      for (let epochId = currentEpoch; epochId >= minEpoch; epochId -= 1) {
+        epochIds.push(epochId);
+      }
+
+      const epochs = await Promise.all(
+        epochIds.map(async (epochId) => {
+          const epoch = await client.getEpoch(BigInt(epochId));
+          return epoch ? formatEpochHistoryItem(epoch) : null;
+        }),
+      );
+
+      res.json({
+        success: true,
+        vaultId,
+        currentEpochId: currentEpoch,
+        epochs: epochs.filter((epoch): epoch is Record<string, unknown> => epoch !== null),
+      });
+    } catch (error) {
+      logger.error("CustomVault API: Failed to get epoch history", {
+        error: (error as Error).message,
+        vaultId: req.params.vaultId,
+      });
+      res.status(500).json({
+        error: "Failed to get epoch history",
         message: (error as Error).message,
       });
     }
@@ -988,7 +986,6 @@ export function buildCustomVaultRouter(): Router {
       const formattedClaimable = await Promise.all(
         state.claimableRequests.map((req) => formatRedemptionRequest(req)),
       );
-
 
       res.json({
         success: true,
@@ -1102,41 +1099,76 @@ export function buildCustomVaultRouter(): Router {
         return;
       }
 
-      // Get user's redemption state for queued assets
-      const state = await provider.getUserRedemptionState(userAddress);
+      const client = provider.getClient();
+      const currentEpochId = await client.getCurrentEpoch();
+      const targetEpochId = currentEpochId + 1n;
+      const depositRequestId = await client.getDepositorEpochRequest(userAddress, targetEpochId);
+      const depositRequest =
+        depositRequestId > 0n ? await client.getDepositRequest(depositRequestId) : null;
 
-      // Calculate queued (pending) and frozen (claimable) assets
-      const queuedShares = state.totalSharesPending;
-      const frozenShares = state.totalSharesClaimable;
+      const [navStatus, epoch, targetEpoch, requestId] = await Promise.all([
+        client.getNAVStatus(),
+        client.getEpoch(currentEpochId),
+        client.getEpoch(targetEpochId),
+        client.getControllerRequestId(userAddress),
+      ]);
 
-      // Get vault info for share price calculation
-      const vaultInfo = await provider.getVaultInfo();
-      const sharesToAssets = (shares: bigint): bigint => {
-        if (vaultInfo.totalSupply === 0n) return 0n;
-        return (shares * vaultInfo.totalAssets) / vaultInfo.totalSupply;
-      };
+      const queuedAssets = depositRequest && !depositRequest.processed ? depositRequest.assets : 0n;
+      const estimateNav =
+        targetEpoch?.epochOpenNAV && targetEpoch.epochOpenNAV > 0n
+          ? targetEpoch.epochOpenNAV
+          : navStatus.currentNAV;
+      const estimatedQueuedShares =
+        queuedAssets > 0n
+          ? estimateNav > 0n
+            ? (queuedAssets * 10n ** 18n) / estimateNav
+            : queuedAssets
+          : queuedAssets;
 
-      const queuedAssets = sharesToAssets(queuedShares);
-      const frozenAssets = sharesToAssets(frozenShares);
+      const redemptionRequest =
+        requestId > 0n ? await client.getRedemptionRequest(requestId) : null;
+      const frozenShares =
+        redemptionRequest?.status === "claimable" ? redemptionRequest.shares : 0n;
+      const frozenAssets =
+        redemptionRequest?.status === "claimable" ? redemptionRequest.assetsClaimable : 0n;
+
+      const currentEpochStart = epoch
+        ? new Date(Number(epoch.startTime) * 1000).toISOString()
+        : null;
+      const currentEpochEnd = epoch ? new Date(Number(epoch.endTime) * 1000).toISOString() : null;
 
       res.json({
         success: true,
         vaultId,
         userAddress,
-        // Queued: assets waiting in deposit queue (pending state)
         queued: queuedAssets.toString(),
         queuedFormatted: formatUnits(queuedAssets, 6),
-        queuedShares: queuedShares.toString(),
-        queuedSharesFormatted: formatUnits(queuedShares, 18),
-        // Frozen: assets frozen in epoch (claimable state)
+        queuedShares: estimatedQueuedShares.toString(),
+        queuedSharesFormatted: formatUnits(estimatedQueuedShares, 6),
+        estimateNav: estimateNav.toString(),
+        estimateNavFormatted: formatUnits(estimateNav, 18),
+        estimateBasis:
+          targetEpoch?.epochOpenNAV && targetEpoch.epochOpenNAV > 0n
+            ? "Estimated from the target epoch open NAV."
+            : "Estimated from current NAV. Final minted shares use the target epoch open NAV when the epoch activates.",
         frozen: frozenAssets.toString(),
         frozenFormatted: formatUnits(frozenAssets, 6),
         frozenShares: frozenShares.toString(),
-        frozenSharesFormatted: formatUnits(frozenShares, 18),
-        // Current epoch info
-        currentEpochId: vaultInfo.epochInfo?.currentEpochId,
-        currentEpochEnd: vaultInfo.epochInfo?.currentEpochEnd.toISOString(),
-        // Lifecycle metadata
+        frozenSharesFormatted: formatUnits(frozenShares, 6),
+        depositRequestId: depositRequestId > 0n ? depositRequestId.toString() : null,
+        depositCreatedAt:
+          depositRequest?.createdAt && depositRequest.createdAt > 0n
+            ? new Date(Number(depositRequest.createdAt) * 1000).toISOString()
+            : null,
+        targetEpochId: Number(depositRequest?.targetEpoch ?? targetEpochId),
+        currentEpochId: Number(currentEpochId),
+        currentEpochStart,
+        currentEpochEnd,
+        nextEpochStart: currentEpochEnd,
+        activationTime: currentEpochEnd,
+        queueStatus: depositRequest ? (depositRequest.processed ? "processed" : "queued") : "idle",
+        mintRule:
+          "Deposits queue for the next epoch and shares mint when that epoch opens using the epoch-open NAV.",
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
@@ -1239,7 +1271,7 @@ export function buildCustomVaultRouter(): Router {
           endTime: epochStatus.endTime.toISOString(),
           settled: epochStatus.settled,
           totalShares: epochStatus.totalShares.toString(),
-          totalSharesFormatted: formatUnits(epochStatus.totalShares, 18),
+          totalSharesFormatted: formatUnits(epochStatus.totalShares, 6),
         },
         // User's tranche position with corrected lifecycle fields
         tranchePosition: {

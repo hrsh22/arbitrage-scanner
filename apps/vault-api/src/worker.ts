@@ -2,11 +2,15 @@ import "dotenv/config";
 
 import type { VaultInstanceConfig } from "./config/types.js";
 import { getEnabledVaultConfigs, resolveVaultIdentity } from "./config/index.js";
-import { env } from "./env.js";
+import { env, isTradingEnabled } from "./env.js";
 import { logger } from "./logger.js";
+import { runStartupValidationOrExit } from "./startupValidation.js";
 import { createNavOracle, NavOracleService } from "./services/navOracle.js";
 import { LiquidityManager, createLiquidityManager } from "./services/liquidityManager.js";
 import { pendingTxRegistry } from "./services/pendingTxRegistry.js";
+
+// Run startup validation early - this will exit if validation fails
+await runStartupValidationOrExit();
 
 let isShuttingDown = false;
 const intervals: NodeJS.Timeout[] = [];
@@ -224,7 +228,7 @@ function initializeVaults(): { initialized: number; failed: Array<{ id: number; 
       // Resolve vault identity (keys/addresses) from environment
       const identity = resolveVaultIdentity(config);
 
-      const navOracle = createNavOracle(config, identity);
+      const navOracle = createNavOracle(config, identity, config.id);
       vaultNavOracles.set(config.id, navOracle);
 
       const liquidityManager = createLiquidityManager(config);
@@ -291,6 +295,15 @@ async function runInitialTasks(): Promise<void> {
 }
 
 async function start(): Promise<void> {
+  logger.info("=== Vault Capital Worker Starting ===");
+  logger.info(
+    `CapitalWorker: PID ${process.pid}, mode: ${env.VAULT_MODE}, network: ${env.VAULT_NETWORK}`,
+  );
+
+  // Amoy enforcement notice
+  if (env.VAULT_NETWORK === "amoy") {
+    logger.info("Amoy vault: trading disabled, live mode enforced");
+  }
   logger.info("=== Vault Capital Worker Starting ===");
   logger.info(`CapitalWorker: PID ${process.pid}, mode: ${env.VAULT_MODE}`);
 

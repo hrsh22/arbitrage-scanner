@@ -1,0 +1,2 @@
+/Users/harsh/Developer/polymarket-mvp/apps/vault-api/src/__tests__/settlementLifecycle.integration.test.ts:        cancelBeforeSettlement: false,
+/Users/harsh/Developer/polymarket-mvp/apps/vault-api/src/services/customVaultProvider.ts:      cancelBeforeSettlement: false,

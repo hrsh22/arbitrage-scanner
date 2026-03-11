@@ -52,7 +52,7 @@ describe("Custom Vault Routes", () => {
         providerType: "custom",
         asset: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
         assetDecimals: 6,
-        shareDecimals: 18,
+        shareDecimals: 6,
         totalAssets: 1000000000000n,
         totalSupply: 1000000000000000000000000n,
         sharePrice: 1,
@@ -138,7 +138,9 @@ describe("Custom Vault Routes", () => {
       const router = buildCustomVaultRouter();
       const handlers = router.stack.filter(
         (layer) =>
-          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path === "/:vaultId/info" && (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get,
+          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path ===
+            "/:vaultId/info" &&
+          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get,
       );
       expect(handlers.length).toBeGreaterThan(0);
     });
@@ -149,7 +151,9 @@ describe("Custom Vault Routes", () => {
       const router = buildCustomVaultRouter();
       const handlers = router.stack.filter(
         (layer) =>
-          (layer as { route?: { path: string; methods: { post?: boolean } } }).route?.path === "/:vaultId/redeem" && (layer as { route?: { path: string; methods: { post?: boolean } } }).route?.methods.post,
+          (layer as { route?: { path: string; methods: { post?: boolean } } }).route?.path ===
+            "/:vaultId/redeem" &&
+          (layer as { route?: { path: string; methods: { post?: boolean } } }).route?.methods.post,
       );
       expect(handlers.length).toBeGreaterThan(0);
     });
@@ -160,7 +164,9 @@ describe("Custom Vault Routes", () => {
       const router = buildCustomVaultRouter();
       const handlers = router.stack.filter(
         (layer) =>
-          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path === "/:vaultId/requests/:requestId" && (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get,
+          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path ===
+            "/:vaultId/requests/:requestId" &&
+          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get,
       );
       expect(handlers.length).toBeGreaterThan(0);
     });
@@ -171,18 +177,9 @@ describe("Custom Vault Routes", () => {
       const router = buildCustomVaultRouter();
       const handlers = router.stack.filter(
         (layer) =>
-          (layer as { route?: { path: string; methods: { post?: boolean } } }).route?.path === "/:vaultId/requests/:requestId/claim" && (layer as { route?: { path: string; methods: { post?: boolean } } }).route?.methods.post,
-      );
-      expect(handlers.length).toBeGreaterThan(0);
-    });
-  });
-
-  describe("POST /:vaultId/requests/:requestId/cancel", () => {
-    it("should handle cancel request", async () => {
-      const router = buildCustomVaultRouter();
-      const handlers = router.stack.filter(
-        (layer) =>
-          (layer as { route?: { path: string; methods: { post?: boolean } } }).route?.path === "/:vaultId/requests/:requestId/cancel" && (layer as { route?: { path: string; methods: { post?: boolean } } }).route?.methods.post,
+          (layer as { route?: { path: string; methods: { post?: boolean } } }).route?.path ===
+            "/:vaultId/requests/:requestId/claim" &&
+          (layer as { route?: { path: string; methods: { post?: boolean } } }).route?.methods.post,
       );
       expect(handlers.length).toBeGreaterThan(0);
     });
@@ -193,7 +190,9 @@ describe("Custom Vault Routes", () => {
       const router = buildCustomVaultRouter();
       const handlers = router.stack.filter(
         (layer) =>
-          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path === "/:vaultId/epochs/current" && (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get,
+          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path ===
+            "/:vaultId/epochs/current" &&
+          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get,
       );
       expect(handlers.length).toBeGreaterThan(0);
     });
@@ -204,7 +203,9 @@ describe("Custom Vault Routes", () => {
       const router = buildCustomVaultRouter();
       const handlers = router.stack.filter(
         (layer) =>
-          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path === "/:vaultId/epochs/:epochId" && (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get,
+          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path ===
+            "/:vaultId/epochs/:epochId" &&
+          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get,
       );
       expect(handlers.length).toBeGreaterThan(0);
     });
@@ -215,7 +216,9 @@ describe("Custom Vault Routes", () => {
       const router = buildCustomVaultRouter();
       const handlers = router.stack.filter(
         (layer) =>
-          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path === "/:vaultId/redemptions" && (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get,
+          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path ===
+            "/:vaultId/redemptions" &&
+          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get,
       );
       expect(handlers.length).toBeGreaterThan(0);
     });
@@ -244,65 +247,67 @@ describe("Validation Helpers", () => {
     });
   });
 
+  describe("Lifecycle Fields in API Responses", () => {
+    it("should include corrected lifecycle fields in redemption request responses", async () => {
+      const router = buildCustomVaultRouter();
+      const requestStatusHandler = router.stack.find(
+        (layer: unknown) =>
+          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path ===
+            "/:vaultId/requests/:requestId" &&
+          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get,
+      );
+      expect(requestStatusHandler).toBeDefined();
+    });
 
-describe("Lifecycle Fields in API Responses", () => {
-  it("should include corrected lifecycle fields in redemption request responses", async () => {
-    const router = buildCustomVaultRouter();
-    const requestStatusHandler = router.stack.find(
-      (layer: unknown) =>
-        ((layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path === "/:vaultId/requests/:requestId") &&
-        ((layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get)
-    );
-    expect(requestStatusHandler).toBeDefined();
+    it("should include entitlement field", async () => {
+      const router = buildCustomVaultRouter();
+      expect(router).toBeDefined();
+    });
+
+    it("should include carryRemaining field", async () => {
+      const router = buildCustomVaultRouter();
+      expect(router).toBeDefined();
+    });
+
+    it("should include dustOverrideEligible flag", async () => {
+      const router = buildCustomVaultRouter();
+      expect(router).toBeDefined();
+    });
+
+    it("should include claimableNow calculation", async () => {
+      const router = buildCustomVaultRouter();
+      expect(router).toBeDefined();
+    });
+
+    it("should include minClaimThreshold", async () => {
+      const router = buildCustomVaultRouter();
+      expect(router).toBeDefined();
+    });
   });
 
-  it("should include entitlement field", async () => {
-    const router = buildCustomVaultRouter();
-    expect(router).toBeDefined();
-  });
+  describe("Deprecated Routes - 410 Gone", () => {
+    it("should have legacy-claim endpoint returning 410", async () => {
+      const router = buildCustomVaultRouter();
+      const legacyClaimHandler = router.stack.find(
+        (layer: unknown) =>
+          (layer as { route?: { path: string; methods: { post?: boolean } } }).route?.path ===
+            "/:vaultId/legacy-claim" &&
+          (layer as { route?: { path: string; methods: { post?: boolean } } }).route?.methods.post,
+      );
+      expect(legacyClaimHandler).toBeDefined();
+    });
 
-  it("should include carryRemaining field", async () => {
-    const router = buildCustomVaultRouter();
-    expect(router).toBeDefined();
+    it("should have legacy-status endpoint returning 410", async () => {
+      const router = buildCustomVaultRouter();
+      const legacyStatusHandler = router.stack.find(
+        (layer: unknown) =>
+          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path ===
+            "/:vaultId/legacy-status" &&
+          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get,
+      );
+      expect(legacyStatusHandler).toBeDefined();
+    });
   });
-
-  it("should include dustOverrideEligible flag", async () => {
-    const router = buildCustomVaultRouter();
-    expect(router).toBeDefined();
-  });
-
-  it("should include claimableNow calculation", async () => {
-    const router = buildCustomVaultRouter();
-    expect(router).toBeDefined();
-  });
-
-  it("should include minClaimThreshold", async () => {
-    const router = buildCustomVaultRouter();
-    expect(router).toBeDefined();
-  });
-});
-
-describe("Deprecated Routes - 410 Gone", () => {
-  it("should have legacy-claim endpoint returning 410", async () => {
-    const router = buildCustomVaultRouter();
-    const legacyClaimHandler = router.stack.find(
-      (layer: unknown) =>
-        ((layer as { route?: { path: string; methods: { post?: boolean } } }).route?.path === "/:vaultId/legacy-claim") &&
-        ((layer as { route?: { path: string; methods: { post?: boolean } } }).route?.methods.post)
-    );
-    expect(legacyClaimHandler).toBeDefined();
-  });
-
-  it("should have legacy-status endpoint returning 410", async () => {
-    const router = buildCustomVaultRouter();
-    const legacyStatusHandler = router.stack.find(
-      (layer: unknown) =>
-        ((layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path === "/:vaultId/legacy-status") &&
-        ((layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get)
-    );
-    expect(legacyStatusHandler).toBeDefined();
-  });
-});
 });
 
 describe("Format Helpers", () => {

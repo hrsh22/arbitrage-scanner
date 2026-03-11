@@ -1,0 +1,253 @@
+/**
+ * Network Configuration Module
+ *
+ * First-class network configuration layer supporting Polygon mainnet and Amoy testnet.
+ * This module provides a single source of truth for network metadata including:
+ * - Chain ID
+ * - RPC endpoint configuration
+ * - Explorer base URLs
+ * - Network-specific contract addresses
+ *
+ * The network is selected via the VAULT_NETWORK environment variable.
+ */
+
+import { createPublicClient, http } from "viem";
+import { polygon, polygonAmoy } from "viem/chains";
+import type { Chain } from "viem/chains";
+
+/**
+ * Supported network types
+ */
+export type NetworkType = "mainnet" | "amoy";
+
+/**
+ * Network configuration metadata
+ */
+export interface NetworkConfig {
+  /** Network identifier */
+  readonly name: NetworkType;
+  /** Human-readable display name */
+  readonly displayName: string;
+  /** Chain ID */
+  readonly chainId: number;
+  /** viem Chain object for provider configuration */
+  readonly chain: Chain;
+  /** Base URL for block explorer */
+  readonly explorerBaseUrl: string;
+  /** Environment variable key for RPC URL */
+  readonly rpcEnvKey: string;
+  /** Default RPC URL if env not set */
+  readonly defaultRpcUrl: string;
+  /** Whether Polymarket trading is supported on this network */
+  readonly supportsPolymarketTrading: boolean;
+  /** Network-specific contract addresses */
+  readonly addresses: {
+    /** USDC.e (USDC from Ethereum, NOT native USDC) */
+    readonly usdcE: string;
+    /** Conditional Token Framework (CTF) contract */
+    readonly ctf: string;
+    /** CTF Exchange for market order execution */
+    readonly ctfExchange: string;
+    /** NegRisk CTF Exchange for negative risk markets */
+    readonly negRiskCtfExchange: string;
+    /** NegRisk adapter for outcome token conversion */
+    readonly negRiskAdapter: string;
+    /** VaultV2 factory for vault creation */
+    readonly vaultV2Factory: string;
+  };
+}
+
+/**
+ * Mainnet configuration (Polygon PoS)
+ */
+const MAINNET_CONFIG: NetworkConfig = {
+  name: "mainnet",
+  displayName: "Polygon Mainnet",
+  chainId: 137,
+  chain: polygon,
+  explorerBaseUrl: "https://polygonscan.com",
+  rpcEnvKey: "POLYGON_RPC_URL",
+  defaultRpcUrl: "https://polygon-bor-rpc.publicnode.com",
+  supportsPolymarketTrading: true,
+  addresses: {
+    usdcE: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+    ctf: "0x4d97dcd97ec945f40cf65f87097ace5ea0476045",
+    ctfExchange: "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+    negRiskCtfExchange: "0xC5d563A36AE78145C45a50134d48A1215220f80a",
+    negRiskAdapter: "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296",
+    vaultV2Factory: "0xA1D94F746dEfa1928926b84fB2596c06926C0405",
+  },
+} as const;
+
+/**
+ * Amoy testnet configuration
+ */
+const AMOY_CONFIG: NetworkConfig = {
+  name: "amoy",
+  displayName: "Polygon Amoy Testnet",
+  chainId: 80002,
+  chain: polygonAmoy,
+  explorerBaseUrl: "https://amoy.polygonscan.com",
+  rpcEnvKey: "AMOY_RPC_URL",
+  defaultRpcUrl: "https://rpc-amoy.polygon.technology",
+  supportsPolymarketTrading: false,
+  addresses: {
+    // NOTE: Amoy testnet USDC.e address is set; other contracts use placeholders if not deployed
+    // These are placeholder addresses - update with actual deployed contracts
+    usdcE: "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582",
+    ctf: "0x0000000000000000000000000000000000000000",
+    ctfExchange: "0x0000000000000000000000000000000000000000",
+    negRiskCtfExchange: "0x0000000000000000000000000000000000000000",
+    negRiskAdapter: "0x0000000000000000000000000000000000000000",
+    vaultV2Factory: "0x0000000000000000000000000000000000000000",
+  },
+} as const;
+
+/**
+ * Network configuration registry
+ */
+export const NETWORK_CONFIGS: Record<NetworkType, NetworkConfig> = {
+  mainnet: MAINNET_CONFIG,
+  amoy: AMOY_CONFIG,
+} as const;
+
+/**
+ * Validate and resolve network type from string
+ * @throws Error if network is not supported
+ */
+export function resolveNetworkType(network: string): NetworkType {
+  if (network !== "mainnet" && network !== "amoy") {
+    throw new Error(`VAULT_NETWORK must be either "mainnet" or "amoy". Received: ${network}`);
+  }
+  return network;
+}
+
+/**
+ * Get network configuration for a specific network type
+ */
+export function getNetworkConfig(network: NetworkType): NetworkConfig {
+  return NETWORK_CONFIGS[network];
+}
+
+/**
+ * Get network configuration from environment variable
+ * Defaults to "mainnet" if VAULT_NETWORK is not set
+ * @throws Error if VAULT_NETWORK is set to an invalid value
+ */
+export function getNetworkConfigFromEnv(): NetworkConfig {
+  const network = process.env.VAULT_NETWORK ?? "mainnet";
+  const networkType = resolveNetworkType(network);
+  return getNetworkConfig(networkType);
+}
+
+/**
+ * Check if a chain ID matches the expected network
+ */
+export function isValidChainIdForNetwork(chainId: number, network: NetworkType): boolean {
+  return NETWORK_CONFIGS[network].chainId === chainId;
+}
+
+/**
+ * Get RPC URL for the configured network
+ * Checks environment variable first, falls back to default
+ */
+export function getRpcUrlForNetwork(network: NetworkType): string {
+  const config = NETWORK_CONFIGS[network];
+  const envUrl = process.env[config.rpcEnvKey];
+  if (envUrl) return envUrl;
+
+  // For mainnet, also check legacy POLYGON_RPC_URL
+  if (network === "mainnet" && process.env.POLYGON_RPC_URL) {
+    return process.env.POLYGON_RPC_URL;
+  }
+
+  return config.defaultRpcUrl;
+}
+
+/**
+ * Build explorer URL for a transaction hash
+ */
+export function getExplorerTxUrl(network: NetworkType, txHash: string): string {
+  const config = NETWORK_CONFIGS[network];
+  return `${config.explorerBaseUrl}/tx/${txHash}`;
+}
+
+/**
+ * Build explorer URL for an address
+ */
+export function getExplorerAddressUrl(network: NetworkType, address: string): string {
+  const config = NETWORK_CONFIGS[network];
+  return `${config.explorerBaseUrl}/address/${address}`;
+}
+
+/**
+ * Export individual configs for convenience
+ */
+export { MAINNET_CONFIG, AMOY_CONFIG };
+
+/**
+ * Re-export chain objects for direct use
+ */
+export { polygon, polygonAmoy };
+
+/**
+ * Chain ID constants
+ */
+export const POLYGON_MAINNET_CHAIN_ID = 137;
+export const POLYGON_AMOY_CHAIN_ID = 80002;
+
+/**
+ * Validate that the RPC URL for a network returns the expected chain ID
+ * This prevents misconfiguration where VAULT_NETWORK=amoy but RPC points to mainnet
+ *
+ * @param network - The network type to validate
+ * @throws Error if RPC chain ID does not match expected chain ID
+ */
+export async function validateRpcChainId(network: NetworkType): Promise<void> {
+  const config = NETWORK_CONFIGS[network];
+  const rpcUrl = getRpcUrlForNetwork(network);
+
+  try {
+    // Create a temporary viem client to query chain ID
+    const client = createPublicClient({
+      chain: config.chain,
+      transport: http(rpcUrl, { timeout: 10_000 }),
+    });
+
+    const chainId = await client.getChainId();
+
+    if (chainId !== config.chainId) {
+      throw new Error(
+        `Chain ID mismatch for VAULT_NETWORK=${network}: ` +
+          `RPC at ${rpcUrl} reports chain ID ${chainId}, ` +
+          `but expected ${config.chainId} (${network}). ` +
+          `Ensure your ${config.rpcEnvKey} environment variable points to the correct network.`,
+      );
+    }
+  } catch (error) {
+    // Re-throw our own error with context
+    if (error instanceof Error && error.message.startsWith("Chain ID mismatch")) {
+      throw error;
+    }
+
+    throw new Error(
+      `Failed to validate RPC chain ID for VAULT_NETWORK=${network}: ` +
+        `${(error as Error).message}. ` +
+        `Ensure ${config.rpcEnvKey} is set correctly and the RPC endpoint is accessible.`,
+    );
+  }
+}
+
+/**
+ * Run startup validation for the configured network
+ * Validates that RPC chain ID matches VAULT_NETWORK configuration
+ * This should be called early in the boot process
+ *
+ * @throws Error if validation fails (startup should abort)
+ */
+export async function validateNetworkConfiguration(): Promise<void> {
+  const network = process.env.VAULT_NETWORK ?? "mainnet";
+  const networkType = resolveNetworkType(network);
+
+  await validateRpcChainId(networkType);
+}

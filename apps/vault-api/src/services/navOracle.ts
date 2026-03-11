@@ -1,21 +1,25 @@
 import { randomUUID } from "node:crypto";
 import { createPublicClient, createWalletClient, formatUnits, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { polygon } from "viem/chains";
 
 import type { VaultInstanceConfig } from "../config/types.js";
 import { resolveVaultIdentity, type ResolvedVaultIdentity } from "../config/identityResolver.js";
 import { NAV_STALENESS_THRESHOLD, USDC_E_ADDRESS } from "../constants.js";
 import { env } from "../env.js";
 import { logger } from "../logger.js";
-import { createPolygonTransport } from "../rpcTransport.js";
+import { createNetworkTransport } from "../rpcTransport.js";
+import { getNetworkConfigFromEnv } from "../config/network.js";
 import {
   PositionRepository,
   positionRepository as defaultPositionRepository,
 } from "../repositories/positionRepository.js";
 import { epochRepository } from "../repositories/epochRepository.js";
 import { navCalculator as defaultNavCalculator, NavCalculator } from "./navCalculator.js";
-import { positionFetcher as defaultPositionFetcher, PositionFetcher } from "./positionFetcher.js";
+import {
+  positionFetcher as defaultPositionFetcher,
+  PositionFetcher,
+  type OpenPosition,
+} from "./positionFetcher.js";
 import { priceService as defaultPriceService, PriceService } from "./priceService.js";
 import { getVaultProvider } from "./vaultProviderFactory.js";
 import type { IVaultProvider } from "./vaultProvider.js";
@@ -106,10 +110,7 @@ const CUSTOM_VAULT_NAV_ABI = [
     type: "function",
     name: "updateNAV",
     stateMutability: "nonpayable",
-    inputs: [
-      { name: "_totalAssets", type: "uint256" },
-      { name: "_totalShares", type: "uint256" },
-    ],
+    inputs: [{ name: "_nav", type: "uint256" }],
     outputs: [],
   },
   {
@@ -155,11 +156,42 @@ const VAULT_TOTAL_SUPPLY_ABI = [
   },
 ] as const;
 
+const VAULT_TOTAL_QUEUED_ASSETS_ABI = [
+  {
+    type: "function",
+    name: "totalQueuedAssets",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
+const VAULT_RESERVED_REDEMPTION_ASSETS_ABI = [
+  {
+    type: "function",
+    name: "reservedRedemptionAssets",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
+const VAULT_TOTAL_PENDING_REDEEM_SHARES_ABI = [
+  {
+    type: "function",
+    name: "totalPendingRedeemShares",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
 // ===== Constants =====
 
 const USDC_DECIMALS = 6;
-const VAULT_SHARE_DECIMALS = 18;
+const VAULT_SHARE_DECIMALS = 6;
 const USDC_SCALE = 10n ** BigInt(USDC_DECIMALS);
+const NAV_SCALE = 10n ** 18n;
 
 /** Warn if bid price deviates >30% from cost basis (potential manipulation or stale price) */
 const PRICE_DEVIATION_WARN_THRESHOLD = 0.3;
@@ -338,14 +370,15 @@ export class NavOracleService {
     this.safeAddress = safeAddress as Address;
     this.account = privateKeyToAccount(privateKey as Hex);
 
-    const transport = createPolygonTransport(env.POLYGON_RPC_URL);
+    const networkConfig = getNetworkConfigFromEnv();
+    const transport = createNetworkTransport();
     this.publicClient = createPublicClient({
-      chain: polygon,
+      chain: networkConfig.chain,
       transport,
     });
     this.walletClient = createWalletClient({
       account: this.account,
-      chain: polygon,
+      chain: networkConfig.chain,
       transport,
     });
 
@@ -541,7 +574,7 @@ export class NavOracleService {
     const idleAssets = vaultUsdc + safeUsdc;
     const totalAssets = idleAssets + deployedMarketValue;
 
-    const totalSupply = Number(formatUnits(totalSupplyRaw, VAULT_SHARE_DECIMALS));
+    const totalSupply = Number(formatUnits(totalSupplyRaw, USDC_DECIMALS));
     const sharePrice = totalSupply > 0 ? totalAssets / totalSupply : 1.0;
 
     // Push market value (not cost basis) to adapter — updatePositionValues feeds realAssets()
@@ -633,14 +666,17 @@ export class NavOracleService {
    * 8. Store snapshot in DB for settlement reference
    */
   private async calculateAndPushNavCustom(): Promise<NavUpdateResult> {
-    // Fetch positions from Polymarket Data API
-    let openPositions;
-    try {
-      openPositions = await this.fetcher.fetchOpenPositions(this.safeAddress);
-    } catch (error) {
-      throw new Error(
-        `NavOracleService: Failed to fetch open positions for safe ${this.safeAddress}: ${getErrorMessage(error)}`,
-      );
+    const networkConfig = getNetworkConfigFromEnv();
+
+    let openPositions: OpenPosition[] = [];
+    if (networkConfig.supportsPolymarketTrading) {
+      try {
+        openPositions = await this.fetcher.fetchOpenPositions(this.safeAddress);
+      } catch (error) {
+        throw new Error(
+          `NavOracleService: Failed to fetch open positions for safe ${this.safeAddress}: ${getErrorMessage(error)}`,
+        );
+      }
     }
 
     const tokenIds = openPositions.map((p) => p.tokenId);
@@ -701,7 +737,14 @@ export class NavOracleService {
     const usdcAddress = USDC_E_ADDRESS as Address;
 
     // Read on-chain balances
-    const [vaultUsdcRaw, safeUsdcRaw, totalSupplyRaw] = await Promise.all([
+    const [
+      vaultUsdcRaw,
+      safeUsdcRaw,
+      totalSupplyRaw,
+      totalQueuedAssetsRaw,
+      reservedRedemptionAssetsRaw,
+      totalPendingRedeemSharesRaw,
+    ] = await Promise.all([
       this.publicClient.readContract({
         address: usdcAddress,
         abi: ERC20_BALANCE_ABI,
@@ -719,19 +762,48 @@ export class NavOracleService {
         abi: VAULT_TOTAL_SUPPLY_ABI,
         functionName: "totalSupply",
       }),
+      this.publicClient.readContract({
+        address: this.vaultAddress,
+        abi: VAULT_TOTAL_QUEUED_ASSETS_ABI,
+        functionName: "totalQueuedAssets",
+      }),
+      this.publicClient
+        .readContract({
+          address: this.vaultAddress,
+          abi: VAULT_RESERVED_REDEMPTION_ASSETS_ABI,
+          functionName: "reservedRedemptionAssets",
+        })
+        .catch(() => 0n),
+      this.publicClient
+        .readContract({
+          address: this.vaultAddress,
+          abi: VAULT_TOTAL_PENDING_REDEEM_SHARES_ABI,
+          functionName: "totalPendingRedeemShares",
+        })
+        .catch(() => 0n),
     ]);
 
+    const queuedAssets = Number(formatUnits(totalQueuedAssetsRaw, USDC_DECIMALS));
+    const reservedRedemptionAssets = Number(
+      formatUnits(reservedRedemptionAssetsRaw, USDC_DECIMALS),
+    );
     const vaultUsdc = Number(formatUnits(vaultUsdcRaw, USDC_DECIMALS));
     const safeUsdc = Number(formatUnits(safeUsdcRaw, USDC_DECIMALS));
-    const idleAssets = vaultUsdc + safeUsdc;
-    const totalAssets = idleAssets + deployedMarketValue;
+    const grossIdleAssets = vaultUsdc + safeUsdc;
+    const grossTotalAssets = grossIdleAssets + deployedMarketValue;
+    const excludedAssets = queuedAssets + reservedRedemptionAssets;
+    const idleAssets = Math.max(grossIdleAssets - excludedAssets, 0);
+    const totalAssets = Math.max(grossTotalAssets - excludedAssets, 0);
 
-    const totalSupply = Number(formatUnits(totalSupplyRaw, VAULT_SHARE_DECIMALS));
-    const sharePrice = totalSupply > 0 ? totalAssets / totalSupply : 1.0;
+    const totalSupply = Number(formatUnits(totalSupplyRaw, USDC_DECIMALS));
+    const pricingSupplyRaw = totalSupplyRaw + totalPendingRedeemSharesRaw;
+    const pricingSupply = Number(formatUnits(pricingSupplyRaw, USDC_DECIMALS));
+    const sharePrice = pricingSupply > 0 ? totalAssets / pricingSupply : 1.0;
 
     // Convert to on-chain units
     const totalAssetsUnits = decimalToUsdcUnits(totalAssets);
-    const totalSupplyUnits = totalSupplyRaw; // Already in wei units
+    const navUnits =
+      pricingSupplyRaw > 0n ? (totalAssetsUnits * NAV_SCALE) / pricingSupplyRaw : NAV_SCALE;
 
     // Get current epoch info from provider if available
     let epochId = 0;
@@ -757,7 +829,7 @@ export class NavOracleService {
           address: this.navSnapshotAddress,
           abi: NAV_SNAPSHOT_ABI,
           functionName: "recordSnapshot",
-          args: [BigInt(epochId), totalAssetsUnits, totalSupplyUnits],
+          args: [BigInt(epochId), totalAssetsUnits, totalSupplyRaw],
         });
       } else {
         // Use vault's updateNAV function directly
@@ -765,7 +837,7 @@ export class NavOracleService {
           address: this.vaultAddress,
           abi: CUSTOM_VAULT_NAV_ABI,
           functionName: "updateNAV",
-          args: [totalAssetsUnits, totalSupplyUnits],
+          args: [navUnits],
         });
       }
       updatedOnChain = true;
@@ -773,8 +845,10 @@ export class NavOracleService {
       logger.info("NavOracleService: Published NAV snapshot (Custom)", {
         epochId,
         totalAssets: totalAssets.toFixed(USDC_DECIMALS),
-        totalSupply: totalSupply.toFixed(VAULT_SHARE_DECIMALS),
+        totalSupply: totalSupply.toFixed(USDC_DECIMALS),
         sharePrice: sharePrice.toFixed(8),
+        queuedAssets: queuedAssets.toFixed(USDC_DECIMALS),
+        reservedRedemptionAssets: reservedRedemptionAssets.toFixed(USDC_DECIMALS),
         txHash,
       });
     } catch (error) {
@@ -803,7 +877,7 @@ export class NavOracleService {
           epochId: epochId.toString(),
           vaultAddress: this.vaultAddress,
           totalAssets: totalAssets.toFixed(USDC_DECIMALS),
-          totalShares: totalSupply.toFixed(VAULT_SHARE_DECIMALS),
+          totalShares: totalSupply.toFixed(USDC_DECIMALS),
           sharePrice: sharePrice.toFixed(8),
           timestamp: new Date(),
           recordedBy: this.account.address,
@@ -1075,7 +1149,14 @@ export class NavOracleService {
   private async forceNavUpdateCustom(newValue: string | number): Promise<NavUpdateResult> {
     const usdcAddress = USDC_E_ADDRESS as Address;
 
-    const [vaultUsdcRaw, safeUsdcRaw, totalSupplyRaw] = await Promise.all([
+    const [
+      vaultUsdcRaw,
+      safeUsdcRaw,
+      totalSupplyRaw,
+      totalQueuedAssetsRaw,
+      reservedRedemptionAssetsRaw,
+      totalPendingRedeemSharesRaw,
+    ] = await Promise.all([
       this.publicClient.readContract({
         address: usdcAddress,
         abi: ERC20_BALANCE_ABI,
@@ -1093,10 +1174,31 @@ export class NavOracleService {
         abi: VAULT_TOTAL_SUPPLY_ABI,
         functionName: "totalSupply",
       }),
+      this.publicClient.readContract({
+        address: this.vaultAddress,
+        abi: VAULT_TOTAL_QUEUED_ASSETS_ABI,
+        functionName: "totalQueuedAssets",
+      }),
+      this.publicClient
+        .readContract({
+          address: this.vaultAddress,
+          abi: VAULT_RESERVED_REDEMPTION_ASSETS_ABI,
+          functionName: "reservedRedemptionAssets",
+        })
+        .catch(() => 0n),
+      this.publicClient
+        .readContract({
+          address: this.vaultAddress,
+          abi: VAULT_TOTAL_PENDING_REDEEM_SHARES_ABI,
+          functionName: "totalPendingRedeemShares",
+        })
+        .catch(() => 0n),
     ]);
 
     const forcedValue = decimalToUsdcUnits(newValue);
-    const totalSupply = totalSupplyRaw;
+    const pricingSupplyRaw = totalSupplyRaw + totalPendingRedeemSharesRaw;
+    const forcedNavUnits =
+      pricingSupplyRaw > 0n ? (forcedValue * NAV_SCALE) / pricingSupplyRaw : NAV_SCALE;
 
     let txHash: Hex;
     if (this.navSnapshotAddress) {
@@ -1106,7 +1208,7 @@ export class NavOracleService {
         address: this.navSnapshotAddress,
         abi: NAV_SNAPSHOT_ABI,
         functionName: "recordSnapshot",
-        args: [BigInt(epochId), forcedValue, totalSupply],
+        args: [BigInt(epochId), forcedValue, pricingSupplyRaw],
       });
     } else {
       // Use vault's updateNAV function
@@ -1114,17 +1216,23 @@ export class NavOracleService {
         address: this.vaultAddress,
         abi: CUSTOM_VAULT_NAV_ABI,
         functionName: "updateNAV",
-        args: [forcedValue, totalSupply],
+        args: [forcedNavUnits],
       });
     }
 
     const vaultUsdc = Number(formatUnits(vaultUsdcRaw, USDC_DECIMALS));
+    const queuedAssets = Number(formatUnits(totalQueuedAssetsRaw, USDC_DECIMALS));
+    const reservedRedemptionAssets = Number(
+      formatUnits(reservedRedemptionAssetsRaw, USDC_DECIMALS),
+    );
     const safeUsdc = Number(formatUnits(safeUsdcRaw, USDC_DECIMALS));
-    const idleAssets = vaultUsdc + safeUsdc;
+    const grossIdleAssets = vaultUsdc + safeUsdc;
+    const excludedAssets = queuedAssets + reservedRedemptionAssets;
+    const idleAssets = Math.max(grossIdleAssets - excludedAssets, 0);
     const forcedDecimal = Number(usdcUnitsToDecimalString(forcedValue));
     const totalAssets = idleAssets + forcedDecimal;
-    const totalSupplyNumber = Number(formatUnits(totalSupply, VAULT_SHARE_DECIMALS));
-    const sharePrice = totalSupplyNumber > 0 ? totalAssets / totalSupplyNumber : 1.0;
+    const pricingSupply = Number(formatUnits(pricingSupplyRaw, USDC_DECIMALS));
+    const sharePrice = pricingSupply > 0 ? totalAssets / pricingSupply : 1.0;
 
     await this.navSnapshots.recordNavSnapshot({
       navId: `nav-force-custom-${Date.now()}-${randomUUID()}`,
@@ -1139,6 +1247,9 @@ export class NavOracleService {
       newValue: usdcUnitsToDecimalString(forcedValue),
       totalAssets: totalAssets.toFixed(USDC_DECIMALS),
       idleAssets: idleAssets.toFixed(USDC_DECIMALS),
+      vaultUsdc: vaultUsdc.toFixed(USDC_DECIMALS),
+      queuedAssets: queuedAssets.toFixed(USDC_DECIMALS),
+      reservedRedemptionAssets: reservedRedemptionAssets.toFixed(USDC_DECIMALS),
       sharePrice: sharePrice.toFixed(8),
       txHash,
     });

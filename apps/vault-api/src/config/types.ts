@@ -5,6 +5,7 @@
 export type VaultMode = "simulation" | "live";
 export type VaultType = "bot" | "agent" | "custom";
 export type VaultRiskLevel = "low" | "medium" | "high";
+export type VaultNetwork = "mainnet" | "amoy";
 
 export interface VaultFeeConfig {
   management: number;
@@ -46,10 +47,12 @@ export interface VaultInstanceConfig {
   profile?: VaultProfile;
 
   /**
-   * Contracts (Polygon mainnet)
+   * Contracts (network-specific based on VAULT_NETWORK env var)
    */
   vaultAddress: string;
   safeAddress: string;
+  tradingSafeAddress?: string; // Dual-safe architecture: separate trading safe
+  network?: VaultNetwork; // Defaults to mainnet if not specified
 
   /**
    * Custom vault configuration (for type = "custom")
@@ -87,6 +90,9 @@ export interface VaultInstanceConfig {
   minAllocationAmountUsdc: number;
   maxDeployedRatio: number; // 0.0 to 1.0 (100%)
   marketFetchMaxEvents: number;
+  autoLiquidityManagement?: boolean;
+  enforceEpochBoundarySafety?: boolean;
+  epochBoundarySafetyBufferMinutes?: number;
 
   /**
    * Hedging

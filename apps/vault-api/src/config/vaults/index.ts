@@ -1,20 +1,55 @@
-import type { VaultInstanceConfig } from "../types.js";
-import vault1Pph from "./vault1-pph.js";
-import vault2WeeklyEpochProd from "./vault2-weekly-epoch-prod.js";
-import vault3WeeklyEpochStaging from "./vault3-weekly-epoch-staging.js";
-import vault4WeeklyEpochTest from "./vault4-weekly-epoch-test.js";
+import type { VaultInstanceConfig, VaultNetwork } from "../types.js";
 import { isAddress } from "viem";
+import * as amoyModule from "./amoy/index.js";
+import * as mainnetModule from "./mainnet/index.js";
 
-export const VAULT_CONFIGS: VaultInstanceConfig[] = [
-  vault1Pph,
-  vault2WeeklyEpochProd,
-  vault3WeeklyEpochStaging,
-  vault4WeeklyEpochTest,
-];
+/**
+ * Determine which network to load vault configs for.
+ * Defaults to "mainnet" if not specified.
+ */
+function getVaultNetwork(): VaultNetwork {
+  const network = process.env.VAULT_NETWORK || "mainnet";
+  if (network !== "mainnet" && network !== "amoy") {
+    throw new Error(`Invalid VAULT_NETWORK: "${network}". Must be either "mainnet" or "amoy"`);
+  }
+  return network;
+}
+
+/**
+ * Dynamically load vault configs based on the current network.
+ */
+function loadVaultConfigs(network: VaultNetwork): VaultInstanceConfig[] {
+  if (network === "amoy") {
+    return Object.values(amoyModule).filter(
+      (config): config is VaultInstanceConfig =>
+        config !== null && typeof config === "object" && "id" in config,
+    );
+  } else {
+    return Object.values(mainnetModule).filter(
+      (config): config is VaultInstanceConfig =>
+        config !== null && typeof config === "object" && "id" in config,
+    );
+  }
+}
+
+const NETWORK = getVaultNetwork();
+
+/**
+ * All vault configurations for the current network.
+ * Loaded dynamically based on VAULT_NETWORK env var.
+ */
+export const VAULT_CONFIGS: VaultInstanceConfig[] = loadVaultConfigs(NETWORK);
+
+/**
+ * Current network being used for vault configs.
+ */
+export const CURRENT_VAULT_NETWORK: VaultNetwork = NETWORK;
 
 function validateConfigs(configs: VaultInstanceConfig[]): void {
   if (configs.length === 0) {
-    throw new Error("No vault configurations defined. Add at least one vault to VAULT_CONFIGS.");
+    throw new Error(
+      `No vault configurations defined for network "${NETWORK}". Add at least one vault to VAULT_CONFIGS.`,
+    );
   }
 
   const ids = new Set<number>();
@@ -225,27 +260,35 @@ function validateConfigs(configs: VaultInstanceConfig[]): void {
       }
       tradingFunderAddress = config.tradingFunderAddress;
     } else {
-      // Standard mode: address from env var
-      if (
-        typeof config.tradingFunderAddressEnv !== "string" ||
-        config.tradingFunderAddressEnv === ""
-      ) {
-        throw new Error(
-          `Vault "${config.name}" (ID: ${config.id}): tradingFunderAddressEnv must be a non-empty string`,
-        );
+      if (config.tradingFunderAddress) {
+        if (!isAddress(config.tradingFunderAddress)) {
+          throw new Error(
+            `Vault "${config.name}" (ID: ${config.id}): tradingFunderAddress must be a valid address`,
+          );
+        }
+        tradingFunderAddress = config.tradingFunderAddress;
+      } else {
+        if (
+          typeof config.tradingFunderAddressEnv !== "string" ||
+          config.tradingFunderAddressEnv === ""
+        ) {
+          throw new Error(
+            `Vault "${config.name}" (ID: ${config.id}): tradingFunderAddressEnv must be a non-empty string`,
+          );
+        }
+        const addressFromEnv = process.env[config.tradingFunderAddressEnv];
+        if (typeof addressFromEnv !== "string" || addressFromEnv === "") {
+          throw new Error(
+            `Vault "${config.name}" (ID: ${config.id}): Missing required env var ${config.tradingFunderAddressEnv}`,
+          );
+        }
+        if (!isAddress(addressFromEnv)) {
+          throw new Error(
+            `Vault "${config.name}" (ID: ${config.id}): ${config.tradingFunderAddressEnv} must be a valid address`,
+          );
+        }
+        tradingFunderAddress = addressFromEnv;
       }
-      const addressFromEnv = process.env[config.tradingFunderAddressEnv];
-      if (typeof addressFromEnv !== "string" || addressFromEnv === "") {
-        throw new Error(
-          `Vault "${config.name}" (ID: ${config.id}): Missing required env var ${config.tradingFunderAddressEnv}`,
-        );
-      }
-      if (!isAddress(addressFromEnv)) {
-        throw new Error(
-          `Vault "${config.name}" (ID: ${config.id}): ${config.tradingFunderAddressEnv} must be a valid address`,
-        );
-      }
-      tradingFunderAddress = addressFromEnv;
     }
 
     // Validate tradingSignatureType

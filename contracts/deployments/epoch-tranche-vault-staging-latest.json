@@ -1,0 +1,69 @@
+{
+  "name": "EpochTrancheVault",
+  "version": "1.0.0",
+  "profile": "staging",
+  "network": {
+    "name": "matic-amoy",
+    "chainId": 80002
+  },
+  "deployment": {
+    "address": "0x8D87Cc370e3751d5bBDBaE702e6618D59D950b2D",
+    "txHash": "0xa770570fee4527c726fa38fb7d8eef0a67d57d86d411a8bb7a3e1dd6b23cd9e0",
+    "blockNumber": 35001201,
+    "gasUsed": "4275895",
+    "deployer": "0xB78721b29c028B16ab25f4a2adE1d25fbf8B2d74",
+    "timestamp": "2026-03-10T08:05:40.408Z"
+  },
+  "configuration": {
+    "asset": "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582",
+    "admin": "0xB78721b29c028B16ab25f4a2adE1d25fbf8B2d74",
+    "settler": "0xB78721b29c028B16ab25f4a2adE1d25fbf8B2d74",
+    "navUpdater": "0xB78721b29c028B16ab25f4a2adE1d25fbf8B2d74",
+    "snapshotter": "0xB78721b29c028B16ab25f4a2adE1d25fbf8B2d74",
+    "depositProcessor": "0xB78721b29c028B16ab25f4a2adE1d25fbf8B2d74",
+    "tradingSafe": "0x5991fd6Ecc5634C4de497b47Eb0Aa0065fffb214",
+    "epochDuration": 3600,
+    "navStalenessThreshold": 3600,
+    "minClaimThreshold": 1000000,
+    "balancedUpfrontBps": 0
+  },
+  "verification": {
+    "asset": "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582",
+    "epochDuration": "3600",
+    "navStalenessThreshold": "3600",
+    "minClaimThreshold": "1000000",
+    "tradingSafe": "0x5991fd6Ecc5634C4de497b47Eb0Aa0065fffb214",
+    "deployTime": "1773129931",
+    "adminHasRole": true,
+    "settlerHasRole": true,
+    "navUpdaterHasRole": true,
+    "snapshotterHasRole": true,
+    "depositProcessorHasRole": true
+  },
+  "abi": [
+    "constructor(address _asset, address _admin, address _settler, address _navUpdater, address _snapshotter, address _depositProcessor, address _tradingSafe, uint256 _epochDuration, uint256 _navStalenessThreshold, uint256 _minClaimThreshold, uint256 _balancedUpfrontBps)",
+    "function asset() view returns (address)",
+    "function EPOCH_DURATION() view returns (uint256)",
+    "function NAV_STALENESS_THRESHOLD() view returns (uint256)",
+    "function MIN_CLAIM_THRESHOLD() view returns (uint256)",
+    "function BALANCED_UPFRONT_BPS() view returns (uint256)",
+    "function tradingSafe() view returns (address)",
+    "function DEPLOY_TIME() view returns (uint256)",
+    "function ADMIN_ROLE() view returns (bytes32)",
+    "function SETTLER_ROLE() view returns (bytes32)",
+    "function NAV_UPDATER_ROLE() view returns (bytes32)",
+    "function SNAPSHOT_ROLE() view returns (bytes32)",
+    "function DEPOSIT_PROCESSOR_ROLE() view returns (bytes32)",
+    "function hasRole(bytes32 role, address account) view returns (bool)",
+    "function getRoleAdmin(bytes32 role) view returns (bytes32)",
+    "function lastNAV() view returns (uint256)",
+    "function lastNAVUpdate() view returns (uint256)",
+    "function currentNAV() view returns (uint256)",
+    "function emergencyMode() view returns (bool)",
+    "function currentEpochId() view returns (uint256)",
+    "function updateNAV(uint256 _nav) external",
+    "function setEmergencyMode(bool _active) external",
+    "function queueDeposit(uint256 assets) external returns (uint256 requestId)",
+    "function requestRedeem(uint256 shares, address controller, address owner) external returns (uint256 requestId)"
+  ]
+}

@@ -67,6 +67,12 @@ vi.mock("../services/safeWallet.js", () => ({
   })),
 }));
 
+const mockGetVaultProvider = vi.fn();
+
+vi.mock("../services/vaultProviderFactory.js", () => ({
+  getVaultProvider: (...args: unknown[]) => mockGetVaultProvider(...args),
+}));
+
 let mockGetAdapterInfo = vi.fn().mockResolvedValue({
   totalDeployed: 0n,
   totalPositionCostBasis: 0n,
@@ -107,6 +113,7 @@ describe("TradingOrchestratorService", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetVaultProvider.mockReset();
 
     mockGetOpenPositions.mockResolvedValue([]);
     mockGetAdapterInfo.mockResolvedValue({
@@ -392,6 +399,112 @@ describe("TradingOrchestratorService", () => {
       ];
 
       const candidates = await orchestrator.scanAndEvaluate(markets);
+      expect(candidates).toEqual([]);
+    });
+
+    it("rejects markets that cross the current epoch boundary when safety guard is enabled", async () => {
+      const mockTradingClient = {
+        isInitialized: () => true,
+        initialize: vi.fn().mockResolvedValue(undefined),
+        createOrder: vi.fn(),
+      };
+      const customConfig = {
+        id: 77,
+        name: "custom-vault",
+        enabled: true,
+        type: "custom",
+        vaultAddress: "0x" + "3".repeat(40),
+        safeAddress: "0x" + "2".repeat(40),
+        allocatorNavSignerKeyEnv: "ALLOCATOR_KEY",
+        safeOperatorKeyEnv: "SAFE_KEY",
+        tradingSignerKeyEnv: "TRADING_KEY",
+        tradingSignatureType: 2,
+        betSize: 5,
+        vaultReserveUsdc: 0,
+        minAllocationAmountUsdc: 1,
+        maxDeployedRatio: 1,
+        marketFetchMaxEvents: 10,
+        hedging: {
+          enabled: false,
+          dropThresholdPercent: 0,
+          multiplier: 0,
+          spreadTolerance: 0,
+          minPositionAgeMinutes: 0,
+          onlyNearResolution: false,
+          nearResolutionMinutes: 0,
+          skipCategories: [],
+        },
+        navRefreshIntervalMin: 1,
+        reconciliationIntervalMin: 1,
+        tradingScanIntervalMin: 1,
+        resolutionCheckIntervalMin: 1,
+        defaultMode: "simulation",
+        enforceEpochBoundarySafety: true,
+        epochBoundarySafetyBufferMinutes: 5,
+      } as any;
+
+      mockGetVaultProvider.mockReturnValue({
+        getVaultInfo: vi.fn().mockResolvedValue({
+          epochInfo: {
+            currentEpochEnd: new Date(Date.now() + 30 * 60 * 1000),
+          },
+        }),
+      });
+
+      const customOrchestrator = new TradingOrchestratorService(
+        customConfig,
+        mockTradingClient as any,
+        null,
+        {
+          vaultId: 77,
+          vaultName: "custom-vault",
+          allocatorNavSignerKey: "0x" + "a".repeat(64),
+          safeOperatorKey: "0x" + "b".repeat(64),
+          tradingSignerKey: "0x" + "c".repeat(64),
+          tradingFunderAddress: "0x" + "1".repeat(40),
+          tradingSignatureType: 2,
+          safeAddress: "0x" + "2".repeat(40),
+          vaultAddress: "0x" + "3".repeat(40),
+          network: "amoy",
+        } as any,
+      );
+
+      mockCalculateNav.mockReturnValue({
+        totalAssets: 10000,
+        idleAssets: 9900,
+        deployedCostBasis: 100,
+        sharePrice: 0,
+        positionCount: 1,
+        lastUpdated: new Date(),
+      });
+
+      const candidates = await customOrchestrator.scanAndEvaluate([
+        {
+          id: "late-market",
+          question: "Will this run past epoch?",
+          conditionId: "cond-late",
+          endDate: new Date(Date.now() + 45 * 60 * 1000).toISOString(),
+          tokens: [
+            {
+              token_id: "t1",
+              outcome: "Yes",
+              price: "0.96",
+              bestAsk: "0.96",
+              bestBid: "0.94",
+              liquidity: "10000",
+            },
+            {
+              token_id: "t2",
+              outcome: "No",
+              price: "0.04",
+              bestAsk: "0.06",
+              bestBid: "0.04",
+              liquidity: "10000",
+            },
+          ],
+        },
+      ]);
+
       expect(candidates).toEqual([]);
     });
   });

@@ -1,0 +1,144 @@
+# Task 3: Liability Exclusion Verification
+# Date: 2026-03-11
+# Objective: Verify NAV calculation excludes queued deposits and reserved redemption liabilities
+
+## Primary Evidence: navOracle.ts
+
+### Lines 740-784: On-Chain Data Reading
+```typescript
+const [
+  vaultUsdcRaw,
+  safeUsdcRaw,
+  totalSupplyRaw,
+  totalQueuedAssetsRaw,
+  reservedRedemptionAssetsRaw,
+  totalPendingRedeemSharesRaw,
+] = await Promise.all([
+  // ... vault USDC balance
+  // ... safe USDC balance
+  // ... totalSupply
+  // ... totalQueuedAssets
+  // ... reservedRedemptionAssets (with catch -> 0n)
+  // ... totalPendingRedeemShares (with catch -> 0n)
+]);
+```
+
+### Lines 786-796: Liability Exclusion Logic
+```typescript
+const queuedAssets = Number(formatUnits(totalQueuedAssetsRaw, USDC_DECIMALS));
+const reservedRedemptionAssets = Number(
+  formatUnits(reservedRedemptionAssetsRaw, USDC_DECIMALS),
+);
+const vaultUsdc = Number(formatUnits(vaultUsdcRaw, USDC_DECIMALS));
+const safeUsdc = Number(formatUnits(safeUsdcRaw, USDC_DECIMALS));
+const grossIdleAssets = vaultUsdc + safeUsdc;
+const grossTotalAssets = grossIdleAssets + deployedMarketValue;
+const excludedAssets = queuedAssets + reservedRedemptionAssets;  // <-- EXCLUSION
+const idleAssets = Math.max(grossIdleAssets - excludedAssets, 0);
+const totalAssets = Math.max(grossTotalAssets - excludedAssets, 0);  // <-- BOUNDARY NAV
+```
+
+### Lines 798-801: Share Price Calculation
+```typescript
+const totalSupply = Number(formatUnits(totalSupplyRaw, USDC_DECIMALS));
+const pricingSupplyRaw = totalSupplyRaw + totalPendingRedeemSharesRaw;
+const pricingSupply = Number(formatUnits(pricingSupplyRaw, USDC_DECIMALS));
+const sharePrice = pricingSupply > 0 ? totalAssets / pricingSupply : 1.0;
+```
+
+Key points:
+- totalAssets EXCLUDES queuedAssets and reservedRedemptionAssets
+- pricingSupply INCLUDES totalPendingRedeemShares (correct for pro-rata)
+- This is the boundary NAV semantics
+
+## Secondary Evidence: vaultRoutes.ts (Runtime Usage)
+
+### Lines 298-356: getVaultStatusPayload for Custom Vaults
+```typescript
+if (config.type === "custom") {
+  try {
+    // Read boundary NAV directly from contract
+    const currentNAV = await publicClient.readContract({
+      address: config.vaultAddress as Address,
+      abi: CUSTOM_VAULT_NAV_ABI,
+      functionName: "currentNAV",
+    });
+    
+    // currentNAV from contract ALREADY excludes queued/reserved
+    sharePrice = Number(formatUnits(currentNAV, 18));
+    
+    // Calculate totalAssets from boundary NAV * totalSupply
+    totalAssets = totalSupply * sharePrice;
+  } catch (error) {
+    // Fall back to legacy calculation
+  }
+}
+```
+
+### Lines 1019-1050: estimateRedeemAssets
+```typescript
+// Try to get boundary NAV from custom vault first
+let currentNAV: bigint | null = null;
+try {
+  currentNAV = await publicClient.readContract({
+    address: vaultAddress as Address,
+    abi: CUSTOM_VAULT_NAV_ABI,
+    functionName: "currentNAV",
+  });
+} catch {
+  // currentNAV not available on legacy vaults
+  currentNAV = null;
+}
+
+if (currentNAV !== null && currentNAV > 0n) {
+  // Use boundary NAV from contract
+  sharePrice = Number(formatUnits(currentNAV, 18));
+}
+```
+
+## Tertiary Evidence: customVaultProvider.ts
+
+### Lines 387-389: previewRedeem
+```typescript
+async previewRedeem(shares: bigint): Promise<bigint> {
+  const navStatus = await this.client.getNAVStatus();
+  if (navStatus.currentNAV === 0n) return shares;
+  return (shares * navStatus.currentNAV) / 10n ** 18n;  // Uses boundary NAV
+}
+```
+
+The `client.getNAVStatus()` reads from the contract's `currentNAV()` function which already
+excludes queued deposits and reserved redemption liabilities.
+
+## Contract-Level Evidence
+
+### customVaultClient.ts Lines 77-83: currentNAV ABI
+```typescript
+{
+  type: "function",
+  name: "currentNAV",
+  stateMutability: "view",
+  inputs: [],
+  outputs: [{ name: "", type: "uint256" }],
+}
+```
+
+The contract's `currentNAV()` function is the authoritative source for boundary pricing.
+Per the contract design:
+- Queued deposits are isolated until epoch opens
+- Reserved redemption assets are excluded from deployable capital
+- NAV = (totalAssets - queued - reserved) / (totalSupply + pendingRedeemShares)
+
+## Summary
+
+✅ navOracle.ts excludes queuedAssets from NAV calculation
+✅ navOracle.ts excludes reservedRedemptionAssets from NAV calculation
+✅ Runtime paths (vaultRoutes.ts) use boundary NAV from contract
+✅ Preview methods (customVaultProvider.ts) use boundary NAV from contract
+✅ No runtime path calculates raw totalAssets/totalSupply for custom vaults
+
+The boundary NAV semantics are consistently applied across:
+1. NAV publication (navOracle.ts)
+2. Status endpoints (vaultRoutes.ts getVaultStatusPayload)
+3. Redemption estimates (vaultRoutes.ts estimateRedeemAssets)
+4. Provider previews (customVaultProvider.ts previewRedeem)

@@ -10,7 +10,14 @@ import { Alert, AlertDescription } from "@workspace/ui/components/alert";
 import { Info, AlertTriangle } from "lucide-react";
 import { useAppKitAccount } from "@reown/appkit/react";
 import type { VaultInstance, RedemptionRequest, Epoch } from "../../../../src/types";
-import { useVaultShares, usePreviewRedeem, useRequestRedeem } from "../../../../src/lib/hooks";
+import {
+  useCustomVaultRequestRedeem,
+  usePreviewRedeem,
+  useTokenAllowance,
+  useTokenApprove,
+} from "../../../../src/lib/hooks";
+
+const CUSTOM_VAULT_SHARE_DECIMALS = 6;
 
 interface RequestFormProps {
   vault: VaultInstance;
@@ -31,17 +38,35 @@ export function RequestForm({
 }: RequestFormProps) {
   const { address, isConnected } = useAppKitAccount();
   const [amount, setAmount] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const { requestRedeem } = useRequestRedeem();
-
-  const { formatted: formattedShares } = useVaultShares(vault.config.vaultAddress, address);
+  const {
+    requestRedeemTx,
+    isPending,
+    isConfirming,
+    isConfirmed,
+    error: txError,
+    reset,
+  } = useCustomVaultRequestRedeem();
+  const { allowance: shareAllowance, refetch: refetchShareAllowance } = useTokenAllowance(
+    vault.config.vaultAddress,
+    address,
+    vault.config.vaultAddress,
+  );
+  const {
+    approve: approveShares,
+    isPending: approvePending,
+    isConfirming: approveConfirming,
+    isConfirmed: approveConfirmed,
+    error: approveError,
+    reset: resetApprove,
+  } = useTokenApprove(vault.config.vaultAddress);
+  const formattedShares = formatUnits(userShares, CUSTOM_VAULT_SHARE_DECIMALS);
 
   const parsedShares = (() => {
     if (!amount) return undefined;
     try {
-      return parseUnits(amount, 18);
+      return parseUnits(amount, CUSTOM_VAULT_SHARE_DECIMALS);
     } catch {
       return undefined;
     }
@@ -51,33 +76,69 @@ export function RequestForm({
 
   const isValidAmount =
     parsedShares !== undefined && parsedShares > 0n && parsedShares <= userShares;
+  const needsShareApproval = parsedShares !== undefined ? shareAllowance < parsedShares : false;
 
   const hasExistingRequest = !!existingRequest;
 
   const handleMax = () => {
     setAmount(formattedShares);
     setError(null);
+    resetApprove();
+  };
+
+  const handleApproveShares = () => {
+    if (!parsedShares) return;
+    setError(null);
+    setSuccessMessage(null);
+    resetApprove();
+    approveShares(vault.config.vaultAddress as `0x${string}`, parsedShares);
   };
 
   const handleSubmit = async () => {
     if (!isValidAmount || !address || !parsedShares) return;
 
-    setIsSubmitting(true);
     setError(null);
     setSuccessMessage(null);
+    reset();
 
     try {
-      await requestRedeem(vault.id, amount, previewAssets ? formatUnits(previewAssets, 6) : "0");
-
-      setSuccessMessage("Redemption request created successfully!");
-      setAmount("");
-      onSuccess();
+      requestRedeemTx(
+        vault.config.vaultAddress as `0x${string}`,
+        parsedShares,
+        address as `0x${string}`,
+        address as `0x${string}`,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to submit request");
-    } finally {
-      setIsSubmitting(false);
     }
   };
+
+  useEffect(() => {
+    if (txError) {
+      setError(txError.message);
+    }
+  }, [txError]);
+
+  useEffect(() => {
+    if (!isConfirmed) return;
+    setSuccessMessage("Redemption request submitted successfully!");
+    setAmount("");
+    onSuccess();
+  }, [isConfirmed, onSuccess]);
+
+  useEffect(() => {
+    if (approveConfirmed) {
+      void refetchShareAllowance();
+    }
+  }, [approveConfirmed, refetchShareAllowance]);
+
+  useEffect(() => {
+    if (approveError) {
+      setError(approveError.message);
+    }
+  }, [approveError]);
+
+  const isBusy = isPending || isConfirming || approvePending || approveConfirming;
 
   // Clear success message after 5 seconds
   useEffect(() => {
@@ -132,8 +193,9 @@ export function RequestForm({
               onChange={(e) => {
                 setAmount(e.target.value);
                 setError(null);
+                resetApprove();
               }}
-              disabled={isSubmitting || hasExistingRequest}
+              disabled={isBusy || hasExistingRequest}
               className="pr-16 font-mono"
               aria-describedby="shares-input-help"
               data-testid="shares-input"
@@ -141,22 +203,37 @@ export function RequestForm({
             <button
               type="button"
               onClick={handleMax}
-              disabled={isSubmitting || hasExistingRequest}
+              disabled={isBusy || hasExistingRequest}
               className="absolute right-2 top-1/2 -translate-y-1/2 rounded bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-200 disabled:opacity-50"
               aria-label="Use maximum available shares"
             >
               MAX
             </button>
           </div>
-          <Button
-            type="button"
-            onClick={handleSubmit}
-            disabled={!isValidAmount || isSubmitting || hasExistingRequest}
-            className="min-w-[120px] request-redeem-button"
-            data-testid="request-redeem-button"
-          >
-            {isSubmitting ? "Submitting..." : "Request"}
-          </Button>
+          {needsShareApproval ? (
+            <Button
+              type="button"
+              onClick={handleApproveShares}
+              disabled={!isValidAmount || isBusy || hasExistingRequest}
+              className="min-w-[140px]"
+            >
+              {approvePending
+                ? "Approve in Wallet..."
+                : approveConfirming
+                  ? "Approving..."
+                  : "Approve Shares"}
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              onClick={handleSubmit}
+              disabled={!isValidAmount || isBusy || hasExistingRequest}
+              className="min-w-[120px] request-redeem-button"
+              data-testid="request-redeem-button"
+            >
+              {isPending ? "Confirm in Wallet..." : isConfirming ? "Confirming..." : "Request"}
+            </Button>
+          )}
         </div>
         <p id="shares-input-help" className="text-xs text-muted-foreground">
           Enter the number of shares you want to redeem

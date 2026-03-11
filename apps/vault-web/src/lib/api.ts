@@ -23,8 +23,8 @@ import type {
   RedemptionRequestCreateResponse,
   RedemptionRequestStatusResponse,
   ClaimRedemptionResponse,
-  CancelRedemptionResponse,
   EpochStatusResponse,
+  EpochHistoryResponse,
   UserRedemptionsResponse,
   // Tranche-carry lifecycle types
   DepositQueueResponse,
@@ -269,22 +269,6 @@ export async function postClaimRedemption(
 }
 
 /**
- * Cancel a pending redemption request
- * POST /api/vaults/:vaultId/requests/:requestId/cancel
- */
-export async function postCancelRedemptionRequest(
-  vaultId: number,
-  requestId: string,
-): Promise<CancelRedemptionResponse> {
-  return fetchWithAuth(
-    makeUrl(`${CUSTOM_VAULT_API_PREFIX}/${vaultId}/requests/${requestId}/cancel`),
-    {
-      method: "POST",
-    },
-  );
-}
-
-/**
  * Get current epoch status
  * GET /api/vaults/:vaultId/epochs/current
  */
@@ -301,6 +285,11 @@ export async function fetchEpochStatus(
   epochId: number,
 ): Promise<EpochStatusResponse> {
   return fetchWithAuth(makeUrl(`${CUSTOM_VAULT_API_PREFIX}/${vaultId}/epochs/${epochId}`));
+}
+
+export async function fetchEpochHistory(vaultId: number, limit = 6): Promise<EpochHistoryResponse> {
+  const qs = buildQuery({ limit });
+  return fetchWithAuth(makeUrl(`${CUSTOM_VAULT_API_PREFIX}/${vaultId}/epochs`, qs));
 }
 
 /**

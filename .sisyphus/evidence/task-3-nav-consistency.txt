@@ -1,0 +1,64 @@
+# Task 3: NAV Consistency Verification - Raw Pricing Search Results
+# Date: 2026-03-11
+# Objective: Verify no runtime paths use raw totalAssets/totalSupply shortcuts for custom vaults
+
+## Files Searched
+- apps/vault-api/src/services/*.ts
+- apps/vault-api/src/routes/*.ts
+
+## Search Pattern: totalAssets / totalSupply raw calculations
+
+### Results Found:
+
+1. navOracle.ts (LEGACY vault path - EXPECTED)
+   - Line 578: `const sharePrice = totalSupply > 0 ? totalAssets / totalSupply : 1.0;`
+   - Context: Legacy (Morpho) vault calculation
+   - Status: ACCEPTABLE - Legacy vaults don't have boundary NAV contract
+
+2. navOracle.ts (CUSTOM vault path - CORRECT)
+   - Line 801: `const sharePrice = pricingSupply > 0 ? totalAssets / pricingSupply : 1.0;`
+   - Context: Uses `totalAssets` that ALREADY excludes queued/reserved (lines 794-796)
+   - Status: CORRECT - Uses boundary NAV semantics with excluded liabilities
+
+3. vaultRoutes.ts (FIXED)
+   - Line 313 (OLD): `sharePrice = totalSupply > 0 ? totalAssets / totalSupply : 1;`
+   - Status: FIXED - Now uses boundary NAV from contract for custom vaults
+   - See: CUSTOM_VAULT_NAV_ABI usage at line 117
+
+4. vaultRoutes.ts (LEGACY fallback - EXPECTED)
+   - Line 1022 (estimateRedeemAssets fallback): Raw ratio for legacy vaults only
+   - Status: ACCEPTABLE - Only used when currentNAV read fails (legacy vaults)
+
+## Remaining Raw Ratio Usage
+
+All raw totalAssets/totalSupply calculations are now:
+1. In legacy vault paths (Morpho adapter) - Expected and acceptable
+2. As fallback when boundary NAV is unavailable - Expected and acceptable
+
+## Custom Vault Runtime Paths (CORRECT)
+
+1. estimateRedeemAssets (vaultRoutes.ts):
+   - Attempts to read currentNAV from contract first
+   - Falls back to raw ratio only if currentNAV unavailable
+   - Lines 1019-1050
+
+2. getVaultStatusPayload (vaultRoutes.ts):
+   - For custom vaults: reads currentNAV directly from contract
+   - Calculates totalAssets from boundary NAV * totalSupply
+   - Lines 298-356
+
+3. navOracle.calculateAndPushNavCustom (navOracle.ts):
+   - Excludes queuedAssets and reservedRedemptionAssets
+   - Uses pricingSupply (includes pending redeem shares)
+   - Lines 786-801
+
+4. customVaultProvider.previewRedeem (customVaultProvider.ts):
+   - Uses navStatus.currentNAV from contract
+   - Line 389: `(shares * navStatus.currentNAV) / 10n ** 18n`
+
+## Conclusion
+
+✅ All custom vault runtime paths now use boundary NAV from contract
+✅ No raw totalAssets/totalSupply shortcuts remain for custom vault pricing
+✅ Legacy vaults continue to use raw ratio (expected behavior)
+✅ Fallback paths are clearly marked and only used when boundary NAV unavailable

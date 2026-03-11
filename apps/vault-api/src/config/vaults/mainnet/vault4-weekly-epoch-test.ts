@@ -1,4 +1,4 @@
-import type { VaultInstanceConfig, VaultMode } from "../types.js";
+import type { VaultInstanceConfig, VaultMode } from "../../types.js";
 
 /**
  * Weekly Epoch Vault - Test Profile
@@ -16,6 +16,7 @@ const config: VaultInstanceConfig = {
   name: "Weekly Epoch Vault (Test)",
   enabled: false, // Enable after deployment
   type: "custom",
+  network: "mainnet",
   profile: {
     strategy: "weekly-epoch",
     strategyLabel: "15min Epoch Redemptions (Test)",
@@ -35,24 +36,21 @@ const config: VaultInstanceConfig = {
   },
 
   // Contract addresses - populated after deployment
-  vaultAddress:
-    process.env.WEEKLY_EPOCH_TEST_VAULT_ADDRESS || "0x0000000000000000000000000000000000000003",
+  vaultAddress: "0x0000000000000000000000000000000000000003",
 
   // Custom vault configuration
   customVaultConfig: {
-    navSnapshotAddress: process.env.WEEKLY_EPOCH_TEST_NAV_SNAPSHOT_ADDRESS,
+    navSnapshotAddress: "0x0000000000000000000000000000000000000000",
     epochDurationSeconds: 900, // 15 minutes
     navStalenessThresholdSeconds: 60, // 1 minute
   },
 
-  safeAddress:
-    process.env.WEEKLY_EPOCH_TEST_SAFE_ADDRESS || "0x0000000000000000000000000000000000000000",
+  safeAddress: "0x0000000000000000000000000000000000000000",
 
   // Role-based identity
   allocatorNavSignerKeyEnv: "WEEKLY_EPOCH_TEST_ALLOCATOR_NAV_KEY",
   safeOperatorKeyEnv: "WEEKLY_EPOCH_TEST_SAFE_OPERATOR_KEY",
   tradingSignerKeyEnv: "WEEKLY_EPOCH_TEST_TRADING_SIGNER_KEY",
-  tradingFunderAddressEnv: "WEEKLY_EPOCH_TEST_TRADING_FUNDER_ADDRESS",
   tradingSignatureType: 0, // EOA for local testing
   singleSafeMode: false,
 

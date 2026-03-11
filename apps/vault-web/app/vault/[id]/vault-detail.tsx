@@ -34,12 +34,14 @@ import {
   useVaultOnChainStats,
   usePreviewDeposit,
   usePreviewRedeem,
+  useQueueDeposit,
   useUsdcApprove,
   useVaultDeposit,
   useVaultRedeem,
   useRequests,
   useEpochStatus,
-  useCancelRedemption,
+  useDepositQueue,
+  useEpochHistory,
 } from "../../../src/lib/hooks";
 import {
   postCancelWithdrawalRequest,
@@ -49,12 +51,19 @@ import {
   postWithdrawalRequest,
 } from "../../../src/lib/api";
 import type {
+  Epoch,
   VaultAllocation,
   VaultInstance,
   VaultNavHistoryItem,
   VaultPosition,
 } from "../../../src/types";
 import { RedemptionPanel } from "./components";
+import {
+  EXPLORER_BASE_URL,
+  VAULT_NETWORK,
+  SUPPORTS_POLYMARKET_TRADING,
+} from "../../../src/constants";
+import { getNetworkDisplayInfo } from "../../../src/lib/network";
 
 // ============================================
 // Formatters
@@ -88,6 +97,16 @@ function formatDate(iso: string): string {
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+  });
+}
+
+function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZoneName: "short",
   });
 }
 
@@ -190,6 +209,28 @@ function NavSparkline({ snapshots }: { snapshots: VaultNavHistoryItem[] }) {
 }
 
 // ============================================
+// Network Badge
+// ============================================
+
+function NetworkBadge({ network }: { network: "mainnet" | "amoy" }) {
+  const displayInfo = getNetworkDisplayInfo(network);
+  const { badgeClasses } = displayInfo;
+
+  return (
+    <Badge
+      variant="outline"
+      className={`gap-1.5 font-normal ${badgeClasses.border} ${badgeClasses.bg} ${badgeClasses.text}`}
+      title={displayInfo.isTestnet ? "Testnet - Polymarket trading disabled" : "Mainnet"}
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${badgeClasses.dot}`} />
+      {displayInfo.name}
+    </Badge>
+  );
+}
+
+// ============================================
+// Mode Badge
+// ============================================
 // Mode Badge
 // ============================================
 
@@ -205,6 +246,219 @@ function ModeBadge({ mode }: { mode: "simulation" | "live" }) {
     >
       {mode === "live" ? "Live Trading" : "Simulation"}
     </Badge>
+  );
+}
+
+function EpochLifecycleCard({
+  epoch,
+  queuedFormatted,
+  targetEpochId,
+  activationTime,
+  isLoading,
+}: {
+  epoch: Epoch | null;
+  queuedFormatted: string;
+  targetEpochId: number | null;
+  activationTime: string | null;
+  isLoading: boolean;
+}) {
+  return (
+    <Card className="border-border/50">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base font-semibold">Epoch Schedule</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        {isLoading || !epoch ? (
+          <div className="space-y-2">
+            <Skeleton className="h-5 w-48" />
+            <Skeleton className="h-4 w-64" />
+            <Skeleton className="h-4 w-56" />
+          </div>
+        ) : (
+          <>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-lg border border-border/50 bg-white p-3">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Current Epoch
+                </p>
+                <p className="mt-1 text-lg font-semibold">#{epoch.epochId}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {formatDateTime(epoch.startTime)} {"->"} {formatDateTime(epoch.endTime)}
+                </p>
+              </div>
+              <div className="rounded-lg border border-border/50 bg-white p-3">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Next Boundary
+                </p>
+                <p className="mt-1 text-lg font-semibold">{epoch.timeRemainingFormatted}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Current epoch ends at {formatDateTime(epoch.endTime)}
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sky-900">
+              <p className="text-sm font-medium">How deposits work</p>
+              <p className="mt-1 text-sm">
+                Deposits made now queue for epoch #{targetEpochId ?? epoch.epochId + 1}. They start
+                earning only after current epoch #{epoch.epochId} ends and the next epoch opens.
+              </p>
+              <p className="mt-2 text-xs text-sky-800">
+                {Number(queuedFormatted) > 0
+                  ? `You currently have ${queuedFormatted} USDC queued. Activation is expected around ${activationTime ? formatDateTime(activationTime) : formatDateTime(epoch.endTime)}.`
+                  : `If you deposit now, it should activate around ${activationTime ? formatDateTime(activationTime) : formatDateTime(epoch.endTime)}.`}
+              </p>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function DepositQueueCard({
+  queuedFormatted,
+  queuedSharesFormatted,
+  estimateNavFormatted,
+  estimateBasis,
+  depositRequestId,
+  depositCreatedAt,
+  targetEpochId,
+  activationTime,
+  queueStatus,
+  mintRule,
+  isLoading,
+}: {
+  queuedFormatted: string;
+  queuedSharesFormatted: string;
+  estimateNavFormatted: string;
+  estimateBasis: string | null;
+  depositRequestId: string | null;
+  depositCreatedAt: string | null;
+  targetEpochId: number | null;
+  activationTime: string | null;
+  queueStatus: string | null;
+  mintRule: string | null;
+  isLoading: boolean;
+}) {
+  const hasQueuedDeposit = Number(queuedFormatted) > 0;
+
+  return (
+    <Card className="border-border/50">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base font-semibold">Your Deposit Status</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        {isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-5 w-40" />
+            <Skeleton className="h-4 w-56" />
+            <Skeleton className="h-4 w-52" />
+          </div>
+        ) : hasQueuedDeposit ? (
+          <>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                <p className="text-xs uppercase tracking-wide text-amber-700">Queued Deposit</p>
+                <p className="mt-1 text-lg font-semibold text-amber-950">${queuedFormatted}</p>
+                <p className="mt-1 text-xs text-amber-800">
+                  Estimated shares at NAV ${Number(estimateNavFormatted || "0").toFixed(6)}:{" "}
+                  {queuedSharesFormatted}
+                </p>
+                {estimateBasis && <p className="mt-1 text-xs text-amber-700">{estimateBasis}</p>}
+              </div>
+              <div className="rounded-lg border border-border/50 bg-white p-3">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Target Epoch
+                </p>
+                <p className="mt-1 text-lg font-semibold">#{targetEpochId ?? "-"}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {activationTime
+                    ? `Expected activation: ${formatDateTime(activationTime)}`
+                    : "Activation time pending"}
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-1 rounded-lg border border-border/50 bg-white p-3 text-xs text-muted-foreground">
+              <p>Status: {queueStatus}</p>
+              {depositRequestId && <p>Deposit request ID: {depositRequestId}</p>}
+              {depositCreatedAt && <p>Queued at: {formatDateTime(depositCreatedAt)}</p>}
+              <p>{mintRule}</p>
+            </div>
+          </>
+        ) : (
+          <div className="rounded-lg border border-border/50 bg-white p-3 text-sm text-muted-foreground">
+            You have no queued deposit right now. Once you queue a deposit, this card will show the
+            amount, target epoch, and when shares should activate.
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function EpochHistoryCard({
+  epochs,
+  isLoading,
+}: {
+  epochs: Array<{
+    epochId: number;
+    startTime: string;
+    endTime: string;
+    status: string;
+    totalSharesPendingFormatted: string;
+    frozenAssetsFormatted: string;
+    snapshotNAVFormatted: string;
+  }>;
+  isLoading: boolean;
+}) {
+  return (
+    <Card className="border-border/50">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base font-semibold">Recent Epochs</CardTitle>
+      </CardHeader>
+      <CardContent className="p-0">
+        {isLoading ? (
+          <div className="space-y-2 p-4">
+            <Skeleton className="h-5 w-full" />
+            <Skeleton className="h-5 w-full" />
+            <Skeleton className="h-5 w-full" />
+          </div>
+        ) : epochs.length === 0 ? (
+          <div className="p-4 text-sm text-muted-foreground">
+            No epoch history yet. Once epochs freeze and settle, you will see what happened here.
+          </div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Epoch</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Window</TableHead>
+                <TableHead>Queued Shares</TableHead>
+                <TableHead>Frozen Assets</TableHead>
+                <TableHead>Snapshot NAV</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {epochs.map((epoch) => (
+                <TableRow key={epoch.epochId}>
+                  <TableCell className="font-mono">#{epoch.epochId}</TableCell>
+                  <TableCell>{epoch.status}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {formatDateTime(epoch.startTime)} {"->"} {formatDateTime(epoch.endTime)}
+                  </TableCell>
+                  <TableCell>{epoch.totalSharesPendingFormatted}</TableCell>
+                  <TableCell>{epoch.frozenAssetsFormatted}</TableCell>
+                  <TableCell>{epoch.snapshotNAVFormatted}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -238,6 +492,8 @@ function TxStatus({
   hash?: string;
   error?: Error | null;
 }) {
+  const explorerUrl = hash ? `${EXPLORER_BASE_URL}/tx/${hash}` : undefined;
+
   if (error) {
     return <p className="text-xs text-rose-600">{error.message}</p>;
   }
@@ -246,32 +502,22 @@ function TxStatus({
     return <p className="text-xs text-amber-600 animate-pulse">Confirm in wallet...</p>;
   }
 
-  if (isConfirming && hash) {
+  if (isConfirming && hash && explorerUrl) {
     return (
       <p className="text-xs text-amber-600">
         Transaction confirming...{" "}
-        <a
-          href={`https://polygonscan.com/tx/${hash}`}
-          target="_blank"
-          rel="noreferrer"
-          className="font-mono underline"
-        >
+        <a href={explorerUrl} target="_blank" rel="noreferrer" className="font-mono underline">
           {truncateHash(hash)}
         </a>
       </p>
     );
   }
 
-  if (isConfirmed && hash) {
+  if (isConfirmed && hash && explorerUrl) {
     return (
       <p className="text-xs text-emerald-600">
         Transaction confirmed!{" "}
-        <a
-          href={`https://polygonscan.com/tx/${hash}`}
-          target="_blank"
-          rel="noreferrer"
-          className="font-mono underline"
-        >
+        <a href={explorerUrl} target="_blank" rel="noreferrer" className="font-mono underline">
           {truncateHash(hash)}
         </a>
       </p>
@@ -281,7 +527,8 @@ function TxStatus({
   return null;
 }
 
-function DepositForm({ vault }: { vault: VaultInstance }) {
+function DepositForm({ vault, onSuccess }: { vault: VaultInstance; onSuccess?: () => void }) {
+  const isCustomVault = vault.type === "custom";
   const { formatted, isConnected, isLoading: balanceLoading, address } = useWalletBalance();
   const [amount, setAmount] = useState("");
   const [navSyncPending, setNavSyncPending] = useState(false);
@@ -291,7 +538,11 @@ function DepositForm({ vault }: { vault: VaultInstance }) {
   const isValidAmount = parsedAmount !== undefined && parsedAmount > 0n;
   const isAddressReady = Boolean(address && isConnected);
 
-  const { shares: previewShares } = usePreviewDeposit(vault.config.vaultAddress, parsedAmount);
+  const { shares: previewShares } = usePreviewDeposit(
+    vault.config.vaultAddress,
+    parsedAmount,
+    !isCustomVault,
+  );
   const { allowance, refetch: refetchAllowance } = useUsdcAllowance(
     address,
     vault.config.vaultAddress,
@@ -314,6 +565,15 @@ function DepositForm({ vault }: { vault: VaultInstance }) {
     error: depositError,
     reset: resetDeposit,
   } = useVaultDeposit();
+  const {
+    queueDeposit,
+    isPending: queueDepositPending,
+    isConfirming: queueDepositConfirming,
+    isConfirmed: queueDepositConfirmed,
+    hash: queueDepositHash,
+    error: queueDepositError,
+    reset: resetQueueDeposit,
+  } = useQueueDeposit();
 
   const needsApproval = isValidAmount ? allowance < parsedAmount : false;
 
@@ -324,13 +584,23 @@ function DepositForm({ vault }: { vault: VaultInstance }) {
   }, [approveConfirmed, refetchAllowance]);
 
   useEffect(() => {
-    if (depositConfirmed) {
+    if (depositConfirmed || queueDepositConfirmed) {
       setAmount("");
       resetDeposit();
+      resetQueueDeposit();
       resetApprove();
       void refetchAllowance();
+      onSuccess?.();
     }
-  }, [depositConfirmed, refetchAllowance, resetApprove, resetDeposit]);
+  }, [
+    depositConfirmed,
+    queueDepositConfirmed,
+    onSuccess,
+    refetchAllowance,
+    resetApprove,
+    resetDeposit,
+    resetQueueDeposit,
+  ]);
 
   const handleMax = () => {
     setAmount(formatted);
@@ -363,6 +633,11 @@ function DepositForm({ vault }: { vault: VaultInstance }) {
 
   const handleDeposit = async () => {
     if (!parsedAmount || !address) return;
+
+    if (isCustomVault) {
+      queueDeposit(vault.config.vaultAddress as `0x${string}`, parsedAmount);
+      return;
+    }
 
     const refreshed = await ensureFreshNav();
     if (!refreshed) return;
@@ -410,7 +685,12 @@ function DepositForm({ vault }: { vault: VaultInstance }) {
                     resetDeposit();
                   }}
                   disabled={
-                    approvePending || approveConfirming || depositPending || depositConfirming
+                    approvePending ||
+                    approveConfirming ||
+                    depositPending ||
+                    depositConfirming ||
+                    queueDepositPending ||
+                    queueDepositConfirming
                   }
                   className="pr-16 font-mono"
                 />
@@ -444,25 +724,37 @@ function DepositForm({ vault }: { vault: VaultInstance }) {
                     !isValidAmount ||
                     depositPending ||
                     depositConfirming ||
+                    queueDepositPending ||
+                    queueDepositConfirming ||
                     approvePending ||
                     approveConfirming ||
                     navSyncPending
                   }
                   className="min-w-[100px]"
                 >
-                  {navSyncPending ? "Refreshing NAV..." : "Deposit"}
+                  {navSyncPending
+                    ? "Refreshing NAV..."
+                    : isCustomVault
+                      ? "Queue Deposit"
+                      : "Deposit"}
                 </Button>
               )}
             </div>
 
             {/* Share conversion preview */}
-            {previewShares !== undefined && parsedAmount && parsedAmount > 0n && (
+            {!isCustomVault && previewShares !== undefined && parsedAmount && parsedAmount > 0n && (
               <p className="text-xs text-muted-foreground">
                 You will receive ~
                 <span className="font-mono">
-                  {Number(formatUnits(previewShares, 18)).toFixed(6)}
+                  {Number(formatUnits(previewShares, 6)).toFixed(6)}
                 </span>{" "}
                 shares
+              </p>
+            )}
+            {isCustomVault && parsedAmount && parsedAmount > 0n && (
+              <p className="text-xs text-muted-foreground">
+                Deposit is queued for the next epoch. Shares mint when that epoch is processed using
+                the epoch-open NAV.
               </p>
             )}
 
@@ -474,11 +766,11 @@ function DepositForm({ vault }: { vault: VaultInstance }) {
             </p>
 
             <TxStatus
-              isPending={depositPending || approvePending}
-              isConfirming={depositConfirming || approveConfirming}
-              isConfirmed={depositConfirmed || approveConfirmed}
-              hash={depositHash ?? approveHash}
-              error={depositError ?? approveError}
+              isPending={depositPending || queueDepositPending || approvePending}
+              isConfirming={depositConfirming || queueDepositConfirming || approveConfirming}
+              isConfirmed={depositConfirmed || queueDepositConfirmed || approveConfirmed}
+              hash={queueDepositHash ?? depositHash ?? approveHash}
+              error={queueDepositError ?? depositError ?? approveError}
             />
           </form>
         )}
@@ -500,14 +792,14 @@ function WithdrawForm({ vault }: { vault: VaultInstance }) {
   const [claimingRequestId, setClaimingRequestId] = useState<string | null>(null);
   const [navSyncPending, setNavSyncPending] = useState(false);
 
-  const parsedShares = getParsedUnits(amount, 18);
+  const parsedShares = getParsedUnits(amount, 6);
   const isValidAmount = parsedShares !== undefined && parsedShares > 0n;
 
   const {
     shares,
     formatted: formattedShares,
     refetch: refetchShares,
-  } = useVaultShares(vault.config.vaultAddress, address);
+  } = useVaultShares(vault.config.vaultAddress, address, vault.type === "custom" ? 6 : 18);
   const { assets: previewAssets, refetch: refetchPreviewAssets } = usePreviewRedeem(
     vault.config.vaultAddress,
     parsedShares,
@@ -523,7 +815,7 @@ function WithdrawForm({ vault }: { vault: VaultInstance }) {
     (request) => request.status === "pending" || request.status === "ready",
   );
   const readyRequest = activeRequest?.status === "ready" ? activeRequest : null;
-  const readyRequestShares = readyRequest ? getParsedUnits(readyRequest.shares, 18) : undefined;
+  const readyRequestShares = readyRequest ? getParsedUnits(readyRequest.shares, 6) : undefined;
   const { assets: readyPreviewAssets, refetch: refetchReadyPreviewAssets } = usePreviewRedeem(
     vault.config.vaultAddress,
     readyRequestShares,
@@ -633,7 +925,7 @@ function WithdrawForm({ vault }: { vault: VaultInstance }) {
       }
 
       const result = await postWithdrawalRequest(
-        formatUnits(parsedShares, 18),
+        formatUnits(parsedShares, 6),
         formatUnits(latestPreviewAssets, 6),
       );
 
@@ -678,7 +970,7 @@ function WithdrawForm({ vault }: { vault: VaultInstance }) {
 
     let requestShares: bigint;
     try {
-      requestShares = parseUnits(requestToClaim.shares, 18);
+      requestShares = parseUnits(requestToClaim.shares, 6);
     } catch {
       setQueueError("Ready withdrawal request has invalid share amount.");
       return;
@@ -1211,8 +1503,30 @@ export default function VaultDetailPage() {
     refetch: refetchRedemptionRequests,
   } = useRequests(vault?.id);
   const { epoch, isLoading: epochLoading, refetch: refetchEpochStatus } = useEpochStatus(vault?.id);
-  const { cancelRedemption, isLoading: cancelRedemptionLoading } = useCancelRedemption();
-  const { shares: redemptionUserShares } = useVaultShares(vault?.config.vaultAddress, address);
+  const {
+    queuedFormatted,
+    queuedSharesFormatted,
+    estimateNavFormatted,
+    estimateBasis,
+    depositRequestId,
+    depositCreatedAt,
+    targetEpochId,
+    activationTime,
+    queueStatus,
+    mintRule,
+    isLoading: depositQueueLoading,
+    refetch: refetchDepositQueue,
+  } = useDepositQueue(vault?.id);
+  const {
+    epochs: epochHistory,
+    isLoading: epochHistoryLoading,
+    refetch: refetchEpochHistory,
+  } = useEpochHistory(vault?.id);
+  const { shares: redemptionUserShares } = useVaultShares(
+    vault?.config.vaultAddress,
+    address,
+    vault?.type === "custom" ? 6 : 18,
+  );
 
   if (!vault && !instancesLoading) {
     return <VaultNotFound />;
@@ -1230,21 +1544,22 @@ export default function VaultDetailPage() {
 
   const hasOnChainStats = totalAssets > 0n || totalSupply > 0n;
   const onChainTotalAssets = Number(formatUnits(totalAssets, 6));
-  const onChainTotalSupply = Number(formatUnits(totalSupply, 18));
+  const shareDisplayDecimals = vault.type === "custom" ? 6 : 18;
+  const onChainTotalSupply = Number(formatUnits(totalSupply, shareDisplayDecimals));
   const apiTotalSupply =
     status && status.nav.sharePrice > 0 ? status.nav.totalAssets / status.nav.sharePrice : 0;
   const sharePrice =
     totalSupply > 0n
-      ? Number(formatUnits(totalAssets, 6)) / Number(formatUnits(totalSupply, 18))
+      ? Number(formatUnits(totalAssets, 6)) / Number(formatUnits(totalSupply, shareDisplayDecimals))
       : 1;
 
   const refreshRedemptionData = async () => {
-    await Promise.all([refetchRedemptionRequests(), refetchEpochStatus()]);
-  };
-
-  const handleCancelRedemption = async (requestId: string) => {
-    await cancelRedemption(vault.id, requestId);
-    await refreshRedemptionData();
+    await Promise.all([
+      refetchRedemptionRequests(),
+      refetchEpochStatus(),
+      refetchDepositQueue(),
+      refetchEpochHistory(),
+    ]);
   };
 
   return (
@@ -1273,13 +1588,44 @@ export default function VaultDetailPage() {
           Back to Vaults
         </Link>
 
-        {/* Vault Header */}
+        {/* Testnet Warning Banner */}
+        {VAULT_NETWORK === "amoy" && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+            <div className="flex items-start gap-3">
+              <svg
+                className="h-5 w-5 text-amber-600 mt-0.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                />
+              </svg>
+              <div>
+                <h3 className="text-sm font-medium text-amber-800">Testnet Mode: Amoy</h3>
+                <p className="mt-1 text-sm text-amber-700">
+                  You are connected to Polygon Amoy Testnet. Vault testing is supported, but
+                  Polymarket trading is disabled.
+                  {!SUPPORTS_POLYMARKET_TRADING &&
+                    " Positions and trading features are not available on testnet."}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-2">
             <div className="flex items-center gap-3">
               <h1 className="text-3xl font-bold tracking-tight text-foreground">{vault.name}</h1>
               {!statusLoading && status && <ModeBadge mode={status.mode} />}
+              <NetworkBadge network={VAULT_NETWORK} />
             </div>
+
             <div className="flex items-center gap-2">
               <Badge variant="secondary" className="bg-slate-100 text-slate-700">
                 {vault.profile.strategyLabel}
@@ -1408,26 +1754,56 @@ export default function VaultDetailPage() {
           <NavSparkline snapshots={navHistoryData?.snapshots ?? []} />
         )}
 
+        {vault.type === "custom" && (
+          <div className="grid gap-6 lg:grid-cols-2">
+            <EpochLifecycleCard
+              epoch={epoch}
+              queuedFormatted={queuedFormatted}
+              targetEpochId={targetEpochId ?? (epoch ? epoch.epochId + 1 : null)}
+              activationTime={activationTime ?? epoch?.endTime ?? null}
+              isLoading={epochLoading || depositQueueLoading}
+            />
+            <DepositQueueCard
+              queuedFormatted={queuedFormatted}
+              queuedSharesFormatted={queuedSharesFormatted}
+              estimateNavFormatted={estimateNavFormatted}
+              estimateBasis={estimateBasis}
+              depositRequestId={depositRequestId}
+              depositCreatedAt={depositCreatedAt}
+              targetEpochId={targetEpochId}
+              activationTime={activationTime ?? epoch?.endTime ?? null}
+              queueStatus={queueStatus}
+              mintRule={mintRule}
+              isLoading={depositQueueLoading}
+            />
+          </div>
+        )}
+
         {/* Deposit / Withdraw / Redemption */}
-        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-          <DepositForm vault={vault} />
-          <WithdrawForm vault={vault} />
+        <div
+          className={`grid gap-6 md:grid-cols-2 ${vault.type === "custom" ? "lg:grid-cols-2" : "lg:grid-cols-3"}`}
+        >
+          <DepositForm vault={vault} onSuccess={() => void refreshRedemptionData()} />
+          {vault.type !== "custom" && <WithdrawForm vault={vault} />}
           <RedemptionPanel
             vault={vault}
             epochInfo={epoch}
             pendingRequests={pendingRequests}
             claimableRequests={claimableRequests}
-            isLoading={redemptionRequestsLoading || epochLoading || cancelRedemptionLoading}
+            isLoading={redemptionRequestsLoading || epochLoading}
             onRequestCreated={() => {
               void refreshRedemptionData();
             }}
             onClaimSuccess={() => {
               void refreshRedemptionData();
             }}
-            onCancelRequest={handleCancelRedemption}
             userShares={redemptionUserShares}
           />
         </div>
+
+        {vault.type === "custom" && (
+          <EpochHistoryCard epochs={epochHistory} isLoading={epochHistoryLoading} />
+        )}
 
         <Tabs defaultValue="positions" className="space-y-4">
           <TabsList>

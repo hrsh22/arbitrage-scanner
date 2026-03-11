@@ -1,6 +1,17 @@
 /**
  * Realization Repository
  * CRUD operations for position realization events.
+ *
+ * BOUNDARY SETTLEMENT MODEL (Current - Supported):
+ * - Full entitlement realization happens at epoch settlement boundary
+ * - All positions realize simultaneously at settlement
+ * - No gradual realization between boundaries
+ *
+ * FUTURE/UNSUPPORTED (Gradual Realization):
+ * - processRealization() implements gradual realization logic
+ * - Requires cohort-accounting architecture (not built)
+ * - Currently NOT user-facing - internal scaffolding only
+ *
  * Enforces strict idempotency - duplicate realization attempts are rejected.
  * Records gross proceeds, fees, and net proceeds from resolved positions.
  */
@@ -123,7 +134,27 @@ export class RealizationRepository {
     }
   }
 
+  /**
+   * FUTURE/UNSUPPORTED: Process realization with cohort-carry distribution
+   *
+   * WARNING: This method implements gradual realization logic that is NOT
+   * supported in the current boundary settlement model. It exists as
+   * internal scaffolding for a future cohort-accounting architecture.
+   *
+   * CURRENT MODEL (Supported):
+   * - Use boundary settlement where all positions realize simultaneously
+   * - Entitlements go directly from frozen -> settled (claimable)
+   * - No partial_realized states are user-facing
+   *
+   * DO NOT call this method in production until cohort-accounting is implemented.
+   */
   async processRealization(input: CreateRealizationInput): Promise<ProcessRealizationResult> {
+    // FUTURE/UNSUPPORTED WARNING: This path is for gradual realization only
+    logger.warn("RealizationRepository: processRealization called - gradual realization is NOT supported in current runtime", {
+      epochId: input.epochId,
+      positionSnapshotId: input.positionSnapshotId,
+      note: "This method exists as internal scaffolding for future cohort-accounting architecture",
+    });
     const realizationResult = await this.create(input);
 
     if (!realizationResult.success) {

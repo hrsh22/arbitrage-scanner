@@ -1,8 +1,17 @@
 /**
  * Claim State Machine
  *
- * Manages deterministic state transitions for the progressive claim lifecycle:
- * pending -> frozen -> partially_realized -> fully_realized -> closed
+ * Manages deterministic state transitions for the redemption claim lifecycle.
+ *
+ * SUPPORTED MODEL: Boundary Settlement Only
+ * - pending -> frozen -> settled -> closed
+ * - Full entitlement realization happens at settlement boundary
+ * - No gradual realization or partial distributions
+ *
+ * FUTURE/UNSUPPORTED (requires cohort-accounting architecture):
+ * - FUTURE_PARTIALLY_REALIZED and FUTURE_FULLY_REALIZED states are defined for type safety
+ *   but gradual realization is NOT supported in current runtime
+ * - Open positions spanning multiple epochs without settlement are unsupported
  *
  * This module enforces valid state transitions and provides validation
  * for claim operations at each lifecycle stage.
@@ -20,12 +29,24 @@ import { logger } from "../logger.js";
 export const ClaimState = {
   /** Request created, awaiting epoch freeze */
   PENDING: "pending",
-  /** Epoch frozen, snapshot captured, entitlement locked */
+  /** Epoch frozen, snapshot captured, entitlement locked - ready for settlement */
   FROZEN: "frozen",
-  /** Some realizations processed, partial payouts available */
-  PARTIALLY_REALIZED: "partially_realized",
-  /** All realizations complete, full entitlement available */
-  FULLY_REALIZED: "fully_realized",
+  /**
+   * FUTURE/UNSUPPORTED: Gradual realization state - DO NOT USE in production
+   * NOTE: Requires cohort-accounting architecture (not built).
+   * For current boundary settlement, use FROZEN -> SETTLED path only.
+   */
+  FUTURE_PARTIALLY_REALIZED: "future_partially_realized",
+  /**
+   * FUTURE/UNSUPPORTED: Gradual realization complete - DO NOT USE in production
+   * NOTE: For current boundary settlement, entitlements go directly to claimable
+   */
+  FUTURE_FULLY_REALIZED: "future_fully_realized",
+  /**
+   * SETTLED: Boundary settlement complete, full entitlement available for withdrawal
+   * This is the ONLY supported path for custom vault redemption claims.
+   */
+  SETTLED: "settled",
   /** All claims settled, request complete */
   CLOSED: "closed",
 } as const;
@@ -38,13 +59,24 @@ export type ClaimState = (typeof ClaimState)[keyof typeof ClaimState];
 
 /**
  * Valid state transitions matrix
- * Defines which states can transition to which other states
+ *
+ * BOUNDARY SETTLEMENT ONLY (Current Supported Model):
+ * - pending -> frozen -> settled -> closed
+ * - Full entitlement available at settlement boundary only
+ *
+ * FUTURE/UNSUPPORTED (requires cohort-accounting architecture):
+ * - frozen -> FUTURE_PARTIALLY_REALIZED -> FUTURE_FULLY_REALIZED
+ * - These transitions exist for type safety but gradual realization is NOT supported
  */
 export const validClaimTransitions: Record<ClaimState, ClaimState[]> = {
   pending: ["frozen"],
-  frozen: ["partially_realized", "fully_realized"],
-  partially_realized: ["fully_realized"],
-  fully_realized: ["closed"],
+  // BOUNDARY SETTLEMENT: frozen -> settled (current supported path)
+  frozen: ["settled"],
+  // FUTURE/UNSUPPORTED: gradual realization paths - DO NOT USE in production
+  future_partially_realized: ["future_fully_realized", "settled"],
+  future_fully_realized: ["settled", "closed"],
+  // BOUNDARY SETTLEMENT: settled -> closed when all claims complete
+  settled: ["closed"],
   closed: [], // Terminal state - no further transitions
 };
 
@@ -116,12 +148,24 @@ export type ClaimOperation = (typeof ClaimOperation)[keyof typeof ClaimOperation
 
 /**
  * Valid operations per state
+ *
+ * BOUNDARY SETTLEMENT MODEL (Supported):
+ * - CANCEL operation exists but is disabled at contract level
+ * - Claims only available after full settlement (settled state)
+ * - No partial claims supported - only full settlement claims
+ *
+ * FUTURE/UNSUPPORTED:
+ * - FUTURE_PARTIALLY_REALIZED and FUTURE_FULLY_REALIZED have limited operations
+ *   because gradual realization is not implemented
  */
 export const validOperationsByState: Record<ClaimState, ClaimOperation[]> = {
-  pending: [ClaimOperation.VIEW, ClaimOperation.CANCEL],
+  pending: [ClaimOperation.VIEW], // CANCEL disabled - requests are irreversible
   frozen: [ClaimOperation.VIEW, ClaimOperation.VIEW_HISTORY],
-  partially_realized: [ClaimOperation.VIEW, ClaimOperation.CLAIM, ClaimOperation.VIEW_HISTORY],
-  fully_realized: [ClaimOperation.VIEW, ClaimOperation.CLAIM, ClaimOperation.VIEW_HISTORY],
+  // FUTURE/UNSUPPORTED: No claim operations in gradual realization states
+  future_partially_realized: [ClaimOperation.VIEW, ClaimOperation.VIEW_HISTORY],
+  future_fully_realized: [ClaimOperation.VIEW, ClaimOperation.VIEW_HISTORY],
+  // BOUNDARY SETTLEMENT: Full claim available after settlement
+  settled: [ClaimOperation.VIEW, ClaimOperation.CLAIM, ClaimOperation.VIEW_HISTORY],
   closed: [ClaimOperation.VIEW, ClaimOperation.VIEW_HISTORY],
 };
 
@@ -234,18 +278,30 @@ export function guardClaimOperation(options: {
 
 /**
  * Map epoch_request_status enum to ClaimState
+ *
+ * BOUNDARY SETTLEMENT MAPPING (Supported):
+ * - settled/claimable contracts map to SETTLED (not partially/fully realized)
+ * - Full entitlement available at settlement boundary only
+ *
+ * FUTURE/UNSUPPORTED:
+ * - partially_fulfilled entitlement status is mapped to SETTLED for boundary settlement
+ * - fully_fulfilled maps to FUTURE_FULLY_REALIZED but is not user-facing
  */
 export function mapRequestStatusToClaimState(
   requestStatus: string,
   entitlementStatus?: string,
 ): ClaimState {
-  // If we have entitlement info, use it for realized states
+  // Use entitlement info to determine state
   if (entitlementStatus) {
     switch (entitlementStatus) {
       case "partially_fulfilled":
-        return ClaimState.PARTIALLY_REALIZED;
+        // BOUNDARY SETTLEMENT: Treat as SETTLED (full settlement at boundary)
+        // FUTURE/UNSUPPORTED: Would map to FUTURE_PARTIALLY_REALIZED for gradual realization
+        return ClaimState.SETTLED;
       case "fully_fulfilled":
-        return ClaimState.FULLY_REALIZED;
+        // BOUNDARY SETTLEMENT: Maps to SETTLED (all claims available)
+        // NOTE: This may also transition to CLOSED if all claims processed
+        return ClaimState.SETTLED;
       case "pending":
         return ClaimState.FROZEN;
       default:
@@ -259,21 +315,8 @@ export function mapRequestStatusToClaimState(
       return ClaimState.PENDING;
     case "claimable":
     case "settled":
-      // ERC-7540: claimable (was settled) = ready to claim
-      return ClaimState.FROZEN;
-    case "claimed":
-      return ClaimState.CLOSED;
-    case "cancelled":
-      return ClaimState.CLOSED;
-    default:
-      return ClaimState.PENDING;
-  }
-  switch (requestStatus) {
-    case "pending":
-      return ClaimState.PENDING;
-    case "settled":
-      // Settled but not yet claimed = frozen (awaiting realizations)
-      return ClaimState.FROZEN;
+      // BOUNDARY SETTLEMENT: claimable/settled = full settlement complete
+      return ClaimState.SETTLED;
     case "claimed":
       return ClaimState.CLOSED;
     case "cancelled":
@@ -285,6 +328,14 @@ export function mapRequestStatusToClaimState(
 
 /**
  * Determine next state based on realization progress
+ *
+ * BOUNDARY SETTLEMENT MODEL (Current - Supported):
+ * - Full settlement happens at boundary: frozen -> settled
+ * - No gradual realization between boundaries
+ *
+ * FUTURE/UNSUPPORTED (Gradual Realization - Not Implemented):
+ * - Would track partial realizations as positions resolve
+ * - Requires cohort-accounting architecture
  */
 export function determineNextState(options: {
   currentState: ClaimState;
@@ -298,26 +349,34 @@ export function determineNextState(options: {
   const entitlement = BigInt(totalEntitlement);
   const claimed = BigInt(totalClaimed);
 
-  // If everything is claimed, move to closed
+  // BOUNDARY SETTLEMENT: If everything is claimed, move to closed
   if (claimed >= entitlement && entitlement > 0n) {
     return ClaimState.CLOSED;
   }
 
-  // If fully realized
-  if (realized >= entitlement && entitlement > 0n) {
-    // Only move to fully_realized if we haven't claimed everything
-    return claimed >= entitlement ? ClaimState.CLOSED : ClaimState.FULLY_REALIZED;
+  // BOUNDARY SETTLEMENT: After settlement, funds are available
+  // This is the ONLY supported path in current runtime
+  if (currentState === ClaimState.SETTLED || currentState === ClaimState.FROZEN) {
+    // Check if there's anything to claim (realized > 0)
+    if (realized > 0n) {
+      // If all realized/claimed, close it
+      if (claimed >= realized) {
+        return ClaimState.CLOSED;
+      }
+      return ClaimState.SETTLED;
+    }
   }
 
-  // If partially realized
-  if (realized > 0n) {
-    return ClaimState.PARTIALLY_REALIZED;
-  }
-
-  // If frozen but no realizations yet
-  if (currentState === ClaimState.FROZEN || currentState === ClaimState.PENDING) {
-    return realized > 0n ? ClaimState.PARTIALLY_REALIZED : ClaimState.FROZEN;
-  }
+  // FUTURE/UNSUPPORTED: Gradual realization logic
+  // NOTE: This code path is NOT supported in current runtime
+  // Would require cohort-accounting architecture to implement properly
+  //
+  // if (realized >= entitlement && entitlement > 0n) {
+  //   return claimed >= entitlement ? ClaimState.CLOSED : ClaimState.FUTURE_FULLY_REALIZED;
+  // }
+  // if (realized > 0n) {
+  //   return ClaimState.FUTURE_PARTIALLY_REALIZED;
+  // }
 
   return currentState;
 }
@@ -332,7 +391,7 @@ export function determineNextState(options: {
  *
  * Canonical Schema (single source of truth):
  *   - entitlement: Total entitled amount (immutable after freeze)
- *   - accrued: Amount accrued from realizations  
+ *   - accrued: Amount accrued from realizations
  *   - claimed: Amount claimed by user
  *   - carryRemaining: Remaining to be carried (calculated: entitlement - claimed)
  *
@@ -343,20 +402,20 @@ export function determineNextState(options: {
 export const LedgerFieldMapping = {
   // Canonical -> Legacy mapping
   canonical: {
-    entitlement: 'entitlement',
-    accrued: 'accrued',
-    claimed: 'claimed',
-    carryRemaining: 'carryRemaining',
+    entitlement: "entitlement",
+    accrued: "accrued",
+    claimed: "claimed",
+    carryRemaining: "carryRemaining",
   },
   // Legacy -> Canonical mapping
   legacy: {
-    totalRealizedUsdc: 'accrued',
-    totalClaimedUsdc: 'claimed',
+    totalRealizedUsdc: "accrued",
+    totalClaimedUsdc: "claimed",
   },
   // Reverse mapping: canonical -> legacy
   toLegacy: {
-    accrued: 'totalRealizedUsdc',
-    claimed: 'totalClaimedUsdc',
+    accrued: "totalRealizedUsdc",
+    claimed: "totalClaimedUsdc",
   },
 } as const;
 
@@ -364,12 +423,12 @@ export const LedgerFieldMapping = {
  * Reason codes for ledger mismatches
  */
 export const LedgerMismatchReason = {
-  CANONICAL_LEGACY_ACCRUED_MISMATCH: 'CANONICAL_LEGACY_ACCRUED_MISMATCH',
-  CANONICAL_LEGACY_CLAIMED_MISMATCH: 'CANONICAL_LEGACY_CLAIMED_MISMATCH',
-  CARRY_REMAINING_CALCULATION_ERROR: 'CARRY_REMAINING_CALCULATION_ERROR',
-  NEGATIVE_VALUE: 'NEGATIVE_VALUE',
-  INVARIANT_VIOLATION: 'INVARIANT_VIOLATION',
-  CONTRACT_REPOSITORY_MISMATCH: 'CONTRACT_REPOSITORY_MISMATCH',
+  CANONICAL_LEGACY_ACCRUED_MISMATCH: "CANONICAL_LEGACY_ACCRUED_MISMATCH",
+  CANONICAL_LEGACY_CLAIMED_MISMATCH: "CANONICAL_LEGACY_CLAIMED_MISMATCH",
+  CARRY_REMAINING_CALCULATION_ERROR: "CARRY_REMAINING_CALCULATION_ERROR",
+  NEGATIVE_VALUE: "NEGATIVE_VALUE",
+  INVARIANT_VIOLATION: "INVARIANT_VIOLATION",
+  CONTRACT_REPOSITORY_MISMATCH: "CONTRACT_REPOSITORY_MISMATCH",
 } as const;
 
 /**
@@ -380,9 +439,9 @@ export interface LegacyLedgerState {
   totalClaimedUsdc: string;
 }
 
-
 // ============================================================================
 // Canonical Ledger Semantics
+// ============================================================================
 
 /**
  * Canonical ledger state per user
@@ -390,10 +449,10 @@ export interface LegacyLedgerState {
  * carryRemaining = entitlement - claimed (loss-aware)
  */
 export interface LedgerState {
-  entitlement: string;  // Total entitled amount (immutable after freeze)
-  accrued: string;      // Amount accrued from realizations
-  claimed: string;      // Amount claimed by user
-  carryRemaining: string;  // Remaining amount to be carried
+  entitlement: string; // Total entitled amount (immutable after freeze)
+  accrued: string; // Amount accrued from realizations
+  claimed: string; // Amount claimed by user
+  carryRemaining: string; // Remaining amount to be carried
 }
 
 /**
@@ -424,7 +483,9 @@ export function validateLedgerInvariants(ledger: LedgerState): {
   // Invariant 4: carryRemaining = entitlement - claimed (loss-aware)
   const expectedCarryRemaining = entitlement - claimed;
   if (carryRemaining !== expectedCarryRemaining) {
-    errors.push(`carryRemaining (${carryRemaining.toString()}) != entitlement - claimed (${expectedCarryRemaining.toString()})`);
+    errors.push(
+      `carryRemaining (${carryRemaining.toString()}) != entitlement - claimed (${expectedCarryRemaining.toString()})`,
+    );
   }
 
   return {

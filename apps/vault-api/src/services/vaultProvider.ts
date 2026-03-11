@@ -65,7 +65,6 @@ export type RequestStatus =
   | "claimed" // Successfully claimed
   | "cancelled"; // Cancelled by user
 
-
 export interface RedemptionRequest {
   requestId: string;
   vaultId: number;
@@ -107,7 +106,6 @@ export interface ClaimResult {
   error?: string;
 }
 
-
 export interface RequestStatusResult {
   request: RedemptionRequest;
   claimable: boolean;
@@ -136,6 +134,19 @@ export interface UserRedemptionState {
   totalSharesClaimable: bigint;
   estimatedAssetsPending: bigint;
   estimatedAssetsClaimable: bigint;
+}
+
+export interface CapitalRebalanceResult {
+  success: boolean;
+  action: "none" | "allocated" | "deallocated";
+  amount: bigint;
+  requiredVaultBalance: bigint;
+  queuedAssets: bigint;
+  reservedRedemptionAssets: bigint;
+  pendingWithdrawalLiability: bigint;
+  details: string;
+  txHash?: Hex;
+  error?: string;
 }
 
 // ============================================================================
@@ -278,6 +289,12 @@ export interface IVaultProvider {
     totalAssets: bigint;
     error?: string;
   }>;
+
+  rebalanceCapital(params: {
+    vaultUsdcBalance: bigint;
+    safeUsdcBalance: bigint;
+    pendingWithdrawalLiability: bigint;
+  }): Promise<CapitalRebalanceResult>;
 
   // --------------------------------------------------------------------------
   // Utility

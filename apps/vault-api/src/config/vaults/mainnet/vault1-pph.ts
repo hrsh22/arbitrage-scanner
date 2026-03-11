@@ -1,4 +1,4 @@
-import type { VaultInstanceConfig, VaultMode } from "../types.js";
+import type { VaultInstanceConfig, VaultMode } from "../../types.js";
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
@@ -11,6 +11,7 @@ const config: VaultInstanceConfig = {
   name: "Sisyphus Vault",
   enabled: true,
   type: "custom",
+  network: "mainnet",
   profile: {
     strategy: "external-ai",
     strategyLabel: "Double or Nothing BTC 15m",

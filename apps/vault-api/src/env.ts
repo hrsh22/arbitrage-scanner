@@ -33,9 +33,15 @@ const csvFromEnv = (key: string): string[] => {
 
 const resolveVaultMode = (value: string): "simulation" | "live" => {
   if (value !== "simulation" && value !== "live") {
-    throw new Error(`VAULT_MODE must be either \"simulation\" or \"live\". Received: ${value}`);
+    throw new Error(`VAULT_MODE must be either "simulation" or "live". Received: ${value}`);
   }
+  return value;
+};
 
+const resolveVaultNetwork = (value: string): "mainnet" | "amoy" => {
+  if (value !== "mainnet" && value !== "amoy") {
+    throw new Error(`VAULT_NETWORK must be either "mainnet" or "amoy". Received: ${value}`);
+  }
   return value;
 };
 
@@ -47,9 +53,31 @@ const resolveClobSignatureType = (value: string): 0 | 1 | 2 => {
 };
 
 const vaultMode = resolveVaultMode(stringFromEnv("VAULT_MODE", "simulation"));
+const vaultNetwork = resolveVaultNetwork(stringFromEnv("VAULT_NETWORK", "mainnet"));
 const vaultClobSignatureType = resolveClobSignatureType(
   stringFromEnv("VAULT_CLOB_SIGNATURE_TYPE", "2"),
 );
+
+// ===== Amoy Network Enforcement =====
+// Amoy vaults ALWAYS run in live mode (no simulation)
+// Polymarket trading is explicitly disabled on Amoy (testnet unsafe)
+const isAmoyNetwork = vaultNetwork === "amoy";
+const enforcedVaultMode: "simulation" | "live" = isAmoyNetwork ? "live" : vaultMode;
+
+if (isAmoyNetwork && vaultMode !== "live") {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[env.ts] Amoy vault: VAULT_MODE override - forcing live mode (simulation not supported on testnet)",
+  );
+}
+
+/**
+ * Check if Polymarket trading is enabled for the current network.
+ * Trading is always disabled on Amoy testnet for security.
+ */
+export function isTradingEnabled(): boolean {
+  return !isAmoyNetwork;
+}
 
 export const env = {
   // Server
@@ -58,12 +86,16 @@ export const env = {
   // Database
   VAULT_DATABASE_URL: stringFromEnv("VAULT_DATABASE_URL", ""),
 
+  // Network
+  VAULT_NETWORK: vaultNetwork,
+
   // Vault & Contracts
   VAULT_ADDRESS: stringFromEnv("VAULT_ADDRESS", ""),
   SAFE_ADDRESS: stringFromEnv("SAFE_ADDRESS", ""),
 
   // Polygon RPC
-  POLYGON_RPC_URL: stringFromEnv("POLYGON_RPC_URL", "https://polygon-rpc.com"),
+  POLYGON_RPC_URL: stringFromEnv("POLYGON_RPC_URL", "https://polygon-bor-rpc.publicnode.com"),
+  AMOY_RPC_URL: stringFromEnv("AMOY_RPC_URL", "https://rpc-amoy.polygon.technology"),
   POLYGON_RPC_FALLBACK_URLS: csvFromEnv("POLYGON_RPC_FALLBACK_URLS"),
   POLYGON_RPC_TIMEOUT_MS: numberFromEnv("POLYGON_RPC_TIMEOUT_MS", 10_000),
   POLYGON_RPC_RETRY_COUNT: numberFromEnv("POLYGON_RPC_RETRY_COUNT", 2),
@@ -78,8 +110,8 @@ export const env = {
   // Session
   VAULT_SESSION_SECRET: stringFromEnv("VAULT_SESSION_SECRET", "vault-dev-secret-change-me"),
 
-  // Mode
-  VAULT_MODE: vaultMode,
+  // Mode - enforced to "live" on Amoy regardless of VAULT_MODE env var
+  VAULT_MODE: enforcedVaultMode,
   VAULT_CLOB_SIGNATURE_TYPE: vaultClobSignatureType,
 
   // Liquidity Manager Circuit Breakers

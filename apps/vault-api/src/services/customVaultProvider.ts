@@ -15,12 +15,19 @@
  */
 
 import type { Address, Hex } from "viem";
-import { createWalletClient, http, type WalletClient } from "viem";
+import {
+  createPublicClient,
+  createWalletClient,
+  erc20Abi,
+  formatUnits,
+  type WalletClient,
+} from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { polygon } from "viem/chains";
+import type { Chain } from "viem/chains";
 import { logger } from "../logger.js";
-import { env } from "../env.js";
+import { USDC_E_ADDRESS } from "../constants.js";
 import type {
+  CapitalRebalanceResult,
   IVaultProvider,
   VaultProviderConfig,
   VaultProviderType,
@@ -40,7 +47,12 @@ import {
   createCustomVaultClient,
   type RedemptionRequestData,
 } from "./customVaultClient.js";
-import { createPolygonTransport } from "../rpcTransport.js";
+import { createNetworkTransport } from "../rpcTransport.js";
+import { getNetworkConfigFromEnv, getRpcUrlForNetwork } from "../config/network.js";
+import { getVaultConfig } from "../config/index.js";
+import type { VaultInstanceConfig } from "../config/types.js";
+import { SUPPORTS_POLYMARKET_TRADING } from "../constants.js";
+import { SafeWalletService } from "./safeWallet.js";
 
 // Default epoch duration: 7 days in seconds
 const DEFAULT_EPOCH_DURATION_SECONDS = 604800;
@@ -50,7 +62,15 @@ const DEFAULT_NAV_STALENESS_SECONDS = 21600;
 
 // USDC decimals
 const USDC_DECIMALS = 6;
-const VAULT_SHARE_DECIMALS = 18;
+const VAULT_SHARE_DECIMALS = 6;
+const DEPOSIT_QUEUE_BATCH_SIZE = 1000n;
+
+interface RoleKeyConfig {
+  adminKey?: string;
+  settlerKey?: string;
+  snapshotterKey?: string;
+  depositProcessorKey?: string;
+}
 
 /**
  * Map contract request status to domain request status
@@ -82,13 +102,22 @@ export class CustomVaultProvider implements IVaultProvider {
   readonly providerType: VaultProviderType = "custom";
   readonly config: VaultProviderConfig;
 
+  private readonly vaultConfig: VaultInstanceConfig;
   private readonly customConfig: Required<CustomVaultConfig>;
   private readonly client: CustomVaultClient;
   private readonly rpcUrl: string;
+  private readonly chain: Chain;
+  private readonly adminKey?: string;
   private readonly settlerKey?: string;
+  private readonly snapshotterKey?: string;
+  private readonly depositProcessorKey?: string;
+  private adminWalletClient?: WalletClient;
+  private safeWalletService?: SafeWalletService;
   private settlerWalletClient?: WalletClient;
+  private snapshotterWalletClient?: WalletClient;
+  private depositProcessorWalletClient?: WalletClient;
 
-  constructor(config: VaultProviderConfig, settlerKey?: string) {
+  constructor(config: VaultProviderConfig, roleKeys?: string | RoleKeyConfig, chain?: Chain) {
     if (config.providerType !== "custom") {
       throw new Error(
         `CustomVaultProvider: expected providerType "custom", got "${config.providerType}"`,
@@ -96,21 +125,50 @@ export class CustomVaultProvider implements IVaultProvider {
     }
 
     this.config = config;
-    this.settlerKey = settlerKey;
+    const vaultConfig = getVaultConfig(config.vaultId);
+    if (!vaultConfig) {
+      throw new Error(`CustomVaultProvider: vault config ${config.vaultId} not found`);
+    }
+    this.vaultConfig = vaultConfig;
+    const resolvedKeys: RoleKeyConfig =
+      typeof roleKeys === "string"
+        ? {
+            adminKey: roleKeys,
+            settlerKey: roleKeys,
+            snapshotterKey: roleKeys,
+            depositProcessorKey: roleKeys,
+          }
+        : {
+            adminKey: roleKeys?.adminKey,
+            settlerKey: roleKeys?.settlerKey,
+            snapshotterKey: roleKeys?.snapshotterKey ?? roleKeys?.settlerKey,
+            depositProcessorKey: roleKeys?.depositProcessorKey ?? roleKeys?.settlerKey,
+          };
+    this.adminKey = resolvedKeys.adminKey;
+    this.settlerKey = resolvedKeys.settlerKey;
+    this.snapshotterKey = resolvedKeys.snapshotterKey;
+    this.depositProcessorKey = resolvedKeys.depositProcessorKey;
+    const networkConfig = getNetworkConfigFromEnv();
+    this.chain = chain ?? networkConfig.chain;
+    this.rpcUrl = getRpcUrlForNetwork(networkConfig.name);
     this.customConfig = {
       epochDurationSeconds: DEFAULT_EPOCH_DURATION_SECONDS,
       navStalenessThresholdSeconds: DEFAULT_NAV_STALENESS_SECONDS,
       ...config.customConfig,
     } as Required<CustomVaultConfig>;
 
-    this.rpcUrl = env.POLYGON_RPC_URL;
-    this.client = createCustomVaultClient(config.vaultAddress, this.rpcUrl);
+    this.client = createCustomVaultClient(config.vaultAddress, this.rpcUrl, this.chain);
 
     logger.info("CustomVaultProvider: Initialized", {
       vaultId: config.vaultId,
       vaultAddress: config.vaultAddress,
+      chainId: this.chain.id,
+      network: networkConfig.name,
       epochDuration: this.customConfig.epochDurationSeconds,
-      hasSettlerKey: !!settlerKey,
+      hasAdminKey: !!this.adminKey,
+      hasSettlerKey: !!this.settlerKey,
+      hasSnapshotterKey: !!this.snapshotterKey,
+      hasDepositProcessorKey: !!this.depositProcessorKey,
     });
   }
 
@@ -122,30 +180,20 @@ export class CustomVaultProvider implements IVaultProvider {
     logger.debug("CustomVaultProvider.getVaultInfo", { vaultId: this.config.vaultId });
 
     try {
-      const [asset, vaultConfig, navStatus, emergencyMode, currentEpoch] = await Promise.all([
+      const [asset, vaultConfig, navStatus, currentEpoch, totalSupply] = await Promise.all([
         this.client.getAsset(),
         this.client.getVaultConfig(),
         this.client.getNAVStatus(),
-        this.client.getEmergencyMode(),
         this.client.getCurrentEpoch(),
+        this.client.getTotalSupply(),
       ]);
 
       const navIsStale = !navStatus.isFresh;
       const navLastUpdated = new Date(Number(navStatus.lastNAVUpdate) * 1000);
 
-      // Get total pending shares from contract
-      const totalPendingShares = await this.client.getTotalPendingRedeemShares();
+      const totalAssets = await this.client.getTotalAssets();
 
-      // Use NAV as totalAssets approximation
-      const totalAssets = navStatus.currentNAV;
-      // Total supply = NAV (at 1:1 ratio when NAV = 1e18)
-      const totalSupply =
-        navStatus.currentNAV > 0n
-          ? (navStatus.currentNAV * 1000000000000000000n) / navStatus.currentNAV
-          : 0n;
-
-      // Calculate share price
-      const sharePrice = totalSupply > 0n ? Number(totalAssets) / Number(totalSupply) : 1;
+      const sharePrice = Number(formatUnits(navStatus.currentNAV, 18));
 
       // Calculate current epoch info
       const epochEnd = await this.client.getEpochEnd(currentEpoch);
@@ -205,7 +253,6 @@ export class CustomVaultProvider implements IVaultProvider {
       settled: epoch.status === "settled" || epoch.status === "finalized",
       proRataFactor,
     };
-
   }
 
   async getRequestStatus(requestId: string): Promise<RequestStatusResult> {
@@ -312,12 +359,12 @@ export class CustomVaultProvider implements IVaultProvider {
       }
     }
 
-    // Calculate estimated assets based on current share price
-    const vaultInfo = await this.getVaultInfo();
-    const sharesToAssets = (shares: bigint): bigint => {
-      if (vaultInfo.totalSupply === 0n) return 0n;
-      return (shares * vaultInfo.totalAssets) / vaultInfo.totalSupply;
-    };
+    const estimatedAssetsPending =
+      totalSharesPending > 0n ? await this.previewRedeem(totalSharesPending) : 0n;
+    const estimatedAssetsClaimable = claimableRequests.reduce(
+      (sum, request) => sum + (request.assetsActual ?? request.assetsEstimated),
+      0n,
+    );
 
     return {
       userAddress,
@@ -326,8 +373,8 @@ export class CustomVaultProvider implements IVaultProvider {
       claimableRequests,
       totalSharesPending,
       totalSharesClaimable,
-      estimatedAssetsPending: sharesToAssets(totalSharesPending),
-      estimatedAssetsClaimable: sharesToAssets(totalSharesClaimable),
+      estimatedAssetsPending,
+      estimatedAssetsClaimable,
     };
   }
 
@@ -337,9 +384,9 @@ export class CustomVaultProvider implements IVaultProvider {
       shares: shares.toString(),
     });
 
-    const vaultInfo = await this.getVaultInfo();
-    if (vaultInfo.totalSupply === 0n) return 0n;
-    return (shares * vaultInfo.totalAssets) / vaultInfo.totalSupply;
+    const navStatus = await this.client.getNAVStatus();
+    if (navStatus.currentNAV === 0n) return shares;
+    return (shares * navStatus.currentNAV) / 10n ** 18n;
   }
 
   // ============================================================================
@@ -412,64 +459,15 @@ export class CustomVaultProvider implements IVaultProvider {
     requestId: string,
     userAddress: Address,
   ): Promise<{ success: boolean; error?: string }> {
-    logger.info("CustomVaultProvider.cancelRedemption", {
+    logger.warn("CustomVaultProvider.cancelRedemption disabled", {
       vaultId: this.config.vaultId,
       requestId,
       userAddress,
     });
-
-    // Parse requestId
-    let requestIdBigInt: bigint;
-    try {
-      requestIdBigInt = BigInt(requestId);
-    } catch {
-      return { success: false, error: "Invalid requestId format" };
-    }
-
-    // Get the redemption request
-    const redemptionData = await this.client.getRedemptionRequest(requestIdBigInt);
-    if (!redemptionData) {
-      return { success: false, error: "Request not found" };
-    }
-
-    // Check if controller matches user (or user is authorized operator)
-    const isAuthorized = await this.isAuthorizedForController(
-      userAddress,
-      redemptionData.controller,
-    );
-    if (!isAuthorized) {
-      return { success: false, error: "Not authorized to cancel this request" };
-    }
-
-    // Check if request is pending (can only cancel pending requests)
-    if (redemptionData.status !== "pending") {
-      return {
-        success: false,
-        error: `Cannot cancel request with status: ${redemptionData.status}`,
-      };
-    }
-
-    // Check if epoch has ended (settlement cutoff)
-    const epoch = await this.client.getEpoch(redemptionData.epochId);
-    if (epoch) {
-      const now = BigInt(Math.floor(Date.now() / 1000));
-      if (now >= epoch.endTime) {
-        return {
-          success: false,
-          error: "Settlement cutoff has passed - cannot cancel",
-        };
-      }
-    }
-
-    // Note: Actual cancellation requires wallet client with cancelRedeemRequest(requestId)
-    logger.info("CustomVaultProvider: Redemption cancellation authorized", {
-      requestId,
-      vaultId: this.config.vaultId,
-      controller: redemptionData.controller,
-      sharesToCancel: redemptionData.shares.toString(),
-    });
-
-    return { success: true };
+    return {
+      success: false,
+      error: "Redemption cancellation is disabled. Redeem requests are irreversible.",
+    };
   }
 
   async claimRedemption(requestId: string, userAddress: Address): Promise<ClaimResult> {
@@ -554,42 +552,302 @@ export class CustomVaultProvider implements IVaultProvider {
   // ============================================================================
 
   async isSettlementReady(epochId?: number): Promise<boolean> {
-    const targetEpochId = epochId ?? Number(await this.client.getCurrentEpoch());
+    const currentEpochId = Number(await this.client.getCurrentEpoch());
+    const targetEpochId = epochId ?? currentEpochId;
     logger.debug("CustomVaultProvider.isSettlementReady", {
       vaultId: this.config.vaultId,
       epochId: targetEpochId,
     });
 
-    return this.client.canSettleEpoch(BigInt(targetEpochId));
+    const navStatus = await this.client.getNAVStatus();
+    if (!navStatus.isFresh) {
+      return false;
+    }
+
+    const now = BigInt(Math.floor(Date.now() / 1000));
+
+    if (epochId !== undefined) {
+      const epoch = await this.client.getEpoch(BigInt(targetEpochId));
+      if (!epoch) {
+        return false;
+      }
+
+      const totalQueuedAssets = await this.client.getTotalQueuedAssets();
+      const hasPendingWork = epoch.totalSharesPending > 0n || totalQueuedAssets > 0n;
+
+      return (
+        now >= epoch.endTime &&
+        (epoch.status === "active" ||
+          ((epoch.status === "frozen" || epoch.status === "settling") && hasPendingWork))
+      );
+    }
+
+    const [currentEpoch, previousEpoch, totalQueuedAssets] = await Promise.all([
+      this.client.getEpoch(BigInt(currentEpochId)),
+      currentEpochId > 0 ? this.client.getEpoch(BigInt(currentEpochId - 1)) : Promise.resolve(null),
+      this.client.getTotalQueuedAssets(),
+    ]);
+
+    const currentNeedsFreeze =
+      currentEpoch !== null && currentEpoch.status === "active" && now >= currentEpoch.endTime;
+    const previousNeedsSettlement =
+      previousEpoch !== null &&
+      (previousEpoch.status === "frozen" || previousEpoch.status === "settling") &&
+      now >= previousEpoch.endTime &&
+      (previousEpoch.totalSharesPending > 0n || totalQueuedAssets > 0n);
+
+    return currentNeedsFreeze || previousNeedsSettlement;
   }
 
-  /**
-   * Get or create the settler wallet client
-   */
-  private getSettlerWalletClient(): WalletClient {
-    if (!this.settlerKey) {
-      throw new Error("CustomVaultProvider: settlerKey is required for settlement operations");
+  private getRoleWalletClient(
+    key: string | undefined,
+    cache: WalletClient | undefined,
+    roleName: string,
+  ): WalletClient {
+    if (!key) {
+      throw new Error(
+        `CustomVaultProvider: ${roleName} key is required for ${roleName} operations`,
+      );
     }
 
-    if (this.settlerWalletClient) {
-      return this.settlerWalletClient;
+    if (cache) {
+      return cache;
     }
 
-    const account = privateKeyToAccount(this.settlerKey as Hex);
-    const transport = createPolygonTransport(this.rpcUrl);
+    const account = privateKeyToAccount(key as Hex);
+    const transport = createNetworkTransport(this.rpcUrl);
 
-    this.settlerWalletClient = createWalletClient({
+    const walletClient = createWalletClient({
       account,
-      chain: polygon,
+      chain: this.chain,
       transport,
     });
 
-    logger.debug("CustomVaultProvider: Created settler wallet client", {
+    logger.debug("CustomVaultProvider: Created role wallet client", {
       vaultId: this.config.vaultId,
-      settlerAddress: account.address,
+      roleName,
+      roleAddress: account.address,
+      chainId: this.chain.id,
     });
 
+    return walletClient;
+  }
+
+  private getSettlerWalletClient(): WalletClient {
+    this.settlerWalletClient = this.getRoleWalletClient(
+      this.settlerKey,
+      this.settlerWalletClient,
+      "settler",
+    );
+
     return this.settlerWalletClient;
+  }
+
+  private getAdminWalletClient(): WalletClient {
+    this.adminWalletClient = this.getRoleWalletClient(
+      this.adminKey,
+      this.adminWalletClient,
+      "admin",
+    );
+
+    return this.adminWalletClient;
+  }
+
+  private getSnapshotterWalletClient(): WalletClient {
+    this.snapshotterWalletClient = this.getRoleWalletClient(
+      this.snapshotterKey,
+      this.snapshotterWalletClient,
+      "snapshotter",
+    );
+
+    return this.snapshotterWalletClient;
+  }
+
+  private getSafeWalletService(): SafeWalletService {
+    if (this.safeWalletService) {
+      return this.safeWalletService;
+    }
+
+    const tradingSafeAddress = this.vaultConfig.tradingSafeAddress ?? this.vaultConfig.safeAddress;
+    const safeOperatorKey = process.env[this.vaultConfig.safeOperatorKeyEnv] ?? "";
+    this.safeWalletService = new SafeWalletService(
+      tradingSafeAddress,
+      safeOperatorKey,
+      this.rpcUrl,
+      this.chain,
+    );
+    return this.safeWalletService;
+  }
+
+  private async ensureRecallAllowance(
+    requiredAmount: bigint,
+  ): Promise<{ success: boolean; error?: string }> {
+    const tradingSafeAddress = (this.vaultConfig.tradingSafeAddress ??
+      this.vaultConfig.safeAddress) as Address;
+    const publicClient = createPublicClient({
+      chain: this.chain,
+      transport: createNetworkTransport(this.rpcUrl),
+    });
+    const code = await publicClient.getCode({ address: tradingSafeAddress });
+
+    if (!code || code === "0x") {
+      const safeOperatorKey = process.env[this.vaultConfig.safeOperatorKeyEnv] ?? "";
+      if (!safeOperatorKey) {
+        return {
+          success: false,
+          error:
+            "Safe operator key is required to approve recall allowance from the trading-safe EOA.",
+        };
+      }
+
+      const account = privateKeyToAccount(safeOperatorKey as Hex);
+      if (account.address.toLowerCase() !== tradingSafeAddress.toLowerCase()) {
+        return {
+          success: false,
+          error:
+            `Safe operator key resolves to ${account.address}, but tradingSafeAddress is ${tradingSafeAddress}. ` +
+            "Set the safe operator key to the trading-safe EOA private key.",
+        };
+      }
+
+      const allowance = (await publicClient.readContract({
+        address: USDC_E_ADDRESS as Address,
+        abi: erc20Abi,
+        functionName: "allowance",
+        args: [tradingSafeAddress, this.config.vaultAddress],
+      })) as bigint;
+      if (allowance >= requiredAmount) {
+        return { success: true };
+      }
+
+      const walletClient = createWalletClient({
+        account,
+        chain: this.chain,
+        transport: createNetworkTransport(this.rpcUrl),
+      });
+      const txHash = await walletClient.writeContract({
+        address: USDC_E_ADDRESS as Address,
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [this.config.vaultAddress, 2n ** 256n - 1n],
+        chain: this.chain,
+        account,
+      });
+      const confirmResult = await this.client.waitForTransaction(txHash);
+      if (!confirmResult.success) {
+        return {
+          success: false,
+          error: confirmResult.error ?? "Trading-safe EOA approval transaction failed to confirm.",
+        };
+      }
+
+      return { success: true };
+    }
+
+    const safeWallet = this.getSafeWalletService();
+    await safeWallet.initialize();
+    const allowance = await safeWallet.getAllowance(USDC_E_ADDRESS, this.config.vaultAddress);
+    if (allowance >= requiredAmount) {
+      return { success: true };
+    }
+
+    const approveResult = await safeWallet.approveToken(
+      USDC_E_ADDRESS,
+      this.config.vaultAddress,
+      safeWallet.getMaxUint256().toString(),
+    );
+    if (!approveResult.success || !approveResult.txHash) {
+      return {
+        success: false,
+        error: approveResult.error ?? "Failed to approve vault recall allowance from trading safe.",
+      };
+    }
+
+    const confirmResult = await this.client.waitForTransaction(approveResult.txHash as Hex);
+    if (!confirmResult.success) {
+      return {
+        success: false,
+        error: confirmResult.error ?? "Trading safe approval transaction failed to confirm.",
+      };
+    }
+
+    return { success: true };
+  }
+
+  private getDepositProcessorWalletClient(): WalletClient {
+    this.depositProcessorWalletClient = this.getRoleWalletClient(
+      this.depositProcessorKey,
+      this.depositProcessorWalletClient,
+      "deposit processor",
+    );
+
+    return this.depositProcessorWalletClient;
+  }
+
+  private async processCurrentDepositQueue(
+    epochId: number,
+  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
+    let walletClient: WalletClient;
+    try {
+      walletClient = this.getDepositProcessorWalletClient();
+    } catch (error) {
+      return {
+        success: false,
+        error: `Failed to initialize deposit processor wallet: ${(error as Error).message}`,
+      };
+    }
+
+    const result = await this.retryWithBackoff(() =>
+      this.client.processDepositQueue(walletClient, BigInt(epochId), 0n, DEPOSIT_QUEUE_BATCH_SIZE),
+    );
+
+    if (!result.success || !result.txHash) {
+      return result;
+    }
+
+    const confirmResult = await this.retryWithBackoff(() =>
+      this.client.waitForTransaction(result.txHash!),
+    );
+    if (!confirmResult.success) {
+      return {
+        success: false,
+        txHash: result.txHash,
+        error: `Deposit queue transaction failed to confirm: ${confirmResult.error}`,
+      };
+    }
+
+    return result;
+  }
+
+  private async resolveMaintenanceEpoch(epochId?: number): Promise<number> {
+    if (epochId !== undefined) {
+      return epochId;
+    }
+
+    const currentEpochId = Number(await this.client.getCurrentEpoch());
+    const currentEpoch = await this.client.getEpoch(BigInt(currentEpochId));
+    if (!currentEpoch) {
+      throw new Error(`Epoch ${currentEpochId} not found`);
+    }
+
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    if (currentEpoch.status === "active" && now >= currentEpoch.endTime) {
+      return currentEpochId;
+    }
+
+    if (currentEpochId > 0) {
+      const totalQueuedAssets = await this.client.getTotalQueuedAssets();
+      const previousEpoch = await this.client.getEpoch(BigInt(currentEpochId - 1));
+      if (
+        previousEpoch &&
+        (previousEpoch.status === "frozen" || previousEpoch.status === "settling") &&
+        (previousEpoch.totalSharesPending > 0n || totalQueuedAssets > 0n)
+      ) {
+        return currentEpochId - 1;
+      }
+    }
+
+    return currentEpochId;
   }
 
   /**
@@ -604,26 +862,25 @@ export class CustomVaultProvider implements IVaultProvider {
     totalAssets: bigint;
     error?: string;
   }> {
-    const targetEpochId = epochId ?? Number(await this.client.getCurrentEpoch());
+    const targetEpochId = await this.resolveMaintenanceEpoch(epochId);
     logger.info("CustomVaultProvider.executeSettlement", {
       vaultId: this.config.vaultId,
       epochId: targetEpochId,
     });
 
-    // Check if settler key is available
-    if (!this.settlerKey) {
+    if (!this.settlerKey && !this.snapshotterKey && !this.depositProcessorKey) {
       return {
         success: false,
         epochId: targetEpochId,
         requestsSettled: 0,
         totalShares: 0n,
         totalAssets: 0n,
-        error: "Settlement requires settlerKey - not configured",
+        error: "Epoch maintenance requires settlerKey or equivalent operator keys - not configured",
       };
     }
 
     // Get epoch data
-    const epoch = await this.client.getEpoch(BigInt(targetEpochId));
+    let epoch = await this.client.getEpoch(BigInt(targetEpochId));
     if (!epoch) {
       return {
         success: false,
@@ -634,6 +891,8 @@ export class CustomVaultProvider implements IVaultProvider {
         error: `Epoch ${targetEpochId} not found`,
       };
     }
+
+    const now = BigInt(Math.floor(Date.now() / 1000));
 
     // Check if already settled
     if (epoch.status === "settled" || epoch.status === "finalized") {
@@ -646,12 +905,11 @@ export class CustomVaultProvider implements IVaultProvider {
         epochId: targetEpochId,
         requestsSettled: Number(epoch.totalSharesPending > 0n ? 1 : 0),
         totalShares: epoch.totalSharesPending,
-        totalAssets: epoch.totalAssetsAvailable,
+        totalAssets: epoch.frozenAssets,
       };
     }
 
     // Check if epoch has ended
-    const now = BigInt(Math.floor(Date.now() / 1000));
     if (now < epoch.endTime) {
       return {
         success: false,
@@ -663,23 +921,9 @@ export class CustomVaultProvider implements IVaultProvider {
       };
     }
 
-    // Get settler wallet client
-    let walletClient: WalletClient;
-    try {
-      walletClient = this.getSettlerWalletClient();
-    } catch (error) {
-      return {
-        success: false,
-        epochId: targetEpochId,
-        requestsSettled: 0,
-        totalShares: 0n,
-        totalAssets: 0n,
-        error: `Failed to initialize settler wallet: ${(error as Error).message}`,
-      };
-    }
-
     // Step 1: Freeze epoch if not frozen
     let freezeTxHash: Hex | undefined;
+    let depositProcessingTxHash: Hex | undefined;
     if (epoch.status === "active") {
       logger.info("CustomVaultProvider: Freezing epoch", {
         epochId: targetEpochId,
@@ -688,12 +932,22 @@ export class CustomVaultProvider implements IVaultProvider {
       // Generate snapshot hash (placeholder - in production this would be a merkle root or similar)
       const snapshotHash = `0x${"0".repeat(64)}` as Hex;
 
+      let snapshotterWalletClient: WalletClient;
+      try {
+        snapshotterWalletClient = this.getSnapshotterWalletClient();
+      } catch (error) {
+        return {
+          success: false,
+          epochId: targetEpochId,
+          requestsSettled: 0,
+          totalShares: 0n,
+          totalAssets: 0n,
+          error: `Failed to initialize snapshotter wallet: ${(error as Error).message}`,
+        };
+      }
+
       const freezeResult = await this.retryWithBackoff(() =>
-        this.client.freezeEpoch(
-          walletClient,
-          BigInt(targetEpochId),
-          snapshotHash,
-        )
+        this.client.freezeEpoch(snapshotterWalletClient, BigInt(targetEpochId), snapshotHash),
       );
 
       if (!freezeResult.success) {
@@ -709,37 +963,128 @@ export class CustomVaultProvider implements IVaultProvider {
 
       freezeTxHash = freezeResult.txHash;
 
-      // Wait for freeze transaction confirmation
       // Wait for freeze transaction confirmation with retry
       const freezeConfirmResult = await this.retryWithBackoff(() =>
-        this.client.waitForTransaction(freezeTxHash!)
+        this.client.waitForTransaction(freezeTxHash!),
       );
+      if (!freezeConfirmResult.success) {
+        return {
+          success: false,
+          txHash: freezeTxHash,
+          epochId: targetEpochId,
+          requestsSettled: 0,
+          totalShares: 0n,
+          totalAssets: 0n,
+          error: `Freeze transaction failed to confirm: ${freezeConfirmResult.error}`,
+        };
+      }
 
       logger.info("CustomVaultProvider: Epoch frozen successfully", {
         txHash: freezeTxHash,
         epochId: targetEpochId,
       });
+
+      const totalQueuedAssets = await this.client.getTotalQueuedAssets();
+      if (totalQueuedAssets > 0n) {
+        const processResult = await this.processCurrentDepositQueue(targetEpochId + 1);
+        if (!processResult.success) {
+          return {
+            success: false,
+            txHash: freezeTxHash,
+            epochId: targetEpochId,
+            requestsSettled: 0,
+            totalShares: 0n,
+            totalAssets: 0n,
+            error: `Failed to process deposit queue for epoch ${targetEpochId + 1}: ${processResult.error}`,
+          };
+        }
+
+        depositProcessingTxHash = processResult.txHash;
+      }
+      epoch = await this.client.getEpoch(BigInt(targetEpochId));
+      if (!epoch) {
+        return {
+          success: false,
+          txHash: depositProcessingTxHash ?? freezeTxHash,
+          epochId: targetEpochId,
+          requestsSettled: 0,
+          totalShares: 0n,
+          totalAssets: 0n,
+          error: `Epoch ${targetEpochId} missing after freeze`,
+        };
+      }
+
+      logger.info("CustomVaultProvider: Deposit queue processed for new active epoch", {
+        epochId: targetEpochId + 1,
+        txHash: depositProcessingTxHash,
+      });
     }
 
-    // Step 2: Calculate available assets (vault USDC balance)
-    const vaultInfo = await this.getVaultInfo();
-    const availableAssets = vaultInfo.totalAssets;
-    const carryAmount = 0n; // TODO: Calculate carry based on performance
+    if (epoch.totalSharesPending === 0n) {
+      if (!depositProcessingTxHash) {
+        const totalQueuedAssets = await this.client.getTotalQueuedAssets();
+        if (totalQueuedAssets > 0n) {
+          const processResult = await this.processCurrentDepositQueue(targetEpochId + 1);
+          if (!processResult.success) {
+            return {
+              success: false,
+              txHash: freezeTxHash,
+              epochId: targetEpochId,
+              requestsSettled: 0,
+              totalShares: 0n,
+              totalAssets: epoch.frozenAssets,
+              error: `Failed to process deposit queue for epoch ${targetEpochId + 1}: ${processResult.error}`,
+            };
+          }
+
+          depositProcessingTxHash = processResult.txHash;
+        }
+      }
+
+      logger.info(
+        "CustomVaultProvider: Epoch maintenance completed with no redemption settlement required",
+        {
+          epochId: targetEpochId,
+          freezeTxHash,
+          depositProcessingTxHash,
+        },
+      );
+
+      return {
+        success: true,
+        txHash: depositProcessingTxHash ?? freezeTxHash,
+        epochId: targetEpochId,
+        requestsSettled: 0,
+        totalShares: 0n,
+        totalAssets: epoch.frozenAssets,
+      };
+    }
+
+    let walletClient: WalletClient;
+    try {
+      walletClient = this.getSettlerWalletClient();
+    } catch (error) {
+      return {
+        success: false,
+        txHash: depositProcessingTxHash ?? freezeTxHash,
+        epochId: targetEpochId,
+        requestsSettled: 0,
+        totalShares: 0n,
+        totalAssets: epoch.frozenAssets,
+        error: `Failed to initialize settler wallet: ${(error as Error).message}`,
+      };
+    }
+
+    const carryAmount = 0n;
 
     // Step 3: Settle epoch
     logger.info("CustomVaultProvider: Settling epoch", {
       epochId: targetEpochId,
-      availableAssets: availableAssets.toString(),
       carryAmount: carryAmount.toString(),
     });
 
     const settleResult = await this.retryWithBackoff(() =>
-      this.client.settleEpoch(
-        walletClient,
-        BigInt(targetEpochId),
-        availableAssets,
-        carryAmount,
-      )
+      this.client.settleEpoch(walletClient, BigInt(targetEpochId), carryAmount),
     );
 
     if (!settleResult.success) {
@@ -756,10 +1101,9 @@ export class CustomVaultProvider implements IVaultProvider {
 
     const settleTxHash = settleResult.txHash!;
 
-    // Wait for settlement transaction confirmation
     // Wait for settlement transaction confirmation with retry
     const settleConfirmResult = await this.retryWithBackoff(() =>
-      this.client.waitForTransaction(settleTxHash)
+      this.client.waitForTransaction(settleTxHash),
     );
     if (!settleConfirmResult.success) {
       return {
@@ -779,10 +1123,7 @@ export class CustomVaultProvider implements IVaultProvider {
     });
 
     const finalizeResult = await this.retryWithBackoff(() =>
-      this.client.finalizeEpoch(
-        walletClient,
-        BigInt(targetEpochId),
-      )
+      this.client.finalizeEpoch(walletClient, BigInt(targetEpochId)),
     );
 
     if (!finalizeResult.success) {
@@ -801,7 +1142,7 @@ export class CustomVaultProvider implements IVaultProvider {
 
     // Wait for finalize transaction confirmation with retry
     const finalizeConfirmResult = await this.retryWithBackoff(() =>
-      this.client.waitForTransaction(finalizeTxHash)
+      this.client.waitForTransaction(finalizeTxHash),
     );
     if (!finalizeConfirmResult.success) {
       return {
@@ -818,7 +1159,7 @@ export class CustomVaultProvider implements IVaultProvider {
     // Get updated epoch data after settlement
     const settledEpoch = await this.client.getEpoch(BigInt(targetEpochId));
     const totalShares = settledEpoch?.totalSharesPending ?? 0n;
-    const totalAssets = settledEpoch?.totalAssetsAvailable ?? 0n;
+    const totalAssets = settledEpoch?.frozenAssets ?? 0n;
     const requestsSettled = Number(totalShares > 0n ? 1 : 0);
 
     logger.info("CustomVaultProvider: Settlement completed successfully", {
@@ -838,6 +1179,225 @@ export class CustomVaultProvider implements IVaultProvider {
       requestsSettled,
       totalShares,
       totalAssets,
+    };
+  }
+
+  async rebalanceCapital(params: {
+    vaultUsdcBalance: bigint;
+    safeUsdcBalance: bigint;
+    pendingWithdrawalLiability: bigint;
+  }): Promise<CapitalRebalanceResult> {
+    const queuedAssets = await this.client.getTotalQueuedAssets();
+    const reservedRedemptionAssets = await this.client.getReservedRedemptionAssets();
+    const deployedCapital = await this.client.getDeployedCapital();
+    const totalPendingRedeemShares = await this.client.getTotalPendingRedeemShares();
+    const estimatedPendingRedemptionAssets =
+      totalPendingRedeemShares > 0n ? await this.previewRedeem(totalPendingRedeemShares) : 0n;
+    const reserveBuffer = BigInt(
+      Math.max(0, Math.round(this.vaultConfig.vaultReserveUsdc * 10 ** USDC_DECIMALS)),
+    );
+    const minTransferAmount = BigInt(
+      Math.max(0, Math.round(this.vaultConfig.minAllocationAmountUsdc * 10 ** USDC_DECIMALS)),
+    );
+    const withdrawalLiability = [
+      reservedRedemptionAssets,
+      params.pendingWithdrawalLiability,
+      estimatedPendingRedemptionAssets,
+    ].reduce((max, value) => (value > max ? value : max), 0n);
+    const requiredVaultBalance = queuedAssets + withdrawalLiability + reserveBuffer;
+
+    if (!this.vaultConfig.autoLiquidityManagement) {
+      return {
+        success: true,
+        action: "none",
+        amount: 0n,
+        requiredVaultBalance,
+        queuedAssets,
+        reservedRedemptionAssets,
+        pendingWithdrawalLiability: withdrawalLiability,
+        details: "Automatic liquidity management disabled in vault config.",
+      };
+    }
+
+    const shortfall =
+      requiredVaultBalance > params.vaultUsdcBalance
+        ? requiredVaultBalance - params.vaultUsdcBalance
+        : 0n;
+
+    if (shortfall > 0n) {
+      if (!this.adminKey) {
+        return {
+          success: false,
+          action: "none",
+          amount: 0n,
+          requiredVaultBalance,
+          queuedAssets,
+          reservedRedemptionAssets,
+          pendingWithdrawalLiability: withdrawalLiability,
+          error: "Admin key not configured for capital recall.",
+          details: "Vault cash is below required liabilities but admin recall is unavailable.",
+        };
+      }
+
+      let recallAmount = shortfall;
+      if (params.safeUsdcBalance < recallAmount) {
+        recallAmount = params.safeUsdcBalance;
+      }
+      if (deployedCapital < recallAmount) {
+        recallAmount = deployedCapital;
+      }
+
+      if (recallAmount < minTransferAmount || recallAmount === 0n) {
+        return {
+          success: true,
+          action: "none",
+          amount: 0n,
+          requiredVaultBalance,
+          queuedAssets,
+          reservedRedemptionAssets,
+          pendingWithdrawalLiability: withdrawalLiability,
+          details:
+            "Vault cash is below the liability target, but recallable capital is below the minimum transfer amount or currently unavailable.",
+        };
+      }
+
+      const walletClient = this.getAdminWalletClient();
+      const approvalResult = await this.ensureRecallAllowance(recallAmount);
+      if (!approvalResult.success) {
+        return {
+          success: false,
+          action: "none",
+          amount: 0n,
+          requiredVaultBalance,
+          queuedAssets,
+          reservedRedemptionAssets,
+          pendingWithdrawalLiability: withdrawalLiability,
+          error: approvalResult.error,
+          details: "Failed to approve the vault to recall USDC from the trading safe.",
+        };
+      }
+      const result = await this.retryWithBackoff(() =>
+        this.client.recallCapital(walletClient, recallAmount),
+      );
+      if (!result.success || !result.txHash) {
+        return {
+          success: false,
+          action: "none",
+          amount: 0n,
+          requiredVaultBalance,
+          queuedAssets,
+          reservedRedemptionAssets,
+          pendingWithdrawalLiability: withdrawalLiability,
+          error: result.error,
+          details: "Failed to recall capital from the trading safe.",
+        };
+      }
+
+      const confirmResult = await this.retryWithBackoff(() =>
+        this.client.waitForTransaction(result.txHash!),
+      );
+      if (!confirmResult.success) {
+        return {
+          success: false,
+          action: "none",
+          amount: 0n,
+          requiredVaultBalance,
+          queuedAssets,
+          reservedRedemptionAssets,
+          pendingWithdrawalLiability: withdrawalLiability,
+          txHash: result.txHash,
+          error: confirmResult.error,
+          details: "Capital recall transaction failed to confirm.",
+        };
+      }
+
+      return {
+        success: true,
+        action: "deallocated",
+        amount: recallAmount,
+        requiredVaultBalance,
+        queuedAssets,
+        reservedRedemptionAssets,
+        pendingWithdrawalLiability: withdrawalLiability,
+        txHash: result.txHash,
+        details: `Recalled ${formatUnits(recallAmount, USDC_DECIMALS)} USDC to restore withdrawal and queue coverage.`,
+      };
+    }
+
+    const hasWithdrawalPressure = withdrawalLiability > 0n || reservedRedemptionAssets > 0n;
+    const excessVaultBalance =
+      params.vaultUsdcBalance > requiredVaultBalance
+        ? params.vaultUsdcBalance - requiredVaultBalance
+        : 0n;
+
+    if (
+      this.vaultConfig.defaultMode !== "live" ||
+      !SUPPORTS_POLYMARKET_TRADING ||
+      !this.adminKey ||
+      hasWithdrawalPressure ||
+      excessVaultBalance < minTransferAmount ||
+      excessVaultBalance === 0n
+    ) {
+      return {
+        success: true,
+        action: "none",
+        amount: 0n,
+        requiredVaultBalance,
+        queuedAssets,
+        reservedRedemptionAssets,
+        pendingWithdrawalLiability: withdrawalLiability,
+        details: hasWithdrawalPressure
+          ? "Withdrawal liabilities still exist, so excess vault cash remains in the vault."
+          : "No deployable excess vault cash above liabilities and reserve buffer.",
+      };
+    }
+
+    const walletClient = this.getAdminWalletClient();
+    const result = await this.retryWithBackoff(() =>
+      this.client.deployCapital(walletClient, excessVaultBalance),
+    );
+    if (!result.success || !result.txHash) {
+      return {
+        success: false,
+        action: "none",
+        amount: 0n,
+        requiredVaultBalance,
+        queuedAssets,
+        reservedRedemptionAssets,
+        pendingWithdrawalLiability: withdrawalLiability,
+        error: result.error,
+        details: "Failed to deploy excess vault cash to the trading safe.",
+      };
+    }
+
+    const confirmResult = await this.retryWithBackoff(() =>
+      this.client.waitForTransaction(result.txHash!),
+    );
+    if (!confirmResult.success) {
+      return {
+        success: false,
+        action: "none",
+        amount: 0n,
+        requiredVaultBalance,
+        queuedAssets,
+        reservedRedemptionAssets,
+        pendingWithdrawalLiability: withdrawalLiability,
+        txHash: result.txHash,
+        error: confirmResult.error,
+        details: "Capital deployment transaction failed to confirm.",
+      };
+    }
+
+    return {
+      success: true,
+      action: "allocated",
+      amount: excessVaultBalance,
+      requiredVaultBalance,
+      queuedAssets,
+      reservedRedemptionAssets,
+      pendingWithdrawalLiability: withdrawalLiability,
+      txHash: result.txHash,
+      details: `Deployed ${formatUnits(excessVaultBalance, USDC_DECIMALS)} USDC of excess vault cash to the trading safe.`,
     };
   }
 
@@ -924,7 +1484,7 @@ export class CustomVaultProvider implements IVaultProvider {
     return {
       asyncRedemption: true,
       instantRedemption: false,
-      cancelBeforeSettlement: true,
+      cancelBeforeSettlement: false,
       proRataSettlement: true,
       requiresNavForSettlement: true,
       supportsRollover: false,
@@ -951,14 +1511,17 @@ export class CustomVaultProvider implements IVaultProvider {
         return await fn();
       } catch (error) {
         lastError = error as Error;
-        
+
         if (attempt < maxRetries) {
           const delayMs = initialDelayMs * Math.pow(2, attempt);
-          logger.warn(`CustomVaultProvider: Retry attempt ${attempt + 1}/${maxRetries} after ${delayMs}ms`, {
-            error: lastError.message,
-            vaultId: this.config.vaultId,
-          });
-          await new Promise(resolve => setTimeout(resolve, delayMs));
+          logger.warn(
+            `CustomVaultProvider: Retry attempt ${attempt + 1}/${maxRetries} after ${delayMs}ms`,
+            {
+              error: lastError.message,
+              vaultId: this.config.vaultId,
+            },
+          );
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
         }
       }
     }
@@ -966,9 +1529,6 @@ export class CustomVaultProvider implements IVaultProvider {
     throw lastError ?? new Error("Max retries exceeded");
   }
 
-  /**
-   * Map redemption request data from contract to domain RedemptionRequest
-   */
   /**
    * Map redemption request data from contract to domain RedemptionRequest
    */

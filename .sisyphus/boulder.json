@@ -1,9 +1,9 @@
 {
-  "active_plan": "/Users/harsh/Developer/polymarket-mvp/.sisyphus/plans/epoch-tranche-remix-mainnet-readiness.md",
-  "started_at": "2026-03-04T11:24:35.219Z",
+  "active_plan": "/Users/harsh/Developer/polymarket-mvp/.sisyphus/plans/boundary-nav-and-epoch-realization-hardening.md",
+  "started_at": "2026-03-10T22:38:46.429Z",
   "session_ids": [
-    "ses_3f6e86955ffeGlb1QIKxYwCu8I"
+    "ses_331d00af9ffeld36kTrJffw5Zm"
   ],
-  "plan_name": "epoch-tranche-remix-mainnet-readiness",
+  "plan_name": "boundary-nav-and-epoch-realization-hardening",
   "agent": "atlas"
 }

@@ -19,7 +19,6 @@ interface RedemptionPanelProps {
   isLoading: boolean;
   onRequestCreated: () => void;
   onClaimSuccess: () => void;
-  onCancelRequest: (requestId: string) => Promise<void>;
   userShares: bigint;
 }
 
@@ -31,7 +30,6 @@ export function RedemptionPanel({
   isLoading,
   onRequestCreated,
   onClaimSuccess,
-  onCancelRequest,
   userShares,
 }: RedemptionPanelProps) {
   const [activeTab, setActiveTab] = useState<string>("request");
@@ -127,7 +125,6 @@ export function RedemptionPanel({
               requests={pendingRequests}
               epochInfo={epochInfo}
               isLoading={isLoading}
-              onCancel={onCancelRequest}
             />
           </TabsContent>
 
@@ -137,6 +134,7 @@ export function RedemptionPanel({
               isLoading={isLoading}
               onClaimSuccess={onClaimSuccess}
               vaultId={vault.id}
+              vaultAddress={vault.config.vaultAddress}
             />
           </TabsContent>
         </Tabs>

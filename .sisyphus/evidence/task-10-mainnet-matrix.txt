@@ -1,0 +1,323 @@
+================================================================================
+VAULT REGRESSION MATRIX RUNNER
+================================================================================
+[0;32m[INFO][0m Validating environment...
+[1;33m[WARN][0m POLYGON_RPC_URL not set. Will use default public RPC.
+[0;32m[INFO][0m Environment validated: VAULT_NETWORK=mainnet
+[0;32m[INFO][0m Running staging readiness check...
+
+======================================================================
+ STAGING READINESS CHECK
+======================================================================
+ Network:     mainnet (chainId=137)
+ Timestamp:   2026-03-09T20:34:07.484Z
+ Status:      ✅ READY
+----------------------------------------------------------------------
+
+⚠️  WARNINGS:
+  env:VAULT_ADDRESS
+     VAULT_ADDRESS is recommended but not set
+  env:SAFE_ADDRESS
+     SAFE_ADDRESS is recommended but not set
+  vault:ContractShape
+     VAULT_ADDRESS not set, skipping contract shape validation
+  polymarket:BuilderCredentials
+     Polymarket builder credentials incomplete on mainnet. Trading may fail.
+  dualsafe:TradingSafe
+     VAULT_ADDRESS not set, skipping tradingSafe validation
+  dualsafe:CapitalFunctions
+     VAULT_ADDRESS not set, skipping capital functions validation
+  dualsafe:VaultUSDCBalance
+     VAULT_ADDRESS not set, skipping USDC balance check
+  dualsafe:TradingSafeApproval
+     VAULT_ADDRESS not set, skipping tradingSafe approval check
+
+----------------------------------------------------------------------
+ Summary: 12 passed, 0 failed, 8 warnings
+======================================================================
+
+Readiness check completed in 589ms with exit code 0
+[0;32m[INFO][0m Readiness check PASSED
+[0;32m[INFO][0m Running build verification...
+[0;32m[INFO][0m Building apps/vault-api...
+
+> vault@0.0.1 build /Users/harsh/Developer/polymarket-mvp/apps/vault-api
+> tsc -p tsconfig.json
+
+[0;32m[INFO][0m Building apps/vault-web...
+
+> vault-web@0.0.1 build /Users/harsh/Developer/polymarket-mvp/apps/vault-web
+> next build
+
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+   ▲ Next.js 16.0.7 (Turbopack)
+   - Environments: .env.local
+
+   Creating an optimized production build ...
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+ ✓ Compiled successfully in 9.4s
+   Running TypeScript ...
+   Collecting page data using 7 workers ...
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+   Generating static pages using 7 workers (0/4) ...
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+   Generating static pages using 7 workers (1/4) 
+   Generating static pages using 7 workers (2/4) 
+   Generating static pages using 7 workers (3/4) 
+ ✓ Generating static pages using 7 workers (4/4) in 430.2ms
+   Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+└ ● /vault/[id]
+  └ /vault/1
+
+
+○  (Static)  prerendered as static content
+●  (SSG)     prerendered as static HTML (uses generateStaticParams)
+
+[0;32m[INFO][0m Build verification PASSED
+[0;32m[INFO][0m Running contract tests...
+Warning: This is a nightly build of Foundry. It is recommended to use the latest stable version. To mute this warning set `FOUNDRY_DISABLE_NIGHTLY_WARNING` in your environment. 
+
+No files changed, compilation skipped
+
+Ran 5 tests for test/SnapshotTrancheVaultFreeze.t.sol:SnapshotTrancheVaultFreezeTest
+[PASS] test_CanForceClose() (gas: 253742)
+[PASS] test_ForceClosePosition_Success() (gas: 453195)
+[PASS] test_FreezeSnapshot_PreventsDoubleFreeze() (gas: 252266)
+[PASS] test_FreezeSnapshot_RequiresSnapshotRole() (gas: 16327)
+[PASS] test_FreezeSnapshot_Success() (gas: 370760)
+Suite result: ok. 5 passed; 0 failed; 0 skipped; finished in 7.05ms (1.00ms CPU time)
+
+Ran 1 test for test/DebugTest.t.sol:DebugTest
+[PASS] testDebugTimestamp() (gas: 250203)
+Suite result: ok. 1 passed; 0 failed; 0 skipped; finished in 7.55ms (51.71µs CPU time)
+
+Ran 31 tests for test/NavSnapshot.t.sol:NavSnapshotTest
+[PASS] testConstructorRevertsZeroAddress() (gas: 36798)
+[PASS] testConstructorSetsNavUpdater() (gas: 10075)
+[PASS] testEnforceFreshNavRevertsAfter6h01m() (gas: 241116)
+[PASS] testEnforceFreshNavRevertsWhenNoSnapshot() (gas: 11868)
+[PASS] testEnforceFreshNavSucceedsAt5h59m() (gas: 237968)
+[PASS] testEnforceFreshNavSucceedsImmediatelyAfterSnapshot() (gas: 237582)
+[PASS] testEpochHistoryTracking() (gas: 471563)
+[PASS] testFreshNavAllowsSettlement() (gas: 240534)
+[PASS] testGetEpochAtIndexRevertsOutOfBounds() (gas: 11185)
+[PASS] testGetEpochCountEmpty() (gas: 8434)
+[PASS] testGetNavByEpochReturnsCorrectData() (gas: 239054)
+[PASS] testGetNavByEpochReturnsEmptyForUnknownEpoch() (gas: 15293)
+[PASS] testIsNavStaleFreshAt5h59m() (gas: 238164)
+[PASS] testIsNavStaleReturnsFalseAtThresholdBoundary() (gas: 238831)
+[PASS] testIsNavStaleReturnsFalseImmediatelyAfterSnapshot() (gas: 237815)
+[PASS] testIsNavStaleReturnsTrueAfterThreshold() (gas: 238982)
+[PASS] testIsNavStaleReturnsTrueWhenNoSnapshot() (gas: 7934)
+[PASS] testRecordNavSnapshotMultipleEpochs() (gas: 357764)
+[PASS] testRecordNavSnapshotOnlyNavUpdater() (gas: 13859)
+[PASS] testRecordNavSnapshotRevertsZeroEpoch() (gas: 13850)
+[PASS] testRecordNavSnapshotRevertsZeroTotalAssets() (gas: 13913)
+[PASS] testRecordNavSnapshotSuccess() (gas: 241775)
+[PASS] testSetNavUpdaterOnlyCurrentUpdater() (gas: 15208)
+[PASS] testSetNavUpdaterRevertsZeroAddress() (gas: 13575)
+[PASS] testSetNavUpdaterSuccess() (gas: 22825)
+[PASS] testSettlementPrecheckRevertsAfter6h01m() (gas: 241388)
+[PASS] testSettlementPrecheckRevertsWhenNoSnapshot() (gas: 11765)
+[PASS] testSettlementPrecheckSucceedsAt5h59m() (gas: 240148)
+[PASS] testSettlementPrecheckSucceedsImmediatelyAfterSnapshot() (gas: 239375)
+[PASS] testStaleNavBlocksSettlement() (gas: 241300)
+[PASS] testStaleNavExplicitRevertReason() (gas: 256988)
+Suite result: ok. 31 passed; 0 failed; 0 skipped; finished in 8.39ms (2.79ms CPU time)
+
+Ran 40 tests for test/WeeklyEpochVault.edgecases.t.sol:WeeklyEpochVaultEdgeCaseTest
+[PASS] testAuthorizationErrorsSequence() (gas: 56881)
+[PASS] testCancelRedeemForDifferentUserReverts() (gas: 16951)
+[PASS] testCancelRedeemRequestZeroAmountReverts() (gas: 12408)
+[PASS] testCancelRedeemWithNoPendingRequestReverts() (gas: 15536)
+[PASS] testClaimMoreThanClaimableReverts() (gas: 20744)
+[PASS] testClaimWithNoClaimableRequestReverts() (gas: 21231)
+[PASS] testClaimZeroAmountRevertsBeforeClaimableCheck() (gas: 18365)
+[PASS] testControllerCannotRedeemForDifferentController() (gas: 21651)
+[PASS] testEmergencyModeCanBeDisabled() (gas: 30841)
+[PASS] testMultipleOperatorChangesEmitEvents() (gas: 75129)
+[PASS] testMultipleOperatorsForSameController() (gas: 91399)
+[PASS] testOperatorAuthorizationStorage() (gas: 40105)
+[PASS] testOperatorCanBeReapprovedAfterRevocation() (gas: 54640)
+[PASS] testOperatorSetEventOnApproval() (gas: 39923)
+[PASS] testOperatorSetEventOnRevocation() (gas: 31219)
+[PASS] testOperatorStatusIndependentPerController() (gas: 63300)
+[PASS] testRandomUserCannotRequestRedeemForOthers() (gas: 18912)
+[PASS] testRedeemRequiresControllerOrOperator() (gas: 22289)
+[PASS] testRedeemZeroAmountReverts() (gas: 18057)
+[PASS] testRedeemZeroControllerReverts() (gas: 17698)
+[PASS] testRedeemZeroReceiverReverts() (gas: 18142)
+[PASS] testRepeatedClaimAttemptsFailConsistently() (gas: 42885)
+[PASS] testRequestRedeemBlockedInEmergencyMode() (gas: 42879)
+[PASS] testRequestRedeemZeroAmountReverts() (gas: 12344)
+[PASS] testRequestRedeemZeroControllerReverts() (gas: 12971)
+[PASS] testRequestRedeemZeroOwnerReverts() (gas: 12197)
+[PASS] testRevokedOperatorCannotRedeem() (gas: 37044)
+[PASS] testRevokedOperatorCannotRedeemForController() (gas: 36868)
+[PASS] testRevokedOperatorCannotRequestRedeem() (gas: 38517)
+[PASS] testRevokedOperatorCannotRequestRedeemForOwner() (gas: 34007)
+[PASS] testRevokedOperatorCannotWithdraw() (gas: 36703)
+[PASS] testSetOperatorZeroAddressReverts() (gas: 12339)
+[PASS] testUnauthorizedControllerCannotRedeem() (gas: 23649)
+[PASS] testUnauthorizedControllerCannotWithdraw() (gas: 23134)
+[PASS] testWithdrawMoreThanClaimableReverts() (gas: 21068)
+[PASS] testWithdrawRequiresControllerOrOperator() (gas: 22605)
+[PASS] testWithdrawWithNoClaimableRequestReverts() (gas: 21005)
+[PASS] testWithdrawZeroAmountReverts() (gas: 17239)
+[PASS] testWithdrawZeroControllerReverts() (gas: 17975)
+[PASS] testWithdrawZeroReceiverReverts() (gas: 17272)
+Suite result: ok. 40 passed; 0 failed; 0 skipped; finished in 10.50ms (6.13ms CPU time)
+
+Ran 18 tests for test/EpochTrancheVault.t.sol:EpochTrancheVaultTest
+[PASS] testCarryConservationInvariant() (gas: 2672787)
+[PASS] testChunkedSettlementInvariant() (gas: 6440719)
+[PASS] testConstructorRejectsZeroTradingSafe() (gas: 124404)
+[PASS] testDeployCapital() (gas: 810332)
+[PASS] testDeployCapitalEmitsEvent() (gas: 803819)
+[PASS] testDeployCapitalOnlyAdmin() (gas: 752997)
+[FAIL: Error != expected error: AccessControlUnauthorizedAccount(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496, 0xa49807205ce4d355092ef5a8a18f56e8913cf4a201fbe287825b095693c21775) != InsufficientShares(200000000000 [2e11], 100000000000 [1e11])] testDeployCapitalRevertsInsufficientBalance() (gas: 801775)
+[PASS] testDeployCapitalRevertsZeroAmount() (gas: 14465)
+[PASS] testFreezeEconomicsInvariants() (gas: 2397591)
+[PASS] testGetDeployedCapital() (gas: 805448)
+[PASS] testRecallCapital() (gas: 830332)
+[PASS] testRecallCapitalEmitsEvent() (gas: 848099)
+[PASS] testRecallCapitalOnlyAdmin() (gas: 13704)
+[PASS] testRecallCapitalRevertsExceedsDeployed() (gas: 804639)
+[PASS] testRecallCapitalRevertsZeroAmount() (gas: 14005)
+[PASS] testThresholdDustInvariant() (gas: 1740917)
+[PASS] testTotalAssetsIncludesDeployedCapital() (gas: 804729)
+[PASS] testTradingSafeIsSet() (gas: 9362)
+Suite result: FAILED. 17 passed; 1 failed; 0 skipped; finished in 15.25ms (7.69ms CPU time)
+
+Ran 16 tests for test/WeeklyEpochVault.extensions.t.sol:WeeklyEpochVaultExtensionTest
+[PASS] testExtension_CanSettleEpoch_FalseWhenStaleNAV() (gas: 502136)
+[PASS] testExtension_CancelRedeemRequest_EmitsEvent() (gas: 494576)
+[PASS] testExtension_CancelRedeemRequest_PartialCancellation() (gas: 494718)
+[PASS] testExtension_CancelRedeemRequest_ReturnsShares() (gas: 500656)
+[PASS] testExtension_CancelRedeemRequest_RevertsAfterSettlementCutoff() (gas: 472547)
+[PASS] testExtension_EpochSettledEvent() (gas: 701981)
+[PASS] testExtension_FreshNAV_AllowsSettlement() (gas: 706303)
+[PASS] testExtension_GetCurrentEpoch() (gas: 6849)
+[PASS] testExtension_GetEpochEnd() (gas: 11424)
+[PASS] testExtension_GetSettlementStatus() (gas: 710926)
+[PASS] testExtension_NAVUpdatedEvent() (gas: 40726)
+[PASS] testExtension_ProRataDistribution() (gas: 724663)
+[PASS] testExtension_SettleEpochChunked_CompletesLargeSettlement() (gas: 72561234)
+[PASS] testExtension_SettleEpoch_MovesPendingToClaimable() (gas: 710740)
+[PASS] testExtension_StaleNAV_BlocksSettleEpoch() (gas: 509480)
+[PASS] testExtension_StaleNAV_BlocksSettleEpochChunked() (gas: 704925)
+Suite result: ok. 16 passed; 0 failed; 0 skipped; finished in 99.40ms (68.50ms CPU time)
+
+Ran 30 tests for test/WeeklyEpochVault.erc7540.t.sol:WeeklyEpochVaultERC7540ComplianceTest
+[PASS] testBothViewsReturnZeroAfterClaim() (gas: 781525)
+[PASS] testCannotClaimTwice() (gas: 783101)
+[PASS] testClaimableReturnsCorrectAfterSettlement() (gas: 748697)
+[PASS] testClaimableReturnsZeroForPending() (gas: 472987)
+[PASS] testEpochSettlementWithERC7540Lifecycle() (gas: 781807)
+[PASS] testFullLifecycleRequestToClaimableToClaimed() (gas: 788145)
+[PASS] testIsOperatorReturnsFalseForNonOperators() (gas: 13261)
+[PASS] testNonOperatorCannotActOnBehalf() (gas: 325040)
+[PASS] testOperatorCanClaimOnBehalf() (gas: 803611)
+[PASS] testOperatorCanRequestRedeemOnBehalf() (gas: 494524)
+[PASS] testOperatorCanSpecifyDifferentReceiver() (gas: 802943)
+[PASS] testOperatorPermissionsAreControllerSpecific() (gas: 347301)
+[PASS] testPendingRedeemRequestReturnsCorrectShares() (gas: 471208)
+[PASS] testPendingReturnsZeroAfterSettlement() (gas: 748549)
+[PASS] testPreviewRedeemReturnsZeroForClaimed() (gas: 780499)
+[PASS] testPreviewRedeemRevertsBeforeClaimable() (gas: 473219)
+[PASS] testPreviewRedeemSucceedsAfterClaimable() (gas: 748193)
+[PASS] testPreviewWithdrawRevertsBeforeClaimable() (gas: 472691)
+[PASS] testPreviewWithdrawSucceedsAfterClaimable() (gas: 748172)
+[PASS] testProRataWithERC7540Claimable() (gas: 748314)
+[PASS] testReceiverCanDifferFromController() (gas: 783206)
+[PASS] testRedeemClaimedEventEmitted() (gas: 780363)
+[PASS] testRedeemRequestEventEmitted() (gas: 472444)
+[PASS] testSetOperatorGrantsPermissionAndEmitsEvent() (gas: 42309)
+[PASS] testSetOperatorRevokesPermission() (gas: 34918)
+[PASS] testSupportsInterfaceIERC165() (gas: 6010)
+[PASS] testSupportsInterfaceIERC7540Cancel() (gas: 5946)
+[PASS] testSupportsInterfaceIERC7540Claim() (gas: 6324)
+[PASS] testSupportsInterfaceIERC7540Redeem() (gas: 5744)
+[PASS] testSupportsInterfaceReturnsFalseForUnsupported() (gas: 6121)
+Suite result: ok. 30 passed; 0 failed; 0 skipped; finished in 119.41ms (16.61ms CPU time)
+
+Ran 60 tests for test/EpochMath.t.sol:EpochMathTest
+[PASS] testFuzz_BoundaryDeterminism(uint256) (runs: 256, μ: 11205, ~: 11205)
+[PASS] testFuzz_BucketRequestDeterminism(uint256) (runs: 256, μ: 8367, ~: 8391)
+[PASS] testFuzz_ConfigActivationDeterminism(uint256,uint256) (runs: 256, μ: 10716, ~: 10739)
+[PASS] testFuzz_DepositCutoffDeterminism(uint256,uint256) (runs: 256, μ: 8899, ~: 8972)
+[PASS] testFuzz_EpochCalculation(uint256) (runs: 256, μ: 12649, ~: 12678)
+[PASS] testFuzz_MintOpenDeterminism(uint256,uint256) (runs: 256, μ: 9890, ~: 9975)
+[PASS] testFuzz_RedemptionFreezeDeterminism(uint256,uint256) (runs: 256, μ: 10700, ~: 10781)
+[PASS] test_AntiGaming_DeterministicBoundaries() (gas: 657734)
+[PASS] test_AntiGaming_SameEpochRequests() (gas: 15115)
+[PASS] test_Boundary_ExactEpochEnd_MapsToNextEpoch() (gas: 9058)
+[PASS] test_Boundary_MultipleEpochBoundaries() (gas: 26390)
+[PASS] test_Boundary_PreEndExactEndPostEnd() (gas: 628511)
+[PASS] test_Boundary_TimingAtExactEpochEnd() (gas: 11707)
+[PASS] test_BucketRequest_AtExactBoundary() (gas: 8579)
+[PASS] test_BucketRequest_AtGenesis() (gas: 6282)
+[PASS] test_BucketRequest_MidEpoch() (gas: 7376)
+[PASS] test_ClaimWindow_OutsideWindow() (gas: 10045)
+[PASS] test_ClaimWindow_WithinWindow() (gas: 9594)
+[PASS] test_ConfigActivationTime_DefaultDelay() (gas: 9350)
+[PASS] test_ConfigActivationTime_ZeroDelay() (gas: 7659)
+[PASS] test_ConfigActivation_DeterministicAcrossEpochs() (gas: 23809)
+[PASS] test_ConsecutiveEpochsContiguous() (gas: 27970)
+[PASS] test_DailyEpochs() (gas: 7995)
+[PASS] test_DepositCutoff_AfterCutoff() (gas: 9286)
+[PASS] test_DepositCutoff_ExactBoundary() (gas: 630955)
+[PASS] test_DepositCutoff_WithinWindow() (gas: 11059)
+[PASS] test_Documentation_BoundaryRule() (gas: 11992)
+[PASS] test_Documentation_EpochContinuity() (gas: 36113)
+[PASS] test_EpochStartLessThanEnd() (gas: 27033)
+[PASS] test_FifteenMinuteEpochs() (gas: 8789)
+[PASS] test_GetCurrentEpoch_AtGenesis() (gas: 6451)
+[PASS] test_GetCurrentEpoch_MultipleEpochs() (gas: 6101)
+[PASS] test_GetCurrentEpoch_OneEpochLater() (gas: 6761)
+[PASS] test_GetDepositCutoffTime() (gas: 8123)
+[PASS] test_GetEpochEnd() (gas: 8780)
+[PASS] test_GetEpochStart() (gas: 8400)
+[PASS] test_GetRedemptionFreezeStart() (gas: 8676)
+[PASS] test_HourlyEpochs() (gas: 7578)
+[PASS] test_IsEpochBoundary_False() (gas: 7047)
+[PASS] test_IsEpochBoundary_True() (gas: 11141)
+[PASS] test_MintOpen_AtAndAfterOffset() (gas: 9298)
+[PASS] test_MintOpen_BeforeOffset() (gas: 8779)
+[PASS] test_MintOpen_ExactBoundary() (gas: 628785)
+[PASS] test_NoOverflow_LargeEpochs() (gas: 7280)
+[PASS] test_NoOverflow_LargeTimestamps() (gas: 625556)
+[PASS] test_RedemptionFreeze_AtAndAfterFreeze() (gas: 9551)
+[PASS] test_RedemptionFreeze_BeforeFreeze() (gas: 10562)
+[PASS] test_RedemptionFreeze_ExactBoundary() (gas: 628912)
+[PASS] test_Revert_GetCurrentEpoch_BeforeGenesis() (gas: 9684)
+[PASS] test_Revert_Overflow_MaxUintTimestamp() (gas: 628625)
+[PASS] test_Revert_UnderflowBeforeGenesis() (gas: 8496)
+[PASS] test_Revert_ZeroEpochDuration() (gas: 37526)
+[PASS] test_SecondsUntilEpochEnd_AtBoundary() (gas: 8268)
+[PASS] test_SecondsUntilEpochEnd_AtStart() (gas: 8485)
+[PASS] test_SecondsUntilEpochEnd_MidEpoch() (gas: 7392)
+[PASS] test_SettlementWindow_OutsideWindow() (gas: 10887)
+[PASS] test_SettlementWindow_WithinWindow() (gas: 8184)
+[PASS] test_ShouldUseOriginalConfig_False() (gas: 7553)
+[PASS] test_ShouldUseOriginalConfig_SameEpoch() (gas: 7113)
+[PASS] test_ShouldUseOriginalConfig_True() (gas: 7094)
+Suite result: ok. 60 passed; 0 failed; 0 skipped; finished in 119.49ms (286.15ms CPU time)
+
+Ran 8 test suites in 211.46ms (387.04ms CPU time): 200 tests passed, 1 failed, 0 skipped (201 total tests)
+
+Failing tests:
+Encountered 1 failing test in test/EpochTrancheVault.t.sol:EpochTrancheVaultTest
+[FAIL: Error != expected error: AccessControlUnauthorizedAccount(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496, 0xa49807205ce4d355092ef5a8a18f56e8913cf4a201fbe287825b095693c21775) != InsufficientShares(200000000000 [2e11], 100000000000 [1e11])] testDeployCapitalRevertsInsufficientBalance() (gas: 801775)
+
+Encountered a total of 1 failing tests, 200 tests succeeded
+
+Tip: Run `forge test --rerun` to retry only the 1 failed test
+[0;31m[ERROR][0m Contract tests FAILED

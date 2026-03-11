@@ -2,7 +2,7 @@ import "dotenv/config";
 
 import type { VaultInstanceConfig } from "./config/types.js";
 import { getEnabledVaultConfigs, resolveVaultIdentity } from "./config/index.js";
-import { env } from "./env.js";
+import { env, isTradingEnabled } from "./env.js";
 import { logger } from "./logger.js";
 import { createNavOracle } from "./services/navOracle.js";
 import { ResolutionCheckerService } from "./services/resolutionChecker.js";
@@ -20,10 +20,10 @@ import { positionRepository } from "./repositories/positionRepository.js";
 import type { ResolvedVaultIdentity } from "./config/identityResolver.js";
 import { Wallet } from "ethers";
 import { ClobClient } from "@polymarket/clob-client";
-import { POLYGON_CHAIN_ID } from "./constants.js";
+import { POLYGON_CHAIN_ID, SUPPORTS_POLYMARKET_TRADING } from "./constants.js";
 import { createPublicClient, type Address } from "viem";
-import { polygon } from "viem/chains";
-import { createPolygonTransport } from "./rpcTransport.js";
+import { createNetworkTransport } from "./rpcTransport.js";
+import { getNetworkConfigFromEnv } from "./config/network.js";
 
 const SAFE_ABI = [
   {
@@ -90,6 +90,9 @@ async function runStartupProbes(
     { addr: identity.safeAddress, name: "safeAddress" },
     { addr: identity.vaultAddress, name: "vaultAddress" },
   ];
+  if (identity.tradingSafeAddress) {
+    addressChecks.push({ addr: identity.tradingSafeAddress, name: "tradingSafeAddress" });
+  }
 
   for (const { addr, name } of addressChecks) {
     if (!isValidAddress(addr)) {
@@ -103,39 +106,54 @@ async function runStartupProbes(
 
   // 2. Safe Owner Probe
   try {
+    const networkConfig = getNetworkConfigFromEnv();
     const client = createPublicClient({
-      chain: polygon,
-      transport: createPolygonTransport(env.POLYGON_RPC_URL || "https://polygon-rpc.com"),
+      chain: networkConfig.chain,
+      transport: createNetworkTransport(),
     });
 
-    const owners = (await client.readContract({
-      address: config.safeAddress as Address,
-      abi: SAFE_ABI,
-      functionName: "getOwners",
-    })) as string[];
-
+    const safeContractAddress = (config.tradingSafeAddress ?? config.safeAddress) as Address;
+    const code = await client.getCode({ address: safeContractAddress });
     const operatorWallet = new Wallet(identity.safeOperatorKey);
     const operatorAddress = operatorWallet.address.toLowerCase();
-    const normalizedOwners = owners.map((o) => o.toLowerCase());
+    if (!code || code === "0x") {
+      if (operatorAddress !== safeContractAddress.toLowerCase()) {
+        throw new Error(
+          `${vaultLabel}: EOA wallet probe failed - safeOperatorKey address ${operatorAddress} does not match trading wallet ${safeContractAddress}`,
+        );
+      }
 
-    if (!normalizedOwners.includes(operatorAddress)) {
-      throw new Error(
-        `${vaultLabel}: Safe owner probe failed - safeOperatorKey address ${operatorAddress} is not in Safe owners list [${owners.join(", ")}]`,
-      );
+      logger.debug(`${vaultLabel}: EOA wallet probe passed (${operatorAddress})`);
+    } else {
+      const owners = (await client.readContract({
+        address: safeContractAddress,
+        abi: SAFE_ABI,
+        functionName: "getOwners",
+      })) as string[];
+      const normalizedOwners = owners.map((o) => o.toLowerCase());
+
+      if (!normalizedOwners.includes(operatorAddress)) {
+        throw new Error(
+          `${vaultLabel}: Safe owner probe failed - safeOperatorKey address ${operatorAddress} is not in Safe owners list [${owners.join(", ")}]`,
+        );
+      }
+
+      logger.debug(`${vaultLabel}: Safe owner probe passed (operator ${operatorAddress} is owner)`);
     }
-
-    logger.debug(`${vaultLabel}: Safe owner probe passed (operator ${operatorAddress} is owner)`);
   } catch (error) {
-    if (error instanceof Error && error.message.includes("Safe owner probe failed")) {
+    if (
+      error instanceof Error &&
+      (error.message.includes("Safe owner probe failed") ||
+        error.message.includes("EOA wallet probe failed"))
+    ) {
       throw error;
     }
-    throw new Error(
-      `${vaultLabel}: Safe owner probe failed - could not query Safe contract: ${(error as Error).message}`,
-    );
+    throw new Error(`${vaultLabel}: Trading wallet probe failed - ${(error as Error).message}`);
   }
-
-  // 3. CLOB Identity Probe (warning only)
-  if (config.type === "bot") {
+  // 3. CLOB Identity Probe (warning only, skip on Amoy)
+  if (!SUPPORTS_POLYMARKET_TRADING) {
+    logger.info(`${vaultLabel}: CLOB identity probe skipped (Polymarket not available on Amoy)`);
+  } else if (config.type === "bot") {
     try {
       const wallet = new Wallet(identity.tradingSignerKey);
       const builderConfig = undefined; // Skip builder config for probe - not required
@@ -148,7 +166,7 @@ async function runStartupProbes(
         identity.tradingSignatureType,
         identity.tradingFunderAddress,
         undefined,
-        true,
+        undefined,
         builderConfig,
       );
 
@@ -382,7 +400,7 @@ async function initializeVaults(): Promise<{
       const navOracle = createNavOracle(config, identity);
 
       const safeWallet = new SafeWalletService(
-        config.safeAddress,
+        config.tradingSafeAddress ?? config.safeAddress,
         identity.safeOperatorKey,
         env.POLYGON_RPC_URL,
       );
@@ -393,7 +411,7 @@ async function initializeVaults(): Promise<{
       );
       vaultResolutionCheckers.set(config.id, resolutionChecker);
 
-      if (isTradingEnabledConfig(config)) {
+      if (isTradingEnabledConfig(config) && SUPPORTS_POLYMARKET_TRADING) {
         const tradingClient = createVaultTradingClient(config);
         const orchestrator = createTradingOrchestrator(config, tradingClient, navOracle);
         vaultOrchestrators.set(config.id, orchestrator);
@@ -402,8 +420,11 @@ async function initializeVaults(): Promise<{
           const checker = new HedgingChecker(config, tradingClient, positionRepository);
           vaultHedgingCheckers.set(config.id, checker);
         }
+      } else if (isTradingEnabledConfig(config) && !SUPPORTS_POLYMARKET_TRADING) {
+        logger.info(
+          `Vault ${config.id} (${config.name}): Trading and hedging disabled (Polymarket not available on Amoy)`,
+        );
       }
-
       initialized++;
 
       logger.info("TradingWorker: Initialized vault", {
@@ -508,6 +529,16 @@ async function runInitialTasks(): Promise<void> {
 }
 
 async function start(): Promise<void> {
+  logger.info("=== Vault Trading Worker Starting ===");
+  logger.info(
+    `TradingWorker: PID ${process.pid}, mode: ${env.VAULT_MODE}, network: ${env.VAULT_NETWORK}`,
+  );
+
+  // Amoy enforcement: trading is explicitly disabled on Amoy testnet
+  if (!isTradingEnabled()) {
+    logger.info("Amoy vault: trading disabled, live mode enforced - TradingWorker exiting");
+    process.exit(0);
+  }
   logger.info("=== Vault Trading Worker Starting ===");
   logger.info(`TradingWorker: PID ${process.pid}, mode: ${env.VAULT_MODE}`);
 

@@ -1,0 +1,48 @@
+Epoch Tranche Vault Deployment Evidence
+=======================================
+
+Run ID: deploy-staging-2026-03-10T08-05-24-495Z
+Profile: staging
+Verdict: success
+Duration: 15913ms
+Timestamp: 2026-03-10T08:05:40.410Z
+
+Deployment Result:
+  Mode: LIVE
+  Contract Address: 0xBB6B5A07ad5E45046D61C3cdAc10bA8b813606e3
+  Transaction Hash: 0xa770570fee4527c726fa38fb7d8eef0a67d57d86d411a8bb7a3e1dd6b23cd9e0
+  Block Number: 35001201
+  Gas Used: 4275895
+
+Deployment Parameters:
+  Asset: 0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582
+  Admin: 0xB78721b29c028B16ab25f4a2adE1d25fbf8B2d74
+  Settler: 0xB78721b29c028B16ab25f4a2adE1d25fbf8B2d74
+  NAV Updater: 0xB78721b29c028B16ab25f4a2adE1d25fbf8B2d74
+  Snapshotter: 0xB78721b29c028B16ab25f4a2adE1d25fbf8B2d74
+  Deposit Processor: 0xB78721b29c028B16ab25f4a2adE1d25fbf8B2d74
+  Trading Safe (DUAL-SAFE): 0x5991fd6Ecc5634C4de497b47Eb0Aa0065fffb214
+  Epoch Duration: 3600 seconds
+  NAV Staleness Threshold: 3600 seconds
+  Min Claim Threshold: 1000000
+  Balanced Upfront Bps: 0
+
+Verification Results:
+  Asset: 0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582
+  Epoch Duration: 3600
+  NAV Staleness Threshold: 3600
+  Min Claim Threshold: 1000000
+  Trading Safe: 0x5991fd6Ecc5634C4de497b47Eb0Aa0065fffb214
+  Admin Has Role: true
+  Settler Has Role: true
+  NAV Updater Has Role: true
+  Snapshotter Has Role: true
+  Deposit Processor Has Role: true
+
+Steps:
+  setup: success
+  config: success
+  bytecode: success
+  deploy: success
+  verify: success
+  artifacts: success

@@ -1,0 +1,52 @@
+## Task 2: Boundary-NAV Contract Hardening - Obsolete Assumptions Search
+## Date: 2026-03-11
+
+### Search Patterns Used
+1. epochOpenNAV.*frozenAssets / frozenAssets.*epochOpenNAV - NO MATCHES
+2. principal.*pricing / liquidAssets.*redemption - NO MATCHES
+3. convertSharesToAssets.*epochOpenNAV / convertAssetsToShares.*frozenAssets - NO MATCHES
+4. frozenShares.*epochOpenNAV - NO MATCHES
+
+### Results
+No mixed pricing sources found in EpochTrancheVault.sol. The contract consistently uses:
+
+1. **freezeEpoch() (lines 481-531)**:
+   - Uses `currentNAV` (boundary NAV) to calculate `shareBackedAssets` (line 485)
+   - Sets `epoch.frozenAssets = shareBackedAssets` (line 492)
+   - Sets `epoch.snapshotNAV = currentNAV` (line 495)
+   - Correctly freezes redemption cohorts from boundary NAV
+
+2. **withdraw() (lines 408-446)**:
+   - Lines 438-442: Releases `reservedRedemptionAssets`
+   - Uses `epoch.frozenAssets` and `epoch.frozenShares` for pricing (line 421)
+   - Correctly releases reserved liabilities
+
+3. **redeem() (lines 368-406)**:
+   - Lines 398-402: Releases `reservedRedemptionAssets`
+   - Uses `epoch.frozenAssets` and `epoch.frozenShares` for pricing (line 381)
+   - Correctly releases reserved liabilities
+
+4. **claimDust() (lines 448-479)**:
+   - Lines 470-474: Releases `reservedRedemptionAssets`
+   - Correctly releases reserved liabilities on dust claims
+
+5. **processDepositQueue() (lines 300-320)**:
+   - Uses `epoch.epochOpenNAV` for deposit pricing (line 314)
+   - This is CORRECT - deposits use epochOpenNAV, redemptions use snapshotNAV/frozenAssets
+   - No mixing within the same operation type
+
+### Key Economic Invariants Verified
+1. Redemption cohorts are frozen from boundary NAV (currentNAV at freeze time)
+2. Queued deposits (totalQueuedAssets) are excluded from redemption snapshots
+3. Reserved liabilities (reservedRedemptionAssets) are released on:
+   - withdraw()
+   - redeem()
+   - claimDust()
+4. No mixed pricing sources remain - each operation uses consistent pricing
+
+### Files Examined
+- contracts/src/EpochTrancheVault.sol (boundary NAV fixes confirmed)
+- contracts/test/EpochTrancheVault.t.sol (24 tests pass)
+
+### Conclusion
+All boundary NAV hardening requirements are satisfied. No obsolete assumptions or mixed pricing code paths remain.

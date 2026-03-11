@@ -7,14 +7,17 @@ import { Skeleton } from "@workspace/ui/components/skeleton";
 import { Alert, AlertDescription } from "@workspace/ui/components/alert";
 import { CheckCircle2, Wallet, Hash, Info, Clock, Percent } from "lucide-react";
 import { useAppKitAccount } from "@reown/appkit/react";
+import { parseUnits } from "viem";
 import type { RedemptionRequest } from "../../../../src/types";
-import { useClaimRedemption } from "../../../../src/lib/hooks";
+import { useCustomVaultClaimRedeem } from "../../../../src/lib/hooks";
+import { EXPLORER_BASE_URL } from "../../../../src/constants";
 
 interface ClaimableRequestsProps {
   requests: RedemptionRequest[];
   isLoading: boolean;
   onClaimSuccess: () => void;
   vaultId: number;
+  vaultAddress: string;
 }
 
 function formatDateTime(iso: string): string {
@@ -29,6 +32,7 @@ function formatDateTime(iso: string): string {
 interface ClaimableRequestCardProps {
   request: RedemptionRequest;
   vaultId: number;
+  vaultAddress: string;
   onClaimSuccess: () => void;
   isProcessing: boolean;
   setProcessing: (id: string | null) => void;
@@ -37,38 +41,47 @@ interface ClaimableRequestCardProps {
 function ClaimableRequestCard({
   request,
   vaultId,
+  vaultAddress,
   onClaimSuccess,
   isProcessing,
   setProcessing,
 }: ClaimableRequestCardProps) {
-  const { isConnected } = useAppKitAccount();
+  const { address, isConnected } = useAppKitAccount();
   const [error, setError] = useState<string | null>(null);
   const [successTx, setSuccessTx] = useState<string | null>(null);
-  const { claimRedemption, data, isLoading, error: claimError, reset } = useClaimRedemption();
+  const {
+    claimRedeemTx,
+    hash,
+    isPending,
+    isConfirming,
+    isConfirmed,
+    error: claimError,
+    reset,
+  } = useCustomVaultClaimRedeem();
 
   // Track processing state
   useEffect(() => {
-    if (isLoading) {
+    if (isPending || isConfirming) {
       setProcessing(request.requestId);
-    } else if (data || claimError) {
+    } else if (isConfirmed || claimError) {
       setProcessing(null);
     }
-  }, [isLoading, data, claimError, request.requestId, setProcessing]);
+  }, [isPending, isConfirming, isConfirmed, claimError, request.requestId, setProcessing]);
 
   // Handle success
   useEffect(() => {
-    if (data?.success && data.requestId === request.requestId) {
-      setSuccessTx(data.txHash || null);
+    if (isConfirmed && hash) {
+      setSuccessTx(hash);
       setTimeout(() => {
         onClaimSuccess();
       }, 2000);
     }
-  }, [data, request.requestId, onClaimSuccess]);
+  }, [isConfirmed, hash, onClaimSuccess]);
 
   // Handle error
   useEffect(() => {
     if (claimError) {
-      setError(claimError);
+      setError(claimError.message);
     }
   }, [claimError]);
 
@@ -80,7 +93,18 @@ function ClaimableRequestCard({
     reset();
 
     try {
-      await claimRedemption(vaultId, request.requestId);
+      const receiverAddress =
+        request.ownerAddress || request.controllerAddress || (address as `0x${string}` | undefined);
+      if (!receiverAddress) {
+        throw new Error("Missing receiver address for claim");
+      }
+
+      claimRedeemTx(
+        vaultAddress as `0x${string}`,
+        BigInt(request.requestId),
+        parseUnits(request.sharesFormatted, 6),
+        receiverAddress as `0x${string}`,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to claim redemption request");
     }
@@ -91,7 +115,7 @@ function ClaimableRequestCard({
   const meetsThreshold = claimableNow >= 1.0; // 1 USDC threshold
   const dustOverrideEligible = claimableNow > 0 && claimableNow < 1.0;
   const canClaim = request.status === "claimable" && claimableNow > 0;
-  const isClaiming = isProcessing || isLoading;
+  const isClaiming = isProcessing || isPending || isConfirming;
 
   return (
     <div
@@ -132,7 +156,7 @@ function ClaimableRequestCard({
         </div>
       </div>
 
-      {/* Pro-rata indicator */}
+      {/* Settlement indicator */}
       {request.proRataApplied && (
         <div className="rounded-md bg-amber-50 border border-amber-200 p-2">
           <div className="flex items-center gap-2">
@@ -143,12 +167,14 @@ function ClaimableRequestCard({
             {request.proRataPercentage && (
               <>
                 This request was filled at {(request.proRataPercentage * 100).toFixed(1)}% due to
-                insufficient liquidity. Remaining shares were rolled over to the next epoch.
+                insufficient liquidity at the settlement boundary. Your claimable amount reflects
+                this final settlement. Full entitlement is realized at the boundary only.
               </>
             )}
           </p>
         </div>
       )}
+      {/* Status or Action */}
       {/* Status or Action */}
       {request.status === "claimed" ? (
         <div className="flex items-center gap-2 rounded-md bg-slate-100 p-3">
@@ -161,7 +187,8 @@ function ClaimableRequestCard({
           {dustOverrideEligible && !meetsThreshold && (
             <div className="rounded-md bg-amber-50 border border-amber-200 p-2">
               <p className="text-xs text-amber-700">
-                <span className="font-medium">Dust amount:</span> This claim is below the 1 USDC minimum threshold.
+                <span className="font-medium">Dust amount:</span> This claim is below the 1 USDC
+                minimum threshold.
               </p>
             </div>
           )}
@@ -189,7 +216,7 @@ function ClaimableRequestCard({
 
           {successTx && (
             <a
-              href={`https://polygonscan.com/tx/${successTx}`}
+              href={`${EXPLORER_BASE_URL}/tx/${successTx}`}
               target="_blank"
               rel="noreferrer"
               className="block text-center text-xs font-mono text-blue-600 hover:underline"
@@ -220,6 +247,7 @@ export function ClaimableRequests({
   isLoading,
   onClaimSuccess,
   vaultId,
+  vaultAddress,
 }: ClaimableRequestsProps) {
   const [processingId, setProcessingId] = useState<string | null>(null);
 
@@ -296,6 +324,7 @@ export function ClaimableRequests({
             key={request.requestId}
             request={request}
             vaultId={vaultId}
+            vaultAddress={vaultAddress}
             onClaimSuccess={onClaimSuccess}
             isProcessing={processingId === request.requestId}
             setProcessing={setProcessingId}
@@ -304,6 +333,14 @@ export function ClaimableRequests({
       </div>
 
       {/* Info Alert */}
+      <Alert className="bg-blue-50/50 border-blue-200">
+        <Info className="h-4 w-4 text-blue-600" aria-hidden="true" />
+        <AlertDescription className="text-xs text-blue-700">
+          <span className="font-medium">Boundary Settlement Model:</span> Claims are available
+          after epoch settlement completes. Full entitlement is realized at the settlement
+          boundary. Partial or gradual realization between settlements is not supported.
+        </AlertDescription>
+      </Alert>
       <Alert className="bg-blue-50/50 border-blue-200">
         <Info className="h-4 w-4 text-blue-600" aria-hidden="true" />
         <AlertDescription className="text-xs text-blue-700">

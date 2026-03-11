@@ -10,7 +10,7 @@ import type { VaultInstanceConfig } from "../config/types.js";
 import { env } from "../env.js";
 import { encodeFunctionData, type Address } from "viem";
 
-import { CTF_ADDRESS, USDC_E_ADDRESS } from "../constants.js";
+import { CTF_ADDRESS, SUPPORTS_POLYMARKET_TRADING, USDC_E_ADDRESS } from "../constants.js";
 import { logger } from "../logger.js";
 import {
   PositionRepository,
@@ -192,6 +192,23 @@ export class ResolutionCheckerService {
   }
 
   async checkResolutions(): Promise<ResolutionCheckResult> {
+    // Block resolution checking on unsupported networks
+    if (!SUPPORTS_POLYMARKET_TRADING) {
+      logger.warn(
+        "ResolutionChecker: Polymarket Gamma API is not available on the current network",
+      );
+      return {
+        checked: 0,
+        resolved: 0,
+        won: 0,
+        lost: 0,
+        redeemed: 0,
+        errors: [
+          "Resolution checking is not supported on the current network (Amoy). Only available on Polygon mainnet.",
+        ],
+      };
+    }
+
     const startTime = Date.now();
     const result: ResolutionCheckResult = {
       checked: 0,
@@ -504,3 +521,4 @@ export class ResolutionCheckerService {
     });
   }
 }
+

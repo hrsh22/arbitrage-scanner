@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
@@ -24,6 +25,7 @@ contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
     uint256 public immutable NAV_STALENESS_THRESHOLD;
     uint256 public immutable MIN_CLAIM_THRESHOLD;
     uint256 public immutable BALANCED_UPFRONT_BPS;
+    address public immutable tradingSafe;
 
     enum EpochStatus {
         Active,
@@ -110,12 +112,14 @@ contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
     mapping(address => uint256) public controllerToRequestId;
     uint256 public nextRedemptionRequestId;
     uint256 public totalPendingRedeemShares;
+    uint256 public reservedRedemptionAssets;
 
     mapping(uint256 => TrancheSnapshot) public epochSnapshots;
 
     uint256 public currentNAV;
     uint256 public lastNAVUpdate;
     bool public emergencyMode;
+    uint256 public deployedCapital;
 
     mapping(uint256 => uint256) public nextRequestIndexToProcess;
     uint256 public constant MAX_CHUNK_SIZE = 100;
@@ -130,7 +134,6 @@ contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
     mapping(uint256 => SettlementProgress) public settlementProgress;
 
     bytes4 constant IERC7540_REDEEM_INTERFACE_ID = 0x620ee8e4;
-    bytes4 constant IERC7540_CANCEL_INTERFACE_ID = 0xe3bc4e65;
     bytes4 constant IERC7540_CLAIM_INTERFACE_ID = 0x2f0a18c5;
 
     event DepositQueued(uint256 indexed requestId, address indexed depositor, uint256 assets, uint256 targetEpoch);
@@ -166,6 +169,8 @@ contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
     event OperatorSet(address indexed controller, address indexed operator, bool approved);
     event LossRealized(uint256 indexed epochId, uint256 lossAmount, uint256 requestsAffected);
     event RequestLossAttributed(uint256 indexed requestId, uint256 lossAmount, uint256 newAccrued);
+    event CapitalDeployed(uint256 amount, uint256 newTotal);
+    event CapitalRecalled(uint256 amount, uint256 newTotal);
 
     error Unauthorized(address caller);
     error NotController(address controller, address caller);
@@ -179,8 +184,7 @@ contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
     error EpochAlreadySettled(uint256 epochId);
     error EpochNotSettled(uint256 epochId);
     error NoPendingRequests(uint256 epochId);
-    error CannotCancelAfterFreeze(uint256 epochId);
-    error CannotCancelFrozenRequest(uint256 requestId);
+    error RedemptionCancellationDisabled();
     error InsufficientShares(uint256 requested, uint256 available);
     error ZeroAmount();
     error InvalidAddress();
@@ -204,6 +208,7 @@ contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
         address _navUpdater,
         address _snapshotter,
         address _depositProcessor,
+        address _tradingSafe,
         uint256 _epochDuration,
         uint256 _navStalenessThreshold,
         uint256 _minClaimThreshold,
@@ -215,10 +220,12 @@ contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
         if (_navUpdater == address(0)) revert InvalidAddress();
         if (_snapshotter == address(0)) revert InvalidAddress();
         if (_depositProcessor == address(0)) revert InvalidAddress();
+        if (_tradingSafe == address(0)) revert InvalidAddress();
         if (_epochDuration == 0) revert InvalidAddress();
         if (_navStalenessThreshold == 0) revert InvalidAddress();
 
         asset = IERC20(_asset);
+        tradingSafe = _tradingSafe;
         EPOCH_DURATION = _epochDuration;
         NAV_STALENESS_THRESHOLD = _navStalenessThreshold;
         MIN_CLAIM_THRESHOLD = _minClaimThreshold;
@@ -347,25 +354,15 @@ contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
         totalPendingRedeemShares += shares;
         epoch.totalSharesPending += shares;
         IERC20(address(this)).safeTransferFrom(owner, address(this), shares);
+        _burn(address(this), shares);
         emit RedeemRequest(controller, owner, requestId, msg.sender, shares);
         return requestId;
     }
 
-    function cancelRedeemRequest(uint256 requestId) external nonReentrant returns (uint256 cancelledShares) {
-        RedemptionRequest storage request = redemptionRequests[requestId];
-        if (!request.exists) revert InvalidRequest(requestId);
-        if (request.controller != msg.sender) revert NotController(request.controller, msg.sender);
-        if (request.status == RequestStatus.Frozen) revert CannotCancelFrozenRequest(requestId);
-        if (request.status != RequestStatus.Pending) revert RequestNotPending(requestId);
-        Epoch storage epoch = epochs[request.epochId];
-        if (epoch.status != EpochStatus.Active) revert CannotCancelAfterFreeze(request.epochId);
-        cancelledShares = request.shares;
-        totalPendingRedeemShares -= cancelledShares;
-        epoch.totalSharesPending -= cancelledShares;
-        request.status = RequestStatus.Cancelled;
-        IERC20(address(this)).safeTransfer(request.owner, cancelledShares);
-        emit RedeemRequestCancelled(requestId, request.controller, cancelledShares);
-        return cancelledShares;
+    function cancelRedeemRequest(uint256 requestId) external pure returns (uint256 cancelledShares) {
+        requestId;
+        cancelledShares = 0;
+        revert RedemptionCancellationDisabled();
     }
 
     function redeem(uint256 requestId, uint256 shares, address receiver)
@@ -398,6 +395,11 @@ contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
         epoch.cohortCarryRemaining -= carry;
 
         if (request.shares == 0) request.status = RequestStatus.Claimed;
+        if (assets > reservedRedemptionAssets) {
+            reservedRedemptionAssets = 0;
+        } else {
+            reservedRedemptionAssets -= assets;
+        }
         asset.safeTransfer(receiver, assets);
         emit Withdraw(msg.sender, receiver, request.controller, assets, shares);
         return assets;
@@ -425,7 +427,7 @@ contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
 
         // Update ledger tracking
         request.shares -= shares;
-        request.assetsClaimable -= grossAssets;
+        request.assetsClaimable -= assets;
         request.carryDeducted += carry;
         request.claimed += assets;
         request.carryRemaining -= carry;
@@ -433,6 +435,11 @@ contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
         epoch.cohortCarryRemaining -= carry;
 
         if (request.shares == 0) request.status = RequestStatus.Claimed;
+        if (assets > reservedRedemptionAssets) {
+            reservedRedemptionAssets = 0;
+        } else {
+            reservedRedemptionAssets -= assets;
+        }
         asset.safeTransfer(receiver, assets);
         emit Withdraw(msg.sender, receiver, request.controller, assets, shares);
         return shares;
@@ -460,6 +467,11 @@ contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
         request.status = RequestStatus.Claimed;
         epoch.cohortTotalClaimed += assets;
         epoch.cohortCarryRemaining -= remainingCarry;
+        if (assets > reservedRedemptionAssets) {
+            reservedRedemptionAssets = 0;
+        } else {
+            reservedRedemptionAssets -= assets;
+        }
 
         asset.safeTransfer(request.controller, assets);
         emit DustClaimed(requestId, request.controller, assets);
@@ -470,8 +482,15 @@ contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
         Epoch storage epoch = epochs[currentEpochId];
         if (epoch.status != EpochStatus.Active) revert EpochNotActive(currentEpochId);
         _requireFreshNAV();
+        uint256 shareBackedAssets = epoch.totalSharesPending == 0 ? 0 : _convertSharesToAssets(epoch.totalSharesPending, currentNAV);
         epoch.frozenShares = epoch.totalSharesPending;
-        epoch.frozenAssets = totalAssets();
+        if (totalPendingRedeemShares > epoch.totalSharesPending) {
+            totalPendingRedeemShares -= epoch.totalSharesPending;
+        } else {
+            totalPendingRedeemShares = 0;
+        }
+        epoch.frozenAssets = shareBackedAssets;
+        reservedRedemptionAssets += shareBackedAssets;
         epoch.status = EpochStatus.Frozen;
         epoch.snapshotNAV = currentNAV;
         epoch.snapshotTimestamp = block.timestamp;
@@ -482,7 +501,7 @@ contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
         }
         epochSnapshots[currentEpochId] = TrancheSnapshot({
             snapshotHash: snapshotHash,
-            totalValue: totalAssets(),
+            totalValue: shareBackedAssets,
             timestamp: block.timestamp,
             realizationDeadline: block.timestamp + 30 days,
             exists: true
@@ -542,6 +561,11 @@ contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
         if (totalRequests == 0) {
             epoch.status = EpochStatus.Settled;
             epoch.carryAccrued = carryAmount;
+            if (epoch.frozenAssets > reservedRedemptionAssets) {
+                reservedRedemptionAssets = 0;
+            } else {
+                reservedRedemptionAssets -= epoch.frozenAssets;
+            }
             settlementProgress[epochId] =
                 SettlementProgress({processedCount: 0, totalCount: 0, lastProcessedIndex: 0, complete: true});
             emit EpochSettled(epochId, epoch.frozenShares, epoch.frozenAssets, carryAmount, proRataRatio, 0);
@@ -592,6 +616,12 @@ contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
         if (isComplete) {
             epoch.status = EpochStatus.Settled;
             progress.complete = true;
+            uint256 netClaimableAssets = epoch.cohortTotalEntitlement - epoch.cohortTotalAccrued;
+            if (epoch.frozenAssets > reservedRedemptionAssets) {
+                reservedRedemptionAssets = netClaimableAssets;
+            } else {
+                reservedRedemptionAssets = reservedRedemptionAssets - epoch.frozenAssets + netClaimableAssets;
+            }
             emit EpochSettled(
                 epochId, epoch.frozenShares, epoch.frozenAssets, carryAmount, proRataRatio, progress.processedCount
             );
@@ -676,6 +706,34 @@ contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
 
         epoch.cohortTotalAccrued = epoch.cohortTotalClaimed + epoch.cohortCarryRemaining;
         emit LossRealized(epochId, lossAmount, requestsAffected);
+        emit LossRealized(epochId, lossAmount, requestsAffected);
+    }
+
+    function deployCapital(uint256 amount) external onlyRole(ADMIN_ROLE) {
+        if (amount == 0) revert ZeroAmount();
+        uint256 vaultBalance = asset.balanceOf(address(this));
+        uint256 unavailableBalance = totalQueuedAssets + reservedRedemptionAssets;
+        uint256 availableVaultBalance = vaultBalance > unavailableBalance ? vaultBalance - unavailableBalance : 0;
+        if (amount > availableVaultBalance) revert InsufficientShares(amount, availableVaultBalance);
+        
+        deployedCapital += amount;
+        asset.safeTransfer(tradingSafe, amount);
+        
+        emit CapitalDeployed(amount, deployedCapital);
+    }
+
+    function recallCapital(uint256 amount) external onlyRole(ADMIN_ROLE) {
+        if (amount == 0) revert ZeroAmount();
+        if (amount > deployedCapital) revert InsufficientShares(amount, deployedCapital);
+        
+        deployedCapital -= amount;
+        asset.safeTransferFrom(tradingSafe, address(this), amount);
+        
+        emit CapitalRecalled(amount, deployedCapital);
+    }
+
+    function getDeployedCapital() external view returns (uint256) {
+        return deployedCapital;
     }
 
     function updateNAV(uint256 _nav) external onlyRole(NAV_UPDATER_ROLE) {
@@ -719,8 +777,18 @@ contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
         return epochs[epochId].endTime;
     }
 
+    function decimals() public view override returns (uint8) {
+        return IERC20Metadata(address(asset)).decimals();
+    }
+
     function totalAssets() public view returns (uint256) {
-        return asset.balanceOf(address(this));
+        return asset.balanceOf(address(this)) + deployedCapital;
+    }
+
+    function liquidAssets() public view returns (uint256) {
+        uint256 grossAssets = totalAssets();
+        uint256 reservedAssets = totalQueuedAssets + reservedRedemptionAssets;
+        return grossAssets > reservedAssets ? grossAssets - reservedAssets : 0;
     }
 
     function isNAVFresh() external view returns (bool) {
@@ -745,8 +813,7 @@ contract EpochTrancheVault is ERC20, AccessControl, ReentrancyGuard {
 
     function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
         return interfaceId == type(IERC165).interfaceId || interfaceId == IERC7540_REDEEM_INTERFACE_ID
-            || interfaceId == IERC7540_CANCEL_INTERFACE_ID || interfaceId == IERC7540_CLAIM_INTERFACE_ID
-            || super.supportsInterface(interfaceId);
+            || interfaceId == IERC7540_CLAIM_INTERFACE_ID || super.supportsInterface(interfaceId);
     }
     uint256[50] private __gap;
 }

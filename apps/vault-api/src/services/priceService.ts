@@ -11,6 +11,7 @@
  */
 
 import { logger } from "../logger.js";
+import { SUPPORTS_POLYMARKET_TRADING } from "../constants.js";
 
 const CLOB_BASE_URL = "https://clob.polymarket.com";
 
@@ -34,10 +35,22 @@ export class PriceService {
    * Uses POST /prices with side=SELL for efficiency.
    * Falls back to individual GET /price calls if batch fails.
    *
+   * On Amoy testnet, returns 0 prices since Polymarket CLOB is not available.
+   *
    * @param tokenIds - Conditional token IDs to price
    * @returns Map of tokenId → bid price (0–1 range). Missing/failed tokens get 0.
    */
   async getBidPrices(tokenIds: string[]): Promise<Map<string, number>> {
+    // Return empty prices on unsupported networks
+    if (!SUPPORTS_POLYMARKET_TRADING) {
+      logger.warn("PriceService: Polymarket CLOB is not available on the current network");
+      const emptyPrices = new Map<string, number>();
+      for (const tokenId of tokenIds) {
+        emptyPrices.set(tokenId, 0);
+      }
+      return emptyPrices;
+    }
+
     if (tokenIds.length === 0) return new Map();
 
     const uniqueIds = [...new Set(tokenIds)];

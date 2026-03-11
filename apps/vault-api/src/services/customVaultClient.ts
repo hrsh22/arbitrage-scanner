@@ -13,8 +13,8 @@
  */
 
 import type { Address, Hex, PublicClient, WalletClient } from "viem";
-import { createPublicClient, createWalletClient, http } from "viem";
-import { polygon } from "viem/chains";
+import { createPublicClient, http } from "viem";
+import type { Chain } from "viem/chains";
 import { logger } from "../logger.js";
 
 // ============================================================================
@@ -121,9 +121,26 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
   },
   {
     type: "function",
+    name: "reservedRedemptionAssets",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
     name: "nextDepositRequestId",
     stateMutability: "view",
     inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "depositorEpochRequest",
+    stateMutability: "view",
+    inputs: [
+      { name: "", type: "address" },
+      { name: "", type: "uint256" },
+    ],
     outputs: [{ name: "", type: "uint256" }],
   },
 
@@ -140,6 +157,10 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
       { name: "shares", type: "uint256" },
       { name: "assetsClaimable", type: "uint256" },
       { name: "carryDeducted", type: "uint256" },
+      { name: "entitlement", type: "uint256" },
+      { name: "accrued", type: "uint256" },
+      { name: "claimed", type: "uint256" },
+      { name: "carryRemaining", type: "uint256" },
       { name: "epochId", type: "uint256" },
       { name: "status", type: "uint8" },
       { name: "createdAt", type: "uint256" },
@@ -172,15 +193,35 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
       { name: "epochId", type: "uint256" },
       { name: "startTime", type: "uint256" },
       { name: "endTime", type: "uint256" },
+      { name: "epochOpenNAV", type: "uint256" },
       { name: "snapshotNAV", type: "uint256" },
       { name: "snapshotTimestamp", type: "uint256" },
       { name: "totalSharesPending", type: "uint256" },
-      { name: "totalAssetsAvailable", type: "uint256" },
+      { name: "frozenShares", type: "uint256" },
+      { name: "frozenAssets", type: "uint256" },
       { name: "proRataRatio", type: "uint256" },
       { name: "carryAccrued", type: "uint256" },
+      { name: "cohortTotalEntitlement", type: "uint256" },
+      { name: "cohortTotalAccrued", type: "uint256" },
+      { name: "cohortTotalClaimed", type: "uint256" },
+      { name: "cohortCarryRemaining", type: "uint256" },
       { name: "status", type: "uint8" },
       { name: "exists", type: "bool" },
     ],
+  },
+  {
+    type: "function",
+    name: "totalSupply",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "deployedCapital",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
   },
   {
     type: "function",
@@ -195,6 +236,20 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
     stateMutability: "view",
     inputs: [{ name: "epochId", type: "uint256" }],
     outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "deployCapital",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "amount", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "recallCapital",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "amount", type: "uint256" }],
+    outputs: [],
   },
   {
     type: "function",
@@ -280,7 +335,6 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
     stateMutability: "nonpayable",
     inputs: [
       { name: "epochId", type: "uint256" },
-      { name: "availableAssets", type: "uint256" },
       { name: "carryAmount", type: "uint256" },
     ],
     outputs: [],
@@ -428,14 +482,6 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
     ],
   },
   {
-    type: "event",
-    name: "NAVUpdated",
-    inputs: [
-      { name: "nav", type: "uint256", indexed: false },
-      { name: "timestamp", type: "uint256", indexed: false },
-    ],
-  },
-  {
     type: "function",
     name: "emergencyMode",
     stateMutability: "view",
@@ -482,6 +528,10 @@ export interface RedemptionRequestData {
   shares: bigint;
   assetsClaimable: bigint;
   carryDeducted: bigint;
+  entitlement: bigint;
+  accrued: bigint;
+  claimed: bigint;
+  carryRemaining: bigint;
   epochId: bigint;
   status: RequestStatus;
   createdAt: bigint;
@@ -503,12 +553,18 @@ export interface EpochData {
   epochId: bigint;
   startTime: bigint;
   endTime: bigint;
+  epochOpenNAV: bigint;
   snapshotNAV: bigint;
   snapshotTimestamp: bigint;
   totalSharesPending: bigint;
-  totalAssetsAvailable: bigint;
+  frozenShares: bigint;
+  frozenAssets: bigint;
   proRataRatio: bigint;
   carryAccrued: bigint;
+  cohortTotalEntitlement: bigint;
+  cohortTotalAccrued: bigint;
+  cohortTotalClaimed: bigint;
+  cohortCarryRemaining: bigint;
   status: EpochStatus;
 }
 
@@ -561,6 +617,7 @@ export interface VaultContractConfig {
   vaultAddress: Address;
   rpcUrl: string;
   chainId?: number;
+  chain: Chain;
 }
 
 // ============================================================================
@@ -627,11 +684,13 @@ function parseContractError(error: unknown): string {
 export class CustomVaultClient {
   private publicClient: PublicClient;
   private vaultAddress: Address;
+  private chain: Chain;
 
   constructor(config: VaultContractConfig) {
     this.vaultAddress = config.vaultAddress;
+    this.chain = config.chain;
     this.publicClient = createPublicClient({
-      chain: polygon,
+      chain: this.chain,
       transport: http(config.rpcUrl),
     }) as PublicClient;
   }
@@ -743,12 +802,37 @@ export class CustomVaultClient {
     }
   }
 
+  async getDepositorEpochRequest(depositor: Address, epochId: bigint): Promise<bigint> {
+    try {
+      return (await this.publicClient.readContract({
+        address: this.vaultAddress,
+        abi: EPOCH_TRANCHE_VAULT_ABI,
+        functionName: "depositorEpochRequest",
+        args: [depositor, epochId],
+      })) as bigint;
+    } catch {
+      return 0n;
+    }
+  }
+
   async getTotalQueuedAssets(): Promise<bigint> {
     try {
       return this.publicClient.readContract({
         address: this.vaultAddress,
         abi: EPOCH_TRANCHE_VAULT_ABI,
         functionName: "totalQueuedAssets",
+      }) as Promise<bigint>;
+    } catch {
+      return 0n;
+    }
+  }
+
+  async getReservedRedemptionAssets(): Promise<bigint> {
+    try {
+      return this.publicClient.readContract({
+        address: this.vaultAddress,
+        abi: EPOCH_TRANCHE_VAULT_ABI,
+        functionName: "reservedRedemptionAssets",
       }) as Promise<bigint>;
     } catch {
       return 0n;
@@ -763,10 +847,14 @@ export class CustomVaultClient {
         abi: EPOCH_TRANCHE_VAULT_ABI,
         functionName: "redemptionRequests",
         args: [requestId],
-      })) as [
+      })) as readonly [
         bigint,
         Address,
         Address,
+        bigint,
+        bigint,
+        bigint,
+        bigint,
         bigint,
         bigint,
         bigint,
@@ -776,7 +864,7 @@ export class CustomVaultClient {
         bigint,
         boolean,
       ];
-      if (!result[10]) return null;
+      if (!result[14]) return null;
       const statusMap: RequestStatus[] = ["pending", "frozen", "claimable", "claimed", "cancelled"];
       return {
         requestId: result[0],
@@ -785,11 +873,14 @@ export class CustomVaultClient {
         shares: result[3],
         assetsClaimable: result[4],
         carryDeducted: result[5],
-        epochId: result[6],
-        status: statusMap[result[7]] ?? "pending",
-        createdAt: result[8],
-        settledAt: result[9] || undefined,
-        // Properties already set above
+        entitlement: result[6],
+        accrued: result[7],
+        claimed: result[8],
+        carryRemaining: result[9],
+        epochId: result[10],
+        status: statusMap[result[11]] ?? "pending",
+        createdAt: result[12],
+        settledAt: result[13] || undefined,
       };
     } catch (error) {
       logger.error("getRedemptionRequest failed", {
@@ -821,7 +912,13 @@ export class CustomVaultClient {
         abi: EPOCH_TRANCHE_VAULT_ABI,
         functionName: "epochs",
         args: [epochId],
-      })) as [
+      })) as readonly [
+        bigint,
+        bigint,
+        bigint,
+        bigint,
+        bigint,
+        bigint,
         bigint,
         bigint,
         bigint,
@@ -834,19 +931,25 @@ export class CustomVaultClient {
         number,
         boolean,
       ];
-      if (!result[10]) return null;
+      if (!result[16]) return null;
       const statusMap: EpochStatus[] = ["active", "frozen", "settling", "settled", "finalized"];
       return {
         epochId: result[0],
         startTime: result[1],
         endTime: result[2],
-        snapshotNAV: result[3],
-        snapshotTimestamp: result[4],
-        totalSharesPending: result[5],
-        totalAssetsAvailable: result[6],
-        proRataRatio: result[7],
-        carryAccrued: result[8],
-        status: statusMap[result[9]] ?? "active",
+        epochOpenNAV: result[3],
+        snapshotNAV: result[4],
+        snapshotTimestamp: result[5],
+        totalSharesPending: result[6],
+        frozenShares: result[7],
+        frozenAssets: result[8],
+        proRataRatio: result[9],
+        carryAccrued: result[10],
+        cohortTotalEntitlement: result[11],
+        cohortTotalAccrued: result[12],
+        cohortTotalClaimed: result[13],
+        cohortCarryRemaining: result[14],
+        status: statusMap[result[15]] ?? "active",
       };
     } catch (error) {
       logger.error("getEpoch failed", {
@@ -856,8 +959,6 @@ export class CustomVaultClient {
       return null;
     }
   }
-
-
 
   async getCurrentEpochId(): Promise<bigint> {
     return this.publicClient.readContract({
@@ -871,8 +972,36 @@ export class CustomVaultClient {
     return this.publicClient.readContract({
       address: this.vaultAddress,
       abi: EPOCH_TRANCHE_VAULT_ABI,
-      functionName: "getCurrentEpoch",
+      functionName: "currentEpochId",
     }) as Promise<bigint>;
+  }
+
+  async getTotalAssets(): Promise<bigint> {
+    return this.publicClient.readContract({
+      address: this.vaultAddress,
+      abi: EPOCH_TRANCHE_VAULT_ABI,
+      functionName: "totalAssets",
+    }) as Promise<bigint>;
+  }
+
+  async getTotalSupply(): Promise<bigint> {
+    return this.publicClient.readContract({
+      address: this.vaultAddress,
+      abi: EPOCH_TRANCHE_VAULT_ABI,
+      functionName: "totalSupply",
+    }) as Promise<bigint>;
+  }
+
+  async getDeployedCapital(): Promise<bigint> {
+    try {
+      return this.publicClient.readContract({
+        address: this.vaultAddress,
+        abi: EPOCH_TRANCHE_VAULT_ABI,
+        functionName: "deployedCapital",
+      }) as Promise<bigint>;
+    } catch {
+      return 0n;
+    }
   }
 
   async getEpochEnd(epochId: bigint): Promise<bigint> {
@@ -950,6 +1079,7 @@ export class CustomVaultClient {
       return 0n;
     }
   }
+
   async canSettleEpoch(epochId: bigint): Promise<boolean> {
     const epoch = await this.getEpoch(epochId);
     if (!epoch) return false;
@@ -999,6 +1129,109 @@ export class CustomVaultClient {
     }
   }
 
+  async processDepositQueue(
+    walletClient: WalletClient,
+    epochId: bigint,
+    startIndex: bigint,
+    endIndex: bigint,
+  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
+    try {
+      logger.info("CustomVaultClient: Processing deposit queue", {
+        vaultAddress: this.vaultAddress,
+        epochId: epochId.toString(),
+        startIndex: startIndex.toString(),
+        endIndex: endIndex.toString(),
+      });
+
+      const hash = await walletClient.writeContract({
+        address: this.vaultAddress,
+        abi: EPOCH_TRANCHE_VAULT_ABI,
+        functionName: "processDepositQueue",
+        args: [epochId, startIndex, endIndex],
+        chain: walletClient.chain,
+        account: walletClient.account!,
+      });
+
+      logger.info("CustomVaultClient: Deposit queue processing transaction submitted", {
+        txHash: hash,
+        epochId: epochId.toString(),
+        startIndex: startIndex.toString(),
+        endIndex: endIndex.toString(),
+      });
+
+      return { success: true, txHash: hash };
+    } catch (error) {
+      const errorMsg = parseContractError(error);
+      logger.error("CustomVaultClient: Failed to process deposit queue", {
+        epochId: epochId.toString(),
+        startIndex: startIndex.toString(),
+        endIndex: endIndex.toString(),
+        error: errorMsg,
+      });
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  async deployCapital(
+    walletClient: WalletClient,
+    amount: bigint,
+  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
+    try {
+      logger.info("CustomVaultClient: Deploying capital", {
+        vaultAddress: this.vaultAddress,
+        amount: amount.toString(),
+      });
+
+      const hash = await walletClient.writeContract({
+        address: this.vaultAddress,
+        abi: EPOCH_TRANCHE_VAULT_ABI,
+        functionName: "deployCapital",
+        args: [amount],
+        chain: walletClient.chain,
+        account: walletClient.account!,
+      });
+
+      return { success: true, txHash: hash };
+    } catch (error) {
+      const errorMsg = parseContractError(error);
+      logger.error("CustomVaultClient: Failed to deploy capital", {
+        amount: amount.toString(),
+        error: errorMsg,
+      });
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  async recallCapital(
+    walletClient: WalletClient,
+    amount: bigint,
+  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
+    try {
+      logger.info("CustomVaultClient: Recalling capital", {
+        vaultAddress: this.vaultAddress,
+        amount: amount.toString(),
+      });
+
+      const hash = await walletClient.writeContract({
+        address: this.vaultAddress,
+        abi: EPOCH_TRANCHE_VAULT_ABI,
+        functionName: "recallCapital",
+        args: [amount],
+        chain: walletClient.chain,
+        account: walletClient.account!,
+      });
+
+      return { success: true, txHash: hash };
+    } catch (error) {
+      const errorMsg = parseContractError(error);
+      logger.error("CustomVaultClient: Failed to recall capital", {
+        amount: amount.toString(),
+        error: errorMsg,
+      });
+      return { success: false, error: errorMsg };
+    }
+  }
+
   /**
    * Settle an epoch after it has been frozen
    * Requires settler role
@@ -1006,14 +1239,12 @@ export class CustomVaultClient {
   async settleEpoch(
     walletClient: WalletClient,
     epochId: bigint,
-    availableAssets: bigint,
     carryAmount: bigint,
   ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
     try {
       logger.info("CustomVaultClient: Settling epoch", {
         vaultAddress: this.vaultAddress,
         epochId: epochId.toString(),
-        availableAssets: availableAssets.toString(),
         carryAmount: carryAmount.toString(),
       });
 
@@ -1021,7 +1252,7 @@ export class CustomVaultClient {
         address: this.vaultAddress,
         abi: EPOCH_TRANCHE_VAULT_ABI,
         functionName: "settleEpoch",
-        args: [epochId, availableAssets, carryAmount],
+        args: [epochId, carryAmount],
         chain: walletClient.chain,
         account: walletClient.account!,
       });
@@ -1036,7 +1267,6 @@ export class CustomVaultClient {
       const errorMsg = parseContractError(error);
       logger.error("CustomVaultClient: Failed to settle epoch", {
         epochId: epochId.toString(),
-        availableAssets: availableAssets.toString(),
         carryAmount: carryAmount.toString(),
         error: errorMsg,
       });
@@ -1116,15 +1346,17 @@ export class CustomVaultClient {
   }
 
   // Factory Function
-  static create(vaultAddress: Address, rpcUrl: string): CustomVaultClient {
-    return new CustomVaultClient({ vaultAddress, rpcUrl });
+  static create(vaultAddress: Address, rpcUrl: string, chain: Chain): CustomVaultClient {
+    return new CustomVaultClient({ vaultAddress, rpcUrl, chain });
   }
 }
 
-
-
-export function createCustomVaultClient(vaultAddress: Address, rpcUrl: string): CustomVaultClient {
-  return CustomVaultClient.create(vaultAddress, rpcUrl);
+export function createCustomVaultClient(
+  vaultAddress: Address,
+  rpcUrl: string,
+  chain: Chain,
+): CustomVaultClient {
+  return CustomVaultClient.create(vaultAddress, rpcUrl, chain);
 }
 
 export { parseContractError };

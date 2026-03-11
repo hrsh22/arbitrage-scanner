@@ -1,4 +1,4 @@
-import type { VaultInstanceConfig, VaultMode } from "../types.js";
+import type { VaultInstanceConfig, VaultMode } from "../../types.js";
 
 /**
  * Weekly Epoch Vault - Production Profile
@@ -16,6 +16,7 @@ const config: VaultInstanceConfig = {
   name: "Weekly Epoch Vault",
   enabled: false, // Enable after deployment
   type: "custom",
+  network: "mainnet",
   profile: {
     strategy: "weekly-epoch",
     strategyLabel: "Weekly Epoch Redemptions",
@@ -37,18 +38,16 @@ const config: VaultInstanceConfig = {
   },
 
   // Contract addresses - populated after deployment
-  vaultAddress:
-    process.env.WEEKLY_EPOCH_VAULT_ADDRESS || "0x0000000000000000000000000000000000000001",
+  vaultAddress: "0x0000000000000000000000000000000000000001",
 
   // Custom vault configuration
   customVaultConfig: {
-    navSnapshotAddress: process.env.WEEKLY_EPOCH_NAV_SNAPSHOT_ADDRESS,
+    navSnapshotAddress: "0x0000000000000000000000000000000000000000",
     epochDurationSeconds: 604800, // 7 days
     navStalenessThresholdSeconds: 21600, // 6 hours
   },
 
-  safeAddress:
-    process.env.WEEKLY_EPOCH_SAFE_ADDRESS || "0x0000000000000000000000000000000000000000",
+  safeAddress: "0x0000000000000000000000000000000000000000",
 
   // Role-based identity
   allocatorNavSignerKeyEnv: "WEEKLY_EPOCH_ALLOCATOR_NAV_KEY",
@@ -57,8 +56,7 @@ const config: VaultInstanceConfig = {
   tradingFunderAddressEnv: "WEEKLY_EPOCH_TRADING_FUNDER_ADDRESS",
   tradingSignatureType: 2, // Safe
   singleSafeMode: true,
-  tradingFunderAddress:
-    process.env.WEEKLY_EPOCH_SAFE_ADDRESS || "0x0000000000000000000000000000000000000000",
+  tradingFunderAddress: "0x0000000000000000000000000000000000000000",
 
   // Trading configuration - minimal for custom vault
   betSize: 0,

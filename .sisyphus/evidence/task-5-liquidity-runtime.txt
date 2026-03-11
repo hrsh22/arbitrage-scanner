@@ -1,0 +1,96 @@
+================================================================================
+TASK 5 EVIDENCE: Liquidity Manager - Liability-First Behavior
+================================================================================
+
+Date: 2026-03-11
+Task: Preserve automatic liability-first recall/deploy behavior
+
+--------------------------------------------------------------------------------
+1. LIQUIDITY MANAGER - RECONCILIATION FLOW
+--------------------------------------------------------------------------------
+
+File: apps/vault-api/src/services/liquidityManager.ts
+
+A. Pending Withdrawal Liability Calculation - Lines 87-97
+
+   Calculates total pending withdrawal liability:
+   
+   const [vaultBalance, safeBalance, pendingWithdrawals] = await Promise.all([
+     this.getUsdcBalance(this.vaultAddress),
+     this.getUsdcBalance(this.safeAddress),
+     this.withdrawalRepo.getPendingRequests(this.vaultAddress),
+   ]);
+   
+   const pendingWithdrawalLiability = pendingWithdrawals.reduce(
+     (sum, request) =>
+       sum +
+       BigInt(Math.max(0, Math.round(Number(request.assetsEstimated) * 10 ** USDC_DECIMALS))),
+     0n,
+   );
+
+B. Pre-Settlement Rebalance - Lines 101-105
+
+   Rebalances BEFORE settlement with liability priority:
+   
+   const rebalanceResult = await this.provider.rebalanceCapital({
+     vaultUsdcBalance: vaultBalance,
+     safeUsdcBalance: safeBalance,
+     pendingWithdrawalLiability,
+   });
+
+C. Post-Settlement Rebalance - Lines 175-179
+
+   Rebalances AFTER settlement with zero liability (already processed):
+   
+   const postSettlementRebalance = await this.provider.rebalanceCapital({
+     vaultUsdcBalance: postSettlementVaultBalance,
+     safeUsdcBalance: postSettlementSafeBalance,
+     pendingWithdrawalLiability: 0n,
+   });
+
+--------------------------------------------------------------------------------
+2. LIABILITY-FIRST BEHAVIOR ANALYSIS
+--------------------------------------------------------------------------------
+
+Pattern: Recall Before Deploy
+- Pre-settlement: rebalanceCapital called with pendingWithdrawalLiability
+  → Provider recalls capital from Safe to Vault to cover withdrawals
+  → Ensures sufficient funds for redemption claims
+  
+- Post-settlement: rebalanceCapital called with 0n liability
+  → Queue already processed, liabilities settled
+  → Deploys available capital back to Safe for trading
+
+Implication: No Gradual Realization
+- All liability resolution happens at settlement boundary
+- No partial recall/deploy cycles between epochs
+- Supports boundary-only position model
+
+--------------------------------------------------------------------------------
+3. SETTLEMENT READINESS CHECK
+--------------------------------------------------------------------------------
+
+File: apps/vault-api/src/services/liquidityManager.ts
+Lines 216-262
+
+Key checks before settlement:
+- navFresh: !vaultInfo.navIsStale
+- epochEnded: new Date() >= epochInfo.currentEpochEnd
+- ready: navFresh && epochEnded
+
+This ensures settlement only happens at epoch boundary with fresh NAV.
+
+--------------------------------------------------------------------------------
+VERIFICATION: ✅ PASS
+--------------------------------------------------------------------------------
+
+Liability-first behavior verified:
+✅ Pending withdrawal liability calculated from repository
+✅ Pre-settlement rebalance recalls capital for liabilities
+✅ Post-settlement rebalance deploys with zero liability
+✅ Settlement only at epoch boundary (no gradual realization)
+✅ NAV freshness required before settlement
+
+================================================================================
+END OF EVIDENCE
+================================================================================

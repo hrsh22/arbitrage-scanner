@@ -25,8 +25,8 @@
  */
 
 import type { Address } from "viem";
+import type { Chain } from "viem/chains";
 import { logger } from "../logger.js";
-import { env } from "../env.js";
 import type {
   IVaultProvider,
   VaultMetadata,
@@ -34,9 +34,10 @@ import type {
   VaultProviderType,
 } from "./vaultProvider.js";
 import { CustomVaultProvider } from "./customVaultProvider.js";
+import { getNetworkConfigFromEnv, getRpcUrlForNetwork } from "../config/network.js";
 
 // Import vault configs for auto-registration
-import { getVaultConfig, getAllVaultConfigs } from "../config/index.js";
+import { getVaultConfig, getAllVaultConfigs, resolveVaultIdentity } from "../config/index.js";
 import type { VaultInstanceConfig } from "../config/types.js";
 
 /**
@@ -57,18 +58,24 @@ export class VaultProviderFactory implements IVaultProviderFactory {
   private static instance: VaultProviderFactory | null = null;
   private providers: Map<number, ProviderEntry> = new Map();
   private rpcUrl: string;
+  private chain: Chain;
 
-  constructor(rpcUrl?: string) {
-    this.rpcUrl = rpcUrl ?? env.POLYGON_RPC_URL;
-    logger.info("VaultProviderFactory: Initialized");
+  constructor(rpcUrl?: string, chain?: Chain) {
+    const networkConfig = getNetworkConfigFromEnv();
+    this.rpcUrl = rpcUrl ?? getRpcUrlForNetwork(networkConfig.name);
+    this.chain = chain ?? networkConfig.chain;
+    logger.info("VaultProviderFactory: Initialized", {
+      network: networkConfig.name,
+      chainId: this.chain.id,
+    });
   }
 
   /**
    * Get singleton instance
    */
-  static getInstance(rpcUrl?: string): VaultProviderFactory {
+  static getInstance(rpcUrl?: string, chain?: Chain): VaultProviderFactory {
     if (!VaultProviderFactory.instance) {
-      VaultProviderFactory.instance = new VaultProviderFactory(rpcUrl);
+      VaultProviderFactory.instance = new VaultProviderFactory(rpcUrl, chain);
     }
     return VaultProviderFactory.instance;
   }
@@ -228,7 +235,21 @@ export class VaultProviderFactory implements IVaultProviderFactory {
    */
   private createProvider(config: VaultProviderConfig): IVaultProvider {
     if (config.providerType === "custom") {
-      return new CustomVaultProvider(config);
+      const vaultConfig = getVaultConfig(config.vaultId);
+      if (!vaultConfig) {
+        throw new Error(`VaultProviderFactory: Vault config ${config.vaultId} not found`);
+      }
+      const identity = resolveVaultIdentity(vaultConfig);
+      return new CustomVaultProvider(
+        config,
+        {
+          adminKey: identity.allocatorNavSignerKey,
+          settlerKey: identity.settlerKey ?? identity.allocatorNavSignerKey,
+          snapshotterKey: identity.settlerKey ?? identity.allocatorNavSignerKey,
+          depositProcessorKey: identity.settlerKey ?? identity.allocatorNavSignerKey,
+        },
+        this.chain,
+      );
     }
     throw new Error(`VaultProviderFactory: Unsupported provider type: ${config.providerType}`);
   }
@@ -337,8 +358,8 @@ export interface IVaultProviderFactory {
 /**
  * Get singleton factory instance
  */
-export function getVaultProviderFactory(): VaultProviderFactory {
-  return VaultProviderFactory.getInstance();
+export function getVaultProviderFactory(rpcUrl?: string, chain?: Chain): VaultProviderFactory {
+  return VaultProviderFactory.getInstance(rpcUrl, chain);
 }
 
 /**
@@ -351,8 +372,8 @@ export function getVaultProvider(vaultId: number): IVaultProvider {
 /**
  * Initialize factory with all vault configs
  */
-export function initializeVaultProviders(): VaultProviderFactory {
-  const factory = VaultProviderFactory.getInstance();
+export function initializeVaultProviders(rpcUrl?: string, chain?: Chain): VaultProviderFactory {
+  const factory = VaultProviderFactory.getInstance(rpcUrl, chain);
   factory.registerFromVaultConfigs();
   return factory;
 }

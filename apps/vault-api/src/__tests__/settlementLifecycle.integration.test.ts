@@ -1,7 +1,41 @@
+const mockVaultInstanceConfig = {
+  id: 1,
+  name: "test-vault",
+  enabled: true,
+  type: "custom",
+  vaultAddress: "0x1234567890123456789012345678901234567890",
+  safeAddress: "0x0987654321098765432109876543210987654321",
+  allocatorNavSignerKeyEnv: "TEST_ALLOCATOR_KEY",
+  safeOperatorKeyEnv: "TEST_SAFE_KEY",
+  tradingSignerKeyEnv: "TEST_TRADING_KEY",
+  tradingSignatureType: 2,
+  betSize: 1,
+  vaultReserveUsdc: 0,
+  minAllocationAmountUsdc: 1,
+  maxDeployedRatio: 1,
+  marketFetchMaxEvents: 10,
+  hedging: {
+    enabled: false,
+    dropThresholdPercent: 0,
+    multiplier: 0,
+    spreadTolerance: 0,
+    minPositionAgeMinutes: 0,
+    onlyNearResolution: false,
+    nearResolutionMinutes: 0,
+    skipCategories: [],
+  },
+  navRefreshIntervalMin: 1,
+  reconciliationIntervalMin: 1,
+  tradingScanIntervalMin: 1,
+  resolutionCheckIntervalMin: 1,
+  defaultMode: "live",
+  autoLiquidityManagement: true,
+} as const;
+
 // Mock the config modules before they are imported
 vi.mock("../config/index.js", () => ({
   vaultConfigs: [],
-  getVaultConfig: vi.fn(),
+  getVaultConfig: vi.fn(() => mockVaultInstanceConfig),
   validateConfigs: vi.fn(),
 }));
 
@@ -27,6 +61,7 @@ vi.mock("../config/identityResolver.js", () => ({
 
 vi.mock("../rpcTransport.js", () => ({
   createPolygonTransport: vi.fn(() => ({})),
+  createNetworkTransport: vi.fn(() => ({})),
 }));
 
 vi.mock("viem", async () => {
@@ -54,7 +89,6 @@ vi.mock("@polymarket/builder-signing-sdk", () => ({
   createL1Signer: vi.fn(),
   createL2Signer: vi.fn(),
 }));
-
 
 /**
  * Settlement Lifecycle Integration Tests
@@ -124,6 +158,7 @@ vi.mock("../repositories/payoutRepository.js", () => ({
 
 vi.mock("../repositories/withdrawalRepository.js", () => ({
   withdrawalRepository: {
+    getPendingRequests: vi.fn().mockResolvedValue([]),
     markSettled: vi.fn(),
   },
 }));
@@ -231,7 +266,7 @@ describe("Settlement Lifecycle Integration Tests", () => {
         providerType: "custom",
         asset: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
         assetDecimals: 6,
-        shareDecimals: 18,
+        shareDecimals: 6,
         totalAssets: 1000000000000n,
         totalSupply: 1000000000000000000000000n,
         sharePrice: 1,
@@ -304,11 +339,21 @@ describe("Settlement Lifecycle Integration Tests", () => {
         totalShares: 1000000000000000000n,
         totalAssets: 1000000n,
       }),
+      rebalanceCapital: vi.fn().mockResolvedValue({
+        success: true,
+        action: "none",
+        amount: 0n,
+        requiredVaultBalance: 0n,
+        queuedAssets: 0n,
+        reservedRedemptionAssets: 0n,
+        pendingWithdrawalLiability: 0n,
+        details: "No liquidity rebalance required.",
+      }),
       validateConfig: vi.fn().mockResolvedValue({ valid: true, errors: [] }),
       getCapabilities: vi.fn().mockReturnValue({
         asyncRedemption: true,
         instantRedemption: false,
-        cancelBeforeSettlement: true,
+        cancelBeforeSettlement: false,
         proRataSettlement: true,
         requiresNavForSettlement: true,
         supportsRollover: false,
@@ -552,7 +597,7 @@ describe("Settlement Lifecycle Integration Tests", () => {
         providerType: "custom",
         asset: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
         assetDecimals: 6,
-        shareDecimals: 18,
+        shareDecimals: 6,
         totalAssets: 1000000000000n,
         totalSupply: 1000000000000000000000000n,
         sharePrice: 1,

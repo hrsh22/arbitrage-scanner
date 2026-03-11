@@ -27,8 +27,8 @@ contract DebugTest is Test {
         NavSnapshot.NavSnapshotData memory snap = navSnapshot.getLatestNav();
         console.log("Snapshot timestamp:", snap.timestamp);
         
-        uint256 snapshotTime = block.timestamp;
-        console.log("Captured snapshotTime:", snapshotTime);
+        uint256 snapshotTime = snap.timestamp;
+        console.log("Captured snapshotTime from snapshot:", snapshotTime);
         
         vm.warp(block.timestamp + STALENESS_THRESHOLD + 60);
         console.log("After warp: block.timestamp =", block.timestamp);
@@ -39,8 +39,7 @@ contract DebugTest is Test {
         snap = navSnapshot.getLatestNav();
         console.log("Snapshot timestamp after warp:", snap.timestamp);
         
-        console.log("Expected revert: NavStale(", snapshotTime, ",", currentTime, ")");
-        
+
         vm.expectRevert(
             abi.encodeWithSelector(NavSnapshot.NavStale.selector, snapshotTime, currentTime)
         );

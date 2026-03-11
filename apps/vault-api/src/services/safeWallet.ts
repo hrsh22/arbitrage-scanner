@@ -14,8 +14,16 @@ import type {
   TransactionResult,
 } from "@safe-global/types-kit";
 import { OperationType } from "@safe-global/types-kit";
-import { createPublicClient, encodeFunctionData, erc20Abi, type Address } from "viem";
-import { polygon } from "viem/chains";
+import {
+  createPublicClient,
+  createWalletClient,
+  encodeFunctionData,
+  erc20Abi,
+  type Address,
+  type WalletClient,
+} from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import type { Chain } from "viem/chains";
 
 import {
   USDC_E_ADDRESS,
@@ -25,7 +33,9 @@ import {
   NEGRISK_ADAPTER_ADDRESS,
 } from "../constants.js";
 import { logger } from "../logger.js";
-import { createPolygonTransport } from "../rpcTransport.js";
+import { createNetworkTransport } from "../rpcTransport.js";
+import { getNetworkConfigFromEnv, getRpcUrlForNetwork } from "../config/network.js";
+
 // Protocol Kit CJS/ESM interop: default export resolves to the Safe class at runtime
 const Safe = ProtocolKit.default as unknown as {
   init(config: { provider: string; signer: string; safeAddress: string }): Promise<SafeKitInstance>;
@@ -112,20 +122,27 @@ export interface SafeInfo {
 export class SafeWalletService {
   private protocolKit: SafeKitInstance | null = null;
   private initialized = false;
+  private eoaMode = false;
+  private eoaWalletClient: WalletClient | null = null;
+  private eoaAddress: Address | null = null;
 
   private readonly safeAddress: string;
   private readonly safeOperatorKey: string;
   private readonly rpcUrl: string;
+  private readonly chain: Chain;
 
   /**
    * @param safeAddress - Gnosis Safe contract address (required)
    * @param safeOperatorKey - Safe operator private key, must be a Safe owner (required)
-   * @param rpcUrl - Polygon RPC endpoint (required)
+   * @param rpcUrl - Polygon RPC endpoint (optional, defaults to network config)
+   * @param chain - Chain object for viem (optional, defaults to network config)
    */
-  constructor(safeAddress: string, safeOperatorKey: string, rpcUrl: string) {
+  constructor(safeAddress: string, safeOperatorKey: string, rpcUrl?: string, chain?: Chain) {
     this.safeAddress = safeAddress;
     this.safeOperatorKey = safeOperatorKey;
-    this.rpcUrl = rpcUrl;
+    const networkConfig = getNetworkConfigFromEnv();
+    this.chain = chain ?? networkConfig.chain;
+    this.rpcUrl = rpcUrl ?? getRpcUrlForNetwork(networkConfig.name);
 
     if (!this.safeAddress) {
       throw new Error("SafeWalletService: safeAddress is required");
@@ -145,6 +162,35 @@ export class SafeWalletService {
     if (this.initialized) return;
 
     try {
+      const client = createPublicClient({
+        chain: this.chain,
+        transport: createNetworkTransport(this.rpcUrl),
+      });
+      const code = await client.getCode({ address: this.safeAddress as Address });
+      if (!code || code === "0x") {
+        const account = privateKeyToAccount(this.safeOperatorKey as `0x${string}`);
+        if (account.address.toLowerCase() !== this.safeAddress.toLowerCase()) {
+          throw new Error(
+            `Safe operator key resolves to ${account.address}, but wallet address is ${this.safeAddress}`,
+          );
+        }
+
+        this.eoaMode = true;
+        this.eoaAddress = account.address;
+        this.eoaWalletClient = createWalletClient({
+          account,
+          chain: this.chain,
+          transport: createNetworkTransport(this.rpcUrl),
+        });
+        this.initialized = true;
+
+        logger.info("SafeWalletService: Initialized in EOA mode", {
+          address: this.safeAddress,
+          chainId: this.chain.id,
+        });
+        return;
+      }
+
       this.protocolKit = await Safe.init({
         provider: this.rpcUrl,
         signer: this.safeOperatorKey,
@@ -159,6 +205,7 @@ export class SafeWalletService {
         safeAddress: safeAddr,
         owners,
         threshold,
+        chainId: this.chain.id,
       });
 
       this.initialized = true;
@@ -177,14 +224,21 @@ export class SafeWalletService {
     return this.protocolKit;
   }
 
+  private ensureEoaWalletClient(): WalletClient {
+    if (!this.initialized || !this.eoaMode || !this.eoaWalletClient) {
+      throw new Error("SafeWalletService: EOA wallet not initialized. Call initialize() first.");
+    }
+    return this.eoaWalletClient;
+  }
+
   /**
    * Get ERC20 token balance of the Safe.
    * @returns Balance as bigint (raw, no decimal adjustment)
    */
   async getBalance(tokenAddress: string): Promise<bigint> {
     const client = createPublicClient({
-      chain: polygon,
-      transport: createPolygonTransport(this.rpcUrl),
+      chain: this.chain,
+      transport: createNetworkTransport(this.rpcUrl),
     });
 
     try {
@@ -213,8 +267,8 @@ export class SafeWalletService {
 
   async getAllowance(tokenAddress: string, spender: string): Promise<bigint> {
     const client = createPublicClient({
-      chain: polygon,
-      transport: createPolygonTransport(this.rpcUrl),
+      chain: this.chain,
+      transport: createNetworkTransport(this.rpcUrl),
     });
 
     try {
@@ -252,6 +306,20 @@ export class SafeWalletService {
     spender: string,
     amount: string = MAX_UINT256,
   ): Promise<SafeTxResult> {
+    if (this.eoaMode) {
+      const walletClient = this.ensureEoaWalletClient();
+      const txHash = await walletClient.writeContract({
+        address: tokenAddress as Address,
+        abi: APPROVE_ABI,
+        functionName: "approve",
+        args: [spender as Address, BigInt(amount)],
+        chain: this.chain,
+        account: walletClient.account!,
+      });
+
+      return { success: true, txHash };
+    }
+
     const kit = this.ensureInitialized();
 
     const data = encodeFunctionData({
@@ -286,6 +354,20 @@ export class SafeWalletService {
     operator: string,
     approved: boolean = true,
   ): Promise<SafeTxResult> {
+    if (this.eoaMode) {
+      const walletClient = this.ensureEoaWalletClient();
+      const txHash = await walletClient.writeContract({
+        address: tokenAddress as Address,
+        abi: SET_APPROVAL_FOR_ALL_ABI,
+        functionName: "setApprovalForAll",
+        args: [operator as Address, approved],
+        chain: this.chain,
+        account: walletClient.account!,
+      });
+
+      return { success: true, txHash };
+    }
+
     const kit = this.ensureInitialized();
 
     const data = encodeFunctionData({
@@ -313,6 +395,20 @@ export class SafeWalletService {
 
   /** Create, sign, and execute a Safe TX to transfer ERC20 tokens. */
   async transferToken(tokenAddress: string, to: string, amount: string): Promise<SafeTxResult> {
+    if (this.eoaMode) {
+      const walletClient = this.ensureEoaWalletClient();
+      const txHash = await walletClient.writeContract({
+        address: tokenAddress as Address,
+        abi: TRANSFER_ABI,
+        functionName: "transfer",
+        args: [to as Address, BigInt(amount)],
+        chain: this.chain,
+        account: walletClient.account!,
+      });
+
+      return { success: true, txHash };
+    }
+
     const kit = this.ensureInitialized();
 
     const data = encodeFunctionData({
@@ -343,6 +439,27 @@ export class SafeWalletService {
    * Batches all 6 approvals into a single MultiSend Safe TX.
    */
   async approvePolymarketExchanges(): Promise<SafeTxResult> {
+    if (this.eoaMode) {
+      let lastTxHash: string | undefined;
+      for (const exchange of POLYMARKET_EXCHANGES) {
+        const usdcApprove = await this.approveToken(USDC_E_ADDRESS, exchange, MAX_UINT256);
+        if (!usdcApprove.success) {
+          return usdcApprove;
+        }
+        lastTxHash = usdcApprove.txHash;
+      }
+
+      for (const exchange of POLYMARKET_EXCHANGES) {
+        const ctfApprove = await this.approveToken(CTF_ADDRESS, exchange, MAX_UINT256);
+        if (!ctfApprove.success) {
+          return ctfApprove;
+        }
+        lastTxHash = ctfApprove.txHash;
+      }
+
+      return { success: true, txHash: lastTxHash };
+    }
+
     const kit = this.ensureInitialized();
 
     const transactions: MetaTransactionData[] = [];
@@ -458,6 +575,19 @@ export class SafeWalletService {
     data: string,
     value: string = "0",
   ): Promise<SafeTxResult> {
+    if (this.eoaMode) {
+      const walletClient = this.ensureEoaWalletClient();
+      const txHash = await walletClient.sendTransaction({
+        account: walletClient.account!,
+        chain: this.chain,
+        to: to as Address,
+        data: data as `0x${string}`,
+        value: BigInt(value),
+      });
+
+      return { success: true, txHash };
+    }
+
     const kit = this.ensureInitialized();
 
     const txData: MetaTransactionData = {
@@ -473,6 +603,32 @@ export class SafeWalletService {
 
   /** Get Safe owners, threshold, modules, chainId, nonce. */
   async getSafeInfo(): Promise<SafeInfo> {
+    if (this.eoaMode) {
+      const client = createPublicClient({
+        chain: this.chain,
+        transport: createNetworkTransport(this.rpcUrl),
+      });
+      const nonce = await client.getTransactionCount({ address: this.safeAddress as Address });
+
+      const info: SafeInfo = {
+        address: this.safeAddress,
+        owners: this.eoaAddress ? [this.eoaAddress] : [this.safeAddress],
+        threshold: 1,
+        modules: [],
+        chainId: BigInt(this.chain.id),
+        nonce,
+      };
+
+      logger.info("SafeWalletService: getSafeInfo (EOA mode)", {
+        address: info.address,
+        owners: info.owners,
+        threshold: info.threshold,
+        nonce: info.nonce,
+      });
+
+      return info;
+    }
+
     const kit = this.ensureInitialized();
 
     const [address, owners, threshold, modules, chainId, nonce] = await Promise.all([

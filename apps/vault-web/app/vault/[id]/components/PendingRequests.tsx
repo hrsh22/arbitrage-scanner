@@ -1,18 +1,16 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { Button } from "@workspace/ui/components/button";
+import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@workspace/ui/components/badge";
 import { Skeleton } from "@workspace/ui/components/skeleton";
 import { Alert, AlertDescription } from "@workspace/ui/components/alert";
-import { Clock, Calendar, XCircle, Info, AlertTriangle, ChevronRight, Hash } from "lucide-react";
+import { Clock, Calendar, Info, Hash } from "lucide-react";
 import type { RedemptionRequest, Epoch } from "../../../../src/types";
 
 interface PendingRequestsProps {
   requests: RedemptionRequest[];
   epochInfo?: Epoch | null;
   isLoading: boolean;
-  onCancel: (requestId: string) => Promise<void>;
 }
 
 function formatDateTime(iso: string): string {
@@ -97,21 +95,10 @@ function CountdownTimer({ targetTime, label }: { targetTime: string; label: stri
 function PendingRequestCard({
   request,
   epochInfo,
-  onCancel,
-  isCancelling,
 }: {
   request: RedemptionRequest;
   epochInfo?: Epoch | null;
-  onCancel: () => void;
-  isCancelling: boolean;
 }) {
-  // Check if cancellation is still possible (before settlement window)
-  const settlementTime = epochInfo?.endTime
-    ? new Date(epochInfo.endTime).getTime()
-    : null;
-  const now = Date.now();
-  const canCancel = settlementTime ? now < settlementTime - 60 * 60 * 1000 : true; // 1 hour buffer
-
   return (
     <div
       className="rounded-lg border border-amber-200 bg-amber-50/30 p-4 space-y-3"
@@ -154,10 +141,7 @@ function PendingRequestCard({
             <Clock className="h-3.5 w-3.5 text-amber-600" aria-hidden="true" />
             <span className="text-xs font-medium text-amber-700">Time Until Settlement</span>
           </div>
-          <CountdownTimer
-            targetTime={epochInfo.endTime}
-            label="Settlement occurs at epoch end"
-          />
+          <CountdownTimer targetTime={epochInfo.endTime} label="Settlement occurs at epoch end" />
         </div>
       )}
 
@@ -165,59 +149,22 @@ function PendingRequestCard({
         <Info className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" aria-hidden="true" />
         <p>
           Your request will be processed at the end of epoch #{request.targetEpoch}. Claims will be
-          available after settlement completes.
+          available after settlement completes at the epoch boundary. Requests cannot be cancelled
+          once submitted.
         </p>
       </div>
 
-      {canCancel ? (
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={onCancel}
-          disabled={isCancelling}
-          className="w-full"
-          data-testid="cancel-request-button"
-        >
-          {isCancelling ? (
-            "Cancelling..."
-          ) : (
-            <>
-              <XCircle className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
-              Cancel Request
-            </>
-          )}
-        </Button>
-      ) : (
-        <div className="rounded-md bg-slate-100 p-2 text-center">
-          <p className="text-xs text-muted-foreground">Cancellation window closed</p>
-        </div>
-      )}
+
+      <div className="rounded-md bg-slate-100 p-2 text-center">
+        <p className="text-xs text-muted-foreground">
+          Redemption requests are irreversible once submitted.
+        </p>
+      </div>
     </div>
   );
 }
 
-export function PendingRequests({
-  requests,
-  epochInfo,
-  isLoading,
-  onCancel,
-}: PendingRequestsProps) {
-  const [cancellingId, setCancellingId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleCancel = async (requestId: string) => {
-    setCancellingId(requestId);
-    setError(null);
-    try {
-      await onCancel(requestId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to cancel request");
-    } finally {
-      setCancellingId(null);
-    }
-  };
-
+export function PendingRequests({ requests, epochInfo, isLoading }: PendingRequestsProps) {
   if (isLoading) {
     return (
       <div className="space-y-4" data-testid="pending-requests-loading">
@@ -252,24 +199,10 @@ export function PendingRequests({
         </Badge>
       </div>
 
-      {/* Error */}
-      {error && (
-        <Alert className="bg-rose-50 border-rose-200">
-          <AlertTriangle className="h-4 w-4 text-rose-600" aria-hidden="true" />
-          <AlertDescription className="text-xs text-rose-700">{error}</AlertDescription>
-        </Alert>
-      )}
-
       {/* Request Cards */}
       <div className="space-y-3">
         {requests.map((request) => (
-          <PendingRequestCard
-            key={request.requestId}
-            request={request}
-            epochInfo={epochInfo}
-            onCancel={() => handleCancel(request.requestId)}
-            isCancelling={cancellingId === request.requestId}
-          />
+          <PendingRequestCard key={request.requestId} request={request} epochInfo={epochInfo} />
         ))}
       </div>
 
@@ -277,9 +210,17 @@ export function PendingRequests({
       <Alert className="bg-blue-50/50 border-blue-200">
         <Calendar className="h-4 w-4 text-blue-600" aria-hidden="true" />
         <AlertDescription className="text-xs text-blue-700">
+          <span className="font-medium">Boundary Settlement Model:</span> All pending requests are
+          processed together at epoch settlement boundaries. NAV at epoch start is used to calculate
+          share pricing. Requests cannot be cancelled after submission.
+        </AlertDescription>
+      </Alert>
+      <Alert className="bg-blue-50/50 border-blue-200">
+        <Calendar className="h-4 w-4 text-blue-600" aria-hidden="true" />
+        <AlertDescription className="text-xs text-blue-700">
           <span className="font-medium">Settlement Process:</span> All pending requests are
-          processed together at the end of each epoch. You can cancel requests up to 1 hour before
-          settlement.
+          processed together at the end of each epoch. Requests cannot be cancelled after
+          submission.
         </AlertDescription>
       </Alert>
     </div>

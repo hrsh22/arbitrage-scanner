@@ -1,22 +1,32 @@
 import { fallback, http, type Transport } from "viem";
 import { env } from "./env.js";
-
-const DEFAULT_BACKUP_RPC = "https://polygon-rpc.com";
+import { getNetworkConfigFromEnv, getRpcUrlForNetwork } from "./config/network.js";
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
 }
 
+/**
+ * Get RPC URLs for the configured network.
+ * Uses VAULT_NETWORK to determine which network to use.
+ */
 export function getPolygonRpcUrls(primaryRpcUrl?: string): string[] {
+  const networkConfig = getNetworkConfigFromEnv();
+
+  // Get the appropriate RPC URL based on network
+  const networkRpcUrl = getRpcUrlForNetwork(networkConfig.name);
+
   const hasExplicitPrimary =
     (typeof primaryRpcUrl === "string" && primaryRpcUrl.length > 0) ||
-    Boolean(process.env.POLYGON_RPC_URL);
-  const primary = primaryRpcUrl ?? env.POLYGON_RPC_URL ?? DEFAULT_BACKUP_RPC;
+    Boolean(process.env[networkConfig.rpcEnvKey]);
+
+  const primary = primaryRpcUrl ?? networkRpcUrl;
   const fallbackUrls = env.POLYGON_RPC_FALLBACK_URLS ?? [];
   const urls = [primary, ...fallbackUrls].filter((url) => url.length > 0);
 
-  if (!hasExplicitPrimary && fallbackUrls.length === 0 && primary !== DEFAULT_BACKUP_RPC) {
-    urls.push(DEFAULT_BACKUP_RPC);
+  // Add default backup only for mainnet if no explicit primary or fallbacks
+  if (networkConfig.name === "mainnet" && !hasExplicitPrimary && fallbackUrls.length === 0) {
+    urls.push("https://polygon-rpc.com");
   }
 
   return unique(urls);
@@ -31,9 +41,20 @@ function createHttpTransport(url: string): Transport {
   return transport as Transport;
 }
 
+export function createNetworkTransport(rpcUrl?: string): Transport {
+  const networkConfig = getNetworkConfigFromEnv();
+  const effectiveUrl = rpcUrl ?? getRpcUrlForNetwork(networkConfig.name);
+  return createHttpTransport(effectiveUrl);
+}
+
+/**
+ * Create a viem transport for the configured network.
+ * Uses VAULT_NETWORK to determine which network to connect to.
+ */
 export function createPolygonTransport(primaryRpcUrl?: string): Transport {
   const urls = getPolygonRpcUrls(primaryRpcUrl);
-  const effectiveUrls = urls.length > 0 ? urls : [DEFAULT_BACKUP_RPC];
+  const networkConfig = getNetworkConfigFromEnv();
+  const effectiveUrls = urls.length > 0 ? urls : [networkConfig.defaultRpcUrl];
   const transports = effectiveUrls.map(createHttpTransport);
 
   if (transports.length === 1) {

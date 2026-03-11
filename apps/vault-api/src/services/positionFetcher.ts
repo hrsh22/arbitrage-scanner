@@ -8,6 +8,7 @@
  */
 
 import { logger } from "../logger.js";
+import { SUPPORTS_POLYMARKET_TRADING } from "../constants.js";
 
 const DATA_API_BASE = "https://data-api.polymarket.com";
 
@@ -126,7 +127,20 @@ export interface PositionHistoryItem {
 // ===== Service =====
 
 export class PositionFetcher {
+  private checkSupported(): void {
+    if (!SUPPORTS_POLYMARKET_TRADING) {
+      throw new Error(
+        "PositionFetcher: Polymarket Data API is not available on the current network. " +
+          "Position fetching is only supported on Polygon mainnet.",
+      );
+    }
+  }
+
   async fetchActivity(walletAddress: string, maxRecords = 5000): Promise<PolymarketActivity[]> {
+    if (!SUPPORTS_POLYMARKET_TRADING) {
+      return [];
+    }
+    this.checkSupported();
     const allActivities: PolymarketActivity[] = [];
     let offset = 0;
 
@@ -171,6 +185,10 @@ export class PositionFetcher {
    * Handles pagination automatically.
    */
   async fetchAllPositions(walletAddress: string): Promise<PolymarketPosition[]> {
+    if (!SUPPORTS_POLYMARKET_TRADING) {
+      return [];
+    }
+    this.checkSupported();
     const allPositions: PolymarketPosition[] = [];
     let offset = 0;
 

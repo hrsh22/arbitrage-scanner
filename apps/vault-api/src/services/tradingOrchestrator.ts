@@ -11,7 +11,7 @@
 import { randomUUID } from "node:crypto";
 import { and, gte, isNotNull, sql } from "drizzle-orm";
 
-import { USDC_E_ADDRESS } from "../constants.js";
+import { SUPPORTS_POLYMARKET_TRADING, USDC_E_ADDRESS } from "../constants.js";
 import type { VaultInstanceConfig } from "../config/types.js";
 import type { ResolvedVaultIdentity } from "../config/identityResolver.js";
 import { resolveVaultIdentity } from "../config/identityResolver.js";
@@ -26,6 +26,7 @@ import { getVaultTradingClient, VaultTradingClient } from "./tradingClient.js";
 import { isValidOpportunity, calculatePPH, calculateExpectedProfit } from "./strategyEngine.js";
 import type { TradeRequest, VaultStatus } from "../types.js";
 import { withdrawalRepository } from "../repositories/withdrawalRepository.js";
+import { getVaultProvider } from "./vaultProviderFactory.js";
 
 const USDC_DECIMALS = 1_000_000;
 const DEFAULT_MAX_DEPLOYED_RATIO = 0.25;
@@ -103,6 +104,7 @@ export interface OrchestratorTradeRequest extends TradeRequest {
   conditionId: string;
   outcome: "YES" | "NO";
   marketQuestion?: string;
+  closesAt?: Date;
 }
 
 export interface TradeExecutionResult {
@@ -134,6 +136,7 @@ interface ScanFunnelStats {
   rejectedStrategy: number;
   rejectedNoProfit: number;
   rejectedDeployedRatio: number;
+  rejectedEpochBoundary: number;
 }
 
 export class TradingOrchestratorService {
@@ -152,6 +155,7 @@ export class TradingOrchestratorService {
   private readonly skipCategories: string[];
   private readonly deployedRatioLimit: number;
   private readonly marketFetchConfig: MarketFetchConfig;
+  private readonly epochBoundarySafetyBufferMinutes: number;
 
   private readonly mode: "simulation" | "live";
   private readonly tradingClient: VaultTradingClient;
@@ -199,6 +203,7 @@ export class TradingOrchestratorService {
       this.mode = env.VAULT_MODE;
       this.mode = env.VAULT_MODE;
       this.deployedRatioLimit = config.maxDeployedRatio;
+      this.epochBoundarySafetyBufferMinutes = config.epochBoundarySafetyBufferMinutes ?? 0;
       this.marketFetchConfig = {
         maxEvents: config.marketFetchMaxEvents,
       };
@@ -216,6 +221,7 @@ export class TradingOrchestratorService {
       this.skipCategories = [];
       this.mode = env.VAULT_MODE;
       this.deployedRatioLimit = DEFAULT_MAX_DEPLOYED_RATIO;
+      this.epochBoundarySafetyBufferMinutes = 0;
       this.marketFetchConfig = {
         maxEvents: DEFAULT_MARKET_MAX_EVENTS,
       };
@@ -237,7 +243,10 @@ export class TradingOrchestratorService {
       rejectedStrategy: 0,
       rejectedNoProfit: 0,
       rejectedDeployedRatio: 0,
+      rejectedEpochBoundary: 0,
     };
+
+    const epochTradingDeadline = await this.getEpochTradingDeadline();
 
     logger.info("TradingOrchestrator: evaluating markets", {
       vaultId: this.vaultConfig?.id,
@@ -267,6 +276,7 @@ export class TradingOrchestratorService {
         status.deployedRatio,
         status.nav.totalAssets,
         existingMarketIds,
+        epochTradingDeadline,
       );
       if (evaluation.candidate) {
         opportunities.push(evaluation.candidate);
@@ -299,6 +309,9 @@ export class TradingOrchestratorService {
             break;
           case "deployed_ratio":
             stats.rejectedDeployedRatio += 1;
+            break;
+          case "epoch_boundary":
+            stats.rejectedEpochBoundary += 1;
             break;
           default:
             break;
@@ -381,6 +394,20 @@ export class TradingOrchestratorService {
     }
 
     try {
+      if (tradeRequest.closesAt) {
+        const epochTradingDeadline = await this.getEpochTradingDeadline();
+        if (
+          epochTradingDeadline &&
+          tradeRequest.closesAt.getTime() > epochTradingDeadline.getTime()
+        ) {
+          return {
+            success: false,
+            simulated: false,
+            error: `Trade closes after the current epoch boundary (${epochTradingDeadline.toISOString()}).`,
+          };
+        }
+      }
+
       const safeBalance = await this.getSafeBalanceUsdc();
       const allocatedAmount = 0;
 
@@ -541,6 +568,7 @@ export class TradingOrchestratorService {
         size: candidate.size,
         outcome: candidate.outcome,
         marketQuestion: candidate.marketQuestion,
+        closesAt: candidate.closesAt,
       });
       results.push(result);
     }
@@ -570,6 +598,7 @@ export class TradingOrchestratorService {
     currentDeployedRatio: number,
     totalAssets: number,
     existingMarketIds: Set<string>,
+    epochTradingDeadline: Date | null,
   ): { candidate: TradeCandidate | null; rejectReason?: string } {
     // Skip markets we already have positions in
     if (existingMarketIds.has(market.id)) {
@@ -588,6 +617,9 @@ export class TradingOrchestratorService {
     }
     if (hoursUntilClose > this.maxHoursGeneral) {
       return { candidate: null, rejectReason: "too_far_out" };
+    }
+    if (epochTradingDeadline && closesAt.getTime() > epochTradingDeadline.getTime()) {
+      return { candidate: null, rejectReason: "epoch_boundary" };
     }
 
     const tokens = Array.isArray(market.tokens) ? market.tokens : [];
@@ -745,6 +777,25 @@ export class TradingOrchestratorService {
     return fetchGammaMarkets(this.marketFetchConfig);
   }
 
+  private async getEpochTradingDeadline(): Promise<Date | null> {
+    if (
+      !this.vaultConfig ||
+      this.vaultConfig.type !== "custom" ||
+      !this.vaultConfig.enforceEpochBoundarySafety
+    ) {
+      return null;
+    }
+
+    const provider = getVaultProvider(this.vaultConfig.id);
+    const vaultInfo = await provider.getVaultInfo();
+    const currentEpochEnd = vaultInfo.epochInfo?.currentEpochEnd;
+    if (!currentEpochEnd) {
+      return null;
+    }
+
+    return new Date(currentEpochEnd.getTime() - this.epochBoundarySafetyBufferMinutes * 60 * 1000);
+  }
+
   private async getCircuitBreakerStatus(): Promise<CircuitBreakerStatus> {
     const [todayRealizedPnl, openPositions] = await Promise.all([
       this.getTodayRealizedPnl(),
@@ -805,8 +856,10 @@ export class TradingOrchestratorService {
         throw new Error("TradingOrchestrator: vaultConfig is required for SafeWalletService");
       }
       const privateKey = process.env[this.vaultConfig.safeOperatorKeyEnv] ?? "";
+      const tradingSafeAddress =
+        this.vaultConfig.tradingSafeAddress ?? this.vaultConfig.safeAddress;
       this.safeWalletService = new SafeWalletService(
-        this.vaultConfig.safeAddress,
+        tradingSafeAddress,
         privateKey,
         env.POLYGON_RPC_URL,
       );
@@ -964,8 +1017,15 @@ async function fetchMarketsPage(url: string): Promise<GammaMarket[]> {
 export async function fetchGammaMarkets(
   options: Partial<MarketFetchConfig> = {},
 ): Promise<GammaMarket[]> {
+  // Block market fetching on unsupported networks
+  if (!SUPPORTS_POLYMARKET_TRADING) {
+    logger.warn(
+      "TradingOrchestrator: Polymarket market fetching is not supported on the current network",
+    );
+    return [];
+  }
+
   const maxEvents = options.maxEvents ?? DEFAULT_MARKET_MAX_EVENTS;
-  const batchCount = Math.max(1, Math.ceil(maxEvents / EVENT_BATCH_SIZE));
   const soonClosingLimit = DEFAULT_MARKET_SOON_CLOSING_LIMIT;
 
   const baseQuery = "active=true&closed=false&order=liquidity&ascending=false";
@@ -1008,7 +1068,6 @@ export async function fetchGammaMarkets(
   logger.info("TradingOrchestrator: fetched markets universe", {
     maxEvents,
     batchSize: EVENT_BATCH_SIZE,
-    batchCount,
     soonClosingLimit,
     liquidityEvents: liquidityEvents.length,
     soonEvents: soonEvents.length,

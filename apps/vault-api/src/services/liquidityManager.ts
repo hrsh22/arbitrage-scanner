@@ -1,5 +1,4 @@
 import { createPublicClient, type Address } from "viem";
-import { polygon } from "viem/chains";
 
 import type { VaultInstanceConfig } from "../config/types.js";
 import { USDC_E_ADDRESS } from "../constants.js";
@@ -11,7 +10,8 @@ import {
   withdrawalRepository as defaultWithdrawalRepository,
   type VaultType,
 } from "../repositories/withdrawalRepository.js";
-import { createPolygonTransport } from "../rpcTransport.js";
+import { createNetworkTransport } from "../rpcTransport.js";
+import { getNetworkConfigFromEnv } from "../config/network.js";
 import type { ReconciliationResult } from "../types.js";
 import type { IVaultProvider } from "./vaultProvider.js";
 import { getVaultProvider } from "./vaultProviderFactory.js";
@@ -46,7 +46,7 @@ export class LiquidityManager {
   constructor(options: LiquidityManagerOptions = {}) {
     const config = options.config;
     const vaultAddress = config?.vaultAddress || env.VAULT_ADDRESS;
-    const safeAddress = config?.safeAddress || env.SAFE_ADDRESS;
+    const safeAddress = config?.tradingSafeAddress || config?.safeAddress || env.SAFE_ADDRESS;
     const vaultId = options.vaultId ?? config?.id;
 
     if (!vaultAddress || !safeAddress || vaultId === undefined) {
@@ -59,9 +59,10 @@ export class LiquidityManager {
     this.safeAddress = safeAddress as Address;
     this.vaultId = vaultId;
     this.withdrawalRepo = options.withdrawalRepo ?? defaultWithdrawalRepository;
+    const networkConfig = getNetworkConfigFromEnv();
     this.publicClient = createPublicClient({
-      chain: polygon,
-      transport: createPolygonTransport(env.POLYGON_RPC_URL),
+      chain: networkConfig.chain,
+      transport: createNetworkTransport(),
     });
     this.provider = getVaultProvider(this.vaultId);
 
@@ -83,17 +84,52 @@ export class LiquidityManager {
         throw new Error("Custom vault missing epoch info");
       }
 
-      const safeBalance = await this.getUsdcBalance(this.safeAddress);
+      const [vaultBalance, safeBalance, pendingWithdrawals] = await Promise.all([
+        this.getUsdcBalance(this.vaultAddress),
+        this.getUsdcBalance(this.safeAddress),
+        this.withdrawalRepo.getPendingRequests(this.vaultAddress),
+      ]);
+      const pendingWithdrawalLiability = pendingWithdrawals.reduce(
+        (sum, request) =>
+          sum +
+          BigInt(Math.max(0, Math.round(Number(request.assetsEstimated) * 10 ** USDC_DECIMALS))),
+        0n,
+      );
       const safeBalanceUsdc = Number(safeBalance) / 10 ** USDC_DECIMALS;
-      const vaultBalanceUsdc = Number(vaultInfo.totalAssets) / 10 ** USDC_DECIMALS;
+      const vaultBalanceUsdc = Number(vaultBalance) / 10 ** USDC_DECIMALS;
+
+      const rebalanceResult = await this.provider.rebalanceCapital({
+        vaultUsdcBalance: vaultBalance,
+        safeUsdcBalance: safeBalance,
+        pendingWithdrawalLiability,
+      });
+
+      if (!rebalanceResult.success) {
+        return {
+          vaultBalance: vaultBalanceUsdc,
+          safeBalance: safeBalanceUsdc,
+          pendingWithdrawals: pendingWithdrawals.length,
+          action: "none",
+          details: `Liquidity rebalance failed: ${rebalanceResult.error ?? rebalanceResult.details}`,
+        };
+      }
+
+      const rebalanceDetails =
+        rebalanceResult.action !== "none" ? `${rebalanceResult.details}` : undefined;
 
       if (vaultInfo.navIsStale) {
         return {
           vaultBalance: vaultBalanceUsdc,
           safeBalance: safeBalanceUsdc,
-          pendingWithdrawals: 0,
-          action: "none",
-          details: "Settlement blocked - NAV is stale. Update NAV before settlement.",
+          pendingWithdrawals: pendingWithdrawals.length,
+          action: rebalanceResult.action,
+          amount:
+            rebalanceResult.amount > 0n
+              ? Number(rebalanceResult.amount) / 10 ** USDC_DECIMALS
+              : undefined,
+          details: rebalanceDetails
+            ? `${rebalanceDetails} Settlement blocked - NAV is stale. Update NAV before settlement.`
+            : "Settlement blocked - NAV is stale. Update NAV before settlement.",
         };
       }
 
@@ -102,9 +138,15 @@ export class LiquidityManager {
         return {
           vaultBalance: vaultBalanceUsdc,
           safeBalance: safeBalanceUsdc,
-          pendingWithdrawals: 0,
-          action: "none",
-          details: `Settlement not ready. Next settlement: ${epochInfo.nextSettlementTime.toISOString()}`,
+          pendingWithdrawals: pendingWithdrawals.length,
+          action: rebalanceResult.action,
+          amount:
+            rebalanceResult.amount > 0n
+              ? Number(rebalanceResult.amount) / 10 ** USDC_DECIMALS
+              : undefined,
+          details: rebalanceDetails
+            ? `${rebalanceDetails} Settlement not ready. Next settlement: ${epochInfo.nextSettlementTime.toISOString()}`
+            : `Settlement not ready. Next settlement: ${epochInfo.nextSettlementTime.toISOString()}`,
         };
       }
 
@@ -119,15 +161,47 @@ export class LiquidityManager {
         };
       }
 
-      await this.syncSettledRequests(settlementResult.epochId);
+      if (settlementResult.requestsSettled > 0) {
+        await this.syncSettledRequests(settlementResult.epochId);
+      }
+
+      const details =
+        settlementResult.requestsSettled > 0
+          ? `Epoch ${settlementResult.epochId} settled. ${settlementResult.requestsSettled} requests processed (tx: ${settlementResult.txHash})`
+          : `Epoch ${settlementResult.epochId} advanced and deposit queue processed (tx: ${settlementResult.txHash})`;
+
+      const postSettlementVaultBalance = await this.getUsdcBalance(this.vaultAddress);
+      const postSettlementSafeBalance = await this.getUsdcBalance(this.safeAddress);
+      const postSettlementRebalance = await this.provider.rebalanceCapital({
+        vaultUsdcBalance: postSettlementVaultBalance,
+        safeUsdcBalance: postSettlementSafeBalance,
+        pendingWithdrawalLiability: 0n,
+      });
+      if (!postSettlementRebalance.success) {
+        return {
+          vaultBalance: Number(postSettlementVaultBalance) / 10 ** USDC_DECIMALS,
+          safeBalance: Number(postSettlementSafeBalance) / 10 ** USDC_DECIMALS,
+          pendingWithdrawals: pendingWithdrawals.length,
+          action: "settled",
+          amount: Number(settlementResult.totalAssets) / 10 ** USDC_DECIMALS,
+          details: `${details} Post-settlement liquidity rebalance failed: ${postSettlementRebalance.error ?? postSettlementRebalance.details}`,
+        };
+      }
+      const combinedDetails = [
+        rebalanceDetails,
+        details,
+        postSettlementRebalance.action !== "none" ? postSettlementRebalance.details : undefined,
+      ]
+        .filter(Boolean)
+        .join(" ");
 
       return {
         vaultBalance: vaultBalanceUsdc,
         safeBalance: safeBalanceUsdc,
-        pendingWithdrawals: 0,
+        pendingWithdrawals: pendingWithdrawals.length,
         action: "settled",
         amount: Number(settlementResult.totalAssets) / 10 ** USDC_DECIMALS,
-        details: `Epoch ${settlementResult.epochId} settled. ${settlementResult.requestsSettled} requests processed (tx: ${settlementResult.txHash})`,
+        details: combinedDetails,
       };
     } catch (error) {
       logger.error("LiquidityManager: Reconciliation failed", {
@@ -138,7 +212,6 @@ export class LiquidityManager {
       throw error;
     }
   }
-
 
   async getSettlementReadiness(): Promise<{
     ready: boolean;

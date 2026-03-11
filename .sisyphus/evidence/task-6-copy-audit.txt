@@ -1,0 +1,38 @@
+=== Task 6: UI Copy Audit - Outdated Copy Search ===
+
+Date: 2026-03-11
+
+1. SEARCH FOR STALE ADDRESSES
+   - 0x7EF2e0048f5bAeDe046f6BF797943daF4ED8CB47 (invalid): NOT FOUND
+   - 0x8D87Cc370e3751d5bBDBaE702e6618D59D950b2D (valid): FOUND in API config
+   
+2. SEARCH FOR "GRADUAL" / "PARTIAL REALIZATION"
+   - "gradual" keyword: NOT FOUND
+   - "partial realization": FOUND 1 occurrence (correctly states it is "not supported")
+   - File: ClaimableRequests.tsx:338
+   - Context: "Partial or gradual realization between settlements is not supported"
+   - Status: ACCURATE (correctly states feature is NOT supported)
+   
+3. SEARCH FOR "PARTIAL" / "PARTIALLY"
+   - "partially realized": NOT FOUND
+   - "partial realization": FOUND (see above - accurate)
+   
+4. SEARCH FOR ROLLOVER CLAIMS
+   - "remaining shares rolled over": NOT FOUND (removed duplicate block)
+   
+5. FILES MODIFIED
+   - ClaimableRequests.tsx:
+     * Removed duplicate proRataApplied block
+     * Updated settlement copy to remove "remaining shares rolled over" text
+     * Consolidated to single accurate message about boundary settlement
+     
+   - PendingRequests.tsx:
+     * Updated Boundary Settlement Model alert to mention NAV pricing
+     * Fixed syntax errors in Alert component structure
+     
+6. ADDRESS VERIFICATION
+   - Valid Amoy deployment: 0x8D87Cc370e3751d5bBDBaE702e6618D59D950b2D
+   - Used in: apps/vault-api/src/config/vaults/amoy/vault1-pph.ts
+   - Docs: docs/operator-runbook-amoy.md
+   - No stale addresses found in vault-web
+

@@ -14,7 +14,7 @@ import { BuilderConfig } from "@polymarket/builder-signing-sdk";
 import { Wallet } from "ethers";
 import { logger } from "../logger.js";
 import { env } from "../env.js";
-import { POLYGON_CHAIN_ID, USDC_E_ADDRESS } from "../constants.js";
+import { POLYGON_CHAIN_ID, SUPPORTS_POLYMARKET_TRADING, USDC_E_ADDRESS } from "../constants.js";
 import type { TradeResult } from "../types.js";
 import type { VaultInstanceConfig } from "../config/types.js";
 
@@ -44,6 +44,14 @@ export class VaultTradingClient {
    * then sets up ClobClient with Safe as funder (signatureType 2).
    */
   async initialize(): Promise<void> {
+    // Block initialization on unsupported networks
+    if (!SUPPORTS_POLYMARKET_TRADING) {
+      throw new Error(
+        "VaultTradingClient: Polymarket trading is not supported on the current network. " +
+          "Trading is only available on Polygon mainnet."
+      );
+    }
+
     const privateKey = this.options.privateKey;
 
     if (!privateKey) {

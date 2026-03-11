@@ -330,15 +330,6 @@ export interface ClaimRedemptionResponse {
   message: string;
 }
 
-/** Cancel redemption response */
-export interface CancelRedemptionResponse {
-  success: boolean;
-  requestId: string;
-  vaultId: number;
-  userAddress: string;
-  message: string;
-}
-
 export interface EpochStatusResponse {
   success: boolean;
   epoch: Epoch;
@@ -375,7 +366,6 @@ export interface Epoch {
   availableAssetsFormatted?: string;
 }
 
-
 // ============================================================================
 // Tranche-Carry Lifecycle Types
 // ============================================================================
@@ -384,19 +374,65 @@ export interface DepositQueueResponse {
   success: boolean;
   vaultId: number;
   userAddress: string;
-  /** Queued: assets waiting in deposit queue (pending state) */
   queued: string;
   queuedFormatted: string;
   queuedShares: string;
   queuedSharesFormatted: string;
-  /** Frozen: assets frozen in epoch (claimable state) */
+  estimateNav: string;
+  estimateNavFormatted: string;
+  estimateBasis: string;
   frozen: string;
   frozenFormatted: string;
   frozenShares: string;
   frozenSharesFormatted: string;
+  depositRequestId: string | null;
+  depositCreatedAt: string | null;
+  targetEpochId: number;
   currentEpochId: number;
+  currentEpochStart?: string;
   currentEpochEnd: string;
+  nextEpochStart?: string;
+  activationTime?: string;
+  queueStatus: "idle" | "queued" | "processed";
+  mintRule: string;
   timestamp: string;
+}
+
+export interface EpochHistoryItem {
+  epochId: number;
+  startTime: string;
+  endTime: string;
+  epochOpenNAV: string;
+  epochOpenNAVFormatted: string;
+  snapshotNAV: string;
+  snapshotNAVFormatted: string;
+  snapshotTimestamp: string | null;
+  totalSharesPending: string;
+  totalSharesPendingFormatted: string;
+  frozenShares: string;
+  frozenSharesFormatted: string;
+  frozenAssets: string;
+  frozenAssetsFormatted: string;
+  proRataRatio: string;
+  proRataRatioFormatted: string;
+  carryAccrued: string;
+  carryAccruedFormatted: string;
+  cohortTotalEntitlement: string;
+  cohortTotalEntitlementFormatted: string;
+  cohortTotalAccrued: string;
+  cohortTotalAccruedFormatted: string;
+  cohortTotalClaimed: string;
+  cohortTotalClaimedFormatted: string;
+  cohortCarryRemaining: string;
+  cohortCarryRemainingFormatted: string;
+  status: string;
+}
+
+export interface EpochHistoryResponse {
+  success: boolean;
+  vaultId: number;
+  currentEpochId: number;
+  epochs: EpochHistoryItem[];
 }
 
 export interface TrancheStatusResponse {

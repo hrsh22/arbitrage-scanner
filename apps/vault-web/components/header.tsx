@@ -15,6 +15,7 @@ import {
   useDisconnect,
 } from "@reown/appkit/react";
 import { getAddress } from "viem";
+import { VAULT_NETWORK } from "../src/constants";
 
 interface HeaderProps {
   className?: string;
@@ -72,7 +73,7 @@ export function Header({ className }: HeaderProps) {
           // Session expired or not found — user will need to sign in again
         });
     }
-  }, [isConnected, address]);
+  }, [isConnected, address, isAuthenticated]);
 
   // Clear auth state on disconnect
   useEffect(() => {
@@ -146,6 +147,13 @@ export function Header({ className }: HeaderProps) {
 
   const isVaultsActive = pathname === "/";
 
+  // Network indicator configuration
+  const isTestnet = VAULT_NETWORK === "amoy";
+  const networkDisplayName = isTestnet ? "Amoy Testnet" : "Polygon Mainnet";
+  const networkBadgeClass = isTestnet
+    ? "border-amber-500/30 bg-amber-50 text-amber-700"
+    : "border-emerald-500/30 bg-emerald-50 text-emerald-700";
+
   return (
     <header
       className={`sticky top-0 z-50 w-full border-b border-border/50 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 ${className ?? ""}`}
@@ -183,8 +191,24 @@ export function Header({ className }: HeaderProps) {
           </nav>
         </div>
 
-        {/* Right: Auth + Wallet */}
+        {/* Right: Auth + Wallet + Network */}
         <div className="flex items-center gap-3">
+          {/* Network Indicator */}
+          <Badge
+            variant="outline"
+            className={`gap-1.5 font-normal ${networkBadgeClass}`}
+            title={
+              isTestnet
+                ? "Polymarket trading is disabled on testnet"
+                : "Connected to Polygon Mainnet"
+            }
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${isTestnet ? "bg-amber-500" : "bg-emerald-500"}`}
+            />
+            {networkDisplayName}
+          </Badge>
+
           {/* Error display */}
           {error && <span className="text-xs text-destructive animate-pulse">{error}</span>}
 

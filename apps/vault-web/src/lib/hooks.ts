@@ -23,8 +23,8 @@ import {
   // Epoch API functions
   postRedemptionRequest,
   postClaimRedemption,
-  postCancelRedemptionRequest,
   fetchCurrentEpochStatus,
+  fetchEpochHistory,
   fetchEpochStatus,
   fetchUserRedemptions,
   // Tranche-carry lifecycle API
@@ -43,8 +43,9 @@ import type {
   // Epoch types
   RedemptionRequestCreateResponse,
   ClaimRedemptionResponse,
-  CancelRedemptionResponse,
   EpochStatusResponse,
+  EpochHistoryItem,
+  EpochHistoryResponse,
   UserRedemptionsResponse,
   Epoch,
   RedemptionRequest,
@@ -257,6 +258,11 @@ interface UsdcAllowanceResult {
   refetch: () => Promise<unknown>;
 }
 
+interface TokenAllowanceResult {
+  allowance: bigint;
+  refetch: () => Promise<unknown>;
+}
+
 export function useUsdcAllowance(owner?: string, spender?: string): UsdcAllowanceResult {
   const { data: allowance, refetch } = useReadContract({
     address: USDC_E_ADDRESS,
@@ -275,13 +281,39 @@ export function useUsdcAllowance(owner?: string, spender?: string): UsdcAllowanc
   };
 }
 
+export function useTokenAllowance(
+  tokenAddress?: string,
+  owner?: string,
+  spender?: string,
+): TokenAllowanceResult {
+  const { data: allowance, refetch } = useReadContract({
+    address: tokenAddress as `0x${string}` | undefined,
+    abi: ERC20_ABI,
+    functionName: "allowance",
+    args: owner && spender ? [owner as `0x${string}`, spender as `0x${string}`] : undefined,
+    query: {
+      enabled: Boolean(tokenAddress && owner && spender),
+      refetchInterval: 10_000,
+    },
+  });
+
+  return {
+    allowance: allowance ?? 0n,
+    refetch,
+  };
+}
+
 interface VaultSharesResult {
   shares: bigint;
   formatted: string;
   refetch: () => Promise<unknown>;
 }
 
-export function useVaultShares(vaultAddress?: string, userAddress?: string): VaultSharesResult {
+export function useVaultShares(
+  vaultAddress?: string,
+  userAddress?: string,
+  shareDecimals = 6,
+): VaultSharesResult {
   const { data: shares, refetch } = useReadContract({
     address: vaultAddress as `0x${string}` | undefined,
     abi: VAULT_ABI,
@@ -297,7 +329,7 @@ export function useVaultShares(vaultAddress?: string, userAddress?: string): Vau
 
   return {
     shares: safeShares,
-    formatted: formatUnits(safeShares, 18),
+    formatted: formatUnits(safeShares, shareDecimals),
     refetch,
   };
 }
@@ -343,14 +375,18 @@ interface PreviewDepositResult {
   shares: bigint | undefined;
 }
 
-export function usePreviewDeposit(vaultAddress?: string, assets?: bigint): PreviewDepositResult {
+export function usePreviewDeposit(
+  vaultAddress?: string,
+  assets?: bigint,
+  enabled = true,
+): PreviewDepositResult {
   const { data: shares } = useReadContract({
     address: vaultAddress as `0x${string}` | undefined,
     abi: VAULT_ABI,
     functionName: "previewDeposit",
     args: assets !== undefined ? [assets] : undefined,
     query: {
-      enabled: Boolean(vaultAddress && assets !== undefined && assets > 0n),
+      enabled: Boolean(enabled && vaultAddress && assets !== undefined && assets > 0n),
     },
   });
 
@@ -408,6 +444,16 @@ interface UsdcApproveResult {
   reset: () => void;
 }
 
+interface TokenApproveResult {
+  approve: (spender: `0x${string}`, amount: bigint) => void;
+  isPending: boolean;
+  isConfirming: boolean;
+  isConfirmed: boolean;
+  hash: `0x${string}` | undefined;
+  error: Error | null;
+  reset: () => void;
+}
+
 export function useUsdcApprove(): UsdcApproveResult {
   const { write, hash, isPending, error, reset } = useEip155WriteState();
   const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
@@ -438,6 +484,40 @@ export function useUsdcApprove(): UsdcApproveResult {
   };
 }
 
+export function useTokenApprove(tokenAddress?: string): TokenApproveResult {
+  const { write, hash, isPending, error, reset } = useEip155WriteState();
+  const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
+    hash,
+  });
+
+  const approve = (spender: `0x${string}`, amount: bigint) => {
+    if (!tokenAddress) {
+      throw new Error("Token address is required for approval");
+    }
+
+    const data = encodeFunctionData({
+      abi: ERC20_ABI,
+      functionName: "approve",
+      args: [spender, amount],
+    });
+
+    write({
+      to: tokenAddress as Address,
+      data,
+    });
+  };
+
+  return {
+    approve,
+    isPending,
+    isConfirming,
+    isConfirmed,
+    hash,
+    error,
+    reset,
+  };
+}
+
 interface VaultDepositResult {
   deposit: (vaultAddress: `0x${string}`, assets: bigint, onBehalf: `0x${string}`) => void;
   isPending: boolean;
@@ -447,6 +527,60 @@ interface VaultDepositResult {
   error: Error | null;
   reset: () => void;
 }
+
+interface QueueDepositResult {
+  queueDeposit: (vaultAddress: `0x${string}`, assets: bigint) => void;
+  isPending: boolean;
+  isConfirming: boolean;
+  isConfirmed: boolean;
+  hash: `0x${string}` | undefined;
+  error: Error | null;
+  reset: () => void;
+}
+
+interface CustomVaultRequestRedeemResult {
+  requestRedeemTx: (
+    vaultAddress: `0x${string}`,
+    shares: bigint,
+    controller: `0x${string}`,
+    owner: `0x${string}`,
+  ) => void;
+  isPending: boolean;
+  isConfirming: boolean;
+  isConfirmed: boolean;
+  hash: `0x${string}` | undefined;
+  error: Error | null;
+  reset: () => void;
+}
+
+interface CustomVaultClaimRedeemResult {
+  claimRedeemTx: (
+    vaultAddress: `0x${string}`,
+    requestId: bigint,
+    shares: bigint,
+    receiver: `0x${string}`,
+  ) => void;
+  isPending: boolean;
+  isConfirming: boolean;
+  isConfirmed: boolean;
+  hash: `0x${string}` | undefined;
+  error: Error | null;
+  reset: () => void;
+}
+
+const CUSTOM_VAULT_REDEEM_ABI = [
+  {
+    inputs: [
+      { name: "requestId", type: "uint256" },
+      { name: "shares", type: "uint256" },
+      { name: "receiver", type: "address" },
+    ],
+    name: "redeem",
+    outputs: [{ name: "assets", type: "uint256" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+] as const;
 
 export function useVaultDeposit(): VaultDepositResult {
   const { write, hash, isPending, error, reset } = useEip155WriteState();
@@ -476,6 +610,84 @@ export function useVaultDeposit(): VaultDepositResult {
     error,
     reset,
   };
+}
+
+export function useQueueDeposit(): QueueDepositResult {
+  const { write, hash, isPending, error, reset } = useEip155WriteState();
+  const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
+    hash,
+  });
+
+  const queueDeposit = (vaultAddress: `0x${string}`, assets: bigint) => {
+    const data = encodeFunctionData({
+      abi: VAULT_ABI,
+      functionName: "queueDeposit",
+      args: [assets],
+    });
+
+    write({
+      to: vaultAddress,
+      data,
+    });
+  };
+
+  return {
+    queueDeposit,
+    isPending,
+    isConfirming,
+    isConfirmed,
+    hash,
+    error,
+    reset,
+  };
+}
+
+export function useCustomVaultRequestRedeem(): CustomVaultRequestRedeemResult {
+  const { write, hash, isPending, error, reset } = useEip155WriteState();
+  const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
+    hash,
+  });
+
+  const requestRedeemTx = (
+    vaultAddress: `0x${string}`,
+    shares: bigint,
+    controller: `0x${string}`,
+    owner: `0x${string}`,
+  ) => {
+    const data = encodeFunctionData({
+      abi: VAULT_ABI,
+      functionName: "requestRedeem",
+      args: [shares, controller, owner],
+    });
+
+    write({ to: vaultAddress, data });
+  };
+
+  return { requestRedeemTx, isPending, isConfirming, isConfirmed, hash, error, reset };
+}
+
+export function useCustomVaultClaimRedeem(): CustomVaultClaimRedeemResult {
+  const { write, hash, isPending, error, reset } = useEip155WriteState();
+  const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
+    hash,
+  });
+
+  const claimRedeemTx = (
+    vaultAddress: `0x${string}`,
+    requestId: bigint,
+    shares: bigint,
+    receiver: `0x${string}`,
+  ) => {
+    const data = encodeFunctionData({
+      abi: CUSTOM_VAULT_REDEEM_ABI,
+      functionName: "redeem",
+      args: [requestId, shares, receiver],
+    });
+
+    write({ to: vaultAddress, data });
+  };
+
+  return { claimRedeemTx, isPending, isConfirming, isConfirmed, hash, error, reset };
 }
 
 interface VaultRedeemResult {
@@ -533,7 +745,12 @@ export function useVaultRedeem(): VaultRedeemResult {
 // ============================================================================
 
 export interface UseRequestRedeemResult {
-  requestRedeem: (vaultId: number, shares: string, assetsEstimated?: string, operator?: string) => Promise<void>;
+  requestRedeem: (
+    vaultId: number,
+    shares: string,
+    assetsEstimated?: string,
+    operator?: string,
+  ) => Promise<void>;
   data: RedemptionRequestCreateResponse | null;
   isLoading: boolean;
   error: string | null;
@@ -690,6 +907,15 @@ export interface UseEpochStatusResult {
   refetch: () => Promise<void>;
 }
 
+export interface UseEpochHistoryResult {
+  currentEpochId: number | null;
+  epochs: EpochHistoryItem[];
+  isLoading: boolean;
+  error: string | null;
+  lastRefresh: Date | null;
+  refetch: () => Promise<void>;
+}
+
 export function useEpochStatus(vaultId?: number, epochId?: number): UseEpochStatusResult {
   const [data, setData] = useState<EpochStatusResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -730,6 +956,46 @@ export function useEpochStatus(vaultId?: number, epochId?: number): UseEpochStat
     isActive: data?.epoch?.isActive ?? false,
     timeRemainingFormatted: data?.epoch?.timeRemainingFormatted ?? "0s",
     canSettle: data?.canSettle,
+    isLoading,
+    error,
+    lastRefresh,
+    refetch,
+  };
+}
+
+export function useEpochHistory(vaultId?: number, limit = 6): UseEpochHistoryResult {
+  const [data, setData] = useState<EpochHistoryResponse | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+
+  const refetch = useCallback(async () => {
+    if (vaultId === undefined) {
+      setIsLoading(false);
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const result = await fetchEpochHistory(vaultId, limit);
+      setData(result);
+      setLastRefresh(new Date());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch epoch history");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [vaultId, limit]);
+
+  useEffect(() => {
+    void refetch();
+  }, [refetch]);
+
+  return {
+    currentEpochId: data?.currentEpochId ?? null,
+    epochs: data?.epochs ?? [],
     isLoading,
     error,
     lastRefresh,
@@ -781,67 +1047,32 @@ export function useClaimRedemption(): UseClaimRedemptionResult {
   };
 }
 
-export interface UseCancelRedemptionResult {
-  cancelRedemption: (vaultId: number, requestId: string) => Promise<void>;
-  data: CancelRedemptionResponse | null;
-  isLoading: boolean;
-  error: string | null;
-  reset: () => void;
-}
-
-export function useCancelRedemption(): UseCancelRedemptionResult {
-  const [data, setData] = useState<CancelRedemptionResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const cancelRedemption = useCallback(async (vaultId: number, requestId: string) => {
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const result = await postCancelRedemptionRequest(vaultId, requestId);
-      setData(result);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to cancel redemption request";
-      setError(message);
-      throw new Error(message);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  const reset = useCallback(() => {
-    setData(null);
-    setError(null);
-    setIsLoading(false);
-  }, []);
-
-  return {
-    cancelRedemption,
-    data,
-    isLoading,
-    error,
-    reset,
-  };
-}
-
 // ============================================================================
 // Tranche-Carry Lifecycle Hooks
 // ============================================================================
 
 export interface UseDepositQueueResult {
-  /** Queued: assets waiting in deposit queue (pending state) */
   queued: string;
   queuedFormatted: string;
   queuedShares: string;
   queuedSharesFormatted: string;
-  /** Frozen: assets frozen in epoch (claimable state) */
+  estimateNav: string;
+  estimateNavFormatted: string;
+  estimateBasis: string | null;
   frozen: string;
   frozenFormatted: string;
   frozenShares: string;
   frozenSharesFormatted: string;
+  depositRequestId: string | null;
+  depositCreatedAt: string | null;
+  targetEpochId: number | null;
   currentEpochId: number | null;
+  currentEpochStart: string | null;
   currentEpochEnd: string | null;
+  nextEpochStart: string | null;
+  activationTime: string | null;
+  queueStatus: "idle" | "queued" | "processed" | null;
+  mintRule: string | null;
   isLoading: boolean;
   error: string | null;
   lastRefresh: Date | null;
@@ -885,12 +1116,23 @@ export function useDepositQueue(vaultId?: number): UseDepositQueueResult {
     queuedFormatted: data?.queuedFormatted ?? "0",
     queuedShares: data?.queuedShares ?? "0",
     queuedSharesFormatted: data?.queuedSharesFormatted ?? "0",
+    estimateNav: data?.estimateNav ?? "0",
+    estimateNavFormatted: data?.estimateNavFormatted ?? "0",
+    estimateBasis: data?.estimateBasis ?? null,
     frozen: data?.frozen ?? "0",
     frozenFormatted: data?.frozenFormatted ?? "0",
     frozenShares: data?.frozenShares ?? "0",
     frozenSharesFormatted: data?.frozenSharesFormatted ?? "0",
+    depositRequestId: data?.depositRequestId ?? null,
+    depositCreatedAt: data?.depositCreatedAt ?? null,
+    targetEpochId: data?.targetEpochId ?? null,
     currentEpochId: data?.currentEpochId ?? null,
+    currentEpochStart: data?.currentEpochStart ?? null,
     currentEpochEnd: data?.currentEpochEnd ?? null,
+    nextEpochStart: data?.nextEpochStart ?? null,
+    activationTime: data?.activationTime ?? null,
+    queueStatus: data?.queueStatus ?? null,
+    mintRule: data?.mintRule ?? null,
     isLoading,
     error,
     lastRefresh,
@@ -976,17 +1218,17 @@ export function useTrancheStatus(vaultId?: number, epochId?: number): UseTranche
       claimedFormatted: data?.tranchePosition?.claimedFormatted ?? "0",
       claimableNow: data?.tranchePosition?.claimableNow ?? "0",
       claimableNowFormatted: data?.tranchePosition?.claimableNowFormatted ?? "0",
-minClaimThreshold: data?.tranchePosition?.minClaimThreshold ?? "1000000",
+      minClaimThreshold: data?.tranchePosition?.minClaimThreshold ?? "1000000",
       minClaimThresholdFormatted: data?.tranchePosition?.minClaimThresholdFormatted ?? "1.0",
       dustOverrideEligible: data?.tranchePosition?.dustOverrideEligible ?? false,
       meetsThreshold: data?.tranchePosition?.meetsThreshold ?? false,
-},
-entitlementCount: data?.entitlementCount ?? 0,
-isLoading,
-error,
-lastRefresh,
-refetch,
-};
+    },
+    entitlementCount: data?.entitlementCount ?? 0,
+    isLoading,
+    error,
+    lastRefresh,
+    refetch,
+  };
 }
 
 export interface UseCarryEligibilityResult {
@@ -1028,7 +1270,10 @@ export interface UseCarryEligibilityResult {
   refetch: () => Promise<void>;
 }
 
-export function useCarryEligibility(vaultId?: number, requestId?: string): UseCarryEligibilityResult {
+export function useCarryEligibility(
+  vaultId?: number,
+  requestId?: string,
+): UseCarryEligibilityResult {
   const [data, setData] = useState<CarryEligibilityResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1079,21 +1324,20 @@ export function useCarryEligibility(vaultId?: number, requestId?: string): UseCa
     totalEntitlements: data?.totalEntitlements ?? 0,
     eligibleCount: data?.eligibleCount ?? 0,
     hasEligibleClaims: data?.hasEligibleClaims ?? false,
-    entitlements: data?.entitlements?.map(e => ({
-      entitlementId: e.entitlementId,
-      requestId: e.requestId,
-      epochId: e.epochId,
-      accrued: e.accrued,
-      claimableNow: e.claimableNow,
-      eligible: e.eligible,
-      dustOverrideEligible: e.dustOverrideEligible ?? false,
-      status: e.status,
-    })) ?? [],
+    entitlements:
+      data?.entitlements?.map((e) => ({
+        entitlementId: e.entitlementId,
+        requestId: e.requestId,
+        epochId: e.epochId,
+        accrued: e.accrued,
+        claimableNow: e.claimableNow,
+        eligible: e.eligible,
+        dustOverrideEligible: e.dustOverrideEligible ?? false,
+        status: e.status,
+      })) ?? [],
     isLoading,
     error,
     lastRefresh,
     refetch,
   };
-
-
 }

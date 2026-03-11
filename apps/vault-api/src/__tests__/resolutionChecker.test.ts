@@ -34,6 +34,7 @@ vi.mock("../constants.js", () => ({
   MAX_DEPLOYED_RATIO: 0.25,
   WITHDRAWAL_FEE_BPS: 50,
   POLYGON_CHAIN_ID: 137,
+  SUPPORTS_POLYMARKET_TRADING: true,
 }));
 
 vi.mock("../config/index.js", () => ({
@@ -64,6 +65,7 @@ vi.mock("viem/accounts", () => ({
 
 vi.mock("viem/chains", () => ({
   polygon: { id: 137 },
+  polygonAmoy: { id: 80002 },
 }));
 
 vi.mock("../services/navOracle.js", () => ({

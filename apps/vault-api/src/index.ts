@@ -1,12 +1,18 @@
+import "dotenv/config";
 import cookieSession from "cookie-session";
 import express from "express";
 import type { Server } from "node:http";
 import { env } from "./env.js";
 import { logger } from "./logger.js";
+import { runStartupValidationOrExit } from "./startupValidation.js";
 import { buildAuthRouter } from "./routes/authRoutes.js";
 import { buildVaultRouter } from "./routes/vaultRoutes.js";
 import { buildCustomVaultRouter } from "./routes/customVaultRoutes.js";
 import { initializeVaultProviders } from "./services/vaultProviderFactory.js";
+
+// Run startup validation early - this will exit if validation fails
+await runStartupValidationOrExit();
+
 if (env.VAULT_SESSION_SECRET === "vault-dev-secret-change-me") {
   logger.warn("VAULT_SESSION_SECRET is using default dev value — set a real secret in production");
 }
