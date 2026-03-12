@@ -3,11 +3,22 @@
  * CRUD operations for epochs, epoch requests, and NAV snapshots
  * with strict state machine validation for cohort-carry lifecycle.
  *
+ * BATCH/SEALED SEMANTICS FOR CUSTOM VAULTS:
+ * - Epoch table stores batches for closed-book vaults (batchId = epochId)
+ * - Sealed processing: pending -> frozen -> claimable -> closed
+ * - Custom vaults use truthful batch statuses (no proxy mapping)
+ * - Legacy vaults use cohort-carry semantics
+ *
+ * DUAL-MODE SUPPORT:
+ * - Legacy Morpho: cohort-carry with pro-rata distribution
+ * - Custom closed-book: sealed batch processing with deterministic settlement
+ *
  * Cohort-Carry Lifecycle:
  *   Epochs: pending -> frozen -> claimable -> closed
  *   Requests: pending -> frozen -> claimable -> claimed -> closed
  *   NO backward transitions allowed
  */
+
 
 import { eq, and, asc, desc, sql } from "drizzle-orm";
 import { db as defaultDb } from "../db/index.js";
@@ -118,19 +129,28 @@ export class EpochRepository {
       .orderBy(desc(epochs.claimableAt));
   }
 
-  /** Get all closed epochs across all vaults */
-  async getAllClosedEpochs() {
+  /** Get all sealed epochs (claimable or closed) across all vaults
+   * SEALED SEMANTICS: Returns epochs ready for claims processing
+   */
+  async getAllSealedEpochs() {
     return this.database
       .select()
       .from(epochs)
-      .where(eq(epochs.status, "closed"))
-      .orderBy(desc(epochs.closedAt));
+      .where(eq(epochs.status, "claimable"))
+      .orderBy(desc(epochs.claimableAt));
   }
 
-  /** Alias for getAllClosedEpochs for backward compatibility */
-  async getAllSettledEpochs() {
-    return this.getAllClosedEpochs();
+  /** Alias for getAllSealedEpochs for backward compatibility */
+  async getAllClosedEpochs() {
+    return this.getAllSealedEpochs();
   }
+
+  /** Alias for getAllSealedEpochs for backward compatibility */
+  async getAllSettledEpochs() {
+    return this.getAllSealedEpochs();
+  }
+
+
 
   /** Get current pending epoch for vault */
   async getCurrentEpoch(vaultAddress: string) {

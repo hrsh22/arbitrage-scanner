@@ -1,0 +1,139 @@
+T14: Prepare Deployment Scripts and Config for ClosedBookBatchVault
+================================================================================
+
+TASK COMPLETED: 2026-03-12
+
+1. FILES CREATED/MODIFIED
+-------------------------
+
+### New Deployment Scripts
+- contracts/scripts/deployClosedBookBatchVault.js
+  * Full deployment CLI for ClosedBookBatchVault
+  * Supports profiles: production, staging, test
+  * Constructor params: _asset, _admin, _settler, _navUpdater, _snapshotter, _depositProcessor, _feeRecipient, _epochDuration, _navStalenessThreshold
+  * Environment variables: CBBV_* prefix
+  * Dry-run support
+  * Evidence generation
+
+- contracts/scripts/flattenClosedBookBatchVaultForRemix.sh
+  * Generates flattened contract for Remix IDE deployment
+  * Includes warnings about correct contract selection
+  * Applies IERC1363 inheritance patch
+
+### Updated Config Files
+- apps/vault-api/src/config/vaults/amoy/vault1-pph.ts
+  * Added comprehensive header documenting both vault implementations
+  * Added vaultContractType field ("epochTrancheVault" | "closedBookBatchVault")
+  * Explicit comments showing LEGACY (active) vs NEW (prepared) addresses
+  * Current selection: "epochTrancheVault" (LEGACY ACTIVE)
+
+- apps/vault-api/src/config/types.ts
+  * Added vaultContractType?: "epochTrancheVault" | "closedBookBatchVault" to VaultInstanceConfig
+
+### Existing Scripts (Verified Intact)
+- contracts/scripts/deployEpochTrancheVault.js (LEGACY - UNCHANGED)
+- contracts/scripts/flattenEpochTrancheVaultForRemix.sh (LEGACY - UNCHANGED)
+- contracts/scripts/verify-amoy-deployment.sh (Already targets ClosedBookBatchVault)
+
+2. VAULT CONTRACT COMPARISON
+----------------------------
+
+EpochTrancheVault (LEGACY - ACTIVE)
+- Address: 0x8D87Cc370e3751d5bBDBaE702e6618D59D950b2D (Amoy)
+- Constructor: 11 params (includes _tradingSafe, _minClaimThreshold, _balancedUpfrontBps)
+- Status: LIVE on Amoy
+- Script: deployEpochTrancheVault.js
+
+ClosedBookBatchVault (NEW - PREPARED)
+- Address: NOT YET DEPLOYED
+- Constructor: 9 params (uses _feeRecipient instead of _tradingSafe)
+- Status: Contract ready, scripts prepared, deployment pending
+- Script: deployClosedBookBatchVault.js
+- Key differences:
+  * Uses feeRecipient instead of tradingSafe
+  * No minClaimThreshold parameter
+  * No balancedUpfrontBps parameter
+  * Simplified batch/cycle lifecycle
+
+3. DEPLOYMENT PREPARATION STATUS
+--------------------------------
+
+READY TO DEPLOY (when needed):
+✅ Deployment script created and syntax-checked
+✅ Flatten script created and syntax-checked
+✅ Config supports explicit vault selection
+✅ Environment variable schema defined (CBBV_* prefix)
+✅ Profile configurations defined (production, staging, test)
+
+NOT YET DONE (requires separate action):
+⏳ Actual deployment to Amoy
+⏳ Contract address recorded
+⏳ Config vaultAddress updated
+⏳ vaultContractType switched to "closedBookBatchVault"
+⏳ Verification on-chain
+
+4. CONFIGURATION STATE
+----------------------
+
+Current State (T14 complete):
+- vaultContractType: "epochTrancheVault" (LEGACY)
+- vaultAddress: "0x8D87Cc370e3751d5bBDBaE702e6618D59D950b2D" (EpochTrancheVault)
+- safeAddress: "0x5991fd6Ecc5634C4de497b47Eb0Aa0065fffb214"
+
+Future State (post-deployment):
+- vaultContractType: "closedBookBatchVault" (NEW)
+- vaultAddress: "<TO_BE_DEPLOYED>" (ClosedBookBatchVault)
+- safeAddress: "0x5991fd6Ecc5634C4de497b47Eb0Aa0065fffb214" (can reuse)
+- feeRecipient: "0x5991fd6Ecc5634C4de497b47Eb0Aa0065fffb214" (replaces tradingSafe)
+
+5. VERIFICATION COMMANDS
+------------------------
+
+Syntax check deployment script:
+  node --check contracts/scripts/deployClosedBookBatchVault.js
+
+Dry run deployment (staging):
+  node contracts/scripts/deployClosedBookBatchVault.js \
+    --profile staging \
+    --rpc-url https://polygon-amoy.g.alchemy.com/v2/YOUR_KEY \
+    --dry-run
+
+Verify deployed contract:
+  VAULT_ADDRESS=0x... ./contracts/scripts/verify-amoy-deployment.sh
+
+6. REQUIRED ENVIRONMENT VARIABLES FOR DEPLOYMENT
+------------------------------------------------
+
+CBBV_ADMIN_ADDRESS
+CBBV_SETTLER_ADDRESS
+CBBV_NAV_UPDATER_ADDRESS
+CBBV_SNAPSHOTTER_ADDRESS
+CBBV_DEPOSIT_PROCESSOR_ADDRESS
+CBBV_FEE_RECIPIENT_ADDRESS
+PRIVATE_KEY
+
+Optional overrides:
+CBBV_ASSET_ADDRESS
+CBBV_EPOCH_DURATION
+CBBV_NAV_STALENESS_THRESHOLD
+
+7. SUMMARY
+----------
+
+T14 successfully prepared deployment scripts and configuration for ClosedBookBatchVault
+WITHOUT claiming the cutover is done. The legacy EpochTrancheVault remains active.
+
+The new ClosedBookBatchVault is:
+- ✅ Contract code ready (src/ClosedBookBatchVault.sol)
+- ✅ Deployment script ready (deployClosedBookBatchVault.js)
+- ✅ Flatten script ready (flattenClosedBookBatchVaultForRemix.sh)
+- ✅ Config supports explicit selection (vaultContractType)
+- ⏳ NOT YET DEPLOYED to Amoy
+- ⏳ NOT YET ACTIVE in production
+
+Cutover requires:
+1. Deploy ClosedBookBatchVault using deployClosedBookBatchVault.js
+2. Update vault1-pph.ts with new vaultAddress
+3. Change vaultContractType to "closedBookBatchVault"
+4. Verify deployment
+5. Test thoroughly before claiming cutover complete

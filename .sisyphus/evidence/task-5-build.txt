@@ -1,0 +1,49 @@
+Task 5 Evidence: Build Verification
+=====================================
+
+## Build Command
+```bash
+cd apps/vault-api && pnpm build
+```
+
+## Build Result
+```
+> vault@0.0.1 build /Users/harsh/Developer/polymarket-mvp/apps/vault-api
+> tsc -p tsconfig.json
+
+(no errors)
+```
+
+## TypeScript Compilation
+- All files compile without errors
+- No type errors introduced
+- Strict mode maintained
+
+## Files Modified
+1. apps/vault-api/src/services/tradingOrchestrator.ts
+   - Added starvation policy constants
+   - Added emergency pause state management
+   - Added 15+ new methods for policy enforcement
+
+2. apps/vault-api/src/services/vaultHealthMonitor.ts
+   - Added checkFlatteningTimeout() health check
+   - Added checkEmergencyPause() health check
+   - Integrated into runFullHealthCheck()
+
+3. apps/vault-api/src/config/alerts.ts
+   - Added starvation/emergency pause thresholds
+   - Added 3 new alert routes
+   - Added 3 new runbook URLs
+   - Added 3 new alert templates
+
+4. apps/vault-api/src/config/types.ts
+   - Added VaultPolicyConfig fields to VaultInstanceConfig
+
+5. apps/vault-api/src/__tests__/starvationPolicy.test.ts
+   - New test file with 27 focused tests
+
+## Dependencies
+- Reused existing FlatnessDetector from T2
+- Reused existing AlertManager infrastructure
+- Reused existing HealthCheckResult types
+- No new external dependencies

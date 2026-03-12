@@ -3,7 +3,23 @@
  * CRUD operations for realized payout distributions to users.
  * Manages individual payout records and enforces cumulative entitlement caps.
  * Ensures claimed amounts never exceed entitlement.
+ *
+ * DUAL-MODE SUPPORT:
+ * - Legacy (cohort-carry): Progressive payout with carry-forward tracking
+ * - Closed-book (sealed): Deterministic settlement with batch processing
+ *
+ * CLOSED-BOOK BATCH SEMANTICS (Sealed Processing):
+ * - Payouts calculated once at batch settlement
+ * - No carry-forward - all entitled amounts available after settlement
+ * - Uses truthful 'claimed' status (no proxy mapping to 'completed')
+ * - Entitlement cap enforced at batch level
+ *
+ * LEGACY COHORT-CARRY SEMANTICS:
+ * - Progressive payout as positions realize value
+ * - Carry-forward tracks unclaimed amounts across tranches
+ * - Per-realization distribution tracking
  */
+
 
 import { eq, and, sql } from "drizzle-orm";
 import { db as defaultDb } from "../db/index.js";

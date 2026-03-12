@@ -237,7 +237,7 @@ export interface SiweVerifyResponse {
 }
 
 // ============================================
-// Epoch-based Redemption Types (ERC7540-style)
+// Batch/Cycle-based Redemption Types (ERC7540-style Closed-Book)
 // ============================================
 
 export type RedemptionRequestStatus = "pending" | "claimable" | "claimed" | "cancelled";
@@ -245,11 +245,15 @@ export type RedemptionRequestStatus = "pending" | "claimable" | "claimed" | "can
 export interface RedemptionRequest {
   id: string;
   requestId: string;
+  cycleId?: number;
+  batchId?: number;
   epochId?: number;
+  targetEpoch?: number;
   shares: string;
   sharesFormatted: string;
-  targetEpoch: number;
-  targetEpochEndTime: string; // ISO date string
+  targetCycle: number;
+  targetCycleEndTime: string; // ISO date string
+  targetEpochEndTime?: string;
   claimableAssets: string | null;
   claimableAssetsFormatted: string | null;
   status: RedemptionRequestStatus;
@@ -262,16 +266,22 @@ export interface RedemptionRequest {
   ownerAddress: string; // The address that owns the shares being redeemed
   controllerAddress: string; // The address that initiated the request (may be operator)
   operatorAddress?: string | null; // The operator who initiated on behalf of owner (if applicable)
+  // Batch lifecycle state
+  batchState?: "queued" | "sealed" | "flattening" | "settling" | "settled" | null;
+  estimatedSettlementTime?: string | null;
+  flatteningProgress?: number | null; // 0-100%
+  settlementProgress?: number | null; // 0-100%
+  lifecycleError?: string | null;
 }
 
-export interface EpochInfo {
-  currentEpoch: number;
-  currentEpochStartTime: string;
-  currentEpochEndTime: string;
-  nextEpochStartTime: string;
-  isSettlementWindow: boolean;
-  settlementWindowStart: string | null;
-  settlementWindowEnd: string | null;
+export interface CycleInfo {
+  currentCycle: number;
+  currentCycleStartTime: string;
+  currentCycleEndTime: string;
+  nextCycleStartTime: string;
+  isCutoffWindow: boolean;
+  cutoffWindowStart: string | null;
+  cutoffWindowEnd: string | null;
   totalPendingShares: string;
   estimatedSettlementAssets: string | null;
   navFresh: boolean;
@@ -288,15 +298,16 @@ export interface RedemptionQueueResponse {
 export interface RedemptionRequestCreateResponse {
   success: boolean;
   requestId: string;
-  epochId: number;
+  cycleId: number;
   status: RedemptionRequestStatus;
   message: string;
   targetSettlement: string;
 }
+
 export interface RedemptionRequestCreateResponse {
   success: boolean;
   requestId: string;
-  epochId: number;
+  cycleId: number;
   status: RedemptionRequestStatus;
   message: string;
   targetSettlement: string;
@@ -330,9 +341,9 @@ export interface ClaimRedemptionResponse {
   message: string;
 }
 
-export interface EpochStatusResponse {
+export interface CycleStatusResponse {
   success: boolean;
-  epoch: Epoch;
+  cycle: Cycle;
   vaultId: number;
   canSettle?: boolean;
 }
@@ -347,9 +358,10 @@ export interface UserRedemptionsResponse {
   estimatedAssetsPendingFormatted: string;
   estimatedAssetsClaimableFormatted: string;
 }
-/** Epoch metadata */
-export interface Epoch {
-  epochId: number;
+
+/** Cycle metadata - represents a closed-book batch window */
+export interface Cycle {
+  cycleId: number;
   startTime: string;
   endTime: string;
   settlementTime: string;
@@ -361,13 +373,21 @@ export interface Epoch {
   totalShares: string;
   totalSharesFormatted: string;
   settled: boolean;
+  // Batch lifecycle states
+  batchState: "open" | "cutoff" | "flattening" | "settling" | "settled" | "closed" | "reopen";
   proRataRatio?: string;
   availableAssets?: string;
   availableAssetsFormatted?: string;
+  // Progress indicators
+  flatteningProgress?: number; // 0-100%
+  settlementProgress?: number; // 0-100%
+  // Cutoff info
+  isCutoff: boolean;
+  cutoffTime?: string | null;
 }
 
 // ============================================================================
-// Tranche-Carry Lifecycle Types
+// Closed-Book Batch/Cycle Lifecycle Types
 // ============================================================================
 
 export interface DepositQueueResponse {
@@ -378,8 +398,10 @@ export interface DepositQueueResponse {
   queuedFormatted: string;
   queuedShares: string;
   queuedSharesFormatted: string;
-  estimateNav: string;
-  estimateNavFormatted: string;
+  // Removed: estimateNav - no current NAV estimates in closed-book
+  // Shares minted at cycle-open NAV when batch is processed
+  cycleOpenNavEstimate: string | null;
+  cycleOpenNavFormatted: string | null;
   estimateBasis: string;
   frozen: string;
   frozenFormatted: string;
@@ -387,23 +409,25 @@ export interface DepositQueueResponse {
   frozenSharesFormatted: string;
   depositRequestId: string | null;
   depositCreatedAt: string | null;
-  targetEpochId: number;
-  currentEpochId: number;
-  currentEpochStart?: string;
-  currentEpochEnd: string;
-  nextEpochStart?: string;
-  activationTime?: string;
+  targetCycleId: number;
+  currentCycleId: number;
+  currentCycleStart?: string | null;
+  currentCycleEnd: string | null;
+  nextCycleStart?: string | null;
+  activationTime?: string | null;
   queueStatus: "idle" | "queued" | "processed";
   mintRule: string;
+  // Batch lifecycle state
+  batchState: "open" | "cutoff" | "flattening" | "settling" | "settled" | "closed" | "reopen";
   timestamp: string;
 }
 
-export interface EpochHistoryItem {
-  epochId: number;
+export interface CycleHistoryItem {
+  cycleId: number;
   startTime: string;
   endTime: string;
-  epochOpenNAV: string;
-  epochOpenNAVFormatted: string;
+  cycleOpenNAV: string;
+  cycleOpenNAVFormatted: string;
   snapshotNAV: string;
   snapshotNAVFormatted: string;
   snapshotTimestamp: string | null;
@@ -425,28 +449,32 @@ export interface EpochHistoryItem {
   cohortTotalClaimedFormatted: string;
   cohortCarryRemaining: string;
   cohortCarryRemainingFormatted: string;
+  // Batch state at time of record
+  batchState: "open" | "cutoff" | "flattening" | "settling" | "settled" | "closed" | "reopen";
   status: string;
 }
 
-export interface EpochHistoryResponse {
+export interface CycleHistoryResponse {
   success: boolean;
   vaultId: number;
-  currentEpochId: number;
-  epochs: EpochHistoryItem[];
+  currentCycleId: number;
+  cycles: CycleHistoryItem[];
 }
 
 export interface TrancheStatusResponse {
   success: boolean;
   vaultId: number;
   userAddress: string;
-  epochId: number;
-  epochStatus: {
+  cycleId: number;
+  cycleStatus: {
     status: "settled" | "pending";
     startTime: string;
     endTime: string;
     settled: boolean;
     totalShares: string;
     totalSharesFormatted: string;
+    // Batch lifecycle
+    batchState: "open" | "cutoff" | "flattening" | "settling" | "settled" | "closed" | "reopen";
   };
   tranchePosition: {
     /** Total entitlement: total USDC entitled */
@@ -478,7 +506,7 @@ export interface TrancheStatusResponse {
 export interface EntitlementDetail {
   entitlementId: number;
   requestId: string;
-  epochId: string;
+  cycleId: string;
   accrued: string;
   claimableNow: string;
   eligible: boolean;
@@ -516,7 +544,84 @@ export interface CarryEligibilityResponse {
   entitlements?: Array<{
     entitlementId: number;
     requestId: string;
-    epochId: string;
+    cycleId: string;
+    accrued: string;
+    claimableNow: string;
+    eligible: boolean;
+    dustOverrideEligible?: boolean;
+    status: string;
+  }>;
+  timestamp: string;
+}
+
+// Extended RedemptionRequest with lifecycle fields
+export interface RedemptionRequestWithLifecycle extends RedemptionRequest {
+  /** Queued: assets waiting in deposit queue */
+  queued: string;
+  queuedFormatted: string;
+  /** Frozen: shares frozen in cycle */
+  frozen: string;
+  frozenFormatted: string;
+  /** Accrued: total realized USDC for this entitlement */
+  accrued: string;
+  accruedFormatted: string;
+  /** Claimed: total USDC already claimed */
+  claimed: string;
+  claimedFormatted: string;
+  /** ClaimableNow: USDC available to claim right now */
+  claimableNow: string;
+  claimableNowFormatted: string;
+  /** Minimum claim threshold (1 USDC) */
+  minClaimThreshold: string;
+  minClaimThresholdFormatted: string;
+  /** Additional metadata */
+  entitlementStatus?: string;
+  sharesSubmitted?: string;
+  entitlementRatio?: string;
+}
+
+export interface EntitlementDetail {
+  entitlementId: number;
+  requestId: string;
+  cycleId: string;
+  accrued: string;
+  claimableNow: string;
+  eligible: boolean;
+  status: string;
+}
+
+export interface CarryEligibilityResponse {
+  success: boolean;
+  vaultId: number;
+  userAddress: string;
+  requestId?: string;
+  entitlementId?: number;
+  /** Lifecycle fields */
+  accrued: string;
+  accruedFormatted: string;
+  claimed: string;
+  claimedFormatted: string;
+  claimableNow: string;
+  claimableNowFormatted: string;
+  minClaimThreshold: string;
+  minClaimThresholdFormatted: string;
+  /** Eligibility status */
+  eligible: boolean;
+  meetsThreshold: boolean;
+  canClaim: boolean;
+  dustOverrideEligible?: boolean;
+  eligibilityError?: string | null;
+  /** Status info */
+  entitlementStatus?: string;
+  currentClaimState?: string;
+  /** Aggregated fields */
+  totalEntitlements?: number;
+  eligibleCount?: number;
+  hasEligibleClaims?: boolean;
+  entitlements?: Array<{
+    entitlementId: number;
+    requestId: string;
+    cycleId: string;
     accrued: string;
     claimableNow: string;
     eligible: boolean;

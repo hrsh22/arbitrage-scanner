@@ -1,0 +1,37 @@
+# Task 7 API Lifecycle Evidence
+## Timestamp: 2026-03-11
+
+### Test Command
+```bash
+pnpm --filter vault exec vitest run src/__tests__/customVaultRoutes.test.ts
+```
+
+### Test Output
+```
+ RUN  v1.6.1 /Users/harsh/Developer/polymarket-mvp/apps/vault-api
+
+ ✓ src/__tests__/customVaultRoutes.test.ts  (19 tests) 5ms
+
+ Test Files  1 passed (1)
+      Tests  19 passed (19)
+   Start at  18:47:10
+   Duration  1.37s (transform 170ms, setup 0ms, collect 1.12s, tests 5ms, environment 0ms, prepare 61ms)
+```
+
+### Summary
+All 19 tests pass. The API routes correctly use batch-based semantics:
+- `/epochs/*` routes remain as compatibility wrappers backed by batch data
+- `getCurrentBatch()` used instead of removed `getCurrentEpoch()`
+- `getBatch()` used instead of removed `getEpoch()`
+- `formatEpochHistoryItem` maps `BatchData` to epoch-compatible response format
+
+### Key Changes
+1. `client.getEpoch(epochId)` -> `client.getBatch(batchId)`
+2. `depositRequest.processed` -> `depositRequest.status === "processed"`
+3. `depositRequest.targetEpoch` -> `depositRequest.targetBatch`
+4. `formatEpochHistoryItem` now accepts `BatchData` and maps fields:
+   - `batchId` -> `epochId` (with `batchId` also included)
+   - `snapshotNAV` -> `epochOpenNAV`
+   - `totalSharesPending` -> `frozenShares`
+   - `totalAssetsSnapshot` -> `frozenAssets`
+   - Carry/epoch fields default to "0" (not applicable in closed-book model)

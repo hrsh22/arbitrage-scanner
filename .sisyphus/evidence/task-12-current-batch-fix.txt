@@ -1,0 +1,41 @@
+# T12 Current-Batch Getter Bug Fix - Evidence
+
+## Problem
+`CustomVaultClient.getCurrentBatch()` was calling contract function `getCurrentBatch()` which reverts on the deployed Amoy contract.
+
+## Solution
+Changed `getCurrentBatch()` method in `customVaultClient.ts` to use `currentBatchId()` instead:
+
+**Before:**
+```typescript
+async getCurrentBatch(): Promise<bigint> {
+  return this.publicClient.readContract({
+    address: this.vaultAddress,
+    abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+    functionName: "getCurrentBatch",
+  }) as Promise<bigint>;
+}
+```
+
+**After:**
+```typescript
+async getCurrentBatch(): Promise<bigint> {
+  return this.publicClient.readContract({
+    address: this.vaultAddress,
+    abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+    functionName: "currentBatchId",
+  }) as Promise<bigint>;
+}
+```
+
+## Files Modified
+- `apps/vault-api/src/services/customVaultClient.ts`
+
+## Build Status
+✅ `pnpm --filter vault build` passes
+
+## Endpoint Test Results
+- `GET /api/vaults/1/cycles/current` - Route exists, calls currentBatchId()
+- `GET /api/vaults/1/epochs/current` - Route exists, calls currentBatchId()
+
+Note: Both endpoints now correctly call `currentBatchId()` but receive a revert from the deployed contract at `0x8D87Cc370e3751d5bBDBaE702e6618D59D950b2D`. This indicates a contract-level issue on Amoy that may require contract redeployment or initialization.

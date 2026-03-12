@@ -1,0 +1,64 @@
+T9: Closed-Book Batch Cycle UI Implementation
+==============================================
+
+BUILD STATUS: ✅ PASSED
+
+Changes Made:
+-------------
+1. types.ts - Updated to use cycle/batch terminology:
+   - Renamed Epoch to Cycle
+   - Renamed targetEpoch to targetCycle
+   - Renamed targetEpochEndTime to targetCycleEndTime
+   - Added batchState field to track lifecycle (open/sealed/flattening/settling/settled)
+   - Removed duplicate/legacy epoch types
+
+2. api.ts - Updated API functions:
+   - Renamed fetchCurrentEpochStatus to fetchCurrentCycleStatus
+   - Renamed fetchEpochHistory to fetchCycleHistory
+   - Renamed fetchEpochStatus to fetchCycleStatus
+   - Fixed bug: vault -> vaultAddress in fetchWithdrawalQueue
+
+3. hooks.ts - Updated hooks:
+   - Renamed useEpochStatus to useCycleStatus
+   - Renamed useEpochHistory to useCycleHistory
+   - Updated useDepositQueue to return cycleOpenNavFormatted (no current NAV estimates)
+   - Added batchState to useDepositQueue result
+   - Fixed entitlements type: epochId -> cycleId
+
+4. vault-detail.tsx - Updated main page:
+   - Replaced EpochLifecycleCard with CycleLifecycleCard
+   - Replaced EpochHistoryCard with CycleHistoryCard
+   - Updated all epoch references to cycle
+   - Added batchState prop to DepositQueueCard
+   - Removed "current NAV" estimate language
+   - Shows truthful closed-book lifecycle: queued → sealed → flattening → settling → claimable
+
+5. PendingRequests.tsx - Updated component:
+   - Changed epochInfo to cycleInfo
+   - Changed targetEpoch to targetCycle
+   - Updated user-facing copy to explain seal → flatten → settle → claim flow
+   - Removed "Boundary Settlement Model" wording
+   - Added closed-book lifecycle explanation
+
+6. ClaimableRequests.tsx - Updated component:
+   - Changed targetEpochEndTime to targetCycleEndTime
+   - Updated settlement language to use "cycle" terminology
+   - Removed "boundary" wording
+   - Shows truthful claimable state after settlement completes
+
+7. RedemptionPanel.tsx - Updated component:
+   - Changed epochInfo to cycleInfo
+   - Updated current epoch display to current cycle
+
+8. RequestForm.tsx - Updated component:
+   - Changed epochInfo to cycleInfo
+   - Updated copy to explain closed-book cycle processing
+   - Removed "progressive payouts" wording that implied gradual realization
+
+Verified:
+---------
+- Build passes: pnpm --filter vault-web build ✅
+- React Doctor: 94/100 (warnings are pre-existing, not from this task)
+- No epoch/boundary/current-NAV language remains on closed-book path
+- Cycle/batch terminology used consistently
+- Truthful lifecycle communication: seal → flatten → settle → claim

@@ -1,0 +1,49 @@
+ClosedBookBatchVault Forge Test Suite - T3 Final
+=================================================
+
+Date: 2025-03-11
+Status: PASSED
+
+Test Results:
+-------------
+Ran 19 tests for test/ClosedBookBatchVault.t.sol:ClosedBookBatchVaultTest
+
+[PASS] testBatchStateTransitions() (gas: 1451469)
+[PASS] testCancelDeposit() (gas: 395659)
+[PASS] testCancelRedeemRequestReturnsShares() (gas: 926144)
+[PASS] testCannotCancelDepositAfterCutoff() (gas: 481642)
+[PASS] testCannotDepositAfterCutoff() (gas: 217441)
+[PASS] testCannotRequestRedeemAfterCutoff() (gas: 694110)
+[PASS] testDepositInNewBatchAfterReopen() (gas: 2006884)
+[PASS] testEmergencyModeBlocksDeposits() (gas: 77739)
+[PASS] testEmergencyModeBlocksRedemptions() (gas: 692038)
+[PASS] testIsNAVFresh() (gas: 49510)
+[PASS] testNoCarryFieldsInContract() (gas: 936691)
+[PASS] testProRataDistribution() (gas: 1978033)
+[PASS] testProcessDepositQueue() (gas: 644418)
+[PASS] testQueueDeposit() (gas: 446950)
+[PASS] testQueueDepositAccumulatesExistingRequest() (gas: 456891)
+[PASS] testReopenBatch() (gas: 1603128)
+[PASS] testRequestRedeemEscrowsShares() (gas: 940674)
+[PASS] testSettlementBurnsShares() (gas: 1095151)
+[PASS] testStaleNAVBlocksFlatten() (gas: 667303)
+
+Suite result: ok. 19 passed; 0 failed; 0 skipped
+
+Fixes Applied:
+--------------
+1. Contract: Added processing guard in processDepositQueue() to only process current batch deposits
+   - Added check: if (batchId != currentBatchId) revert BatchNotOpen(batchId);
+
+2. Tests: Fixed struct destructuring index for proRataRatio in testProRataDistribution
+   - Changed from (,,,,,,,,, uint256 proRataRatio,,) to (,,,,,,,, uint256 proRataRatio,,,)
+   - proRataRatio is the 9th field (index 8) in the Batch struct
+
+3. Tests: Fixed batch lifecycle sequences in multiple tests
+   - Added complete lifecycle (cutoff → flatten → settle → close → reopen) before processing deposits
+   - Ensured tests follow explicit lifecycle transitions instead of time-only transitions
+
+Files Modified:
+---------------
+- contracts/src/ClosedBookBatchVault.sol (processing guard)
+- contracts/test/ClosedBookBatchVault.t.sol (test fixes)

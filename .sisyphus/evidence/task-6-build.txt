@@ -1,0 +1,14 @@
+T6 Build Verification
+=====================
+
+Command: pnpm --filter vault build
+
+Result: PASSED
+
+TypeScript compilation successful with T6 close-on-flat automation in place.
+
+Files with T6 changes:
+- apps/vault-api/src/services/tradingOrchestrator.ts
+- apps/vault-api/src/services/liquidityManager.ts
+- apps/vault-api/src/services/customVaultProvider.ts
+- apps/vault-api/src/__tests__/settlementLifecycle.integration.test.ts

@@ -1,0 +1,48 @@
+Task 1 Evidence: Build Verification
+====================================
+
+Date: 2026-03-11
+Status: PASSED
+
+## Build Command
+
+pnpm --filter vault build
+
+## Result
+
+> vault@0.0.1 build /Users/harsh/Developer/polymarket-mvp/apps/vault-api
+> tsc -p tsconfig.json
+
+BUILD SUCCESS
+
+## Files Modified (T1 Scope)
+
+1. apps/vault-api/src/services/claimStateMachine.ts
+   - Closed-book batch state machine
+   - OPEN -> CUTOFF -> FLATTENING -> SETTLING -> SETTLED -> CLOSED -> REOPEN
+   - Explicit cancellation rules
+
+2. apps/vault-api/src/repositories/withdrawalRepository.ts
+   - Batch/cycle terminology
+   - Closed-book batch state transitions
+   - Cancellation enforcement (impossible after CUTOFF)
+
+3. apps/vault-api/src/services/customVaultProvider.ts
+   - Updated doc comments with closed-book batch terminology
+   - getCapabilities() returns batchBased: true
+
+4. apps/vault-api/src/services/vaultProvider.ts
+   - Added batchBased?: boolean to VaultCapabilities interface
+
+5. apps/vault-api/src/routes/customVaultRoutes.ts
+   - Updated API documentation with batch/cycle terminology
+
+6. apps/vault-api/src/__tests__/closedBookBatch.test.ts (NEW)
+   - 33 focused T1 tests
+   - Tests closed-book batch state machine
+   - Tests batch sealing rule
+   - Tests cancellation rule
+
+## Build Status
+
+✅ PASSED - No TypeScript errors

@@ -5,11 +5,12 @@ import { Badge } from "@workspace/ui/components/badge";
 import { Skeleton } from "@workspace/ui/components/skeleton";
 import { Alert, AlertDescription } from "@workspace/ui/components/alert";
 import { Clock, Calendar, Info, Hash } from "lucide-react";
-import type { RedemptionRequest, Epoch } from "../../../../src/types";
+import type { RedemptionRequest, Cycle } from "../../../../src/types";
+import { getCyclePresentation } from "../../../../src/lib/cyclePresentation";
 
 interface PendingRequestsProps {
   requests: RedemptionRequest[];
-  epochInfo?: Epoch | null;
+  cycleInfo?: Cycle | null;
   isLoading: boolean;
 }
 
@@ -65,7 +66,7 @@ function CountdownTimer({ targetTime, label }: { targetTime: string; label: stri
   if (!timeLeft) return null;
 
   return (
-    <div className="space-y-1" data-testid="epoch-countdown">
+    <div className="space-y-1" data-testid="cycle-countdown">
       <p className="text-xs text-muted-foreground">{label}</p>
       <div className="flex items-center gap-1 text-sm font-mono">
         {timeLeft.days > 0 && (
@@ -94,82 +95,109 @@ function CountdownTimer({ targetTime, label }: { targetTime: string; label: stri
 
 function PendingRequestCard({
   request,
-  epochInfo,
+  cycleInfo,
 }: {
   request: RedemptionRequest;
-  epochInfo?: Epoch | null;
+  cycleInfo?: Cycle | null;
 }) {
+  const cyclePresentation = getCyclePresentation(cycleInfo?.batchState);
+
   return (
     <div
-      className="rounded-lg border border-amber-200 bg-amber-50/30 p-4 space-y-3"
+      className="space-y-3 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4"
       data-testid={`pending-request-${request.requestId}`}
     >
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-2">
-          <Hash className="h-4 w-4 text-amber-600" aria-hidden="true" />
-          <span className="text-sm font-mono font-medium" data-testid="request-id">
+          <Hash className="h-4 w-4 text-amber-200" aria-hidden="true" />
+          <span className="text-sm font-mono font-medium text-amber-50" data-testid="request-id">
             {request.requestId.slice(0, 8)}...{request.requestId.slice(-4)}
           </span>
           <Badge
             variant="outline"
-            className="bg-amber-100 text-amber-700 border-amber-200 text-[10px]"
+            className="border-amber-400/25 bg-amber-400/15 text-[10px] text-amber-100"
           >
-            Pending
+            In progress
           </Badge>
         </div>
-        <span className="text-xs text-muted-foreground">{formatDateTime(request.createdAt)}</span>
+        <span className="text-xs text-amber-50/70">{formatDateTime(request.createdAt)}</span>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <p className="text-xs text-muted-foreground">Shares Requested</p>
-          <p className="text-sm font-mono font-medium" data-testid="shares-requested">
+          <p className="text-xs text-amber-50/70">Shares leaving</p>
+          <p className="text-sm font-mono font-medium text-amber-50" data-testid="shares-requested">
             {request.sharesFormatted} shares
           </p>
         </div>
         <div>
-          <p className="text-xs text-muted-foreground">Target Epoch</p>
-          <p className="text-sm font-mono font-medium" data-testid="target-epoch">
-            #{request.targetEpoch}
+          <p className="text-xs text-amber-50/70">Assigned cycle</p>
+          <p className="text-sm font-mono font-medium text-amber-50" data-testid="target-cycle">
+            #{request.targetCycle}
           </p>
         </div>
       </div>
 
-      {epochInfo?.endTime && (
-        <div className="rounded-md bg-white p-3 border border-amber-100">
+      {cycleInfo?.batchState === "cutoff" && cycleInfo?.cutoffTime && (
+        <div className="rounded-xl border border-white/10 bg-slate-950/35 p-3">
           <div className="flex items-center gap-2 mb-2">
-            <Clock className="h-3.5 w-3.5 text-amber-600" aria-hidden="true" />
-            <span className="text-xs font-medium text-amber-700">Time Until Settlement</span>
+            <Clock className="h-3.5 w-3.5 text-amber-200" aria-hidden="true" />
+            <span className="text-xs font-medium text-amber-100">Queue locked</span>
           </div>
-          <CountdownTimer targetTime={epochInfo.endTime} label="Settlement occurs at epoch end" />
+          <CountdownTimer
+            targetTime={cycleInfo.cutoffTime}
+            label="The current cycle is locked and moving toward pricing."
+          />
         </div>
       )}
 
-      <div className="flex items-start gap-2 text-xs text-amber-700">
-        <Info className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" aria-hidden="true" />
+      {cycleInfo?.batchState === "open" && (
+        <div className="rounded-xl border border-white/10 bg-slate-950/35 p-3">
+          <div className="flex items-center gap-2 mb-2">
+            <Clock className="h-3.5 w-3.5 text-amber-200" aria-hidden="true" />
+            <span className="text-xs font-medium text-amber-100">Waiting for lock</span>
+          </div>
+          <p className="text-xs leading-6 text-amber-50/90">
+            Your request stays open until the cycle locks. After that, the vault finalizes pricing
+            and settles payouts.
+          </p>
+        </div>
+      )}
+
+      <div className="flex items-start gap-2 text-xs leading-6 text-amber-50/90">
+        <Info className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-amber-200" aria-hidden="true" />
         <p>
-          Your request will be processed at the end of epoch #{request.targetEpoch}. Claims will be
-          available after settlement completes at the epoch boundary. Requests cannot be cancelled
-          once submitted.
+          This request is tied to cycle #{request.targetCycle}. Current vault state:{" "}
+          <span className="font-medium">{cyclePresentation.label.toLowerCase()}</span>. Claims
+          unlock after settlement completes.
         </p>
       </div>
 
-
-      <div className="rounded-md bg-slate-100 p-2 text-center">
-        <p className="text-xs text-muted-foreground">
-          Redemption requests are irreversible once submitted.
+      <div className="rounded-xl border border-white/10 bg-slate-950/35 p-2 text-center">
+        <p className="text-xs text-slate-300">
+          Exit requests cannot be cancelled after the queue locks.
         </p>
       </div>
+
+      {request.lifecycleError && (
+        <Alert className="border-rose-400/20 bg-rose-400/10">
+          <Info className="h-4 w-4 text-rose-200" aria-hidden="true" />
+          <AlertDescription className="text-xs leading-6 text-rose-50/90">
+            This request did not receive a valid settled entitlement and will need manual recovery.
+            You can still submit a new redemption request for other shares.
+          </AlertDescription>
+        </Alert>
+      )}
     </div>
   );
 }
 
-export function PendingRequests({ requests, epochInfo, isLoading }: PendingRequestsProps) {
+export function PendingRequests({ requests, cycleInfo, isLoading }: PendingRequestsProps) {
   if (isLoading) {
     return (
       <div className="space-y-4" data-testid="pending-requests-loading">
-        <Skeleton className="h-32 w-full" />
-        <Skeleton className="h-32 w-full" />
+        <Skeleton className="h-32 w-full rounded-2xl bg-white/10" />
+        <Skeleton className="h-32 w-full rounded-2xl bg-white/10" />
       </div>
     );
   }
@@ -177,13 +205,13 @@ export function PendingRequests({ requests, epochInfo, isLoading }: PendingReque
   if (requests.length === 0) {
     return (
       <div
-        className="flex flex-col items-center justify-center py-12 text-center rounded-lg border border-dashed border-slate-300 bg-slate-50/50"
+        className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/15 bg-white/[0.03] py-12 text-center"
         data-testid="no-pending-requests"
       >
-        <Clock className="h-8 w-8 text-slate-300 mb-3" aria-hidden="true" />
-        <p className="text-sm font-medium text-muted-foreground">No pending requests</p>
-        <p className="mt-1 text-xs text-muted-foreground max-w-xs">
-          You don&apos;t have any redemption requests waiting for settlement.
+        <Clock className="mb-3 h-8 w-8 text-slate-500" aria-hidden="true" />
+        <p className="text-sm font-medium text-white">No exit requests in flight</p>
+        <p className="mt-1 max-w-xs text-xs leading-6 text-slate-400">
+          Once you start an exit, it will appear here until the vault finishes settlement.
         </p>
       </div>
     );
@@ -191,36 +219,27 @@ export function PendingRequests({ requests, epochInfo, isLoading }: PendingReque
 
   return (
     <div className="space-y-4" data-testid="pending-requests">
-      {/* Summary */}
       <div className="flex items-center justify-between text-sm">
-        <span className="text-muted-foreground">Pending Requests</span>
-        <Badge variant="secondary" className="bg-amber-100 text-amber-700">
-          {requests.length} pending
+        <span className="text-slate-400">Exit requests in progress</span>
+        <Badge
+          variant="secondary"
+          className="border border-amber-400/25 bg-amber-400/12 text-amber-100"
+        >
+          {requests.length} active
         </Badge>
       </div>
 
-      {/* Request Cards */}
       <div className="space-y-3">
         {requests.map((request) => (
-          <PendingRequestCard key={request.requestId} request={request} epochInfo={epochInfo} />
+          <PendingRequestCard key={request.requestId} request={request} cycleInfo={cycleInfo} />
         ))}
       </div>
 
-      {/* Settlement Info */}
-      <Alert className="bg-blue-50/50 border-blue-200">
-        <Calendar className="h-4 w-4 text-blue-600" aria-hidden="true" />
-        <AlertDescription className="text-xs text-blue-700">
-          <span className="font-medium">Boundary Settlement Model:</span> All pending requests are
-          processed together at epoch settlement boundaries. NAV at epoch start is used to calculate
-          share pricing. Requests cannot be cancelled after submission.
-        </AlertDescription>
-      </Alert>
-      <Alert className="bg-blue-50/50 border-blue-200">
-        <Calendar className="h-4 w-4 text-blue-600" aria-hidden="true" />
-        <AlertDescription className="text-xs text-blue-700">
-          <span className="font-medium">Settlement Process:</span> All pending requests are
-          processed together at the end of each epoch. Requests cannot be cancelled after
-          submission.
+      <Alert className="border-cyan-400/20 bg-cyan-400/10">
+        <Calendar className="h-4 w-4 text-cyan-200" aria-hidden="true" />
+        <AlertDescription className="text-xs leading-6 text-cyan-50/90">
+          <span className="font-medium">What happens next:</span> the vault locks the queue,
+          finalizes pricing, then releases claimable USDC once settlement is complete.
         </AlertDescription>
       </Alert>
     </div>

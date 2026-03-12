@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 import { Button } from "@workspace/ui/components/button";
 import { Badge } from "@workspace/ui/components/badge";
 import { Separator } from "@workspace/ui/components/separator";
@@ -49,7 +48,6 @@ function truncateAddress(address?: string): string {
 }
 
 export function Header({ className }: HeaderProps) {
-  const pathname = usePathname();
   const { address, isConnected } = useAppKitAccount();
   const { chainId } = useAppKitNetwork();
   const { walletProvider } = useAppKitProvider<Eip1193Provider>("eip155");
@@ -145,55 +143,42 @@ export function Header({ className }: HeaderProps) {
     setError(null);
   };
 
-  const isVaultsActive = pathname === "/";
-
   // Network indicator configuration
   const isTestnet = VAULT_NETWORK === "amoy";
   const networkDisplayName = isTestnet ? "Amoy Testnet" : "Polygon Mainnet";
   const networkBadgeClass = isTestnet
-    ? "border-amber-500/30 bg-amber-50 text-amber-700"
-    : "border-emerald-500/30 bg-emerald-50 text-emerald-700";
+    ? "border-amber-400/25 bg-amber-400/12 text-amber-200"
+    : "border-emerald-400/25 bg-emerald-400/12 text-emerald-200";
 
   return (
     <header
-      className={`sticky top-0 z-50 w-full border-b border-border/50 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 ${className ?? ""}`}
+      className={`sticky top-0 z-50 w-full border-b border-white/10 bg-slate-950/70 backdrop-blur-xl supports-[backdrop-filter]:bg-slate-950/55 ${className ?? ""}`}
     >
-      <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-6">
-        {/* Left: Logo + Navigation */}
-        <div className="flex items-center gap-8">
-          {/* Logo */}
-          <Link href="/" className="flex items-center gap-2.5 group">
-            <div className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 transition-colors group-hover:bg-primary/15">
-              {/* Vault icon - CSS-based */}
+      <div className="mx-auto flex min-h-16 max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
+        <div className="flex items-center gap-4">
+          <Link href="/" className="group flex items-center gap-3">
+            <div className="relative flex h-11 w-11 items-center justify-center rounded-2xl border border-cyan-400/25 bg-white/5 shadow-[0_0_32px_rgba(34,211,238,0.16)] transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:shadow-[0_0_36px_rgba(34,211,238,0.22)]">
+              <div className="absolute inset-1 rounded-[1rem] bg-gradient-to-br from-cyan-300/18 via-white/6 to-fuchsia-300/16" />
               <div className="flex flex-col items-center gap-0.5">
                 <div className="flex gap-1">
-                  <div className="h-1.5 w-1.5 rounded-sm bg-primary" />
-                  <div className="h-1.5 w-1.5 rounded-sm bg-primary" />
+                  <div className="h-1.5 w-1.5 rounded-sm bg-cyan-200" />
+                  <div className="h-1.5 w-1.5 rounded-sm bg-cyan-200" />
                 </div>
-                <div className="h-3 w-4 rounded-sm border border-primary/80" />
+                <div className="h-3 w-4 rounded-sm border border-cyan-100/80" />
               </div>
             </div>
-            <span className="text-base font-semibold tracking-tight text-foreground">Vault</span>
+            <div className="space-y-0.5">
+              <span className="block text-sm font-semibold uppercase tracking-[0.24em] text-cyan-200/80">
+                Polymarket Vault
+              </span>
+              <span className="block text-xs text-slate-400">
+                Cycle-based deposits, exits, and settlement tracking
+              </span>
+            </div>
           </Link>
-
-          {/* Navigation */}
-          <nav className="flex items-center gap-1">
-            <Link
-              href="/"
-              className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                isVaultsActive
-                  ? "bg-accent text-foreground"
-                  : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-              }`}
-            >
-              Vaults
-            </Link>
-          </nav>
         </div>
 
-        {/* Right: Auth + Wallet + Network */}
-        <div className="flex items-center gap-3">
-          {/* Network Indicator */}
+        <div className="flex items-center gap-2 sm:gap-3">
           <Badge
             variant="outline"
             className={`gap-1.5 font-normal ${networkBadgeClass}`}
@@ -209,47 +194,40 @@ export function Header({ className }: HeaderProps) {
             {networkDisplayName}
           </Badge>
 
-          {/* Error display */}
-          {error && <span className="text-xs text-destructive animate-pulse">{error}</span>}
+          {error && <span className="animate-pulse text-xs text-rose-300">{error}</span>}
 
-          {/* Auth State Machine */}
           {isAuthenticated ? (
-            /* Authenticated: Green indicator + Address + Disconnect */
             <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2">
                 <Badge
                   variant="outline"
-                  className="border-emerald-200 bg-emerald-50 text-emerald-700 gap-1.5 font-normal"
+                  className="gap-1.5 border-emerald-400/25 bg-emerald-400/12 font-normal text-emerald-200"
                 >
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                  Authenticated
+                  Signed in
                 </Badge>
-                <Separator orientation="vertical" className="h-5" />
-                <span className="font-mono text-sm text-muted-foreground">
-                  {truncateAddress(address)}
-                </span>
+                <Separator orientation="vertical" className="h-5 bg-white/10" />
+                <span className="font-mono text-sm text-slate-300">{truncateAddress(address)}</span>
               </div>
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={handleDisconnect}
-                className="text-muted-foreground hover:text-foreground"
+                className="text-slate-300 hover:bg-white/8 hover:text-white"
               >
                 Disconnect
               </Button>
             </div>
           ) : isConnected ? (
-            /* Connected but not authenticated: Sign In + Address */
             <div className="flex items-center gap-3">
-              <span className="font-mono text-sm text-muted-foreground">
-                {truncateAddress(address)}
-              </span>
-              <Separator orientation="vertical" className="h-5" />
+              <div className="hidden rounded-full border border-white/10 bg-white/5 px-3 py-2 sm:block">
+                <span className="font-mono text-sm text-slate-300">{truncateAddress(address)}</span>
+              </div>
               <Button
                 onClick={handleSignIn}
                 disabled={isLoading}
                 size="sm"
-                className="min-w-[120px]"
+                className="min-w-[120px] bg-cyan-300 text-slate-950 shadow-[0_0_30px_rgba(34,211,238,0.2)] hover:bg-cyan-200"
               >
                 {isLoading ? (
                   <span className="flex items-center gap-2">
@@ -283,14 +261,17 @@ export function Header({ className }: HeaderProps) {
                 variant="ghost"
                 size="sm"
                 onClick={handleDisconnect}
-                className="text-muted-foreground hover:text-foreground"
+                className="text-slate-300 hover:bg-white/8 hover:text-white"
               >
                 Disconnect
               </Button>
             </div>
           ) : (
-            /* Disconnected: Connect Wallet */
-            <Button onClick={() => open()} size="sm">
+            <Button
+              onClick={() => open()}
+              size="sm"
+              className="bg-cyan-300 text-slate-950 shadow-[0_0_30px_rgba(34,211,238,0.2)] hover:bg-cyan-200"
+            >
               Connect Wallet
             </Button>
           )}

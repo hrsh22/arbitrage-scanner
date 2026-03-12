@@ -19,14 +19,14 @@ import type {
   WithdrawalRequestPrepareResponse,
   SiweNonceResponse,
   SiweVerifyResponse,
-  // Epoch types
+  // Batch/Cycle types
   RedemptionRequestCreateResponse,
   RedemptionRequestStatusResponse,
   ClaimRedemptionResponse,
-  EpochStatusResponse,
-  EpochHistoryResponse,
+  CycleStatusResponse,
+  CycleHistoryResponse,
   UserRedemptionsResponse,
-  // Tranche-carry lifecycle types
+  // Closed-book batch lifecycle types
   DepositQueueResponse,
   TrancheStatusResponse,
   CarryEligibilityResponse,
@@ -222,11 +222,11 @@ export async function fetchHealth(): Promise<{
 }
 
 // ============================================
-// Custom ERC7540 Epoch Vault API
+// Custom ERC7540 Closed-Book Batch/Cycle Vault API
 // ============================================
 
 /**
- * Create a redemption request (initiates epoch-based withdrawal)
+ * Create a redemption request (initiates cycle-based withdrawal)
  * POST /api/vaults/:vaultId/redeem
  */
 export async function postRedemptionRequest(
@@ -269,27 +269,27 @@ export async function postClaimRedemption(
 }
 
 /**
- * Get current epoch status
- * GET /api/vaults/:vaultId/epochs/current
+ * Get current cycle status
+ * GET /api/vaults/:vaultId/cycles/current
  */
-export async function fetchCurrentEpochStatus(vaultId: number): Promise<EpochStatusResponse> {
-  return fetchWithAuth(makeUrl(`${CUSTOM_VAULT_API_PREFIX}/${vaultId}/epochs/current`));
+export async function fetchCurrentCycleStatus(vaultId: number): Promise<CycleStatusResponse> {
+  return fetchWithAuth(makeUrl(`${CUSTOM_VAULT_API_PREFIX}/${vaultId}/cycles/current`));
 }
 
 /**
- * Get specific epoch details
- * GET /api/vaults/:vaultId/epochs/:epochId
+ * Get specific cycle details
+ * GET /api/vaults/:vaultId/cycles/:cycleId
  */
-export async function fetchEpochStatus(
+export async function fetchCycleStatus(
   vaultId: number,
-  epochId: number,
-): Promise<EpochStatusResponse> {
-  return fetchWithAuth(makeUrl(`${CUSTOM_VAULT_API_PREFIX}/${vaultId}/epochs/${epochId}`));
+  cycleId: number,
+): Promise<CycleStatusResponse> {
+  return fetchWithAuth(makeUrl(`${CUSTOM_VAULT_API_PREFIX}/${vaultId}/cycles/${cycleId}`));
 }
 
-export async function fetchEpochHistory(vaultId: number, limit = 6): Promise<EpochHistoryResponse> {
+export async function fetchCycleHistory(vaultId: number, limit = 6): Promise<CycleHistoryResponse> {
   const qs = buildQuery({ limit });
-  return fetchWithAuth(makeUrl(`${CUSTOM_VAULT_API_PREFIX}/${vaultId}/epochs`, qs));
+  return fetchWithAuth(makeUrl(`${CUSTOM_VAULT_API_PREFIX}/${vaultId}/cycles`, qs));
 }
 
 /**
@@ -301,7 +301,7 @@ export async function fetchUserRedemptions(vaultId: number): Promise<UserRedempt
 }
 
 // ============================================================================
-// Tranche-Carry Lifecycle API
+// Closed-Book Batch/Cycle Lifecycle API
 // ============================================================================
 
 /**
@@ -315,14 +315,14 @@ export async function fetchDepositQueue(vaultId: number): Promise<DepositQueueRe
 
 /**
  * Get tranche status including accrued carry
- * GET /api/vaults/:vaultId/tranche-status?epochId=
+ * GET /api/vaults/:vaultId/tranche-status?cycleId=
  * Returns tranche progress with realization data
  */
 export async function fetchTrancheStatus(
   vaultId: number,
-  epochId?: number,
+  cycleId?: number,
 ): Promise<TrancheStatusResponse> {
-  const qs = buildQuery({ epochId });
+  const qs = buildQuery({ cycleId });
   return fetchWithAuth(makeUrl(`${CUSTOM_VAULT_API_PREFIX}/${vaultId}/tranche-status`, qs));
 }
 

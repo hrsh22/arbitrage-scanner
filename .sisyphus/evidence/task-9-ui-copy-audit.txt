@@ -1,0 +1,70 @@
+T9: UI Copy Audit - Closed-Book Cycle Language
+===============================================
+
+COPY CHANGES VERIFIED:
+----------------------
+
+BEFORE (Epoch/Boundary language):
+- "Current Epoch", "Next Boundary", "Target Epoch"
+- "Estimated shares at NAV $X.XX"
+- "Deposits made now queue for epoch #N"
+- "Boundary Settlement Model"
+- "Settlement occurs at epoch end"
+- "Progressive Payouts" (implied gradual realization)
+- "Full entitlement is realized at the boundary"
+
+AFTER (Cycle/Batch language):
+- "Current Cycle", "Cutoff Window", "Target Cycle"
+- "Shares will mint at cycle-open NAV"
+- "Deposits made now queue for cycle #N"
+- "Closed-Book Cycle Model"
+- "Settlement occurs when cycle closes"
+- "Closed-Book Cycle: Redemptions are processed when the cycle closes"
+- "Full entitlement is realized after settlement completes"
+
+LIFECYCLE FLOW NOW COMMUNICATED:
+--------------------------------
+PendingRequests component explains:
+1. Request is queued for cycle #N
+2. After cycle closes, batch enters flattening
+3. Then settlement
+4. Claims available once settlement completes
+
+DepositQueueCard shows:
+- Current batch state (Open/Sealed/Flattening/Settling/Settled)
+- Truthful timing: "Shares will mint after cycle closes"
+- No misleading "current NAV" estimates
+
+ClaimableRequests shows:
+- Claims available after settlement completes
+- No "boundary" or "epoch settlement" language
+- Truthful: "Waiting for settlement to complete and assets to become available"
+
+FILES MODIFIED:
+---------------
+- apps/vault-web/src/types.ts
+- apps/vault-web/src/lib/api.ts
+- apps/vault-web/src/lib/hooks.ts
+- apps/vault-web/app/vault/[id]/vault-detail.tsx
+- apps/vault-web/app/vault/[id]/components/PendingRequests.tsx
+- apps/vault-web/app/vault/[id]/components/ClaimableRequests.tsx
+- apps/vault-web/app/vault/[id]/components/RedemptionPanel.tsx
+- apps/vault-web/app/vault/[id]/components/RequestForm.tsx
+
+STATUS: ✅ Copy audit complete - all epoch/boundary language replaced with cycle/batch terminology
+
+
+FINAL VERIFICATION (2026-03-11):
+------------------------------
+Command: grep -E 'boundary|epoch settlement|Current Epoch|Target Epoch|Boundary Settlement Model' apps/vault-web/app/vault/[id]/components/*.tsx
+Result: No matches found ✅
+
+Build: pnpm --filter vault-web build ✅
+
+Stale copy removed:
+- 'cycle boundary' → 'when the cycle closes and settlement completes'
+- 'settlement boundary' → 'during settlement'
+- 'boundary only' → 'after settlement completes'
+- 'after epoch settlement completes' → 'after the cycle settles'
+
+T9 COPY AUDIT: COMPLETE ✅

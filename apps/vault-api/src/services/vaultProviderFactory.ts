@@ -247,6 +247,7 @@ export class VaultProviderFactory implements IVaultProviderFactory {
           settlerKey: identity.settlerKey ?? identity.allocatorNavSignerKey,
           snapshotterKey: identity.settlerKey ?? identity.allocatorNavSignerKey,
           depositProcessorKey: identity.settlerKey ?? identity.allocatorNavSignerKey,
+          safeOperatorKey: identity.safeOperatorKey,
         },
         this.chain,
       );

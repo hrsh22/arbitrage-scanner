@@ -245,6 +245,7 @@ describe("Reconciliation - Mismatch Detection", () => {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             orderBy: vi.fn().mockResolvedValue([mockEntitlement]),
+            limit: vi.fn().mockResolvedValue([mockEntitlement]),
           }),
         }),
       });
@@ -322,6 +323,7 @@ describe("Reconciliation - Clean State (Zero Unexplained Deltas)", () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           orderBy: vi.fn().mockResolvedValue([mockEntitlement]),
+          limit: vi.fn().mockResolvedValue([mockEntitlement]),
         }),
       }),
     });
@@ -398,6 +400,7 @@ describe("Reconciliation - Clean State (Zero Unexplained Deltas)", () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           orderBy: vi.fn().mockResolvedValue(mockEntitlements),
+          limit: vi.fn().mockResolvedValue(mockEntitlements),
         }),
       }),
     });
@@ -435,6 +438,7 @@ describe("Reconciliation - Clean State (Zero Unexplained Deltas)", () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           orderBy: vi.fn().mockResolvedValue([mockEntitlement]),
+          limit: vi.fn().mockResolvedValue([mockEntitlement]),
         }),
       }),
     });
@@ -450,6 +454,7 @@ describe("Reconciliation - Clean State (Zero Unexplained Deltas)", () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           orderBy: vi.fn().mockResolvedValue([]),
+          limit: vi.fn().mockResolvedValue([]),
         }),
       }),
     });
@@ -496,6 +501,7 @@ describe("Reconciliation - Explained vs Unexplained Deltas", () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           orderBy: vi.fn().mockResolvedValue([mockEntitlement]),
+          limit: vi.fn().mockResolvedValue([mockEntitlement]),
         }),
       }),
     });
@@ -530,6 +536,7 @@ describe("Reconciliation - Explained vs Unexplained Deltas", () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           orderBy: vi.fn().mockResolvedValue([mockEntitlement]),
+          limit: vi.fn().mockResolvedValue([mockEntitlement]),
         }),
       }),
     });
@@ -543,7 +550,6 @@ describe("Reconciliation - Explained vs Unexplained Deltas", () => {
 
 describe("LedgerFieldMapping Constants", () => {
   it("exports correct field mapping constants", () => {
-    const { EntitlementRepository } = require("../repositories/entitlementRepository.js");
 
     expect(EntitlementRepository.LedgerFieldMapping).toBeDefined();
     expect(EntitlementRepository.LedgerFieldMapping.canonical).toEqual({
@@ -559,7 +565,6 @@ describe("LedgerFieldMapping Constants", () => {
   });
 
   it("exports correct mismatch reason constants", () => {
-    const { EntitlementRepository } = require("../repositories/entitlementRepository.js");
 
     expect(EntitlementRepository.ReconcileMismatchReason).toBeDefined();
     expect(EntitlementRepository.ReconcileMismatchReason.CANONICAL_LEGACY_ACCRUED_MISMATCH).toBe(

@@ -1,0 +1,20 @@
+T2 Build Verification
+=====================
+
+Command: pnpm --filter vault build
+Status: PASSED
+
+Date: 2026-03-11
+
+Files modified:
+- apps/vault-api/src/services/flatnessDetector.ts (NEW)
+- apps/vault-api/src/services/customVaultProvider.ts
+- apps/vault-api/src/services/tradingOrchestrator.ts
+- apps/vault-api/src/services/vaultHealthMonitor.ts
+- apps/vault-api/src/__tests__/flatnessDetector.test.ts (NEW)
+
+Build output:
+> vault@0.0.1 build /Users/harsh/Developer/polymarket-mvp/apps/vault-api
+> tsc -p tsconfig.json
+
+(No errors)

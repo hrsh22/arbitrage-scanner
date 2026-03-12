@@ -265,7 +265,7 @@ Wave 3: regression, E2E/manual QA, docs/runbook, deployment scripts, staging reh
 
   **Commit**: YES | Message: `feat(contracts): add closed-book epoch vault` | Files: `contracts/src/ClosedBookEpochVault.sol`, `contracts/flattened/ClosedBookEpochVault.flattened.sol`
 
-- [ ] 4. Define post-flat clearing price and operational netting math
+- [x] 4. Define post-flat clearing price and operational netting math
 
   **What to do**: Implement the single post-flat clearing price based on realized cash basis. Price withdrawals and deposits from the same locked clearing price, computed before any deposit cash changes the price. Allow operational netting of batch deposits and withdrawals only after that price is fixed.
   **Must NOT do**: Do not include sealed-batch deposit cash in the numerator before clearing price lock. Do not price redemptions from anything except post-flat realized assets.
@@ -385,7 +385,7 @@ Wave 3: regression, E2E/manual QA, docs/runbook, deployment scripts, staging reh
 
   **Commit**: YES | Message: `feat(worker): automate close-on-flat settlement flow` | Files: `apps/vault-api/src/services/tradingOrchestrator.ts`, `apps/vault-api/src/tradingWorker.ts`, `apps/vault-api/src/services/liquidityManager.ts`
 
-- [ ] 7. Rebuild provider and API lifecycle semantics for closed-book batches
+- [x] 7. Rebuild provider and API lifecycle semantics for closed-book batches
 
   **What to do**: Replace open-position lifecycle semantics with batch lifecycle payloads: queued batch id, active state, cutoff time, flattening blockers, settlement status, clearing price, claimable redemptions, and minted deposits. Expose the active and next batch separately.
   **Must NOT do**: Do not expose mutable mark-to-market estimates for queued entries/exits. Do not keep old carry or partial-realization fields in custom-vault APIs.
@@ -425,7 +425,7 @@ Wave 3: regression, E2E/manual QA, docs/runbook, deployment scripts, staging reh
 
   **Commit**: YES | Message: `feat(api): expose closed-book batch lifecycle` | Files: `apps/vault-api/src/services/customVaultProvider.ts`, `apps/vault-api/src/routes/customVaultRoutes.ts`, `apps/vault-api/src/services/claimStateMachine.ts`
 
-- [ ] 8. Align schema and repositories to batch ids and sealed processing
+- [x] 8. Align schema and repositories to batch ids and sealed processing
 
   **What to do**: Introduce canonical batch ids, sealed-batch deposit/redemption records, settlement snapshots, and reopen markers in the database layer. Reuse useful queue patterns from `withdrawalRepository.ts` but remove assumptions that custom vaults settle off open-position estimates.
   **Must NOT do**: Do not leave custom-vault persistence split across incompatible legacy and new queue semantics.
@@ -465,7 +465,7 @@ Wave 3: regression, E2E/manual QA, docs/runbook, deployment scripts, staging reh
 
   **Commit**: YES | Message: `refactor(vault-api): persist sealed settlement batches` | Files: `apps/vault-api/src/db/schema.ts`, `apps/vault-api/src/repositories/*.ts`
 
-- [ ] 9. Rebuild the vault UI around the closed-book cycle
+- [x] 9. Rebuild the vault UI around the closed-book cycle
 
   **What to do**: Update the vault UI to show queued requests by batch, active vault state, cutoff/sealed messaging, flattening progress, settlement progress, claimable redemptions, and minted deposits. Make it explicit that users are waiting for the cycle to close and flatten, not for mark-to-market pricing.
   **Must NOT do**: Do not show “estimated shares at current NAV” or “estimated redemption at current NAV” in the closed-book path.
@@ -506,7 +506,7 @@ Wave 3: regression, E2E/manual QA, docs/runbook, deployment scripts, staging reh
 
   **Commit**: YES | Message: `feat(vault-web): show closed-book batch lifecycle` | Files: `apps/vault-web/app/vault/[id]/*`, `apps/vault-web/src/lib/*`
 
-- [ ] 10. Add contract and backend regression coverage for batch fairness
+- [x] 10. Add contract and backend regression coverage for batch fairness
 
   **What to do**: Add Forge and Vitest coverage for batch sealing, next-batch routing, flatness gating, escrow-share economics, price lock, forced unwind, and reopen gating. Make the new closed-book batch path the primary regression spine.
   **Must NOT do**: Do not rely only on happy-path tests. Do not leave next-batch routing or escrow economics implicit.
@@ -547,7 +547,7 @@ Wave 3: regression, E2E/manual QA, docs/runbook, deployment scripts, staging reh
 
   **Commit**: YES | Message: `test(vault): cover closed-book batch invariants` | Files: `contracts/test/*`, `apps/vault-api/src/__tests__/*`
 
-- [ ] 11. Automate lifecycle scripts and operator assertions
+- [x] 11. Automate lifecycle scripts and operator assertions
 
   **What to do**: Add or update scripts to exercise request intake, cutoff, flatten, settlement, claim, and reopen for staging. Include assertions for flatness, batch ids, and clearing price evidence so operator runs are reproducible.
   **Must NOT do**: Do not leave operator verification as manual memory or screenshots only.
@@ -587,7 +587,7 @@ Wave 3: regression, E2E/manual QA, docs/runbook, deployment scripts, staging reh
 
   **Commit**: YES | Message: `chore(vault): automate closed-book lifecycle scripts` | Files: `scripts/*`, `contracts/scripts/*`
 
-- [ ] 12. Deliver integrated API/UI/E2E QA
+- [x] 12. Deliver integrated API/UI/E2E QA
 
   **What to do**: Run and expand API and Playwright scenarios covering request queueing, next-batch routing, cutoff banners, flattening progress, settlement completion, claims, and reopen. Verify both desktop and mobile rendering.
   **Must NOT do**: Do not ship without browser verification of the new lifecycle.
@@ -627,7 +627,7 @@ Wave 3: regression, E2E/manual QA, docs/runbook, deployment scripts, staging reh
 
   **Commit**: YES | Message: `test(vault): verify closed-book lifecycle end to end` | Files: `apps/vault-web/e2e/*`, `apps/vault-api/src/__tests__/*`
 
-- [ ] 13. Update runbooks, disclosures, and operator workflow docs
+- [x] 13. Update runbooks, disclosures, and operator workflow docs
 
   **What to do**: Rewrite docs to describe the closed-book cycle, queue sealing, flatness rules, forced unwind, emergency pause, settlement claims, and reopen workflow. Update user-facing disclosures around wait time and no-liquidity guarantee during open cycles.
   **Must NOT do**: Do not leave any wording that implies continuous liquidity or open-position pricing.
@@ -667,7 +667,7 @@ Wave 3: regression, E2E/manual QA, docs/runbook, deployment scripts, staging reh
 
   **Commit**: YES | Message: `docs(vault): document closed-book settlement cycle` | Files: `docs/operator-runbook-amoy.md`, `VAULT_KNOWLEDGE.md`, `apps/vault-web/*`
 
-- [ ] 14. Prepare deployment scripts and config for the new vault
+- [x] 14. Prepare deployment scripts and config for the new vault
 
   **What to do**: Add deployment/verification scripts, flattened contract workflow, and runtime config for the new `ClosedBookEpochVault` deployment. Keep the current vault config as legacy and add explicit config switching instructions.
   **Must NOT do**: Do not overwrite the current live vault config in place without a separate closed-book deployment artifact.
@@ -707,7 +707,7 @@ Wave 3: regression, E2E/manual QA, docs/runbook, deployment scripts, staging reh
 
   **Commit**: YES | Message: `chore(vault): prepare closed-book deployment package` | Files: `contracts/scripts/*`, `apps/vault-api/src/config/vaults/*`
 
-- [ ] 15. Execute staging rehearsal and produce the production cutover package
+- [x] 15. Execute staging rehearsal and produce the production cutover package
 
   **What to do**: Rehearse the full closed-book lifecycle on staging, capture evidence, produce rollback instructions, and document the production cutover as a fresh deployment. Explicitly keep the current vault as legacy and non-migrated.
   **Must NOT do**: Do not promote without a full staging replay. Do not present in-place migration as a supported path.

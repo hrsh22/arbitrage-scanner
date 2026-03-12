@@ -6,7 +6,7 @@
  */
 
 import type { HealthCheckResult } from "../services/vaultHealthMonitor.js";
-
+import { logger } from "../logger.js";
 // ===== Alert Thresholds =====
 
 export const ALERT_THRESHOLDS = {
@@ -31,6 +31,22 @@ export const ALERT_THRESHOLDS = {
   /** Position resolution lag: alert if unresolved positions older than 48 hours after market close */
   POSITION_RESOLUTION_LAG_SECONDS: 172800, // 48 hours
 } as const;
+
+// ===== Starvation & Emergency Pause Thresholds (T5) =====
+
+/** Flattening timeout: alert if book cannot be flattened within 1 hour */
+export const FLATTENING_TIMEOUT_SECONDS = 3600; // 1 hour
+
+/** Emergency pause: immediate critical alert when triggered */
+export const EMERGENCY_PAUSE_ALERT = {
+  enabled: true,
+  severity: "critical" as const,
+  channels: ["pagerduty", "slack", "email"] as const,
+};
+
+/** Slippage breach threshold: alert on forced-unwind slippage cap breach */
+export const SLIPPAGE_BREACH_THRESHOLD_PERCENT = 5.0; // 5%
+
 
 // ===== Snapshot-Tranche Alert Thresholds =====
 
@@ -162,6 +178,33 @@ export const DEFAULT_ALERT_ROUTES: AlertRoute[] = [
     dedupWindowMinutes: 60,
     enabled: true,
   },
+  // Flattening timeout: starvation detected - critical
+  {
+    checks: ["flattening_timeout"],
+    minSeverity: "warning",
+    channels: ["pagerduty", "slack"],
+    deduplicate: true,
+    dedupWindowMinutes: 60,
+    enabled: true,
+  },
+  // Emergency pause: immediate critical response required
+  {
+    checks: ["emergency_pause"],
+    minSeverity: "info",  // Trigger even if just info to ensure we catch all
+    channels: ["pagerduty", "slack", "email"],
+    deduplicate: false,  // Don't dedup - every emergency pause is critical
+    dedupWindowMinutes: 0,
+    enabled: true,
+  },
+  // Slippage breach during forced unwind - warning
+  {
+    checks: ["slippage_breach"],
+    minSeverity: "warning",
+    channels: ["slack"],
+    deduplicate: true,
+    dedupWindowMinutes: 5,
+    enabled: true,
+  },
 ];
 
 // ===== Channel Configurations =====
@@ -247,6 +290,13 @@ export const RUNBOOK_URLS: Record<string, string> = {
     "https://github.com/polymarket-mvp/runbooks/blob/main/snapshot-tranche/frozen-snapshot-stale.md",
   realization_processing_lag:
     "https://github.com/polymarket-mvp/runbooks/blob/main/snapshot-tranche/realization-processing-lag.md",
+  // Starvation & Emergency Pause runbooks (T5)
+  flattening_timeout:
+    "https://github.com/polymarket-mvp/runbooks/blob/main/starvation/flattening-timeout.md",
+  emergency_pause:
+    "https://github.com/polymarket-mvp/runbooks/blob/main/starvation/emergency-pause.md",
+  slippage_breach:
+    "https://github.com/polymarket-mvp/runbooks/blob/main/starvation/slippage-breach.md",
   default: "https://github.com/polymarket-mvp/runbooks/blob/main/README.md",
 };
 
@@ -306,6 +356,44 @@ export const ALERT_TEMPLATES: Record<string, (result: HealthCheckResult) => Aler
     body: `Snapshot ${result.details?.epochId ?? "unknown"} has ${result.details?.frozenPositionCount ?? "unknown"} positions frozen for ${result.details?.daysSinceFrozen ?? "unknown"} days without realizations.\n\n${result.message}`,
     action:
       "1. Check market resolution status\n2. Process realization events\n3. Review force-close policy for stale positions",
+  }),
+  // Starvation & Emergency Pause templates (T5)
+  flattening_timeout: (result) => ({
+    subject: `[CRITICAL] Flattening Timeout - Starvation Detected`,
+    body: `Book flattening exceeded ${result.details?.maxFlatteningWindowMs ?? "unknown"}ms window. ` +
+      `Started at ${result.details?.startedAt ?? "unknown"}, deadline was ${result.details?.expectedDeadline ?? "unknown"}.\n\n` +
+      `Blocking conditions: ${(result.details?.blockingConditions as string[])?.join(", ") ?? "unknown"}\n\n` +
+      `${result.message}`,
+    action:
+      "1. Review blocking conditions preventing flatness\n" +
+      "2. Attempt forced-unwind with slippage caps\n" +
+      "3. If slippage exceeds cap, emergency pause will engage\n" +
+      "4. Manual operator recovery may be required",
+  }),
+  emergency_pause: (result) => ({
+    subject: `[CRITICAL] EMERGENCY PAUSE ACTIVATED`,
+    body: `Vault has entered emergency pause state.\n\n` +
+      `Triggered by: ${result.details?.triggeredBy ?? "unknown"}\n` +
+      `Reason: ${result.details?.reason ?? "unknown"}\n` +
+      `Paused at: ${result.details?.pausedAt ?? "unknown"}\n\n` +
+      `${result.message}`,
+    action:
+      "1. DO NOT attempt to reopen vault until root cause is identified\n" +
+      "2. Review recent flattening/slippage logs\n" +
+      "3. Verify vault is in safe state (flat or emergency) before recovery\n" +
+      "4. Use operator recovery action to clear pause when safe\n" +
+      "5. Document incident and update thresholds if needed",
+  }),
+  slippage_breach: (result) => ({
+    subject: `[${result.severity.toUpperCase()}] Slippage Breach During Forced Unwind`,
+    body: `Slippage of ${result.details?.slippagePercent ?? "unknown"}% exceeded cap of ${result.details?.slippageCap ?? "unknown"}%.\n\n` +
+      `Breach count: ${result.details?.breachCount ?? "unknown"}/${result.details?.maxBreaches ?? "unknown"}\n\n` +
+      `${result.message}`,
+    action:
+      "1. Monitor slippage levels during forced unwind\n" +
+      "2. If breach count exceeds threshold, emergency pause will trigger\n" +
+      "3. Consider alternative unwind strategies\n" +
+      "4. Document slippage conditions for post-incident review",
   }),
   default: (result) => ({
     subject: `[${result.severity.toUpperCase()}] ${result.name}`,
@@ -413,7 +501,7 @@ export class AlertManager {
     });
 
     if (!response.ok) {
-      console.error(`PagerDuty alert failed: ${response.statusText}`);
+      logger.error(`PagerDuty alert failed: ${response.statusText}`);
     }
   }
 
@@ -421,7 +509,7 @@ export class AlertManager {
     const config = SEVERITY_CONFIGS[result.severity];
     const template = ALERT_TEMPLATES[result.name] ?? ALERT_TEMPLATES.default;
     if (!template) {
-      console.error(`No alert template found for ${result.name}`);
+      logger.error(`No alert template found for ${result.name}`);
       return;
     }
     const { subject, body, action } = template(result);
@@ -465,14 +553,14 @@ export class AlertManager {
     });
 
     if (!response.ok) {
-      console.error(`Slack alert failed: ${response.statusText}`);
+      logger.error(`Slack alert failed: ${response.statusText}`);
     }
   }
 
   private async sendEmail(_result: HealthCheckResult): Promise<void> {
     // Email implementation would use nodemailer or similar
     // Skipping for brevity - in production, implement with proper SMTP client
-    console.log("Email alert would be sent (not implemented in this version)");
+    logger.info("Email alert would be sent (not implemented in this version)");
   }
 }
 

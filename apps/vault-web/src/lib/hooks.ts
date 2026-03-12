@@ -20,14 +20,14 @@ import {
   fetchVaultNavHistory,
   fetchVaultAllocations,
   fetchWithdrawalQueue,
-  // Epoch API functions
+  // Batch/Cycle API functions
   postRedemptionRequest,
   postClaimRedemption,
-  fetchCurrentEpochStatus,
-  fetchEpochHistory,
-  fetchEpochStatus,
+  fetchCurrentCycleStatus,
+  fetchCycleHistory,
+  fetchCycleStatus,
   fetchUserRedemptions,
-  // Tranche-carry lifecycle API
+  // Closed-book batch lifecycle API
   fetchDepositQueue,
   fetchTrancheStatus,
   fetchCarryEligibility,
@@ -40,16 +40,16 @@ import type {
   VaultNavHistoryResponse,
   VaultAllocationsResponse,
   WithdrawalQueueResponse,
-  // Epoch types
+  // Batch/Cycle types
   RedemptionRequestCreateResponse,
   ClaimRedemptionResponse,
-  EpochStatusResponse,
-  EpochHistoryItem,
-  EpochHistoryResponse,
+  CycleStatusResponse,
+  CycleHistoryItem,
+  CycleHistoryResponse,
   UserRedemptionsResponse,
-  Epoch,
+  Cycle,
   RedemptionRequest,
-  // Tranche-carry lifecycle types
+  // Closed-book batch lifecycle types
   DepositQueueResponse,
   TrancheStatusResponse,
   CarryEligibilityResponse,
@@ -399,7 +399,6 @@ interface PreviewRedeemResult {
 }
 
 export function usePreviewRedeem(vaultAddress?: string, shares?: bigint): PreviewRedeemResult {
-  // Use share price based calculation instead of previewRedeem
   const { data: totalAssets, refetch: refetchAssets } = useReadContract({
     address: vaultAddress as `0x${string}` | undefined,
     abi: VAULT_ABI,
@@ -420,11 +419,9 @@ export function usePreviewRedeem(vaultAddress?: string, shares?: bigint): Previe
     },
   });
 
-  // Calculate assets from share price: assets = shares * (totalAssets / totalSupply)
   const assets = React.useMemo(() => {
     if (!totalAssets || !totalSupply || !shares || totalSupply === 0n) return undefined;
-    const sharePrice = Number(totalAssets) / Number(totalSupply);
-    return BigInt(Math.floor(Number(shares) * sharePrice));
+    return (shares * totalAssets) / totalSupply;
   }, [totalAssets, totalSupply, shares]);
 
   const refetch = useCallback(async () => {
@@ -741,6 +738,8 @@ export function useVaultRedeem(): VaultRedeemResult {
 }
 
 // ============================================================================
+// Custom ERC7540 Closed-Book Batch/Cycle Vault Hooks
+// ============================================================================
 // Custom ERC7540 Epoch Vault Hooks
 // ============================================================================
 
@@ -808,8 +807,7 @@ export interface UseRequestsResult {
   lastRefresh: Date | null;
   refetch: () => Promise<void>;
 }
-
-export function useRequests(vaultId?: number): UseRequestsResult {
+export function useRequests(vaultId?: number, isAuthenticated = false): UseRequestsResult {
   const [data, setData] = useState<UserRedemptionsResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -818,6 +816,13 @@ export function useRequests(vaultId?: number): UseRequestsResult {
   const refetch = useCallback(async () => {
     if (vaultId === undefined) {
       setIsLoading(false);
+      return;
+    }
+
+    // Skip fetching if user is not authenticated
+    if (!isAuthenticated) {
+      setIsLoading(false);
+      setError(null);
       return;
     }
 
@@ -833,16 +838,22 @@ export function useRequests(vaultId?: number): UseRequestsResult {
           normalizedStatus = "claimable";
         }
 
-        const targetEpoch =
-          request.targetEpoch ?? (request as RedemptionRequest & { epochId?: number }).epochId ?? 0;
-        const targetEpochEndTime = request.targetEpochEndTime ?? request.createdAt;
+        const targetCycle =
+          request.targetCycle ??
+          request.targetEpoch ??
+          request.batchId ??
+          request.epochId ??
+          (request as RedemptionRequest & { cycleId?: number }).cycleId ??
+          0;
+        const targetCycleEndTime =
+          request.targetCycleEndTime ?? request.targetEpochEndTime ?? request.createdAt;
 
         return {
           ...request,
           id: request.id || request.requestId,
           status: normalizedStatus,
-          targetEpoch,
-          targetEpochEndTime,
+          targetCycle,
+          targetCycleEndTime,
           claimableAssets: request.claimableAssets ?? null,
           claimableAssetsFormatted: request.claimableAssetsFormatted ?? null,
           claimedAt: request.claimedAt ?? null,
@@ -853,11 +864,20 @@ export function useRequests(vaultId?: number): UseRequestsResult {
           ownerAddress: request.ownerAddress ?? request.controllerAddress ?? "",
           controllerAddress: request.controllerAddress ?? request.ownerAddress ?? "",
           operatorAddress: request.operatorAddress ?? null,
+          lifecycleError: request.lifecycleError ?? null,
         };
       };
 
-      const pendingRequests = result.pendingRequests.map(normalizeRequest);
-      const claimableRequests = result.claimableRequests.map(normalizeRequest);
+      const isBrokenZeroEntitlementRequest = (request: RedemptionRequest): boolean =>
+        request.lifecycleError === "No entitlement record found" &&
+        Number(request.claimableAssetsFormatted ?? "0") === 0;
+
+      const pendingRequests = result.pendingRequests
+        .map(normalizeRequest)
+        .filter((request) => !isBrokenZeroEntitlementRequest(request));
+      const claimableRequests = result.claimableRequests
+        .map(normalizeRequest)
+        .filter((request) => !isBrokenZeroEntitlementRequest(request));
 
       setData({
         ...result,
@@ -870,11 +890,21 @@ export function useRequests(vaultId?: number): UseRequestsResult {
       });
       setLastRefresh(new Date());
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch requests");
+      // Silently handle auth errors - don't spam console for unauthenticated users
+      const errMessage = err instanceof Error ? err.message : "Failed to fetch requests";
+      if (
+        errMessage.includes("401") ||
+        errMessage.includes("unauthorized") ||
+        errMessage.includes("Unauthorized")
+      ) {
+        setError(null);
+      } else {
+        setError(errMessage);
+      }
     } finally {
       setIsLoading(false);
     }
-  }, [vaultId]);
+  }, [vaultId, isAuthenticated]);
 
   useEffect(() => {
     refetch();
@@ -896,28 +926,37 @@ export function useRequests(vaultId?: number): UseRequestsResult {
   };
 }
 
-export interface UseEpochStatusResult {
-  epoch: Epoch | null;
+export interface UseCycleStatusResult {
+  cycle: Cycle | null;
   isActive: boolean;
   timeRemainingFormatted: string;
   canSettle: boolean | undefined;
+  batchState:
+    | "open"
+    | "cutoff"
+    | "flattening"
+    | "settling"
+    | "settled"
+    | "closed"
+    | "reopen"
+    | null;
   isLoading: boolean;
   error: string | null;
   lastRefresh: Date | null;
   refetch: () => Promise<void>;
 }
 
-export interface UseEpochHistoryResult {
-  currentEpochId: number | null;
-  epochs: EpochHistoryItem[];
+export interface UseCycleHistoryResult {
+  currentCycleId: number | null;
+  cycles: CycleHistoryItem[];
   isLoading: boolean;
   error: string | null;
   lastRefresh: Date | null;
   refetch: () => Promise<void>;
 }
 
-export function useEpochStatus(vaultId?: number, epochId?: number): UseEpochStatusResult {
-  const [data, setData] = useState<EpochStatusResponse | null>(null);
+export function useCycleStatus(vaultId?: number, cycleId?: number): UseCycleStatusResult {
+  const [data, setData] = useState<CycleStatusResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
@@ -933,17 +972,17 @@ export function useEpochStatus(vaultId?: number, epochId?: number): UseEpochStat
 
     try {
       const result =
-        epochId !== undefined
-          ? await fetchEpochStatus(vaultId, epochId)
-          : await fetchCurrentEpochStatus(vaultId);
+        cycleId !== undefined
+          ? await fetchCycleStatus(vaultId, cycleId)
+          : await fetchCurrentCycleStatus(vaultId);
       setData(result);
       setLastRefresh(new Date());
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch epoch status");
+      setError(err instanceof Error ? err.message : "Failed to fetch cycle status");
     } finally {
       setIsLoading(false);
     }
-  }, [vaultId, epochId]);
+  }, [vaultId, cycleId]);
 
   useEffect(() => {
     refetch();
@@ -952,10 +991,11 @@ export function useEpochStatus(vaultId?: number, epochId?: number): UseEpochStat
   }, [refetch]);
 
   return {
-    epoch: data?.epoch ?? null,
-    isActive: data?.epoch?.isActive ?? false,
-    timeRemainingFormatted: data?.epoch?.timeRemainingFormatted ?? "0s",
+    cycle: data?.cycle ?? null,
+    isActive: data?.cycle?.isActive ?? false,
+    timeRemainingFormatted: data?.cycle?.timeRemainingFormatted ?? "0s",
     canSettle: data?.canSettle,
+    batchState: data?.cycle?.batchState ?? null,
     isLoading,
     error,
     lastRefresh,
@@ -963,8 +1003,8 @@ export function useEpochStatus(vaultId?: number, epochId?: number): UseEpochStat
   };
 }
 
-export function useEpochHistory(vaultId?: number, limit = 6): UseEpochHistoryResult {
-  const [data, setData] = useState<EpochHistoryResponse | null>(null);
+export function useCycleHistory(vaultId?: number, limit = 6): UseCycleHistoryResult {
+  const [data, setData] = useState<CycleHistoryResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
@@ -979,11 +1019,11 @@ export function useEpochHistory(vaultId?: number, limit = 6): UseEpochHistoryRes
     setError(null);
 
     try {
-      const result = await fetchEpochHistory(vaultId, limit);
+      const result = await fetchCycleHistory(vaultId, limit);
       setData(result);
       setLastRefresh(new Date());
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch epoch history");
+      setError(err instanceof Error ? err.message : "Failed to fetch cycle history");
     } finally {
       setIsLoading(false);
     }
@@ -994,8 +1034,8 @@ export function useEpochHistory(vaultId?: number, limit = 6): UseEpochHistoryRes
   }, [refetch]);
 
   return {
-    currentEpochId: data?.currentEpochId ?? null,
-    epochs: data?.epochs ?? [],
+    currentCycleId: data?.currentCycleId ?? null,
+    cycles: data?.cycles ?? [],
     isLoading,
     error,
     lastRefresh,
@@ -1048,7 +1088,9 @@ export function useClaimRedemption(): UseClaimRedemptionResult {
 }
 
 // ============================================================================
-// Tranche-Carry Lifecycle Hooks
+// ============================================================================
+// Closed-Book Batch/Cycle Lifecycle Hooks
+// ============================================================================
 // ============================================================================
 
 export interface UseDepositQueueResult {
@@ -1056,8 +1098,9 @@ export interface UseDepositQueueResult {
   queuedFormatted: string;
   queuedShares: string;
   queuedSharesFormatted: string;
-  estimateNav: string;
-  estimateNavFormatted: string;
+  // No current NAV estimate in closed-book; shares minted at cycle-open NAV
+  cycleOpenNavEstimate: string | null;
+  cycleOpenNavFormatted: string | null;
   estimateBasis: string | null;
   frozen: string;
   frozenFormatted: string;
@@ -1065,21 +1108,29 @@ export interface UseDepositQueueResult {
   frozenSharesFormatted: string;
   depositRequestId: string | null;
   depositCreatedAt: string | null;
-  targetEpochId: number | null;
-  currentEpochId: number | null;
-  currentEpochStart: string | null;
-  currentEpochEnd: string | null;
-  nextEpochStart: string | null;
+  targetCycleId: number | null;
+  currentCycleId: number | null;
+  currentCycleStart: string | null;
+  currentCycleEnd: string | null;
+  nextCycleStart: string | null;
   activationTime: string | null;
   queueStatus: "idle" | "queued" | "processed" | null;
   mintRule: string | null;
+  batchState:
+    | "open"
+    | "cutoff"
+    | "flattening"
+    | "settling"
+    | "settled"
+    | "closed"
+    | "reopen"
+    | null;
   isLoading: boolean;
   error: string | null;
   lastRefresh: Date | null;
   refetch: () => Promise<void>;
 }
-
-export function useDepositQueue(vaultId?: number): UseDepositQueueResult {
+export function useDepositQueue(vaultId?: number, isAuthenticated = false): UseDepositQueueResult {
   const [data, setData] = useState<DepositQueueResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1091,6 +1142,13 @@ export function useDepositQueue(vaultId?: number): UseDepositQueueResult {
       return;
     }
 
+    // Skip fetching if user is not authenticated
+    if (!isAuthenticated) {
+      setIsLoading(false);
+      setError(null);
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
 
@@ -1099,11 +1157,21 @@ export function useDepositQueue(vaultId?: number): UseDepositQueueResult {
       setData(result);
       setLastRefresh(new Date());
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch deposit queue");
+      // Silently handle auth errors - don't spam console for unauthenticated users
+      const errMessage = err instanceof Error ? err.message : "Failed to fetch deposit queue";
+      if (
+        errMessage.includes("401") ||
+        errMessage.includes("unauthorized") ||
+        errMessage.includes("Unauthorized")
+      ) {
+        setError(null);
+      } else {
+        setError(errMessage);
+      }
     } finally {
       setIsLoading(false);
     }
-  }, [vaultId]);
+  }, [vaultId, isAuthenticated]);
 
   useEffect(() => {
     refetch();
@@ -1116,8 +1184,8 @@ export function useDepositQueue(vaultId?: number): UseDepositQueueResult {
     queuedFormatted: data?.queuedFormatted ?? "0",
     queuedShares: data?.queuedShares ?? "0",
     queuedSharesFormatted: data?.queuedSharesFormatted ?? "0",
-    estimateNav: data?.estimateNav ?? "0",
-    estimateNavFormatted: data?.estimateNavFormatted ?? "0",
+    cycleOpenNavEstimate: data?.cycleOpenNavEstimate ?? null,
+    cycleOpenNavFormatted: data?.cycleOpenNavFormatted ?? null,
     estimateBasis: data?.estimateBasis ?? null,
     frozen: data?.frozen ?? "0",
     frozenFormatted: data?.frozenFormatted ?? "0",
@@ -1125,14 +1193,15 @@ export function useDepositQueue(vaultId?: number): UseDepositQueueResult {
     frozenSharesFormatted: data?.frozenSharesFormatted ?? "0",
     depositRequestId: data?.depositRequestId ?? null,
     depositCreatedAt: data?.depositCreatedAt ?? null,
-    targetEpochId: data?.targetEpochId ?? null,
-    currentEpochId: data?.currentEpochId ?? null,
-    currentEpochStart: data?.currentEpochStart ?? null,
-    currentEpochEnd: data?.currentEpochEnd ?? null,
-    nextEpochStart: data?.nextEpochStart ?? null,
+    targetCycleId: data?.targetCycleId ?? null,
+    currentCycleId: data?.currentCycleId ?? null,
+    currentCycleStart: data?.currentCycleStart ?? null,
+    currentCycleEnd: data?.currentCycleEnd ?? null,
+    nextCycleStart: data?.nextCycleStart ?? null,
     activationTime: data?.activationTime ?? null,
     queueStatus: data?.queueStatus ?? null,
     mintRule: data?.mintRule ?? null,
+    batchState: data?.batchState ?? null,
     isLoading,
     error,
     lastRefresh,
@@ -1141,14 +1210,24 @@ export function useDepositQueue(vaultId?: number): UseDepositQueueResult {
 }
 
 export interface UseTrancheStatusResult {
-  epochId: number | null;
-  epochStatus: {
+  cycleId: number | null;
+  cycleStatus: {
     status: "settled" | "pending" | null;
     startTime: string | null;
     endTime: string | null;
     settled: boolean;
     totalShares: string;
     totalSharesFormatted: string;
+    // Batch lifecycle
+    batchState:
+      | "open"
+      | "cutoff"
+      | "flattening"
+      | "settling"
+      | "settled"
+      | "closed"
+      | "reopen"
+      | null;
   };
   tranchePosition: {
     accrued: string;
@@ -1169,7 +1248,7 @@ export interface UseTrancheStatusResult {
   refetch: () => Promise<void>;
 }
 
-export function useTrancheStatus(vaultId?: number, epochId?: number): UseTrancheStatusResult {
+export function useTrancheStatus(vaultId?: number, cycleId?: number): UseTrancheStatusResult {
   const [data, setData] = useState<TrancheStatusResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1185,7 +1264,7 @@ export function useTrancheStatus(vaultId?: number, epochId?: number): UseTranche
     setError(null);
 
     try {
-      const result = await fetchTrancheStatus(vaultId, epochId);
+      const result = await fetchTrancheStatus(vaultId, cycleId);
       setData(result);
       setLastRefresh(new Date());
     } catch (err) {
@@ -1193,7 +1272,7 @@ export function useTrancheStatus(vaultId?: number, epochId?: number): UseTranche
     } finally {
       setIsLoading(false);
     }
-  }, [vaultId, epochId]);
+  }, [vaultId, cycleId]);
 
   useEffect(() => {
     refetch();
@@ -1202,14 +1281,15 @@ export function useTrancheStatus(vaultId?: number, epochId?: number): UseTranche
   }, [refetch]);
 
   return {
-    epochId: data?.epochId ?? null,
-    epochStatus: {
-      status: data?.epochStatus?.status ?? null,
-      startTime: data?.epochStatus?.startTime ?? null,
-      endTime: data?.epochStatus?.endTime ?? null,
-      settled: data?.epochStatus?.settled ?? false,
-      totalShares: data?.epochStatus?.totalShares ?? "0",
-      totalSharesFormatted: data?.epochStatus?.totalSharesFormatted ?? "0",
+    cycleId: data?.cycleId ?? null,
+    cycleStatus: {
+      status: data?.cycleStatus?.status ?? null,
+      startTime: data?.cycleStatus?.startTime ?? null,
+      endTime: data?.cycleStatus?.endTime ?? null,
+      settled: data?.cycleStatus?.settled ?? false,
+      totalShares: data?.cycleStatus?.totalShares ?? "0",
+      totalSharesFormatted: data?.cycleStatus?.totalSharesFormatted ?? "0",
+      batchState: data?.cycleStatus?.batchState ?? null,
     },
     tranchePosition: {
       accrued: data?.tranchePosition?.accrued ?? "0",
@@ -1257,7 +1337,7 @@ export interface UseCarryEligibilityResult {
   entitlements: Array<{
     entitlementId: number;
     requestId: string;
-    epochId: string;
+    cycleId: string;
     accrued: string;
     claimableNow: string;
     eligible: boolean;
@@ -1328,7 +1408,7 @@ export function useCarryEligibility(
       data?.entitlements?.map((e) => ({
         entitlementId: e.entitlementId,
         requestId: e.requestId,
-        epochId: e.epochId,
+        cycleId: e.cycleId,
         accrued: e.accrued,
         claimableNow: e.claimableNow,
         eligible: e.eligible,

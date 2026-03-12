@@ -1,0 +1,45 @@
+# T12 UI Live Copy Fix - Evidence
+
+## Changes Made
+
+### File: `apps/vault-web/app/vault/[id]/components/RedemptionPanel.tsx`
+
+#### Change 1: Subtitle text (line 47)
+**Before:**
+```
+Request shares to be redeemed at the next weekly settlement
+```
+
+**After:**
+```
+Request shares to be redeemed at cycle settlement
+```
+
+#### Change 2: Alert description (lines 64-66)
+**Before:**
+```
+Weekly Settlement: Redemption requests are processed at the end of each weekly cycle. 
+Claims become available after settlement is complete.
+```
+
+**After:**
+```
+Cycle Settlement: Redemption requests are processed when the cycle closes and positions 
+are frozen. Claims become available after settlement is complete.
+```
+
+## Verification
+
+### Build Status
+✅ `pnpm --filter vault-web build` passes
+
+### Playwright Snapshot Verification
+Live page at `http://localhost:3000/vault/1` now shows:
+- Subtitle: "Request shares to be redeemed at cycle settlement"
+- Alert: "Cycle Settlement: Redemption requests are processed when the cycle closes and positions are frozen..."
+
+### Console Status
+No errors related to the copy changes.
+
+## Summary
+Stale "weekly settlement" wording has been replaced with closed-book cycle terminology consistent with the vault's batch/cycle settlement model.

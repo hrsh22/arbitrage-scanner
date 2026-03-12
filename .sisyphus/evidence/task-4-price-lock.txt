@@ -1,0 +1,75 @@
+Task 4 Evidence: Post-Flat Clearing Price Implementation - COMPLETED
+=====================================================================
+
+Date: 2026-03-11
+Status: ALL TESTS PASSING (19/19)
+
+CONTRACT: contracts/src/ClosedBookBatchVault.sol
+
+T4 MATH FIX IMPLEMENTATION:
+
+1. NUMERATOR EXCLUSION (Line 625):
+   Code: uint256 realizedAssets = totalVaultAssets - totalQueuedAssets;
+   
+   Uses totalQueuedAssets (global) to exclude ALL unprocessed queued deposits
+   from the clearing price calculation, not just the current batch's deposits.
+
+2. DENOMINATOR (Line 626):
+   Code: uint256 realizedShares = totalSupply();
+   
+   Uses full totalSupply() as denominator, not subtracting pending redemption shares.
+
+3. LOCKED CLEARING PRICE (Line 629):
+   Code: uint256 clearingPrice = realizedShares > 0 
+           ? (realizedAssets * 1e18) / realizedShares 
+           : currentNAV;
+   
+   Price = (Total Assets - Queued Deposits) / Total Supply
+   
+   Stored in batch.lockedClearingPrice and used for both deposits and redemptions.
+
+4. TOTAL ASSETS SNAPSHOT (Lines 635-639):
+   Code: uint256 assetValue = batch.totalSharesPending == 0
+           ? 0
+           : (batch.totalSharesPending * clearingPrice) / 1e18;
+         batch.totalAssetsSnapshot = assetValue;
+   
+   Frozen redemption asset snapshot derived from locked clearing price.
+
+5. RESERVED REDEMPTION ASSETS (Line 640):
+   Code: reservedRedemptionAssets += assetValue;
+   
+   Tracks assets reserved for redemptions.
+
+6. SETTLEMENT GATING (Line 677):
+   Code: if (!batch.isPriceLocked) revert PriceNotLocked(batchId);
+   
+   Settlement gates on isPriceLocked, not fresh NAV.
+
+TEST RESULTS:
+-------------
+All 19 tests passing:
+- testBatchStateTransitions
+- testCancelDeposit
+- testCancelRedeemRequestReturnsShares
+- testCannotCancelDepositAfterCutoff
+- testCannotDepositAfterCutoff
+- testCannotRequestRedeemAfterCutoff
+- testDepositInNewBatchAfterReopen
+- testEmergencyModeBlocksDeposits
+- testEmergencyModeBlocksRedemptions
+- testIsNAVFresh
+- testNoCarryFieldsInContract
+- testProRataDistribution
+- testProcessDepositQueue
+- testQueueDeposit
+- testQueueDepositAccumulatesExistingRequest
+- testReopenBatch
+- testRequestRedeemEscrowsShares
+- testSettlementBurnsShares
+- testStaleNAVBlocksFlatten
+
+VERIFICATION COMMAND:
+forge test --match-contract ClosedBookBatchVaultTest
+
+Q.E.D. T4 price lock math fix correctly implemented and verified.

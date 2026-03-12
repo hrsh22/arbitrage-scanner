@@ -1,0 +1,43 @@
+ClosedBookBatchVault Staging Replay
+==================================
+
+Deployment
+- Network: Amoy (chainId 80002)
+- Deployed contract: 0x66e665a6B8898920e76f263eAa729afd716c1470
+- Deployment tx: 0x56570c31a6e94857ad0ebd9a6ccba609f0c3e5f7d7c3953cf500eab70a9c1af1
+- Deployer: 0x5991fd6Ecc5634C4de497b47Eb0Aa0065fffb214
+- Admin/Settler/NAV Updater/Snapshotter/Deposit Processor: 0xB78721b29c028B16ab25f4a2adE1d25fbf8B2d74
+- Fee recipient: 0x5991fd6Ecc5634C4de497b47Eb0Aa0065fffb214
+
+Standalone Verification
+- verify-amoy-deployment.sh: PASS
+- Name: Closed Book Batch Vault
+- Symbol: CBBV
+- Asset: 0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582
+- Epoch duration: 3600
+- Current batch after deploy: 0 (Open)
+
+Lifecycle Rehearsal
+- Scripted run exposed a shell-harness issue: queued deposits target the next batch, but the script tried processing the current batch.
+- Manual on-chain replay completed successfully for batch 2.
+
+Manual Replay Commands/Outcomes
+- queueDeposit(1000000): tx 0xf83bbab03111b78fae6ec3b5a5a70f68617221d4fa145d79cd3777400428a3c2
+- cutoffBatch() on batch 2: tx 0x3dfcf2ad19817fcfb846c4727c0ea1b508f7840a5199350da1bf3fea47804d0f
+- flattenBatch(snapshot) on batch 2: tx 0xf85f06c979f0f1b43d32a6681530f61bc6e961dfa07203adef02b8c88b6f9f8d
+- processDepositQueue(2, 0, 100): tx 0xfe21a173f02c4a5c5368a3eb97e43151d091ba9e0e61b8eb59ab3a569f0b7f10
+- settleBatch(2): tx 0xe247d5c1d2ee3ff18a6a98cfcc8ff7992cab17a18abe1d19b435492ab7f2b90f
+- reopenBatch(): tx 0x41454f359a115c640218f5d636ff552359ca0ede00308228cb1977579e156fb2
+
+Post-Replay State
+- currentBatchId(): 3
+- getBatchStatus(2): 6 (Reopen)
+- getBatchStatus(3): 0 (Open)
+- totalSupply(): 1000000
+- balanceOf(0xB78721b29c028B16ab25f4a2adE1d25fbf8B2d74): 1000000
+- totalQueuedAssets(): 0
+
+Conclusion
+- Staging deployment succeeded.
+- Closed-book cycle replay succeeded on-chain.
+- The remaining issue is the helper script assumption about which batch queued deposits belong to; the contract behavior itself is valid.

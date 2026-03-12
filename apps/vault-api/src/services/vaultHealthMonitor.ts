@@ -23,6 +23,7 @@ import { getAllVaultConfigs, getVaultConfig } from "../config/index.js";
 import { resolveVaultIdentity } from "../config/identityResolver.js";
 import { getVaultProvider } from "./vaultProviderFactory.js";
 import { createNavOracle } from "./navOracle.js";
+import { FlatnessDetector, type FlatnessCheckResult } from "./flatnessDetector.js";
 
 // ===== Constants =====
 
@@ -862,6 +863,250 @@ export class VaultHealthMonitor {
   }
 
   // ============================================================================
+  // Flatness Check
+  // ============================================================================
+
+  /**
+   * Check if the vault is in a "flat" state.
+   *
+   * A vault is flat when all five conditions are met:
+   * 1. Zero open Polymarket positions
+   * 2. Zero resting orders on CLOB
+   * 3. deployedCapital == 0
+   * 4. Zero non-dust CTF token balances
+   * 5. Successful reconciliation pass
+   *
+   * Flatness is a prerequisite for settlement.
+   */
+  async checkFlatness(vaultId?: number): Promise<HealthCheckResult> {
+    try {
+      const vaults = vaultId ? [getVaultConfig(vaultId)].filter(Boolean) : getAllVaultConfigs();
+      const failedChecks: { vaultId: number; blockingConditions: string[] }[] = [];
+
+      for (const vault of vaults) {
+        if (!vault) continue;
+
+        try {
+          // Only check custom vaults that use flatness-based settlement
+          const provider = getVaultProvider(vault.id);
+          const capabilities = provider.getCapabilities();
+
+          if (!capabilities.batchBased) continue;
+
+          const flatnessDetector = new FlatnessDetector();
+          const tradingSafeAddress = vault.tradingSafeAddress ?? vault.safeAddress;
+          const result = await flatnessDetector.checkFlatness(vault, tradingSafeAddress);
+
+          if (!result.isFlat) {
+            failedChecks.push({
+              vaultId: vault.id,
+              blockingConditions: result.blockingConditions,
+            });
+          }
+        } catch (error) {
+          logger.warn("HealthMonitor: Failed to check flatness", {
+            vaultId: vault.id,
+            error: (error as Error).message,
+          });
+        }
+      }
+
+      if (failedChecks.length > 0) {
+        const firstFailure = failedChecks[0]!;
+        return {
+          name: "vault_flatness",
+          status: "degraded",
+          severity: "warning",
+          message: `${failedChecks.length} vault(s) are not flat. First: vault ${firstFailure.vaultId} blocked by: ${firstFailure.blockingConditions.join(
+)}`,
+          details: {
+            failedCount: failedChecks.length,
+            failures: failedChecks,
+          },
+          timestamp: new Date(),
+          runbookUrl: "https://github.com/polymarket-mvp/runbooks/blob/main/vault-flatness.md",
+        };
+      }
+
+      return {
+        name: "vault_flatness",
+        status: "healthy",
+        severity: "info",
+        message: "All checked vaults are flat",
+        details: { checkedVaults: vaults.filter(Boolean).length },
+        timestamp: new Date(),
+      };
+    } catch (error) {
+      return {
+        name: "vault_flatness",
+        status: "critical",
+        severity: "critical",
+        message: `Check failed: ${(error as Error).message}`,
+        timestamp: new Date(),
+      };
+    }
+  }
+
+  // ============================================================================
+  // Starvation & Emergency Pause Health Checks (T5)
+  // ============================================================================
+
+  /**
+   * Check for flattening timeout (starvation detection).
+   * 
+   * Alerts if book flattening exceeds MAX_FLATTENING_WINDOW_MS.
+   */
+  async checkFlatteningTimeout(vaultId?: number): Promise<HealthCheckResult> {
+    try {
+      const configs = vaultId ? [getVaultConfig(vaultId)].filter(Boolean) : getAllVaultConfigs();
+      const timeoutChecks: Array<{
+        vaultId: number;
+        startedAt: string;
+        expectedDeadline: string;
+        blockingConditions: string[];
+        timeoutTriggered: boolean;
+      }> = [];
+
+      for (const vault of configs) {
+        if (!vault) continue;
+
+        try {
+          // Get the trading orchestrator for this vault
+          const { createTradingOrchestrator } = await import("./tradingOrchestrator.js");
+          const orchestrator = createTradingOrchestrator(vault);
+
+          const attempt = orchestrator.getCurrentFlatteningAttempt();
+          const hasTimeout = orchestrator.hasFlatteningTimeout();
+
+          if (attempt && (hasTimeout || attempt.status === "timeout")) {
+            timeoutChecks.push({
+              vaultId: vault.id,
+              startedAt: attempt.startedAt.toISOString(),
+              expectedDeadline: attempt.expectedDeadline.toISOString(),
+              blockingConditions: attempt.blockingConditions,
+              timeoutTriggered: true,
+            });
+          }
+        } catch (error) {
+          logger.warn("HealthMonitor: Failed to check flattening timeout", {
+            vaultId: vault.id,
+            error: (error as Error).message,
+          });
+        }
+      }
+
+      if (timeoutChecks.length > 0) {
+        const first = timeoutChecks[0]!;
+        return {
+          name: "flattening_timeout",
+          status: "critical",
+          severity: "critical",
+          message: `${timeoutChecks.length} vault(s) have flattening timeout. First: vault ${first.vaultId} started at ${first.startedAt}, deadline was ${first.expectedDeadline}`,
+          details: {
+            timeoutCount: timeoutChecks.length,
+            timeouts: timeoutChecks,
+            maxFlatteningWindowMs: 60 * 60 * 1000, // 1 hour
+          },
+          timestamp: new Date(),
+          runbookUrl: "https://github.com/polymarket-mvp/runbooks/blob/main/starvation/flattening-timeout.md",
+        };
+      }
+
+      return {
+        name: "flattening_timeout",
+        status: "healthy",
+        severity: "info",
+        message: "No flattening timeouts detected",
+        details: { checkedVaults: configs.filter(Boolean).length },
+        timestamp: new Date(),
+      };
+    } catch (error) {
+      return {
+        name: "flattening_timeout",
+        status: "critical",
+        severity: "critical",
+        message: `Check failed: ${(error as Error).message}`,
+        timestamp: new Date(),
+      };
+    }
+  }
+
+  /**
+   * Check for emergency pause state.
+   * 
+   * Critical alert if vault is in emergency pause.
+   */
+  async checkEmergencyPause(vaultId?: number): Promise<HealthCheckResult> {
+    try {
+      const configs = vaultId ? [getVaultConfig(vaultId)].filter(Boolean) : getAllVaultConfigs();
+      const pausedVaults: Array<{
+        vaultId: number;
+        pausedAt: string | null;
+        reason: string | null;
+        triggeredBy: string | null;
+      }> = [];
+
+      for (const vault of configs) {
+        if (!vault) continue;
+
+        try {
+          const { createTradingOrchestrator } = await import("./tradingOrchestrator.js");
+          const orchestrator = createTradingOrchestrator(vault);
+
+          const pauseState = orchestrator.getEmergencyPauseState();
+
+          if (pauseState.isPaused) {
+            pausedVaults.push({
+              vaultId: vault.id,
+              pausedAt: pauseState.pausedAt?.toISOString() ?? null,
+              reason: pauseState.reason,
+              triggeredBy: pauseState.triggeredBy,
+            });
+          }
+        } catch (error) {
+          logger.warn("HealthMonitor: Failed to check emergency pause", {
+            vaultId: vault.id,
+            error: (error as Error).message,
+          });
+        }
+      }
+
+      if (pausedVaults.length > 0) {
+        const first = pausedVaults[0]!;
+        return {
+          name: "emergency_pause",
+          status: "critical",
+          severity: "critical",
+          message: `EMERGENCY PAUSE: ${pausedVaults.length} vault(s) paused. First: vault ${first.vaultId} paused at ${first.pausedAt}, reason: ${first.reason}`,
+          details: {
+            pausedCount: pausedVaults.length,
+            pausedVaults,
+          },
+          timestamp: new Date(),
+          runbookUrl: "https://github.com/polymarket-mvp/runbooks/blob/main/starvation/emergency-pause.md",
+        };
+      }
+
+      return {
+        name: "emergency_pause",
+        status: "healthy",
+        severity: "info",
+        message: "No emergency pauses active",
+        details: { checkedVaults: configs.filter(Boolean).length },
+        timestamp: new Date(),
+      };
+    } catch (error) {
+      return {
+        name: "emergency_pause",
+        status: "critical",
+        severity: "critical",
+        message: `Check failed: ${(error as Error).message}`,
+        timestamp: new Date(),
+      };
+    }
+  }
+
+  // ============================================================================
   // Composite Health Check
   // ============================================================================
 
@@ -884,6 +1129,11 @@ export class VaultHealthMonitor {
       this.checkUnresolvedPositionsTimeout(vaultId),
       this.checkPayoutBacklog(vaultId),
       this.checkFrozenSnapshotStaleness(vaultId),
+      // Flatness check (for closed-book batch vaults)
+      this.checkFlatness(vaultId),
+      // Starvation & Emergency Pause checks (T5)
+      this.checkFlatteningTimeout(vaultId),
+      this.checkEmergencyPause(vaultId),
     ]);
 
     const critical = checks.filter((c) => c.severity === "critical").length;

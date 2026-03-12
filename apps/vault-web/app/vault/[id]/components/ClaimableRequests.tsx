@@ -16,7 +16,6 @@ interface ClaimableRequestsProps {
   requests: RedemptionRequest[];
   isLoading: boolean;
   onClaimSuccess: () => void;
-  vaultId: number;
   vaultAddress: string;
 }
 
@@ -31,7 +30,6 @@ function formatDateTime(iso: string): string {
 
 interface ClaimableRequestCardProps {
   request: RedemptionRequest;
-  vaultId: number;
   vaultAddress: string;
   onClaimSuccess: () => void;
   isProcessing: boolean;
@@ -40,7 +38,6 @@ interface ClaimableRequestCardProps {
 
 function ClaimableRequestCard({
   request,
-  vaultId,
   vaultAddress,
   onClaimSuccess,
   isProcessing,
@@ -119,74 +116,77 @@ function ClaimableRequestCard({
 
   return (
     <div
-      className="rounded-lg border border-emerald-200 bg-emerald-50/30 p-4 space-y-3"
+      className="space-y-3 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4"
       data-testid={`claimable-request-${request.requestId}`}
     >
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-2">
-          <Hash className="h-4 w-4 text-emerald-600" aria-hidden="true" />
-          <span className="text-sm font-mono font-medium">
+          <Hash className="h-4 w-4 text-emerald-200" aria-hidden="true" />
+          <span className="text-sm font-mono font-medium text-emerald-50">
             {request.requestId.slice(0, 8)}...{request.requestId.slice(-4)}
           </span>
           <Badge
             variant="outline"
-            className="bg-emerald-100 text-emerald-700 border-emerald-200 text-[10px]"
+            className="border-emerald-400/25 bg-emerald-400/15 text-[10px] text-emerald-100"
           >
             {request.status === "claimed" ? "Claimed" : "Claimable"}
           </Badge>
         </div>
-        <span className="text-xs text-muted-foreground">
-          {formatDateTime(request.targetEpochEndTime || request.createdAt)}
+        <span className="text-xs text-emerald-50/70">
+          Requested {formatDateTime(request.createdAt)}
         </span>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <p className="text-xs text-muted-foreground">Shares Redeemed</p>
-          <p className="text-sm font-mono font-medium">{request.sharesFormatted} shares</p>
+          <p className="text-xs text-emerald-50/70">Shares settled</p>
+          <p className="text-sm font-mono font-medium text-emerald-50">
+            {request.sharesFormatted} shares
+          </p>
         </div>
         <div>
-          <p className="text-xs text-muted-foreground">USDC to Receive</p>
+          <p className="text-xs text-emerald-50/70">USDC ready now</p>
           <p
-            className="text-sm font-mono font-medium text-emerald-700"
+            className="text-sm font-mono font-medium text-emerald-50"
             data-testid="claimable-amount"
           >
             ${request.claimableAssetsFormatted || "0.00"}
           </p>
         </div>
+        <div>
+          <p className="text-xs text-emerald-50/70">Settled cycle</p>
+          <p className="text-sm font-mono font-medium text-emerald-50">#{request.targetCycle}</p>
+        </div>
       </div>
 
       {/* Settlement indicator */}
       {request.proRataApplied && (
-        <div className="rounded-md bg-amber-50 border border-amber-200 p-2">
+        <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 p-2">
           <div className="flex items-center gap-2">
-            <Percent className="h-3.5 w-3.5 text-amber-600" aria-hidden="true" />
-            <span className="text-xs font-medium text-amber-700">Pro-rata Settlement Applied</span>
+            <Percent className="h-3.5 w-3.5 text-amber-200" aria-hidden="true" />
+            <span className="text-xs font-medium text-amber-100">Pro-rata settlement applied</span>
           </div>
-          <p className="text-xs text-amber-700 mt-1">
+          <p className="mt-1 text-xs leading-6 text-amber-50/90">
             {request.proRataPercentage && (
               <>
                 This request was filled at {(request.proRataPercentage * 100).toFixed(1)}% due to
-                insufficient liquidity at the settlement boundary. Your claimable amount reflects
-                this final settlement. Full entitlement is realized at the boundary only.
+                insufficient liquidity during settlement. Your claimable amount reflects this final
+                settlement. Full entitlement is realized after settlement completes.
               </>
             )}
           </p>
         </div>
       )}
-      {/* Status or Action */}
-      {/* Status or Action */}
       {request.status === "claimed" ? (
-        <div className="flex items-center gap-2 rounded-md bg-slate-100 p-3">
-          <CheckCircle2 className="h-4 w-4 text-slate-500" aria-hidden="true" />
-          <span className="text-sm text-muted-foreground">Already claimed</span>
+        <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-slate-950/35 p-3">
+          <CheckCircle2 className="h-4 w-4 text-slate-300" aria-hidden="true" />
+          <span className="text-sm text-slate-300">Already claimed</span>
         </div>
       ) : canClaim ? (
         <div className="space-y-2">
-          {/* Dust override warning */}
           {dustOverrideEligible && !meetsThreshold && (
-            <div className="rounded-md bg-amber-50 border border-amber-200 p-2">
-              <p className="text-xs text-amber-700">
+            <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 p-2">
+              <p className="text-xs leading-6 text-amber-50/90">
                 <span className="font-medium">Dust amount:</span> This claim is below the 1 USDC
                 minimum threshold.
               </p>
@@ -198,7 +198,7 @@ function ClaimableRequestCard({
               void handleClaim();
             }}
             disabled={isClaiming || !canClaim}
-            className="w-full claim-button"
+            className="w-full bg-emerald-300 text-slate-950 hover:bg-emerald-200 claim-button"
             data-testid="claim-button"
           >
             {isClaiming ? (
@@ -219,22 +219,26 @@ function ClaimableRequestCard({
               href={`${EXPLORER_BASE_URL}/tx/${successTx}`}
               target="_blank"
               rel="noreferrer"
-              className="block text-center text-xs font-mono text-blue-600 hover:underline"
+              className="block text-center text-xs font-mono text-cyan-200 hover:underline"
             >
               View transaction: {successTx.slice(0, 10)}...{successTx.slice(-4)}
             </a>
           )}
 
-          {error && <div className="rounded-md bg-rose-50 p-2 text-xs text-rose-700">{error}</div>}
+          {error && (
+            <div className="rounded-xl border border-rose-400/20 bg-rose-400/10 p-2 text-xs leading-6 text-rose-50/90">
+              {error}
+            </div>
+          )}
         </div>
       ) : (
         <div
-          className="flex items-center gap-2 rounded-md bg-slate-100 p-3"
+          className="flex items-center gap-2 rounded-xl border border-white/10 bg-slate-950/35 p-3"
           data-testid="claim-disabled"
         >
           <Clock className="h-4 w-4 text-slate-400" aria-hidden="true" />
-          <span className="text-sm text-muted-foreground">
-            Waiting for settlement to complete...
+          <span className="text-sm text-slate-300">
+            Waiting for settlement to finish and release claimable USDC...
           </span>
         </div>
       )}
@@ -246,7 +250,6 @@ export function ClaimableRequests({
   requests,
   isLoading,
   onClaimSuccess,
-  vaultId,
   vaultAddress,
 }: ClaimableRequestsProps) {
   const [processingId, setProcessingId] = useState<string | null>(null);
@@ -262,8 +265,8 @@ export function ClaimableRequests({
   if (isLoading) {
     return (
       <div className="space-y-4" data-testid="claimable-requests-loading">
-        <Skeleton className="h-32 w-full" />
-        <Skeleton className="h-32 w-full" />
+        <Skeleton className="h-32 w-full rounded-2xl bg-white/10" />
+        <Skeleton className="h-32 w-full rounded-2xl bg-white/10" />
       </div>
     );
   }
@@ -271,13 +274,13 @@ export function ClaimableRequests({
   if (requests.length === 0) {
     return (
       <div
-        className="flex flex-col items-center justify-center py-12 text-center rounded-lg border border-dashed border-slate-300 bg-slate-50/50"
+        className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/15 bg-white/[0.03] py-12 text-center"
         data-testid="no-claimable-requests"
       >
-        <Wallet className="h-8 w-8 text-slate-300 mb-3" aria-hidden="true" />
-        <p className="text-sm font-medium text-muted-foreground">No claimable requests</p>
-        <p className="mt-1 text-xs text-muted-foreground max-w-xs">
-          Settled redemption requests will appear here when they&apos;re ready to claim.
+        <Wallet className="mb-3 h-8 w-8 text-slate-500" aria-hidden="true" />
+        <p className="text-sm font-medium text-white">Nothing ready to claim</p>
+        <p className="mt-1 max-w-xs text-xs leading-6 text-slate-400">
+          Completed settlements will appear here once USDC is ready for pickup.
         </p>
       </div>
     );
@@ -285,45 +288,44 @@ export function ClaimableRequests({
 
   return (
     <div className="space-y-4" data-testid="claimable-requests">
-      {/* Summary */}
       <div className="flex items-center justify-between">
-        <span className="text-sm text-muted-foreground">Claimable Requests</span>
+        <span className="text-sm text-slate-400">Ready to claim</span>
         <div className="flex items-center gap-2">
           {claimableCount > 0 && (
-            <Badge variant="secondary" className="bg-emerald-100 text-emerald-700">
+            <Badge
+              variant="secondary"
+              className="border border-emerald-400/25 bg-emerald-400/12 text-emerald-100"
+            >
               {claimableCount} claimable
             </Badge>
           )}
           {claimedCount > 0 && (
-            <Badge variant="outline" className="text-muted-foreground">
+            <Badge variant="outline" className="border-white/10 text-slate-300">
               {claimedCount} claimed
             </Badge>
           )}
         </div>
       </div>
 
-      {/* Total Available */}
       {totalClaimable > 0 && (
-        <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-4">
+        <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Wallet className="h-5 w-5 text-emerald-600" aria-hidden="true" />
-              <span className="text-sm font-medium text-emerald-700">Total Available to Claim</span>
+              <Wallet className="h-5 w-5 text-emerald-200" aria-hidden="true" />
+              <span className="text-sm font-medium text-emerald-100">Total available now</span>
             </div>
-            <span className="text-xl font-mono font-bold text-emerald-700">
+            <span className="text-xl font-mono font-bold text-emerald-50">
               ${totalClaimable.toFixed(2)}
             </span>
           </div>
         </div>
       )}
 
-      {/* Request Cards */}
       <div className="space-y-3">
         {requests.map((request) => (
           <ClaimableRequestCard
             key={request.requestId}
             request={request}
-            vaultId={vaultId}
             vaultAddress={vaultAddress}
             onClaimSuccess={onClaimSuccess}
             isProcessing={processingId === request.requestId}
@@ -332,20 +334,11 @@ export function ClaimableRequests({
         ))}
       </div>
 
-      {/* Info Alert */}
-      <Alert className="bg-blue-50/50 border-blue-200">
-        <Info className="h-4 w-4 text-blue-600" aria-hidden="true" />
-        <AlertDescription className="text-xs text-blue-700">
-          <span className="font-medium">Boundary Settlement Model:</span> Claims are available
-          after epoch settlement completes. Full entitlement is realized at the settlement
-          boundary. Partial or gradual realization between settlements is not supported.
-        </AlertDescription>
-      </Alert>
-      <Alert className="bg-blue-50/50 border-blue-200">
-        <Info className="h-4 w-4 text-blue-600" aria-hidden="true" />
-        <AlertDescription className="text-xs text-blue-700">
-          <span className="font-medium">Claiming:</span> Click the claim button to receive your
-          USDC. Claims are processed immediately and cannot be reversed.
+      <Alert className="border-cyan-400/20 bg-cyan-400/10">
+        <Info className="h-4 w-4 text-cyan-200" aria-hidden="true" />
+        <AlertDescription className="text-xs leading-6 text-cyan-50/90">
+          <span className="font-medium">Claim flow:</span> once a cycle finishes settlement, the
+          request keeps its settled cycle assignment and can be claimed on-chain at any time.
         </AlertDescription>
       </Alert>
     </div>

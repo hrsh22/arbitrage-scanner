@@ -39,6 +39,15 @@ async function triggerEventReconciliation(
   config: VaultInstanceConfig,
   eventType: string,
 ): Promise<void> {
+  if (config.vaultContractType === "closedBookBatchVault") {
+    logger.info("eventReconciliationSkipped", {
+      eventType,
+      vaultId: config.id,
+      reason: "custom_vaults_require_explicit_keeper_maintenance",
+    });
+    return;
+  }
+
   const vaultId = config.id;
   const vaultAddress = config.vaultAddress;
 
@@ -119,6 +128,33 @@ const CUSTOM_VAULT_NAV_ABI = [
   {
     type: "function",
     name: "currentNAV",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "lastNAVUpdate",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
+const CUSTOM_VAULT_TOTAL_QUEUED_ASSETS_ABI = [
+  {
+    type: "function",
+    name: "totalQueuedAssets",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
+const CUSTOM_VAULT_RESERVED_REDEMPTION_ASSETS_ABI = [
+  {
+    type: "function",
+    name: "reservedRedemptionAssets",
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],
@@ -284,6 +320,10 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<{
   let redeemableCostBasis = 0;
   let totalAssets = 0;
   let sharePrice = 1;
+  let lastUpdated = latestNav
+    ? new Date(String(latestNav.timestamp)).toISOString()
+    : new Date().toISOString();
+  let customStatusReadSucceeded = false;
 
   try {
     const networkConfig = getNetworkConfigFromEnv();
@@ -295,33 +335,77 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<{
     // For custom vaults, use boundary NAV from contract (excludes queued/reserved)
     if (config.type === "custom") {
       try {
-        // Read boundary NAV directly from contract - this excludes queued deposits
-        // and reserved redemption liabilities per the contract's NAV semantics
-        const currentNAV = await publicClient.readContract({
-          address: config.vaultAddress as Address,
-          abi: CUSTOM_VAULT_NAV_ABI,
-          functionName: "currentNAV",
-        });
+        const [
+          currentNAV,
+          lastNavUpdateRaw,
+          totalSupplyRaw,
+          vaultUsdcRaw,
+          safeUsdcRaw,
+          totalQueuedAssetsRaw,
+          reservedRedemptionAssetsRaw,
+        ] = await Promise.all([
+          publicClient.readContract({
+            address: config.vaultAddress as Address,
+            abi: CUSTOM_VAULT_NAV_ABI,
+            functionName: "currentNAV",
+          }),
+          publicClient.readContract({
+            address: config.vaultAddress as Address,
+            abi: CUSTOM_VAULT_NAV_ABI,
+            functionName: "lastNAVUpdate",
+          }),
+          publicClient.readContract({
+            address: config.vaultAddress as Address,
+            abi: VAULT_TOTAL_SUPPLY_ABI,
+            functionName: "totalSupply",
+          }),
+          publicClient.readContract({
+            address: USDC_E_ADDRESS as Address,
+            abi: ERC20_BALANCE_ABI,
+            functionName: "balanceOf",
+            args: [config.vaultAddress as Address],
+          }),
+          publicClient.readContract({
+            address: USDC_E_ADDRESS as Address,
+            abi: ERC20_BALANCE_ABI,
+            functionName: "balanceOf",
+            args: [config.safeAddress as Address],
+          }),
+          publicClient.readContract({
+            address: config.vaultAddress as Address,
+            abi: CUSTOM_VAULT_TOTAL_QUEUED_ASSETS_ABI,
+            functionName: "totalQueuedAssets",
+          }),
+          publicClient.readContract({
+            address: config.vaultAddress as Address,
+            abi: CUSTOM_VAULT_RESERVED_REDEMPTION_ASSETS_ABI,
+            functionName: "reservedRedemptionAssets",
+          }),
+        ]);
 
-        // currentNAV is in 18 decimals, represents assets per share
-        sharePrice = Number(formatUnits(currentNAV, 18));
-        
-        // Also read totalSupply for totalAssets calculation
-        const totalSupplyRaw = await publicClient.readContract({
-          address: config.vaultAddress as Address,
-          abi: VAULT_TOTAL_SUPPLY_ABI,
-          functionName: "totalSupply",
-        });
         const totalSupply = Number(formatUnits(totalSupplyRaw, VAULT_SHARE_DECIMALS));
-        
-        // Calculate totalAssets from boundary NAV and totalSupply
+        vaultUsdc = Number(formatUnits(vaultUsdcRaw, USDC_DECIMALS));
+        safeUsdc = Number(formatUnits(safeUsdcRaw, USDC_DECIMALS));
+        const totalQueuedAssets = Number(formatUnits(totalQueuedAssetsRaw, USDC_DECIMALS));
+        const reservedRedemptionAssets = Number(
+          formatUnits(reservedRedemptionAssetsRaw, USDC_DECIMALS),
+        );
+        const excludedAssets = totalQueuedAssets + reservedRedemptionAssets;
+        idleAssets = Math.max(vaultUsdc + safeUsdc - excludedAssets, 0);
+
+        sharePrice = Number(formatUnits(currentNAV, 18));
         totalAssets = totalSupply * sharePrice;
-        
+        lastUpdated = new Date(Number(lastNavUpdateRaw) * 1000).toISOString();
+        customStatusReadSucceeded = true;
+
         logger.debug("Vault API: Using boundary NAV for custom vault status", {
           vaultId: config.id,
           currentNAV: currentNAV.toString(),
           sharePrice,
           totalAssets,
+          vaultUsdc,
+          safeUsdc,
+          idleAssets,
         });
       } catch (error) {
         logger.warn("Vault API: Failed to read boundary NAV for custom vault, falling back", {
@@ -333,7 +417,7 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<{
     }
 
     // For legacy vaults OR if custom vault boundary NAV read failed
-    if (config.type !== "custom" || totalAssets === 0) {
+    if (config.type !== "custom" || !customStatusReadSucceeded) {
       const [vaultUsdcRaw, safeUsdcRaw, totalSupplyRaw] = await Promise.all([
         publicClient.readContract({
           address: USDC_E_ADDRESS as Address,
@@ -366,7 +450,7 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<{
       );
       totalAssets = idleAssets + deployedCostBasis;
       sharePrice = totalSupply > 0 ? totalAssets / totalSupply : 1;
-      
+
       logger.debug("Vault API: Using raw ratio for legacy vault status", {
         vaultId: config.id,
         totalAssets,
@@ -382,7 +466,7 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<{
   }
 
   // Fallback to NAV snapshot if on-chain reads failed
-  if (totalAssets <= 0 && latestTotalAssets > 0) {
+  if (!customStatusReadSucceeded && totalAssets <= 0 && latestTotalAssets > 0) {
     totalAssets = latestTotalAssets;
     idleAssets = latestIdleAssets;
     deployedCostBasis = latestDeployed;
@@ -408,9 +492,7 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<{
       sharePrice,
       positionCount: openPositions.length,
       redeemableCount: redeemablePositions.length,
-      lastUpdated: latestNav
-        ? new Date(String(latestNav.timestamp)).toISOString()
-        : new Date().toISOString(),
+      lastUpdated,
     },
     positionCount: openPositions.length,
     deployedRatio,
@@ -1102,7 +1184,7 @@ export function buildVaultRouter(): Router {
         const totalAssets = Number(formatUnits(totalAssetsRaw, USDC_DECIMALS));
         const totalSupply = Number(formatUnits(totalSupplyRaw, VAULT_SHARE_DECIMALS));
         sharePrice = totalSupply > 0 ? totalAssets / totalSupply : 1;
-        
+
         logger.debug("estimateRedeemAssets: Using raw ratio (legacy vault)", {
           vaultAddress,
           totalAssets,

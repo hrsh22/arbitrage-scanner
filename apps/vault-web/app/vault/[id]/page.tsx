@@ -1,7 +1,23 @@
+import type { Metadata } from "next";
+
 import VaultDetailPage from "./vault-detail";
 
 interface VaultInstancesStaticResponse {
   instances?: Array<{ id: number }>;
+}
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}): Promise<Metadata> {
+  const { id } = await params;
+
+  return {
+    title: `Vault ${id} | Polymarket Vault`,
+    description:
+      "Follow the current cycle, deposit queue, exits, and settlement state for this vault.",
+  };
 }
 
 export async function generateStaticParams() {

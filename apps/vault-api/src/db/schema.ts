@@ -48,12 +48,21 @@ export const tradeStatusEnum = pgEnum("trade_status", [
 
 // Enum: Withdrawal request status
 export const withdrawalStatusEnum = pgEnum("withdrawal_status", [
-  "pending",
-  "ready",
-  "completed",
-  "cancelled",
-  "expired",
+  "pending",    // Legacy Morpho: request pending
+  "ready",      // Legacy Morpho: ready for claim
+  "completed",  // Legacy Morpho: claim completed
+  "cancelled",  // Legacy Morpho: request cancelled
+  "expired",    // Legacy Morpho: request expired
+  // Closed-book batch states (truthful semantics for custom vaults)
+  "open",       // Batch accepting requests (cancellable)
+  "cutoff",     // Batch sealed, no more requests
+  "flattening", // Positions being flattened
+  "settling",   // Calculating entitlements
+  "settled",    // Ready for claims
+  "claimed",    // User has claimed assets
+  "closed",     // Batch complete
 ]);
+
 
 /**
  * vault_config - Vault deployment configuration
@@ -185,7 +194,14 @@ export const vaultTrades = pgTable(
  * Users who cannot instantly redeem are queued here.
  * Worker processes queue, deallocates from Safe when needed,
  * and marks requests "ready" when vault has enough liquidity.
+ *
+ * CLOSED-BOOK BATCH SEMANTICS:
+ * - For legacy Morpho vaults: uses pending/ready/completed flow
+ * - For custom closed-book vaults: uses open/cutoff/flattening/settling/settled/claimed flow
+ * - batchId links withdrawal to a specific settlement batch
+ * - onchainRequestId links to the on-chain redemption request
  */
+
 export const withdrawalRequests = pgTable(
   "withdrawal_requests",
   {
@@ -195,8 +211,13 @@ export const withdrawalRequests = pgTable(
     userAddress: text("user_address").notNull(),
     shares: numeric("shares", { precision: 30, scale: 18 }).notNull(),
     assetsEstimated: numeric("assets_estimated", { precision: 20, scale: 6 }).notNull(),
-    estimateHistory: text("estimate_history"), // JSON array of EstimateUpdate entries
+    estimateHistory: text("estimate_history"), // JSON array of EstimateUpdate entries (legacy)
     status: withdrawalStatusEnum("status").notNull().default("pending"),
+    // Closed-book batch vault fields (for sealed processing)
+    withdrawalType: text("withdrawal_type").default("instant"), // "instant" | "batch"
+    batchId: text("batch_id"), // References batch/epoch for closed-book vaults
+    onchainRequestId: text("onchain_request_id"), // On-chain request ID from custom vault
+    // Timestamps
     requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
     readyAt: timestamp("ready_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),

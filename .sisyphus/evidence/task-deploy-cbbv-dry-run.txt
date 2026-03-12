@@ -1,0 +1,30 @@
+Closed Book Batch Vault Deployment Evidence
+===========================================
+
+Run ID: deploy-cbbv-staging-2026-03-11T19-30-13-360Z
+Profile: staging
+Verdict: dry-run
+Duration: 998ms
+Timestamp: 2026-03-11T19:30:14.359Z
+
+Deployment Result:
+  Mode: DRY RUN
+  Would-be Address: 0x66e665a6B8898920e76f263eAa729afd716c1470
+  Nonce: 26
+
+Deployment Parameters:
+  Asset: 0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582
+  Admin: 0xB78721b29c028B16ab25f4a2adE1d25fbf8B2d74
+  Settler: 0xB78721b29c028B16ab25f4a2adE1d25fbf8B2d74
+  NAV Updater: 0xB78721b29c028B16ab25f4a2adE1d25fbf8B2d74
+  Snapshotter: 0xB78721b29c028B16ab25f4a2adE1d25fbf8B2d74
+  Deposit Processor: 0xB78721b29c028B16ab25f4a2adE1d25fbf8B2d74
+  Fee Recipient: 0x5991fd6Ecc5634C4de497b47Eb0Aa0065fffb214
+  Epoch Duration: 3600 seconds
+  NAV Staleness Threshold: 3600 seconds
+
+Steps:
+  setup: success
+  config: success
+  bytecode: success
+  deploy: dry-run

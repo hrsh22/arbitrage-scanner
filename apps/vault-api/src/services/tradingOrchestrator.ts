@@ -27,6 +27,7 @@ import { isValidOpportunity, calculatePPH, calculateExpectedProfit } from "./str
 import type { TradeRequest, VaultStatus } from "../types.js";
 import { withdrawalRepository } from "../repositories/withdrawalRepository.js";
 import { getVaultProvider } from "./vaultProviderFactory.js";
+import { FlatnessDetector, type FlatnessCheckResult } from "./flatnessDetector.js";
 
 const USDC_DECIMALS = 1_000_000;
 const DEFAULT_MAX_DEPLOYED_RATIO = 0.25;
@@ -35,6 +36,66 @@ const EVENT_BATCH_SIZE = 100;
 const DEFAULT_MARKET_SOON_CLOSING_LIMIT = 100;
 const DEFAULT_MARKET_MAX_EVENTS = 1000;
 const MARKET_FETCH_TIMEOUT_MS = 15_000;
+
+// ============================================================================
+// Emergency Pause & Starvation Policy Constants (T5)
+// ============================================================================
+
+/** Maximum time allowed for flattening attempt before forced-unwind triggers (ms)
+ *  Default: 1 hour - if book cannot be flattened within this window, starvation
+ *  protocol engages forced-unwind with slippage caps
+ */
+export const MAX_FLATTENING_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+/** Maximum slippage allowed for forced-unwind before emergency pause triggers
+ *  Default: 5% - if unwind would incur >5% slippage, pause instead of unsafe unwind
+ */
+export const DEFAULT_FORCE_UNWIND_SLIPPAGE_CAP = 0.05; // 5%
+
+/** Maximum consecutive slippage breaches before emergency pause triggers */
+export const MAX_SLIPPAGE_BREACH_COUNT = 3;
+
+/** Vault operational states for starvation/emergency handling */
+export type VaultOperationalState = 
+  | "normal"           // Normal trading operations
+  | "flattening"       // Book flattening in progress
+  | "forced_unwind"    // Forced unwind due to timeout
+  | "emergency_paused" // Emergency pause - manual recovery required
+  | "settling"         // Settlement in progress
+  | "settled";         // Settlement complete, vault flat
+
+/** Flattening attempt tracking */
+export interface FlatteningAttempt {
+  vaultId: number;
+  startedAt: Date;
+  expectedDeadline: Date;
+  status: "in_progress" | "timeout" | "completed" | "failed";
+  blockingConditions: string[];
+  timeoutTriggered: boolean;
+  slippageBreaches: number;
+  lastSlippagePercent: number;
+}
+
+/** Emergency pause state */
+export interface EmergencyPauseState {
+  isPaused: boolean;
+  pausedAt: Date | null;
+  reason: string | null;
+  triggeredBy: "timeout" | "slippage" | "operator" | "system" | null;
+  recoveryAction?: string;
+}
+
+/** Vault policy configuration for timeout/slippage/emergency handling */
+export interface VaultPolicyConfig {
+  /** Maximum flattening window in milliseconds */
+  maxFlatteningWindowMs: number;
+  /** Slippage cap for forced unwind (0.05 = 5%) */
+  forceUnwindSlippageCap: number;
+  /** Maximum consecutive slippage breaches before emergency pause */
+  maxSlippageBreachCount: number;
+  /** Whether to allow operator override of emergency pause */
+  allowOperatorOverride: boolean;
+}
 
 interface GammaToken {
   token_id?: string;
@@ -166,6 +227,21 @@ export class TradingOrchestratorService {
   private safeWalletService: SafeWalletService | null = null;
   private lastScanAt: Date | undefined;
 
+  // ============================================================================
+  // Starvation Policy & Emergency Pause State (T5)
+  // ============================================================================
+
+  private vaultOperationalState: VaultOperationalState = "normal";
+  private currentFlatteningAttempt: FlatteningAttempt | null = null;
+  private emergencyPauseState: EmergencyPauseState = {
+    isPaused: false,
+    pausedAt: null,
+    reason: null,
+    triggeredBy: null,
+  };
+  private readonly vaultPolicyConfig: VaultPolicyConfig;
+  private settlementInProgress: boolean = false;
+
   constructor(
     config?: VaultInstanceConfig,
     tradingClient: VaultTradingClient = getVaultTradingClient(),
@@ -207,6 +283,12 @@ export class TradingOrchestratorService {
       this.marketFetchConfig = {
         maxEvents: config.marketFetchMaxEvents,
       };
+      this.vaultPolicyConfig = {
+        maxFlatteningWindowMs: config.maxFlatteningWindowMs ?? MAX_FLATTENING_WINDOW_MS,
+        forceUnwindSlippageCap: config.forceUnwindSlippageCap ?? DEFAULT_FORCE_UNWIND_SLIPPAGE_CAP,
+        maxSlippageBreachCount: config.maxSlippageBreachCount ?? MAX_SLIPPAGE_BREACH_COUNT,
+        allowOperatorOverride: config.allowOperatorOverride ?? process.env.VAULT_ALLOW_OPERATOR_OVERRIDE === "true",
+      };
     } else {
       // Legacy: env-var fallbacks for backward compatibility
       this.minOdds = this.numberFromEnv("VAULT_MIN_ODDS", 0.95);
@@ -225,8 +307,14 @@ export class TradingOrchestratorService {
       this.marketFetchConfig = {
         maxEvents: DEFAULT_MARKET_MAX_EVENTS,
       };
-    }
+      this.vaultPolicyConfig = {
+        maxFlatteningWindowMs: MAX_FLATTENING_WINDOW_MS,
+        forceUnwindSlippageCap: DEFAULT_FORCE_UNWIND_SLIPPAGE_CAP,
+        maxSlippageBreachCount: MAX_SLIPPAGE_BREACH_COUNT,
+        allowOperatorOverride: process.env.VAULT_ALLOW_OPERATOR_OVERRIDE === "true",
+      };
   }
+}
 
   async scanAndEvaluate(markets: GammaMarket[]): Promise<TradeCandidate[]> {
     const status = await this.getVaultStatus();
@@ -549,6 +637,16 @@ export class TradingOrchestratorService {
         reason: breaker.reason,
         todayRealizedPnl: breaker.todayRealizedPnl,
         openPositions: breaker.openPositions,
+      });
+      return [];
+    }
+    // Check vault operational state (T6: close-on-flat gating)
+    const tradeCheck = this.canTrade();
+    if (!tradeCheck.allowed) {
+      logger.warn("TradingOrchestrator: scan skipped - trading halted", {
+        vaultId: this.vaultConfig?.id,
+        operationalState: this.vaultOperationalState,
+        reason: tradeCheck.reason,
       });
       return [];
     }
@@ -909,6 +1007,599 @@ export class TradingOrchestratorService {
     if (!raw) return fallback;
     const parsed = Number.parseInt(raw, 10);
     return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  // ============================================================================
+  // Flatness Checks
+  // ============================================================================
+
+  /**
+   * Check if the vault is in a "flat" state - ready for settlement.
+   *
+   * A vault is considered flat when all five conditions are met:
+   * 1. Zero open Polymarket positions
+   * 2. Zero resting orders on CLOB
+   * 3. deployedCapital == 0
+   * 4. Zero non-dust CTF token balances
+   * 5. Successful reconciliation pass
+   */
+  async checkFlatness(): Promise<FlatnessCheckResult> {
+    if (!this.vaultConfig) {
+      throw new Error("TradingOrchestrator: vaultConfig is required for flatness check");
+    }
+
+    const flatnessDetector = new FlatnessDetector();
+    const tradingSafeAddress = this.vaultConfig.tradingSafeAddress ?? this.vaultConfig.safeAddress;
+    return flatnessDetector.checkFlatness(this.vaultConfig, tradingSafeAddress);
+  }
+
+  /**
+   * Quick check if vault is flat (returns boolean only).
+   */
+  async isFlat(): Promise<boolean> {
+    const result = await this.checkFlatness();
+    return result.isFlat;
+  }
+
+  /**
+   * Check if vault is NOT flat and return blocking conditions.
+   * Useful for pre-trade checks to avoid trading when settlement is pending.
+   */
+  async getFlatnessBlockingConditions(): Promise<string[]> {
+    const result = await this.checkFlatness();
+    return result.blockingConditions;
+  }
+
+  // ============================================================================
+  // Close-on-Flat Automation (T6)
+  // ============================================================================
+
+  /**
+   * Cancel all resting orders on the CLOB.
+   *
+   * This is a critical step before settlement - all open orders must be
+   * cancelled to achieve flatness condition #2 (zero resting orders).
+   *
+   * @returns Result of cancellation attempt
+   */
+  async cancelAllRestingOrders(): Promise<{ success: boolean; cancelledCount: number; error?: string }> {
+    if (!this.tradingClient.isInitialized()) {
+      await this.tradingClient.initialize();
+    }
+
+    try {
+      const result = await this.tradingClient.cancelAllOrders();
+
+      if (result.success) {
+        logger.info("TradingOrchestrator: All resting orders cancelled", {
+          vaultId: this.vaultConfig?.id,
+        });
+        return { success: true, cancelledCount: 0 }; // CLOB client doesn't return count
+      } else {
+        logger.error("TradingOrchestrator: Failed to cancel resting orders", {
+          vaultId: this.vaultConfig?.id,
+          error: result.error,
+        });
+        return { success: false, cancelledCount: 0, error: result.error };
+      }
+    } catch (error) {
+      const errorMsg = (error as Error).message;
+      logger.error("TradingOrchestrator: Exception cancelling resting orders", {
+        vaultId: this.vaultConfig?.id,
+        error: errorMsg,
+      });
+      return { success: false, cancelledCount: 0, error: errorMsg };
+    }
+  }
+
+  /**
+   * Check if trading should be halted due to batch state.
+   *
+   * Trading is halted when:
+   * - Emergency pause is active
+   * - Settlement is in progress
+   * - Flattening is in progress (not timed out)
+   * - Forced unwind is in progress
+   *
+   * @returns Object with allowed flag and reason if blocked
+   */
+  canTrade(): { allowed: boolean; reason?: string } {
+    // Reuse canReopen logic which covers the same conditions
+    return this.canReopen();
+  }
+
+  /**
+   * Initiate the close-on-flat sequence when a batch is sealed.
+   *
+   * This method:
+   * 1. Transitions vault to 'flattening' state
+   * 2. Cancels all resting orders
+   * 3. Begins monitoring for flatness
+   * 4. Will trigger settlement only after flatness is achieved
+   *
+   * @returns Result of initiation
+   */
+  async initiateCloseOnFlat(): Promise<{
+    success: boolean;
+    ordersCancelled: boolean;
+    flatnessCheck: FlatnessCheckResult | null;
+    error?: string;
+  }> {
+    if (!this.vaultConfig) {
+      return {
+        success: false,
+        ordersCancelled: false,
+        flatnessCheck: null,
+        error: "Vault config required for close-on-flat",
+      };
+    }
+
+    logger.info("TradingOrchestrator: Initiating close-on-flat sequence", {
+      vaultId: this.vaultConfig.id,
+      currentState: this.vaultOperationalState,
+    });
+
+    // Step 1: Start flattening attempt (sets state to 'flattening')
+    this.startFlatteningAttempt();
+
+    // Step 2: Cancel all resting orders immediately
+    const cancelResult = await this.cancelAllRestingOrders();
+    if (!cancelResult.success) {
+      logger.error("TradingOrchestrator: Failed to cancel orders during close-on-flat", {
+        vaultId: this.vaultConfig.id,
+        error: cancelResult.error,
+      });
+      // Continue with flatness check even if cancellation fails -
+      // it may be a transient error or there may be no orders
+    }
+
+    // Step 3: Check flatness
+    const flatnessCheck = await this.checkFlatness();
+
+    // Step 4: Update flattening progress with current blocking conditions
+    if (!flatnessCheck.isFlat) {
+      this.updateFlatteningProgress(flatnessCheck.blockingConditions);
+      logger.info("TradingOrchestrator: Vault not yet flat, flattening in progress", {
+        vaultId: this.vaultConfig.id,
+        blockingConditions: flatnessCheck.blockingConditions,
+      });
+    } else {
+      this.completeFlattening();
+      logger.info("TradingOrchestrator: Vault is already flat", {
+        vaultId: this.vaultConfig.id,
+      });
+    }
+
+    return {
+      success: true,
+      ordersCancelled: cancelResult.success,
+      flatnessCheck,
+    };
+  }
+
+  /**
+   * Check if settlement can proceed.
+   *
+   * Settlement is gated by:
+   * 1. Vault must be in 'flattening' or 'forced_unwind' state (close-on-flat initiated)
+   * 2. All five flatness conditions must pass
+   * 3. No emergency pause active
+   * 4. No settlement already in progress
+   *
+   * This prevents settlement from front-running the flatness check.
+   *
+   * @returns Object with allowed flag and details
+   */
+  async canProceedWithSettlement(): Promise<{
+    allowed: boolean;
+    reason?: string;
+    flatnessCheck?: FlatnessCheckResult;
+  }> {
+    if (!this.vaultConfig) {
+      return { allowed: false, reason: "Vault config required" };
+    }
+
+    // Check emergency pause
+    if (this.emergencyPauseState.isPaused) {
+      return {
+        allowed: false,
+        reason: `Emergency pause active: ${this.emergencyPauseState.reason}`,
+      };
+    }
+
+    // Check if settlement already in progress
+    if (this.settlementInProgress) {
+      return { allowed: false, reason: "Settlement already in progress" };
+    }
+
+    // Check if close-on-flat has been initiated
+    const validStatesForSettlement: VaultOperationalState[] = [
+      "flattening",
+      "forced_unwind",
+    ];
+    if (!validStatesForSettlement.includes(this.vaultOperationalState)) {
+      return {
+        allowed: false,
+        reason: `Invalid state for settlement: ${this.vaultOperationalState}. Must be in 'flattening' or 'forced_unwind' state.`,
+      };
+    }
+
+    // Perform fresh flatness check
+    const flatnessCheck = await this.checkFlatness();
+
+    if (!flatnessCheck.isFlat) {
+      return {
+        allowed: false,
+        reason: `Flatness check failed: ${flatnessCheck.blockingConditions.join(", ")}`,
+        flatnessCheck,
+      };
+    }
+
+    return { allowed: true, flatnessCheck };
+  }
+
+  /**
+   * Poll for flatness with timeout.
+   *
+   * Used during the flattening phase to wait for positions to be closed
+   * and capital to be recalled. Implements the starvation policy from T5.
+   *
+   * @param maxWaitMs Maximum time to wait for flatness
+   * @param pollIntervalMs Interval between checks
+   * @returns Result with flatness status
+   */
+  async waitForFlatness(
+    maxWaitMs: number = this.vaultPolicyConfig.maxFlatteningWindowMs,
+    pollIntervalMs: number = 5000,
+  ): Promise<{
+    success: boolean;
+    flatnessCheck: FlatnessCheckResult | null;
+    timedOut: boolean;
+  }> {
+    const startTime = Date.now();
+    const deadline = startTime + maxWaitMs;
+
+    logger.info("TradingOrchestrator: Waiting for flatness", {
+      vaultId: this.vaultConfig?.id,
+      maxWaitMs,
+      pollIntervalMs,
+    });
+
+    while (Date.now() < deadline) {
+      const flatnessCheck = await this.checkFlatness();
+
+      if (flatnessCheck.isFlat) {
+        logger.info("TradingOrchestrator: Flatness achieved", {
+          vaultId: this.vaultConfig?.id,
+          elapsedMs: Date.now() - startTime,
+        });
+        return { success: true, flatnessCheck, timedOut: false };
+      }
+
+      // Update flattening progress
+      this.updateFlatteningProgress(flatnessCheck.blockingConditions);
+
+      // Check for timeout (starvation)
+      if (this.hasFlatteningTimeout()) {
+        logger.warn("TradingOrchestrator: Flattening timeout detected", {
+          vaultId: this.vaultConfig?.id,
+          elapsedMs: Date.now() - startTime,
+        });
+        return { success: false, flatnessCheck, timedOut: true };
+      }
+
+      // Wait before next check
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    }
+
+    logger.warn("TradingOrchestrator: Wait for flatness timed out", {
+      vaultId: this.vaultConfig?.id,
+      maxWaitMs,
+    });
+
+    return { success: false, flatnessCheck: null, timedOut: true };
+  }
+
+  // ============================================================================
+  // Starvation Policy & Emergency Pause Methods (T5)
+  // ============================================================================
+  // Starvation Policy & Emergency Pause Methods (T5)
+  // ============================================================================
+
+  /**
+   * Get the current vault operational state.
+   *
+   * This provides machine-readable status for monitoring and gating decisions.
+   */
+  getVaultOperationalState(): VaultOperationalState {
+    return this.vaultOperationalState;
+  }
+
+  /**
+   * Check if the vault is currently in emergency pause state.
+   */
+  isEmergencyPaused(): boolean {
+    return this.emergencyPauseState.isPaused;
+  }
+
+  /**
+   * Get the current emergency pause state with details.
+   */
+  getEmergencyPauseState(): EmergencyPauseState {
+    return { ...this.emergencyPauseState };
+  }
+
+  /**
+   * Get the current flattening attempt, if any.
+   */
+  getCurrentFlatteningAttempt(): FlatteningAttempt | null {
+    return this.currentFlatteningAttempt ? { ...this.currentFlatteningAttempt } : null;
+  }
+
+  /**
+   * Start a flattening attempt with timeout tracking.
+   *
+   * This initiates the starvation protocol - if flattening exceeds
+   * MAX_FLATTENING_WINDOW_MS, forced-unwind mode is triggered.
+   */
+  startFlatteningAttempt(): FlatteningAttempt {
+    if (!this.vaultConfig) {
+      throw new Error("TradingOrchestrator: vaultConfig is required to start flattening");
+    }
+
+    const now = new Date();
+    const deadline = new Date(now.getTime() + this.vaultPolicyConfig.maxFlatteningWindowMs);
+
+    this.currentFlatteningAttempt = {
+      vaultId: this.vaultConfig.id,
+      startedAt: now,
+      expectedDeadline: deadline,
+      status: "in_progress",
+      blockingConditions: [],
+      timeoutTriggered: false,
+      slippageBreaches: 0,
+      lastSlippagePercent: 0,
+    };
+
+    this.vaultOperationalState = "flattening";
+
+    logger.info("TradingOrchestrator: Flattening attempt started", {
+      vaultId: this.vaultConfig.id,
+      startedAt: now.toISOString(),
+      expectedDeadline: deadline.toISOString(),
+      maxFlatteningWindowMs: this.vaultPolicyConfig.maxFlatteningWindowMs,
+    });
+
+    return { ...this.currentFlatteningAttempt };
+  }
+
+  /**
+   * Update flattening attempt with current blocking conditions.
+   */
+  updateFlatteningProgress(blockingConditions: string[]): void {
+    if (!this.currentFlatteningAttempt) {
+      return;
+    }
+
+    this.currentFlatteningAttempt.blockingConditions = blockingConditions;
+
+    // Check for timeout
+    const now = new Date();
+    if (now > this.currentFlatteningAttempt.expectedDeadline && !this.currentFlatteningAttempt.timeoutTriggered) {
+      this.currentFlatteningAttempt.timeoutTriggered = true;
+      this.currentFlatteningAttempt.status = "timeout";
+
+      logger.warn("TradingOrchestrator: Flattening timeout triggered - starvation detected", {
+        vaultId: this.vaultConfig?.id,
+        startedAt: this.currentFlatteningAttempt.startedAt.toISOString(),
+        expectedDeadline: this.currentFlatteningAttempt.expectedDeadline.toISOString(),
+        blockingConditions,
+      });
+
+      // Transition to forced_unwind state
+      this.vaultOperationalState = "forced_unwind";
+    }
+  }
+
+  /**
+   * Record a slippage breach during forced unwind.
+   *
+   * Returns true if the breach count exceeds the threshold (emergency pause should trigger).
+   */
+  recordSlippageBreach(slippagePercent: number): boolean {
+    if (!this.currentFlatteningAttempt) {
+      return false;
+    }
+
+    this.currentFlatteningAttempt.slippageBreaches++;
+    this.currentFlatteningAttempt.lastSlippagePercent = slippagePercent;
+
+    const shouldEmergencyPause =
+      this.currentFlatteningAttempt.slippageBreaches >= this.vaultPolicyConfig.maxSlippageBreachCount ||
+      slippagePercent > this.vaultPolicyConfig.forceUnwindSlippageCap;
+
+    logger.warn("TradingOrchestrator: Slippage breach recorded", {
+      vaultId: this.vaultConfig?.id,
+      slippagePercent: `${(slippagePercent * 100).toFixed(2)}%`,
+      breachCount: this.currentFlatteningAttempt.slippageBreaches,
+      maxBreaches: this.vaultPolicyConfig.maxSlippageBreachCount,
+      slippageCap: `${(this.vaultPolicyConfig.forceUnwindSlippageCap * 100).toFixed(2)}%`,
+      shouldEmergencyPause,
+    });
+
+    if (shouldEmergencyPause) {
+      this.triggerEmergencyPause("slippage", `Slippage breach: ${(slippagePercent * 100).toFixed(2)}% exceeds cap`);
+    }
+
+    return shouldEmergencyPause;
+  }
+
+  /**
+   * Trigger emergency pause.
+   *
+   * Once triggered, reopen is blocked until manual recovery action is taken.
+   */
+  triggerEmergencyPause(
+    triggeredBy: "timeout" | "slippage" | "operator" | "system",
+    reason: string,
+  ): void {
+    this.emergencyPauseState = {
+      isPaused: true,
+      pausedAt: new Date(),
+      reason,
+      triggeredBy,
+      recoveryAction: "Manual operator intervention required. Review blocking conditions and take recovery action.",
+    };
+
+    this.vaultOperationalState = "emergency_paused";
+
+    logger.error("TradingOrchestrator: EMERGENCY PAUSE TRIGGERED", {
+      vaultId: this.vaultConfig?.id,
+      triggeredBy,
+      reason,
+      pausedAt: this.emergencyPauseState.pausedAt?.toISOString(),
+    });
+  }
+
+  /**
+   * Clear emergency pause (operator recovery action).
+   *
+   * Requires explicit operator action. Can only be called if:
+   * - Operator override is enabled, OR
+   * - The vault is confirmed to be in a safe state
+   */
+  async clearEmergencyPause(operatorId: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.emergencyPauseState.isPaused) {
+      return { success: false, error: "Vault is not in emergency pause state" };
+    }
+
+    // Verify operator override is allowed
+    if (!this.vaultPolicyConfig.allowOperatorOverride) {
+      // Even without override, we allow clearing if vault is flat
+      const isCurrentlyFlat = await this.isFlat();
+      if (!isCurrentlyFlat) {
+        return {
+          success: false,
+          error: "Operator override disabled and vault is not flat. Cannot clear emergency pause.",
+        };
+      }
+    }
+
+    // Clear the pause
+    this.emergencyPauseState = {
+      isPaused: false,
+      pausedAt: null,
+      reason: null,
+      triggeredBy: null,
+    };
+
+    this.vaultOperationalState = "normal";
+    this.currentFlatteningAttempt = null;
+
+    logger.info("TradingOrchestrator: Emergency pause cleared by operator", {
+      vaultId: this.vaultConfig?.id,
+      operatorId,
+      clearedAt: new Date().toISOString(),
+    });
+
+    return { success: true };
+  }
+
+  /**
+   * Check if reopen (trading) is currently allowed.
+   *
+   * Reopen is blocked if:
+   * - Emergency pause is active
+   * - Flattening is in progress and not timed out
+   * - Settlement is in progress
+   */
+  canReopen(): { allowed: boolean; reason?: string } {
+    // Emergency pause blocks everything
+    if (this.emergencyPauseState.isPaused) {
+      return {
+        allowed: false,
+        reason: `Emergency pause active: ${this.emergencyPauseState.reason}`,
+      };
+    }
+
+    // Flattening in progress blocks reopen
+    if (this.vaultOperationalState === "flattening" && this.currentFlatteningAttempt) {
+      if (this.currentFlatteningAttempt.status === "in_progress") {
+        return {
+          allowed: false,
+          reason: `Flattening in progress since ${this.currentFlatteningAttempt.startedAt.toISOString()}`,
+        };
+      }
+    }
+
+    // Settlement in progress blocks reopen
+    if (this.settlementInProgress) {
+      return { allowed: false, reason: "Settlement in progress" };
+    }
+
+    // Forced_unwind state requires explicit state change before reopen
+    if (this.vaultOperationalState === "forced_unwind") {
+      return { allowed: false, reason: "Forced unwind in progress - must complete or clear emergency state" };
+    }
+
+    return { allowed: true };
+  }
+
+  /**
+   * Check if the flattening attempt has timed out (starvation detected).
+   */
+  hasFlatteningTimeout(): boolean {
+    if (!this.currentFlatteningAttempt) {
+      return false;
+    }
+    return this.currentFlatteningAttempt.timeoutTriggered;
+  }
+
+  /**
+   * Mark settlement as started.
+   *
+   * This blocks reopen until settlement completes or fails.
+   */
+  startSettlement(): void {
+    this.settlementInProgress = true;
+    this.vaultOperationalState = "settling";
+
+    logger.info("TradingOrchestrator: Settlement started", {
+      vaultId: this.vaultConfig?.id,
+    });
+  }
+
+  /**
+   * Mark settlement as completed.
+   */
+  completeSettlement(): void {
+    this.settlementInProgress = false;
+    this.vaultOperationalState = "settled";
+    this.currentFlatteningAttempt = null;
+
+    logger.info("TradingOrchestrator: Settlement completed", {
+      vaultId: this.vaultConfig?.id,
+    });
+  }
+
+  /**
+   * Complete flattening attempt successfully.
+   */
+  completeFlattening(): void {
+    if (this.currentFlatteningAttempt) {
+      this.currentFlatteningAttempt.status = "completed";
+    }
+
+    logger.info("TradingOrchestrator: Flattening completed successfully", {
+      vaultId: this.vaultConfig?.id,
+    });
+  }
+
+  /**
+   * Get the current vault policy configuration.
+   */
+  getVaultPolicyConfig(): VaultPolicyConfig {
+    return { ...this.vaultPolicyConfig };
   }
 }
 

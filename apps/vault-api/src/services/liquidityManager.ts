@@ -1,3 +1,19 @@
+/**
+ * Liquidity Manager - Vault Liquidity and Settlement Coordination
+ *
+ * Manages vault liquidity operations including:
+ * - Reconciliation between vault and trading safe balances
+ * - Settlement readiness checks with flatness gating (T6)
+ * - Order cancellation before settlement (T6)
+ * - Capital recall/deploy operations
+ *
+ * CLOSE-ON-FLAT AUTOMATION (T6):
+ * - Settlement is gated by flatness verification
+ * - All resting orders are cancelled before settlement attempt
+ * - Settlement cannot proceed until vault is confirmed flat
+ * - Uses TradingOrchestrator for flatness detection and order management
+ */
+
 import { createPublicClient, type Address } from "viem";
 
 import type { VaultInstanceConfig } from "../config/types.js";
@@ -15,6 +31,10 @@ import { getNetworkConfigFromEnv } from "../config/network.js";
 import type { ReconciliationResult } from "../types.js";
 import type { IVaultProvider } from "./vaultProvider.js";
 import { getVaultProvider } from "./vaultProviderFactory.js";
+import { FlatnessDetector, type FlatnessCheckResult } from "./flatnessDetector.js";
+import { createVaultTradingClient } from "./tradingClient.js";
+import { resolveVaultIdentity } from "../config/identityResolver.js";
+import { createTradingOrchestrator } from "./tradingOrchestrator.js";
 
 const USDC_DECIMALS = 6;
 
@@ -78,23 +98,27 @@ export class LiquidityManager {
 
     try {
       const vaultInfo = await this.provider.getVaultInfo();
-      const epochInfo = vaultInfo.epochInfo;
+      const batchInfo = vaultInfo.batchInfo;
 
-      if (!epochInfo) {
-        throw new Error("Custom vault missing epoch info");
-      }
-
-      const [vaultBalance, safeBalance, pendingWithdrawals] = await Promise.all([
+      const [vaultBalance, safeBalance] = await Promise.all([
         this.getUsdcBalance(this.vaultAddress),
         this.getUsdcBalance(this.safeAddress),
-        this.withdrawalRepo.getPendingRequests(this.vaultAddress),
       ]);
-      const pendingWithdrawalLiability = pendingWithdrawals.reduce(
-        (sum, request) =>
-          sum +
-          BigInt(Math.max(0, Math.round(Number(request.assetsEstimated) * 10 ** USDC_DECIMALS))),
-        0n,
-      );
+      const pendingWithdrawals =
+        this.provider.providerType === "custom"
+          ? []
+          : await this.withdrawalRepo.getPendingRequests(this.vaultAddress);
+      const pendingWithdrawalLiability =
+        this.provider.providerType === "custom"
+          ? await this.provider.estimatePendingWithdrawalLiability(batchInfo?.currentBatchId)
+          : pendingWithdrawals.reduce(
+              (sum, request) =>
+                sum +
+                BigInt(
+                  Math.max(0, Math.round(Number(request.assetsEstimated) * 10 ** USDC_DECIMALS)),
+                ),
+              0n,
+            );
       const safeBalanceUsdc = Number(safeBalance) / 10 ** USDC_DECIMALS;
       const vaultBalanceUsdc = Number(vaultBalance) / 10 ** USDC_DECIMALS;
 
@@ -145,8 +169,8 @@ export class LiquidityManager {
               ? Number(rebalanceResult.amount) / 10 ** USDC_DECIMALS
               : undefined,
           details: rebalanceDetails
-            ? `${rebalanceDetails} Settlement not ready. Next settlement: ${epochInfo.nextSettlementTime.toISOString()}`
-            : `Settlement not ready. Next settlement: ${epochInfo.nextSettlementTime.toISOString()}`,
+            ? `${rebalanceDetails} Settlement not ready. Current batch: ${batchInfo?.currentBatchId ?? "unknown"}`
+            : `Settlement not ready. Current batch: ${batchInfo?.currentBatchId ?? "unknown"}`,
         };
       }
 
@@ -213,6 +237,14 @@ export class LiquidityManager {
     }
   }
 
+  async hasActionableBatchWork(): Promise<boolean> {
+    return this.provider.hasActionableBatchWork();
+  }
+
+  async needsNavRefreshForActionableWork(): Promise<boolean> {
+    return this.provider.needsNavRefreshForActionableWork();
+  }
+
   async getSettlementReadiness(): Promise<{
     ready: boolean;
     reason?: string;
@@ -222,34 +254,26 @@ export class LiquidityManager {
   }> {
     try {
       const vaultInfo = await this.provider.getVaultInfo();
-      const epochInfo = vaultInfo.epochInfo;
-
-      if (!epochInfo) {
-        return {
-          ready: false,
-          reason: "No epoch info available",
-          navFresh: !vaultInfo.navIsStale,
-          epochEnded: false,
-        };
-      }
+      const batchInfo = vaultInfo.batchInfo;
+      const providerReady = await this.provider.isSettlementReady();
 
       const navFresh = !vaultInfo.navIsStale;
-      const epochEnded = new Date() >= epochInfo.currentEpochEnd;
-      const ready = navFresh && epochEnded;
+      const currentBatchStatus = batchInfo?.currentBatchStatus ?? "open";
+      const ready = navFresh && providerReady;
 
       let reason: string | undefined;
       if (!ready) {
         reason = !navFresh
           ? "NAV is stale"
-          : `Epoch ends at ${epochInfo.currentEpochEnd.toISOString()}`;
+          : `No actionable settlement work for batch state ${currentBatchStatus}`;
       }
 
       return {
         ready,
         reason,
-        epochId: epochInfo.currentEpochId,
+        epochId: batchInfo?.currentBatchId,
         navFresh,
-        epochEnded,
+        epochEnded: providerReady,
       };
     } catch (error) {
       return {

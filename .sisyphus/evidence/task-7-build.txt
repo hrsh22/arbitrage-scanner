@@ -1,0 +1,25 @@
+# Task 7 Build Evidence
+## Timestamp: 2026-03-11
+
+### Build Command
+```bash
+pnpm --filter vault build
+```
+
+### Build Output
+```
+> vault@0.0.1 build /Users/harsh/Developer/polymarket-mvp/apps/vault-api
+> tsc -p tsconfig.json
+
+(no errors - build successful)
+```
+
+### Summary
+TypeScript compilation passes without errors. All type mismatches resolved:
+- Fixed `getEpoch` -> `getBatch` method calls
+- Fixed `processed` -> `status === "processed"` field checks
+- Fixed `targetEpoch` -> `targetBatch` field references
+- Updated `formatEpochHistoryItem` to handle `BatchData` interface
+
+### Files Modified
+- apps/vault-api/src/routes/customVaultRoutes.ts

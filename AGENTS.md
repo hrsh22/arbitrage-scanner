@@ -273,16 +273,17 @@ curl http://localhost:8080/bot/status
 
 <!-- This section should be updated after each significant change -->
 
-| Date       | Change                                                                          | Files Affected                                                            |
-| ---------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| 2026-01-01 | Refactored bot config into modular structure with strict validation             | `bot/config/*`, removed `bot/botConfigs.ts`                               |
-| 2025-01-01 | Optimized multi-bot scans: fetch markets once, run all bots in parallel         | `bot/botManager.ts`, `bot/tradingBot.ts`, `cron/runTradingBot.ts`         |
-| 2024-12-31 | Added multi-bot support with BotManager and per-bot configurations              | `bot/botConfigs.ts`, `bot/botManager.ts`, `bot/routes.ts`, `botSchema.ts` |
-| 2024-12-22 | Added cron-friendly endpoints `/bot/scan` and `/bot/check-resolutions`          | `bot/routes.ts`, `bot/tradingBot.ts`, `bot/resolutionChecker.ts`          |
-| 2024-12-22 | Added resolution checker to track position outcomes and calculate USD P/L       | `bot/resolutionChecker.ts`, `clients/polymarketClient.ts`, `index.ts`     |
-| 2024-12-22 | Relaxed 99¢+ time threshold from 3h to 6h                                       | `bot/config.ts`                                                           |
-| 2024-12-22 | Added max investment stats (maxInvestment, maxProfitPercent, maxProfitAbsolute) | `bot/types.ts`, `bot/strategyEngine.ts`                                   |
-| 2024-12-22 | Initial AGENTS.md creation                                                      | `AGENTS.md`                                                               |
+| Date       | Change                                                                                              | Files Affected                                                                                                                                                             |
+| ---------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-03-12 | Hardened closed-book lifecycle: permissionless state-gated maintenance, no route-driven progression | `contracts/src/ClosedBookBatchVault.sol`, `contracts/test/ClosedBookBatchVault.t.sol`, `apps/vault-api/src/routes/*`, `apps/vault-api/src/services/customVaultProvider.ts` |
+| 2026-01-01 | Refactored bot config into modular structure with strict validation                                 | `bot/config/*`, removed `bot/botConfigs.ts`                                                                                                                                |
+| 2025-01-01 | Optimized multi-bot scans: fetch markets once, run all bots in parallel                             | `bot/botManager.ts`, `bot/tradingBot.ts`, `cron/runTradingBot.ts`                                                                                                          |
+| 2024-12-31 | Added multi-bot support with BotManager and per-bot configurations                                  | `bot/botConfigs.ts`, `bot/botManager.ts`, `bot/routes.ts`, `botSchema.ts`                                                                                                  |
+| 2024-12-22 | Added cron-friendly endpoints `/bot/scan` and `/bot/check-resolutions`                              | `bot/routes.ts`, `bot/tradingBot.ts`, `bot/resolutionChecker.ts`                                                                                                           |
+| 2024-12-22 | Added resolution checker to track position outcomes and calculate USD P/L                           | `bot/resolutionChecker.ts`, `clients/polymarketClient.ts`, `index.ts`                                                                                                      |
+| 2024-12-22 | Relaxed 99¢+ time threshold from 3h to 6h                                                           | `bot/config.ts`                                                                                                                                                            |
+| 2024-12-22 | Added max investment stats (maxInvestment, maxProfitPercent, maxProfitAbsolute)                     | `bot/types.ts`, `bot/strategyEngine.ts`                                                                                                                                    |
+| 2024-12-22 | Initial AGENTS.md creation                                                                          | `AGENTS.md`                                                                                                                                                                |
 
 ---
 

@@ -8,54 +8,64 @@ Read this file before making any vault-related change in:
 - `apps/vault-web/`
 - `contracts/`
 
-This document reflects the current EpochTrancheVault architecture (Wave 3).
+**Current State (March 2026):** The codebase targets **ClosedBookBatchVault**, but the active Amoy deployment still uses the legacy **EpochTrancheVault** contract. A deployment cutover is required to use the new batch/cycle system.
 
 ---
 
 ## 1) Current Architecture at a Glance
 
-The vault system uses **EpochTrancheVault** as the canonical smart contract for epoch-gated tranche carry management.
+The vault system uses **ClosedBookBatchVault** as the canonical smart contract for batch-gated deposit and redemption processing.
 
-### Core Flow
+### Core Flow (Closed-Book Batch System)
 
 ```
-Deposit:   queueDeposit -> (epoch advances) -> processDepositQueue -> mint shares
-Redeem:    requestRedeem -> (epoch freeze/settle) -> redeem/withdraw with carry
-Settlement: freezeEpoch -> settleEpoch -> finalizeEpoch
-Carry:     Accrues at settlement, deducted on claim (pro-rata)
+Deposit:   queueDeposit -> (batch cutoff/flatten) -> processDepositQueue -> mint shares
+Redeem:    requestRedeem -> shares escrowed -> (batch settle) -> claim assets
+Batch:     Open -> Cutoff -> Flattening -> Settling -> Settled -> Closed -> Reopen
 ```
 
 ### Key Components
 
-| Component          | File                                                 | Purpose                                                                |
-| ------------------ | ---------------------------------------------------- | ---------------------------------------------------------------------- |
-| Canonical Contract | `contracts/src/EpochTrancheVault.sol`                | Epoch-gated vault with deposit queue, redemption epochs, carry accrual |
-| Backend Provider   | `apps/vault-api/src/services/customVaultProvider.ts` | Reads vault state, manages redemption flow                             |
-| Backend Client     | `apps/vault-api/src/services/customVaultClient.ts`   | viem-based contract interactions                                       |
-| API Routes         | `apps/vault-api/src/routes/customVaultRoutes.ts`     | REST endpoints for lifecycle operations                                |
-| Frontend Hooks     | `apps/vault-web/src/lib/hooks.ts`                    | React hooks for vault interactions                                     |
-| Frontend API       | `apps/vault-web/src/lib/api.ts`                      | API client for vault operations                                        |
+| Component          | File                                                 | Purpose                                                                   |
+| ------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------- |
+| Canonical Contract | `contracts/src/ClosedBookBatchVault.sol`             | Closed-book vault with deposit queue, redemption escrow, batch settlement |
+| Legacy Contract    | `contracts/src/EpochTrancheVault.sol`                | Epoch-gated vault with carry (still deployed on Amoy)                     |
+| Backend Provider   | `apps/vault-api/src/services/customVaultProvider.ts` | Reads vault state, manages redemption flow                                |
+| Backend Client     | `apps/vault-api/src/services/customVaultClient.ts`   | viem-based contract interactions                                          |
+| API Routes         | `apps/vault-api/src/routes/customVaultRoutes.ts`     | REST endpoints for lifecycle operations                                   |
+| Frontend Hooks     | `apps/vault-web/src/lib/hooks.ts`                    | React hooks for vault interactions                                        |
+| Frontend API       | `apps/vault-web/src/lib/api.ts`                      | API client for vault operations                                           |
 
 ### Primary Active Vault
 
 - `vault1` configured in `apps/vault-api/src/config/vaults/vault1-pph.ts`
-- `type: "custom"` with custom epoch settings (1 hour default in dev, 7 days in prod)
+- `type: "custom"` with custom batch settings (1 hour default in dev, 7 days in prod)
 - Provider routing: `VaultProviderFactory` instantiates `CustomVaultProvider`
+
+### Current Deployment Gap
+
+| Environment  | Contract             | Address                                      | Status      |
+| ------------ | -------------------- | -------------------------------------------- | ----------- |
+| Amoy Testnet | EpochTrancheVault    | `0x8D87Cc370e3751d5bBDBaE702e6618D59D950b2D` | **Legacy**  |
+| Amoy Testnet | ClosedBookBatchVault | Not deployed                                 | **Pending** |
+
+**Impact:** API endpoints like `/cycles/current` will not function until the new contract is deployed.
 
 ---
 
-## 2) Smart Contract Layer (EpochTrancheVault)
+## 2) Smart Contract Layer (ClosedBookBatchVault)
 
 ### 2.1 Contract Overview
 
-File: `contracts/src/EpochTrancheVault.sol`
+File: `contracts/src/ClosedBookBatchVault.sol`
 
 Core model:
 
-- **Deposit Queue**: Async deposits queued for next epoch minting
-- **Redemption Epochs**: ERC-7540 async redemption with freeze/settle/finalize
-- **Carry Accrual**: Pro-rata carry distribution per epoch
-- **Snapshot-based Settlement**: NAV-locked settlement with freshness guards
+- **Deposit Queue**: Async deposits queued for batch processing after flatten
+- **Redemption Escrow**: Shares held by vault during settlement, burned at settlement time
+- **Batch Settlement**: Discrete cycles with cutoff, flatten, settle, close, reopen phases
+- **Flatten-Time Pricing**: All deposits in a batch mint at the same locked clearing price
+- **Pro-rata Distribution**: Applied if insufficient assets for full redemptions
 
 ### 2.2 Constructor Parameters
 
@@ -65,100 +75,76 @@ constructor(
     address _admin,              // Admin role
     address _settler,            // Settlement role
     address _navUpdater,         // NAV update role
-    address _snapshotter,        // Epoch freeze role
+    address _snapshotter,        // Cutoff/flatten role
     address _depositProcessor,   // Deposit queue processor
-    uint256 _epochDuration,      // Epoch duration in seconds
-    uint256 _navStalenessThreshold,  // NAV freshness threshold
-    uint256 _minClaimThreshold,  // Minimum claim amount (100 USDC default)
-    uint256 _balancedUpfrontBps  // Balanced upfront basis points
+    uint256 _navStalenessThreshold  // NAV freshness threshold
 )
 ```
 
-### 2.3 Epoch Lifecycle (Corrected)
+### 2.3 Batch/Cycle Lifecycle
 
 ```
-Active -> Frozen -> Settled -> Finalized
-  |        |          |          |
-  |        |          |          +-- All claims processed, dust override enabled
-  |        |          +-- Claims available (carry applied), chunked settlement complete
-  |        +-- Snapshot taken, NAV locked, requests frozen
+Open -> Cutoff -> Flattening -> Settling -> Settled -> Closed -> Reopen
+  |        |          |           |           |         |        |
+  |        |          |           |           |         |        +-- New batch starts
+  |        |          |           |           |         +-- Claims window ended
+  |        |          |           |           +-- Claims available
+  |        |          |           +-- Chunked settlement in progress
+  |        |          +-- NAV locked, clearing price set, deposits processed
+  |        +-- Deposits closed, redemptions frozen
   +-- Accepting deposits and redemption requests
 ```
 
 **Key Semantics:**
 
-1. **Freeze** (SNAPSHOT_ROLE): Locks cohort economics at boundary
+1. **Cutoff** (SNAPSHOT_ROLE): Closes deposits for current batch
+   - Deposits are now queued for the _next_ batch
+   - Redemptions can still be requested but are frozen in place
 
-   - Records immutable snapshot of pending requests, NAV, and epoch totals
+2. **Flatten** (SNAPSHOT_ROLE): Locks cohort economics
+   - Records NAV snapshot
+   - Locks clearing price (excluding sealed/queued deposits)
+   - Transitions batch to Flattening state
+   - Creates next batch for new deposits
 
-   - Transitions all pending requests to `Frozen` status
+3. **Deposit Processing** (DEPOSIT_PROCESSOR_ROLE): Mints shares at locked price
+   - Only callable in Flattening or Settling states
+   - All deposits mint at the same lockedClearingPrice
+   - Chunked processing for gas efficiency
 
-   - Creates next epoch for new deposits/requests
+4. **Settlement** (SETTLER_ROLE): Processes redemptions
+   - Requires: batch ended + flattened + fresh NAV
+   - Shares escrowed during settlement
+   - Burns shares at settlement, calculates claimable assets
+   - Applies pro-rata ratio if insufficient liquidity
 
-   - No new requests accepted for frozen epoch
+5. **Close** (SETTLER_ROLE): Ends claims window
+   - Called after sufficient time for claims
+   - Batch enters Closed state
 
-2. **Settlement** (SETTLER_ROLE): Processes frozen cohort in chunks
-
-   - Requires: epoch ended + frozen + fresh NAV
-
-   - Processes requests up to `maxSettlementChunkSize` per call (default: 100)
-
-   - Updates per-user carry ledger (entitlement, accrued, claimed, carryRemaining)
-
-   - Transitions requests to `Claimable` status
-
-   - Resume cursor tracks progress for interrupted settlements
-
-3. **Finalization** (SETTLER_ROLE): Marks epoch complete
-
-   - Called after all claims processed
-
-   - Enables dust override for residual balances below threshold
-
-   - Epoch enters `Finalized` state (terminal)
-
-```
-Active -> Frozen -> Settled -> Finalized
-  |        |          |          |
-  |        |          |          +-- All claims processed
-  |        |          +-- Claims available (carry applied)
-  |        +-- Snapshot taken, NAV locked
-  +-- Accepting deposits and redemption requests
-```
+6. **Reopen** (SETTLER_ROLE): Starts next batch
+   - Creates new batch with fresh timing
+   - Cycle begins again
 
 ### 2.4 Role Structure
 
-| Role                     | Purpose                              |
-| ------------------------ | ------------------------------------ |
-| `ADMIN_ROLE`             | Emergency mode, admin functions      |
-| `SETTLER_ROLE`           | Epoch settlement and finalization    |
-| `NAV_UPDATER_ROLE`       | NAV updates with freshness checks    |
-| `SNAPSHOT_ROLE`          | Epoch freezing and snapshot creation |
-| `DEPOSIT_PROCESSOR_ROLE` | Processing deposit queue             |
+| Role                     | Purpose                           |
+| ------------------------ | --------------------------------- |
+| `ADMIN_ROLE`             | Emergency mode, admin functions   |
+| `SETTLER_ROLE`           | Batch settlement, close, reopen   |
+| `NAV_UPDATER_ROLE`       | NAV updates with freshness checks |
+| `SNAPSHOT_ROLE`          | Cutoff and flatten operations     |
+| `DEPOSIT_PROCESSOR_ROLE` | Processing deposit queue          |
 
 ### 2.5 Key Invariants
-### 2.5 Key Invariants (Corrected)
 
-- Epoch duration is immutable after deployment
-
+- Batch duration is immutable after deployment
 - NAV staleness threshold is immutable after deployment
-
-- Settlement requires: epoch ended + fresh NAV + frozen state
-
-- Claims require: settled epoch + minimum threshold met (unless dust override)
-
-- Carry is applied pro-rata at settlement, tracked in per-user ledger
-
-- Frozen cohort economics are immutable (snapshot-based)
-
-- Chunked settlement preserves deterministic ordering across chunks
-
-- Ledger invariants: `0 <= claimed <= accrued <= entitlement`
-- Epoch duration is immutable after deployment
-- NAV staleness threshold is immutable after deployment
-- Settlement requires: epoch ended + fresh NAV + frozen state
-- Claims require: settled epoch + minimum threshold met
-- Carry is applied pro-rata at settlement, deducted on claim
+- Settlement requires: batch cutoff + flattened + fresh NAV
+- Claims require: settled batch
+- All deposits in a batch mint at the same locked clearing price
+- Shares are escrowed during redemption, burned at settlement
+- Pro-rata ratio preserves fairness when assets are insufficient
 
 ---
 
@@ -172,21 +158,22 @@ function queueDeposit(uint256 assets) external returns (uint256 requestId)
 
 1. User calls `queueDeposit(assets)`
 2. Assets transferred to vault
-3. Request queued for next epoch processing
-4. Multiple deposits from same user in same epoch accumulate
+3. Request queued for next batch processing
+4. Multiple deposits from same user in same target batch accumulate
 
 ### 3.2 Deposit Processing
 
 ```solidity
 function processDepositQueue(
-    uint256 epochId,
+    uint256 batchId,
     uint256 startIndex,
     uint256 endIndex
 ) external onlyRole(DEPOSIT_PROCESSOR_ROLE)
 ```
 
-- Can only be called for Active or Frozen epochs
-- Mints shares based on current NAV at processing time
+- Can only be called for Flattening or Settling batches
+- Mints shares based on `lockedClearingPrice` (set at flatten time)
+- Ensures fair pricing: all deposits in batch get same price
 - Chunked processing for gas efficiency (max 100 per call)
 
 ---
@@ -203,10 +190,10 @@ function requestRedeem(
 ) external returns (uint256 requestId)
 ```
 
-- Returns unique `requestId` (not controller-aggregated)
-- Shares transferred to vault
+- Returns unique `requestId`
+- Shares transferred to vault and held in escrow
 - Request enters Pending state
-- Can be cancelled while epoch is Active
+- Can be cancelled while batch is Open
 
 ### 4.2 Cancel Redemption
 
@@ -215,7 +202,7 @@ function cancelRedeemRequest(uint256 requestId) external returns (uint256 cancel
 ```
 
 - Only callable by controller
-- Only while epoch is Active (before freeze)
+- Only while batch is Open (before cutoff)
 - Returns shares to owner
 
 ### 4.3 Claim Redemption
@@ -229,189 +216,148 @@ function redeem(
 ```
 
 - Claims assets for redeemed shares
-- Carry deducted automatically
-- Minimum threshold enforced (100 USDC default)
-
-```solidity
-function withdraw(
-    uint256 requestId,
-    uint256 assets,
-    address receiver
-) external returns (uint256 shares)
-```
-
-- Alternative claim by specifying output amount
-- Same carry mechanics as `redeem()`
+- Shares already burned at settlement
+- Claims available only after batch reaches Settled state
 
 ---
 
-## 5) Epoch Settlement Flow
+## 5) Batch Settlement Flow
 
-### 5.1 Freeze Epoch
+### 5.1 Cutoff Batch
 
 ```solidity
-function freezeEpoch(bytes32 snapshotHash) external onlyRole(SNAPSHOT_ROLE)
+function cutoffBatch() external onlyRole(SNAPSHOT_ROLE)
 ```
 
-- Takes snapshot of current state
-- Locks NAV at snapshot time
-- Creates next epoch
-- No new requests accepted for frozen epoch
+- Closes deposits for current batch
+- New deposits queue for next batch
+- Redemptions frozen in place
 
-### 5.2 Settle Epoch
+### 5.2 Flatten Batch
 
 ```solidity
-function settleEpoch(
-    uint256 epochId,
-    uint256 availableAssets,
-    uint256 carryAmount
+function flattenBatch(bytes32 snapshotHash) external onlyRole(SNAPSHOT_ROLE)
+```
+
+- Takes NAV snapshot
+- Locks clearing price for deposit processing
+- Creates next batch for new deposits
+- Transitions to Flattening state
+
+### 5.3 Settle Batch
+
+```solidity
+function settleBatch(
+    uint256 batchId,
+    uint256 availableAssets
 ) external onlyRole(SETTLER_ROLE)
 ```
 
-- Requires: epoch ended + frozen + fresh NAV
+- Requires: batch cutoff + flattened + fresh NAV
 - Calculates pro-rata ratio if insufficient liquidity
-- Accrues carry for the epoch
-- Marks redemption requests as Claimable
+- Burns escrowed shares, calculates claimable assets
+- Transitions to Settled state
 
-### 5.3 Finalize Epoch
+### 5.4 Close Batch
 
 ```solidity
-function finalizeEpoch(uint256 epochId) external onlyRole(SETTLER_ROLE)
+function closeBatch(uint256 batchId) external onlyRole(SETTLER_ROLE)
 ```
 
-- Called after all claims processed
-- Epoch enters Finalized state (terminal)
+- Called after claims window
+- Transitions to Closed state
+
+### 5.5 Reopen Batch
+
+```solidity
+function reopenBatch() external onlyRole(SETTLER_ROLE)
+```
+
+- Creates new batch
+- Cycle begins again
 
 ---
 
-## 6) Carry Mechanics (Corrected Ledger Semantics)
+## 6) Batch Schedule and Timing
 
-### 6.1 Carry Ledger Fields
-
-Per-user ledger tracks:
-
-| Field | Description | Invariant |
-| ----- | ----------- | --------- |
-| `entitlement` | Total USDC entitled (deposits + realized gains) | Immutable after settlement |
-| `accrued` | Carry eligible for claiming | `accrued >= claimed` |
-| `claimed` | USDC already claimed | `claimed <= accrued` |
-| `carryRemaining` | Outstanding carry obligation | `carryRemaining = entitlement - accrued` |
-
-### 6.2 Carry Accrual at Settlement
-
-```
-
-userAccrued += (userShares * epochCarry * proRataRatio) / 1e36
-
-```
-
-- Carry accrues at epoch settlement
-- Applied pro-rata based on shares and settlement ratio
-- Stored in `epoch.carryAccrued` per epoch
-
-### 6.3 Carry Deduction on Claim
-
-```
-
-carryDeducted = (assets * epoch.carryAccrued) / 1e18
-
-netAssets = assets - carryDeducted
-
-```
-
-- Deducted automatically on claim
-- Carry remaining updates: `carryRemaining -= carryDeducted`
-
-### 6.4 Minimum Claim Threshold
-
-Default: **100 USDC** (configurable at deployment)
-
-- Prevents micro-claims that waste gas
-- Enforced in both `redeem()` and `withdraw()`
-- Error: `BelowClaimThreshold(uint256 amount, uint256 threshold)`
-- **Dust Override**: Bypassed after tranche finalization
-
----
-
-## 7) Epoch Schedule and Timing
-
-### 7.1 Default Parameters
+### 6.1 Default Parameters
 
 | Parameter               | Development      | Production       |
 | ----------------------- | ---------------- | ---------------- |
-| Epoch Duration          | 1 hour (3600s)   | 7 days (604800s) |
+| Batch Duration          | 1 hour (3600s)   | 7 days (604800s) |
 | NAV Staleness Threshold | 6 hours (21600s) | 6 hours (21600s) |
-| Minimum Claim Threshold | 100 USDC         | 100 USDC         |
 
-### 7.2 Timing Configuration
+### 6.2 Timing Configuration
 
 Set via environment variables:
 
 ```bash
 # apps/vault-api/.env
-VAULT_1_EPOCH_DURATION_SECONDS=3600  # Dev: 1 hour
-VAULT_1_EPOCH_DURATION_SECONDS=604800  # Prod: 7 days
+VAULT_1_BATCH_DURATION_SECONDS=3600  # Dev: 1 hour
+VAULT_1_BATCH_DURATION_SECONDS=604800  # Prod: 7 days
 ```
 
-### 7.3 Epoch Schedule Example (Production)
+### 6.3 Batch Schedule Example (Production)
 
 ```
-Epoch 0:  Jan 1 00:00 UTC -> Jan 8 00:00 UTC
-Epoch 1:  Jan 8 00:00 UTC -> Jan 15 00:00 UTC
-Epoch 2:  Jan 15 00:00 UTC -> Jan 22 00:00 UTC
+Batch 0:  Jan 1 00:00 UTC -> Jan 8 00:00 UTC
+Batch 1:  Jan 8 00:00 UTC -> Jan 15 00:00 UTC
+Batch 2:  Jan 15 00:00 UTC -> Jan 22 00:00 UTC
 ...
 ```
 
-### 7.4 Realization Cadence (Corrected)
+### 6.4 Realization Cadence
 
-1. **Epoch Active**: Deposits and redemption requests accepted
-2. **Freeze**: Snapshot taken, NAV locked, requests frozen
-3. **Settlement**: Chunked processing, carry accrued, requests become claimable
-4. **Claims**: Available immediately after settlement (threshold enforced)
-5. **Finalization**: After all claims processed, dust override enabled
+1. **Open**: Deposits and redemption requests accepted
+2. **Cutoff**: Deposits closed, redemptions frozen
+3. **Flatten**: NAV locked, clearing price set
+4. **Settlement**: Chunked processing, shares burned, assets calculated
+5. **Claims**: Available immediately after settlement
+6. **Close**: Claims window ended
+7. **Reopen**: Next batch begins
 
-## 8) Vault API Architecture
+---
 
-### 8.1 Provider Factory
+## 7) Vault API Architecture
+
+### 7.1 Provider Factory
 
 File: `apps/vault-api/src/services/vaultProviderFactory.ts`
 
 - Maps vault configs to provider instances
 - Forces custom provider path for all vaults
-- Creates `CustomVaultProvider` with epoch configuration
+- Creates `CustomVaultProvider` with batch configuration
 
-### 8.2 Custom Provider
+### 7.2 Custom Provider
 
 File: `apps/vault-api/src/services/customVaultProvider.ts`
 
 Key methods:
 
-- `getVaultInfo()` - Vault metadata and epoch info
-- `getEpochStatus(epochId)` - Epoch state and timing
+- `getVaultInfo()` - Vault metadata and batch info
+- `getBatchStatus(batchId)` - Batch state and timing
 - `requestRedeem()` - Create redemption request
 - `cancelRedemption()` - Cancel pending request
 - `claimRedemption()` - Claim settled request
 - `getUserRedemptionState()` - User's full redemption state
 
-### 8.3 API Routes
+### 7.3 API Routes
 
 Base: `/api/vaults`
 
-| Endpoint                               | Method | Description                 |
-| -------------------------------------- | ------ | --------------------------- |
-| `/:vaultId/redeem`                     | POST   | Create redemption request   |
-| `/:vaultId/requests/:requestId`        | GET    | Get request status          |
-| `/:vaultId/requests/:requestId/claim`  | POST   | Claim redemption            |
-| `/:vaultId/requests/:requestId/cancel` | POST   | Cancel redemption           |
-| `/:vaultId/epochs/current`             | GET    | Current epoch status        |
-| `/:vaultId/epochs/:epochId`            | GET    | Specific epoch details      |
-| `/:vaultId/redemptions`                | GET    | User's redemption state     |
-| `/:vaultId/info`                       | GET    | Vault metadata              |
-| `/:vaultId/deposit-queue`              | GET    | Deposit queue status        |
-| `/:vaultId/tranche-status`             | GET    | Tranche progress with carry |
-| `/:vaultId/carry-eligibility`          | GET    | Carry claim eligibility     |
+| Endpoint                               | Method | Description               | Status                   |
+| -------------------------------------- | ------ | ------------------------- | ------------------------ |
+| `/:vaultId/redeem`                     | POST   | Create redemption request | Working                  |
+| `/:vaultId/requests/:requestId`        | GET    | Get request status        | Working                  |
+| `/:vaultId/requests/:requestId/claim`  | POST   | Claim redemption          | Working                  |
+| `/:vaultId/requests/:requestId/cancel` | POST   | Cancel redemption         | Working                  |
+| `/:vaultId/cycles/current`             | GET    | Current batch status      | **Broken until cutover** |
+| `/:vaultId/cycles/:cycleId`            | GET    | Specific batch details    | **Broken until cutover** |
+| `/:vaultId/redemptions`                | GET    | User's redemption state   | Working                  |
+| `/:vaultId/info`                       | GET    | Vault metadata            | Working                  |
+| `/:vaultId/deposit-queue`              | GET    | Deposit queue status      | Working                  |
 
-### 8.4 Lifecycle Fields
+### 7.4 Lifecycle Fields
 
 API responses include these standardized fields:
 
@@ -419,33 +365,29 @@ API responses include these standardized fields:
 {
   queued: string; // Assets waiting in deposit queue
   queuedFormatted: string; // Human-readable
-  frozen: string; // Shares frozen in epoch
-  frozenFormatted: string;
-  accrued: string; // Total realized USDC
-  accruedFormatted: string;
-  claimed: string; // Total USDC already claimed
-  claimedFormatted: string;
+  escrowed: string; // Shares escrowed in settlement
+  escrowedFormatted: string;
   claimableNow: string; // USDC available to claim now
   claimableNowFormatted: string;
-  minClaimThreshold: string; // 100 USDC default
-  minClaimThresholdFormatted: string;
+  batchStatus: "Open" | "Cutoff" | "Flattening" | "Settling" | "Settled" | "Closed";
+  currentBatchId: string;
 }
 ```
 
 ---
 
-## 9) Vault Web Architecture
+## 8) Vault Web Architecture
 
-### 9.1 API Client
+### 8.1 API Client
 
 File: `apps/vault-web/src/lib/api.ts`
 
 Two prefixes:
 
 - `VAULT_API_PREFIX = /vault` - Legacy/general operations
-- `CUSTOM_VAULT_API_PREFIX = /api/vaults` - Epoch redemption flow
+- `CUSTOM_VAULT_API_PREFIX = /api/vaults` - Batch redemption flow
 
-### 9.2 Custom Hooks
+### 8.2 Custom Hooks
 
 File: `apps/vault-web/src/lib/hooks.ts`
 
@@ -453,21 +395,15 @@ Redemption hooks:
 
 - `useRequestRedeem()` - Create redemption request
 - `useRequests()` - Get user's redemption requests
-- `useEpochStatus()` - Get epoch status
+- `useBatchStatus()` - Get batch status
 - `useClaimRedemption()` - Claim redemption
 - `useCancelRedemption()` - Cancel redemption
 
-Tranche-carry hooks:
-
-- `useDepositQueue()` - Deposit queue status
-- `useTrancheStatus()` - Tranche progress
-- `useCarryEligibility()` - Carry claim eligibility
-
 ---
 
-## 10) Configuration and Environment
+## 9) Configuration and Environment
 
-### 10.1 Vault Config
+### 9.1 Vault Config
 
 File: `apps/vault-api/src/config/vaults/vault1-pph.ts`
 
@@ -476,14 +412,14 @@ File: `apps/vault-api/src/config/vaults/vault1-pph.ts`
   id: 1,
   type: "custom",
   customVaultConfig: {
-    epochDurationSeconds: 3600,  // or 604800 for prod
+    batchDurationSeconds: 3600,  // or 604800 for prod
     navStalenessThresholdSeconds: 21600,
   },
   // ... other fields
 }
 ```
 
-### 10.2 Required Environment Variables
+### 9.2 Required Environment Variables
 
 **apps/vault-api/.env:**
 
@@ -503,8 +439,8 @@ VAULT_1_ALLOCATOR_NAV_KEY=...
 VAULT_1_SAFE_OPERATOR_KEY=...
 VAULT_1_TRADING_SIGNER_KEY=...
 
-# Epoch Configuration
-VAULT_1_EPOCH_DURATION_SECONDS=3600
+# Batch Configuration
+VAULT_1_BATCH_DURATION_SECONDS=3600
 ```
 
 **apps/vault-web/.env:**
@@ -516,23 +452,24 @@ NEXT_PUBLIC_API_URL=http://localhost:3001
 
 ---
 
-## 11) Deprecated Components
+## 10) Deprecated Components
 
-### 11.1 Superseded Contracts
+### 10.1 Superseded Contracts
 
-| Contract                   | Status     | Replacement             |
-| -------------------------- | ---------- | ----------------------- |
-| `WeeklyEpochVault.sol`     | DEPRECATED | `EpochTrancheVault.sol` |
-| `SnapshotTrancheVault.sol` | DEPRECATED | `EpochTrancheVault.sol` |
+| Contract                   | Status     | Replacement                |
+| -------------------------- | ---------- | -------------------------- |
+| `WeeklyEpochVault.sol`     | DEPRECATED | `ClosedBookBatchVault.sol` |
+| `SnapshotTrancheVault.sol` | DEPRECATED | `ClosedBookBatchVault.sol` |
+| `EpochTrancheVault.sol`    | LEGACY     | `ClosedBookBatchVault.sol` |
 
-### 11.2 Migration Notes
+### 10.2 Migration Notes
 
-- `WeeklyEpochVault` and `SnapshotTrancheVault` are superseded by `EpochTrancheVault`
-- Old contract files remain for reference but are not deployed
-- All new deployments use `EpochTrancheVault`
+- `EpochTrancheVault` is still deployed on Amoy but superseded by `ClosedBookBatchVault`
+- New deployments should use `ClosedBookBatchVault`
 - Migration from old contracts requires full withdrawal and redeposit
+- Carry mechanics from EpochTrancheVault are NOT present in ClosedBookBatchVault
 
-### 11.3 Deprecated Endpoints
+### 10.3 Deprecated Endpoints
 
 The following endpoints return explicit 410 Gone errors:
 
@@ -543,306 +480,182 @@ GET /api/vaults/:vaultId/legacy-status -> Use GET /api/vaults/:vaultId/redemptio
 
 ---
 
-## 12) Operational Runbook (Corrected Lifecycle)
+## 11) Operational Runbook (Closed-Book Lifecycle)
 
-### 12.1 Epoch Lifecycle Procedures
+### 11.1 Batch Lifecycle Procedures
 
-#### Phase 1: Pre-Freeze Preparation
+#### Phase 1: Pre-Cutoff Preparation
 
-**Checklist before freezing:**
+**Checklist before cutoff:**
 
 1. **Verify NAV freshness** (< 6 hours old):
+
    ```bash
    curl http://localhost:3001/api/vaults/1/nav-status
    ```
 
 2. **Review pending redemption requests**:
+
    ```bash
-   curl http://localhost:3001/api/vaults/1/epochs/current
+   curl http://localhost:3001/api/vaults/1/redemptions
    ```
 
-3. **Ensure epoch has ended** (or will end at freeze time):
+3. **Review deposit queue**:
    ```bash
-   curl http://localhost:3001/api/vaults/1/epochs/1
-   # Check 'ended' field
+   curl http://localhost:3001/api/vaults/1/deposit-queue
    ```
 
-#### Phase 2: Freeze Epoch
+#### Phase 2: Cutoff Batch
 
-**Trigger freeze (SNAPSHOT_ROLE):**
+**Trigger cutoff (SNAPSHOT_ROLE):**
 
 ```bash
-# Contract call via backend or direct
-curl -X POST http://localhost:3001/api/vaults/1/epochs/current/freeze \
+curl -X POST http://localhost:3001/api/vaults/1/cycles/current/cutoff \
+  -H "Content-Type: application/json"
+```
+
+**Cutoff effects:**
+
+- Deposits now queue for next batch
+- Redemptions frozen in place
+
+**Verification:**
+
+```bash
+curl http://localhost:3001/api/vaults/1/cycles/current
+# Check status: 'Cutoff'
+```
+
+#### Phase 3: Flatten Batch
+
+**Trigger flatten (SNAPSHOT_ROLE):**
+
+```bash
+curl -X POST http://localhost:3001/api/vaults/1/cycles/current/flatten \
   -H "Content-Type: application/json" \
   -d '{"snapshotHash": "0x..."}'
 ```
 
-**Freeze effects:**
-- All pending requests transition to `Frozen` status
-- Cohort economics snapshot recorded (immutable)
-- NAV locked at freeze time
-- Next epoch becomes active immediately
+**Flatten effects:**
 
-**Verification:**
-```bash
-curl http://localhost:3001/api/vaults/1/epochs/1
-# Check status: 'frozen'
-# Check frozenAt timestamp
-```
+- NAV locked at snapshot time
+- Clearing price locked
+- Next batch created
+- Deposit queue can now be processed
 
-#### Phase 3: Chunked Settlement
+#### Phase 4: Process Deposits
 
-**Settlement parameters:**
-
-| Parameter | Description | Default |
-| --------- | ----------- | ------- |
-| `maxChunkSize` | Max requests per chunk | 100 |
-| `availableAssets` | Total assets available for redemption | Varies |
-| `carryAmount` | Total carry to distribute | Varies |
-
-**Execute chunked settlement (SETTLER_ROLE):**
+**Execute deposit processing (DEPOSIT_PROCESSOR_ROLE):**
 
 ```bash
-# First chunk
-curl -X POST http://localhost:3001/api/vaults/1/epochs/1/settle \
+curl -X POST http://localhost:3001/api/vaults/1/cycles/current/process-deposits \
   -H "Content-Type: application/json" \
   -d '{
-    "availableAssets": "1000000000",
-    "carryAmount": "50000000",
-    "maxChunkSize": 100
-  }'
-
-# Check settlement progress
-curl http://localhost:3001/api/vaults/1/epochs/1
-# Check 'settlementProgress' and 'processedCount'
-
-# Resume with next chunk if incomplete
-curl -X POST http://localhost:3001/api/vaults/1/epochs/1/settle \
-  -H "Content-Type: application/json" \
-  -d '{
-    "availableAssets": "1000000000",
-    "carryAmount": "50000000",
-    "maxChunkSize": 100
+    "startIndex": 0,
+    "endIndex": 100
   }'
 ```
 
-**Settlement completion criteria:**
-- All requests processed (processedCount == totalRequests)
-- Status transitions to 'settled'
-- Carry accrued to per-user ledgers
-- Requests become 'claimable'
+#### Phase 5: Settle Batch
 
-#### Phase 4: User Claims
+**Execute settlement (SETTLER_ROLE):**
+
+```bash
+curl -X POST http://localhost:3001/api/vaults/1/cycles/current/settle \
+  -H "Content-Type: application/json" \
+  -d '{
+    "availableAssets": "1000000000"
+  }'
+```
+
+**Settlement effects:**
+
+- Shares escrowed for redemption burned
+- Claimable assets calculated
+- Pro-rata ratio applied if needed
+
+#### Phase 6: User Claims
 
 **View claimable amounts:**
 
 ```bash
 curl http://localhost:3001/api/vaults/1/redemptions
-# Check 'claimableNow' and 'carryRemaining'
+# Check 'claimableNow'
 ```
 
-**Threshold enforcement:**
-- Claims below 100 USDC are blocked with `BelowClaimThreshold`
-- Users can accumulate across epochs to meet threshold
+#### Phase 7: Close Batch
 
-#### Phase 5: Finalize Epoch
-
-**Trigger finalization (SETTLER_ROLE):**
+**Trigger close (SETTLER_ROLE):**
 
 ```bash
-curl -X POST http://localhost:3001/api/vaults/1/epochs/1/finalize
+curl -X POST http://localhost:3001/api/vaults/1/cycles/current/close
 ```
 
-**Finalization effects:**
-- Epoch enters 'finalized' state (terminal)
-- Dust override enabled for residual balances
-- No further claims possible for this epoch
+#### Phase 8: Reopen
+
+**Trigger reopen (SETTLER_ROLE):**
+
+```bash
+curl -X POST http://localhost:3001/api/vaults/1/cycles/reopen
+```
 
 ---
 
-### 12.2 Chunked Settlement Procedures
+## 12) Current Deployment Gap (IMPORTANT)
 
-**When to use chunked settlement:**
-- Cohort size > 100 redemption requests
-- Gas limit concerns for large cohorts
-- Need for resumable settlement after interruptions
+### 12.1 The Problem
 
-**Chunking mechanics:**
+The codebase targets `ClosedBookBatchVault`, but Amoy still runs `EpochTrancheVault`:
 
-1. **Cursor-based resume**: Contract tracks `lastProcessedIndex`
-2. **Deterministic ordering**: Requests processed in epoch order
-3. **Idempotent chunks**: Safe to retry same chunk (no double processing)
+- **Amoy Deployment:** `0x8D87Cc370e3751d5bBDBaE702e6618D59D950b2D` (EpochTrancheVault)
+- **Codebase Target:** ClosedBookBatchVault
+- **Gap:** New contract deployment required
 
-**Monitoring settlement progress:**
+### 12.2 Affected Endpoints
 
-```bash
-# Watch settlement events
-curl http://localhost:3001/api/vaults/1/events?type=SettlementProgress
+| Endpoint              | Status on Current Amoy          | Works After Cutover |
+| --------------------- | ------------------------------- | ------------------- |
+| `/cycles/current`     | **BROKEN** - function not found | Yes                 |
+| `/cycles/:id/flatten` | **BROKEN** - function not found | Yes                 |
+| `/cycles/:id/settle`  | **BROKEN** - signature mismatch | Yes                 |
+| `/epochs/current`     | Working (legacy)                | Removed             |
+| Deposit queue         | Working                         | Yes                 |
+| Redemption requests   | Partial                         | Yes                 |
 
-# Check epoch status
-curl http://localhost:3001/api/vaults/1/epochs/1 | jq '.settlement'
+### 12.3 QA Finding
+
+Integrated QA confirmed `/cycles/current` fails against current Amoy deployment with:
+
+```
+Error: contract function not found: currentBatchId()
 ```
 
-**Failure recovery:**
+This is expected - the legacy contract uses `currentEpochId()` instead.
 
-| Scenario | Recovery Action |
-|----------|----------------|
-| Transaction reverts | Fix condition (NAV staleness, wrong state), retry same chunk |
-| Partial processing | Retry chunk, cursor ensures no duplicates |
-| Settlement timeout | Check gas limits, reduce chunk size |
+### 12.4 Operator Action
+
+**Until cutover:**
+
+- Use legacy `/epochs/*` endpoints
+- Follow EpochTrancheVault procedures
+- Reference legacy documentation in operator-runbook-amoy.md Appendix C
+
+**After cutover:**
+
+- Update contract address in config
+- Switch to `/cycles/*` endpoints
+- Follow procedures in this document
 
 ---
 
-### 12.3 Dust Override Procedures
-
-**Dust override eligibility:**
-
-Enabled ONLY after epoch finalization. Allows claims below 100 USDC threshold.
-
-**Check dust override status:**
-
-```bash
-curl http://localhost:3001/api/vaults/1/epochs/1 | jq '.dustOverrideEnabled'
-```
-
-**Claim with dust override:**
-
-```bash
-# Same claim endpoint, threshold check bypassed for finalized epochs
-curl -X POST http://localhost:3001/api/vaults/1/requests/0x.../claim \
-  -H "Content-Type: application/json" \
-  -d '{"shares": "50000000"}'
-```
-
-**Important:** Dust override is FINAL. Once enabled, no further claims from this epoch.
-
----
-
-### 12.4 Reconciliation Procedures
-
-**When to reconcile:**
-- After settlement completion
-- Before finalization
-- Periodic integrity checks
-- Suspicion of ledger drift
-
-**Reconciliation checks:**
-
-| Check | Command | Expected Result |
-|-------|---------|-----------------|
-| Contract vs Repository | `pnpm --filter vault test -- reconciliation` | Zero unexplained deltas |
-| Ledger invariants | `pnpm --filter vault test -- ledger-invariants` | All invariants pass |
-| Per-user balances | `curl /api/vaults/1/carry-eligibility` | Matches on-chain state |
-
-**Ledger invariant equations:**
-
-```
-0 <= claimed <= accrued <= entitlement
-carryRemaining = entitlement - accrued (>= 0)
-conservation: sum(claimed) + sum(carryRemaining) = totalRealized (within rounding)
-```
-
-**Manual reconciliation:**
-
-```bash
-# Generate reconciliation report
-curl -X POST http://localhost:3001/api/vaults/1/reconcile \
-  -H "Content-Type: application/json" \
-  -d '{"epochId": 1}'
-```
-
-**Handling mismatches:**
-
-| Mismatch Type | Action |
-|---------------|--------|
-| Contract > Repository | Re-ingest events, check for missed settlements |
-| Repository > Contract | Check for stale cached state, refresh from chain |
-| Carry calculation drift | Verify pro-rata math matches contract exactly |
-
----
-
-### 12.5 Failure Handling and Rollback
-
-**Settlement failure scenarios:**
-
-| Error | Cause | Resolution |
-|-------|-------|------------|
-| `EpochNotFrozen` | Called settle before freeze | Complete freeze first |
-| `NAVStale` | NAV > 6 hours old | Update NAV via oracle |
-| `EpochNotEnded` | Epoch still active | Wait for epoch end time |
-| `SettlementIncomplete` | Partial settlement, resume needed | Continue chunked settlement |
-
-**Rollback procedures:**
-
-**Cannot rollback:**
-- Freeze (immutable snapshot)
-- Settlement (carry already accrued)
-- Claims (assets already transferred)
-
-**Emergency procedures:**
-
-```bash
-# Enable emergency mode (ADMIN_ROLE)
-curl -X POST http://localhost:3001/api/vaults/1/emergency \
-  -H "Content-Type: application/json" \
-  -d '{"enabled": true}'
-
-# Effects:
-# - New deposits blocked
-# - New redemption requests blocked
-# - Existing claims still allowed
-# - Settlement paused
-
-# Disable emergency mode
-curl -X POST http://localhost:3001/api/vaults/1/emergency \
-  -H "Content-Type: application/json" \
-  -d '{"enabled": false}'
-```
-
-**Escalation path:**
-
-1. **Level 1**: Check logs and error messages
-2. **Level 2**: Verify contract state directly via RPC
-3. **Level 3**: Contact contract admin for emergency intervention
-
----
-
-### 12.6 Deprecated Behaviors and Replacements
-
-| Deprecated | Replacement | Status |
-|------------|-------------|--------|
-| `requestId` as unique ID | Controller address as identifier | `requestId` always returns 0 per ERC-7540 |
-| `Settled` status | `Claimable` status | Renamed for clarity |
-| `Cancelled` status | Request deletion (no status) | Cancellation removes request |
-| Unbounded settlement | Chunked settlement with cursor | Gas-bounded processing |
-| Immediate mint on deposit | Delayed mint at epoch open | Fair pricing semantics |
-| Static carry calculation | Ledger-based carry tracking | Loss attribution support |
-
-**API endpoint changes:**
-
-| Old Endpoint | New Endpoint | Response Change |
-|--------------|--------------|-----------------|
-| `POST /legacy-claim` | `POST /requests/:id/claim` | Returns 410 Gone with guidance |
-| `GET /legacy-status` | `GET /redemptions` | Returns 410 Gone with guidance |
-
-**Status value mappings (contract):**
-
-| Old | New | Value |
-|-----|-----|-------|
-| `Pending` | `Pending` | 0 (unchanged) |
-| `Cancelled` | *deleted* | n/a |
-| `Settled` | `Claimable` | 2 |
-| `Claimed` | `Claimed` | 3 |
-
----
 ## 13) Change Checklist
 
 Before coding:
 
 - [ ] Read this file
 - [ ] Open vault1 config, provider factory, and route files
-- [ ] Confirm change targets EpochTrancheVault flow
+- [ ] Confirm change targets ClosedBookBatchVault flow
+- [ ] Check current deployment state (legacy vs new)
 
 During coding:
 
@@ -850,6 +663,7 @@ During coding:
 - [ ] Update contract ABI in `customVaultClient.ts` if adding new functions
 - [ ] Add error mapping for new contract errors
 - [ ] Test both happy path and error cases
+- [ ] Account for deployment gap if working with current Amoy
 
 After coding:
 
@@ -857,6 +671,7 @@ After coding:
 - [ ] Run `pnpm --filter vault-web build`
 - [ ] For contracts: `forge build` and `forge test` in `contracts/`
 - [ ] Verify endpoint paths used by frontend match mounted backend routes
+- [ ] Update deployment gap documentation if state changed
 
 ---
 
@@ -919,17 +734,17 @@ pnpm build
                     v                                 v
         +---------------------+           +---------------------+
         |  CustomVaultProvider|           |  Entitlement Repo   |
-        |  (reads contract)   |           |  (tracks carry)     |
+        |  (reads contract)   |           |  (tracks state)     |
         +----------+----------+           +---------------------+
                    |
                    | viem / RPC
                    v
         +---------------------+
-        | EpochTrancheVault   |
+        | ClosedBookBatchVault|
         | (Polygon Mainnet)   |
         +---------------------+
 ```
 
 ---
 
-_Last updated: March 4, 2026 - EpochTrancheVault Wave 3_
+_Last updated: March 2026 - ClosedBookBatchVault migration in progress_

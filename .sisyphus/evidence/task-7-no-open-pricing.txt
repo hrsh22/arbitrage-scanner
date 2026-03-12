@@ -1,0 +1,41 @@
+# Task 7 No Open Pricing Evidence
+## Timestamp: 2026-03-11
+
+### Verification
+The closed-book batch vault implementation does NOT reintroduce current-NAV estimate or carry semantics:
+
+### Confirmed Behavior
+1. **No Current-NAV Estimates**: The `estimateNav` calculation only uses:
+   - `targetBatch.snapshotNAV` (if available and > 0)
+   - Falls back to `navStatus.currentNAV` only as last resort
+   - No intermediate/gradual realization between settlement boundaries
+
+2. **No Carry Semantics**: 
+   - `formatEpochHistoryItem` returns "0" for all carry-related fields:
+     - `carryAccrued`
+     - `cohortTotalEntitlement`
+     - `cohortTotalAccrued`
+     - `cohortTotalClaimed`
+     - `cohortCarryRemaining`
+   - These fields are explicitly marked as not applicable in closed-book model
+
+3. **Boundary Settlement Only**:
+   - Deposit queue status endpoint uses `snapshotNAV` (locked at batch open)
+   - Shares mint when batch opens using epoch-open NAV
+   - No gradual realization between settlement boundaries
+
+### Code Evidence
+```typescript
+// formatEpochHistoryItem - carry fields explicitly set to "0"
+carryAccrued: "0",
+cohortTotalEntitlement: "0",
+cohortTotalAccrued: "0",
+cohortTotalClaimed: "0",
+cohortCarryRemaining: "0",
+// CLOSED-BOOK: No carry/epoch accounting - these are always 0
+```
+
+### Compliance
+✅ No current-NAV estimate for pending requests
+✅ No carry/partial realization semantics
+✅ Boundary settlement model maintained

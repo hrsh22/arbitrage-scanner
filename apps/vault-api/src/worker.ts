@@ -25,6 +25,14 @@ function isVaultLiveExecutionAllowed(config: VaultInstanceConfig): boolean {
   return env.VAULT_MODE === "live" && config.enabled;
 }
 
+function shouldSchedulePeriodicNavRefresh(config: VaultInstanceConfig): boolean {
+  if (config.type !== "custom") {
+    return true;
+  }
+
+  return config.vaultContractType !== "closedBookBatchVault";
+}
+
 function scheduleInterval(fn: () => Promise<void>, intervalMs: number, name: string): void {
   const timer = setInterval(() => {
     fn().catch((error) =>
@@ -139,7 +147,48 @@ async function runReconciliationForVault(vaultId: number): Promise<void> {
   if (oracle) {
     try {
       let health = await oracle.getNavHealth();
-      if (health.stale) {
+      const shouldAutoRefreshClosedBookNav =
+        config.vaultContractType === "closedBookBatchVault" &&
+        (await manager.needsNavRefreshForActionableWork());
+
+      if (shouldAutoRefreshClosedBookNav) {
+        logger.warn(
+          "CapitalWorker [Liquidity]: Closed-book vault has actionable batch work and needs NAV refresh before reconciliation",
+          {
+            vaultId,
+            secondsSinceUpdate: health.secondsSinceUpdate,
+            thresholdSeconds: health.thresholdSeconds,
+            stale: health.stale,
+          },
+        );
+
+        await runNavRefreshForVault(vaultId);
+        health = await oracle.getNavHealth();
+
+        if (health.stale) {
+          logger.warn(
+            "CapitalWorker [Liquidity]: Skipping reconciliation while NAV remains stale after refresh attempt",
+            {
+              vaultId,
+              secondsSinceUpdate: health.secondsSinceUpdate,
+              thresholdSeconds: health.thresholdSeconds,
+            },
+          );
+          return;
+        }
+      } else if (health.stale) {
+        if (config.vaultContractType === "closedBookBatchVault") {
+          logger.info(
+            "CapitalWorker [Liquidity]: NAV is stale for closed-book vault but there is no actionable batch work",
+            {
+              vaultId,
+              secondsSinceUpdate: health.secondsSinceUpdate,
+              thresholdSeconds: health.thresholdSeconds,
+            },
+          );
+          return;
+        }
+
         logger.warn(
           "CapitalWorker [Liquidity]: NAV stale, attempting refresh before reconciliation",
           {
@@ -179,6 +228,10 @@ async function runReconciliationForVault(vaultId: number): Promise<void> {
   reconciliationInFlight.add(vaultId);
   try {
     const result = await manager.runReconciliation();
+
+    if (result.action === "settled" && config.vaultContractType === "closedBookBatchVault") {
+      await runNavRefreshForVault(vaultId);
+    }
 
     if (result.action !== "none") {
       logger.info("CapitalWorker [Liquidity]: Reconciliation action taken", {
@@ -265,7 +318,7 @@ function scheduleVaultCrons(): void {
   for (const config of enabledConfigs) {
     const vaultLabel = `vault=${config.id}/${config.name}`;
 
-    if (vaultNavOracles.has(config.id)) {
+    if (vaultNavOracles.has(config.id) && shouldSchedulePeriodicNavRefresh(config)) {
       scheduleInterval(
         () => runNavRefreshForVault(config.id),
         config.navRefreshIntervalMin * 60 * 1000,
@@ -287,7 +340,9 @@ async function runInitialTasks(): Promise<void> {
   const enabledConfigs = getEnabledVaultConfigs();
 
   const initialPromises = enabledConfigs.map(async (config) => {
-    await runNavRefreshForVault(config.id);
+    if (shouldSchedulePeriodicNavRefresh(config)) {
+      await runNavRefreshForVault(config.id);
+    }
     await runReconciliationForVault(config.id);
   });
 

@@ -1,0 +1,33 @@
+ClosedBookBatchVault Rollback Package
+=====================================
+
+Current State
+- Legacy active Amoy vault remains the configured production/runtime contract until explicit cutover.
+- New staging ClosedBookBatchVault deployment exists at 0x66e665a6B8898920e76f263eAa729afd716c1470.
+- No silent cutover has been performed.
+
+Rollback Principle
+- Rollback is config-based and deployment-selection-based.
+- Do not mutate the legacy vault state in place.
+- If the new deployment is not promoted, keep the runtime pointed at the legacy vault.
+
+Config Targets
+- Legacy config path: apps/vault-api/src/config/vaults/amoy/vault1-pph.ts
+- New deployment artifact: contracts/deployments/closed-book-batch-vault-staging-latest.json
+
+Cutover Preconditions
+- Deploy script dry run passes
+- Deployment verification passes
+- Manual or scripted lifecycle rehearsal passes
+- API/UI/runtime point at closed-book routes and types
+- Operator runbook is updated for closed-book flow
+
+Rollback Steps
+1. Keep or restore apps/vault-api config to the legacy EpochTrancheVault address/type.
+2. Do not register the new staging deployment as active production runtime until explicit promotion.
+3. If a cutover had been partially attempted, revert only config/script selection, not on-chain state of the legacy contract.
+4. Retain the new deployment artifact and evidence for future retry; do not delete historical evidence.
+
+Promotion Notes
+- The new deployment was rehearsed successfully on Amoy.
+- Remaining promotion work is an explicit config/runtime switch, not a contract mutation of the legacy vault.

@@ -1,0 +1,71 @@
+Task 1 Evidence: Related Tests
+===============================
+
+Date: 2026-03-11
+Status: PASSED
+
+## Test Commands Verified
+
+### 1. T1-Focused Tests
+
+Command:
+pnpm --filter vault exec vitest run src/__tests__/closedBookBatch.test.ts
+
+Result:
+✓ src/__tests__/closedBookBatch.test.ts (33 tests) 5ms
+Test Files  1 passed (1)
+Tests  33 passed (33)
+
+### 2. API Route Tests
+
+Command:
+pnpm --filter vault exec vitest run src/__tests__/customVaultRoutes.test.ts
+
+Result:
+✓ src/__tests__/customVaultRoutes.test.ts (19 tests) 5ms
+Test Files  1 passed (1)
+Tests  19 passed (19)
+
+### 3. Build Verification
+
+Command:
+pnpm --filter vault build
+
+Result:
+PASSED (no errors)
+
+## Test Coverage
+
+**closedBookBatch.test.ts (33 tests):**
+- State Definitions (7 states)
+- Valid State Transitions (8 tests)
+- Batch Sealing Rule (2 tests)
+- Cancellation Rule (5 tests)
+- Valid Operations by State (3 tests)
+- State Mapping from Request Status (7 tests)
+- Transition Matrix Verification (7 tests)
+
+**customVaultRoutes.test.ts (19 tests):**
+- Route Structure
+- GET /:vaultId/info
+- POST /:vaultId/redeem
+- GET /:vaultId/requests/:requestId
+- POST /:vaultId/requests/:requestId/claim
+- GET /:vaultId/epochs/current
+- GET /:vaultId/epochs/:epochId
+- GET /:vaultId/redemptions
+- Validation Helpers
+- Lifecycle Fields in API Responses
+- Deprecated Routes (410 Gone)
+
+## Key T1 Semantics Verified
+
+1. **Batch Lifecycle**: OPEN -> CUTOFF -> FLATTENING -> SETTLING -> SETTLED -> CLOSED -> REOPEN
+2. **Batch Sealing**: First request in OPEN state seals the batch
+3. **Cancellation Rule**: Cancellation IMPOSSIBLE after CUTOFF state
+4. **State Transitions**: All forward transitions verified, backward transitions rejected
+5. **Operations by State**: Correct operations allowed in each state
+
+## Total Test Count
+
+52 tests passed (33 + 19)

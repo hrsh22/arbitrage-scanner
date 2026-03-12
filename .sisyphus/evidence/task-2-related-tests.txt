@@ -1,0 +1,21 @@
+T2 Tests Verification
+=====================
+
+Command: pnpm --filter vault exec vitest run src/__tests__/flatnessDetector.test.ts
+Status: PASSED
+
+Date: 2026-03-11
+
+Test Results:
+Test Files  1 passed (1)
+Tests       4 passed (4)
+Duration    ~10s
+
+Test Coverage:
+- returns correct structure with all five conditions
+- detects resting orders as blocking condition
+- detects reconciliation failure as blocking condition
+- includes timestamp in result
+
+Files tested:
+- apps/vault-api/src/__tests__/flatnessDetector.test.ts

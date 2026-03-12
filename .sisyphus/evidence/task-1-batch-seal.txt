@@ -1,0 +1,67 @@
+Task 1 Evidence: Batch Seal Semantics
+=====================================
+
+Date: 2026-03-11
+Status: VERIFIED
+
+## Canonical State Machine Established
+
+Files Modified:
+- apps/vault-api/src/services/claimStateMachine.ts
+- apps/vault-api/src/repositories/withdrawalRepository.ts
+- apps/vault-api/src/services/customVaultProvider.ts
+- apps/vault-api/src/services/vaultProvider.ts
+- apps/vault-api/src/routes/customVaultRoutes.ts
+
+## Closed-Book Batch Lifecycle
+
+OPEN -> CUTOFF -> FLATTENING -> SETTLING -> SETTLED -> CLOSED -> REOPEN
+
+## Batch Sealing Rule (Implemented)
+
+First accepted redemption request in OPEN state seals the active batch.
+Subsequent requests route to the next batch (queued for future processing).
+
+Reference: claimStateMachine.ts
+```typescript
+export const ClaimState = {
+  OPEN: "open",
+  CUTOFF: "cutoff",  // First request seals the batch
+  FLATTENING: "flattening",
+  SETTLING: "settling",
+  SETTLED: "settled",
+  CLOSED: "closed",
+  REOPEN: "reopen",
+} as const;
+```
+
+## Cancellation Rule (Implemented)
+
+Cancellation is IMPOSSIBLE after CUTOFF.
+Requests are irreversible once the batch is sealed.
+
+Reference: withdrawalRepository.ts
+```typescript
+// CLOSED-BOOK BATCH: Enforce cancellation rule
+// Cancellation is IMPOSSIBLE after CUTOFF
+if (targetStatus === "cancelled" && vaultType === "custom") {
+  const cancellableStates: WithdrawalStatus[] = ["open"];
+  if (!cancellableStates.includes(currentStatus)) {
+    return {
+      success: false,
+      request,
+      error: `Cancellation IMPOSSIBLE: Batch is already sealed...`,
+      cancellationRejected: true,
+    };
+  }
+}
+```
+
+## Terminology Update
+
+- "batch" / "cycle" - New closed-book model terminology
+- "epoch" - Legacy/deprecated (WeeklyEpochVault/EpochTrancheVault reference only)
+
+## Build Verification
+
+pnpm --filter vault build: PASSED

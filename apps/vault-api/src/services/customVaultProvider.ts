@@ -1,38 +1,52 @@
 /**
- * Custom Vault Provider (ERC-7540 Compliant with Tranche Lifecycle)
+ * Custom Vault Provider (ERC-7540 Compliant with Closed-Book Batch Lifecycle)
  *
- * Implementation for the EpochTrancheVault with:
+ * Implementation for the ClosedBookBatchVault with:
  * - Unique requestIds per redemption (not controller-aggregated)
  * - Deposit queue with queueDeposit/processDepositQueue
- * - Epoch freeze/settle/finalize flow
- * - Carry accrual on claim
+ * - Batch open/cutoff/flattening/settling/settled/reopen flow
+ * - Locked clearing price at flatten time (no mark-to-market estimates)
  * - Async request/settle/claim flow
  * - Pro-rata settlement for insufficient liquidity
  * - NAV staleness guards
  * - Operator authorization model
  *
+ * CLOSED-BOOK BATCH MODEL:
+ * - OPEN: Batch is accepting new redemption requests
+ * - CUTOFF: First request accepted in OPEN seals the batch; no new requests accepted
+ * - FLATTENING: NAV snapshot taken, clearing price locked
+ * - SETTLING: Batch settlement in progress, entitlements being calculated
+ * - SETTLED: Settlement complete, ready for claims
+ * - CLOSED: Claims window ended
+ * - REOPEN: Settlement complete, vault ready for next batch
+ *
+ * BATCH SEALING RULE:
+ * - First accepted redemption request in OPEN state seals the active batch
+ * - Subsequent requests route to the next batch (queued for future processing)
+ *
+ * CANCELLATION RULE:
+ * - Cancellation is IMPOSSIBLE after CUTOFF
+ * - Requests are irreversible once the batch is sealed
+ *
+ * NO CARRY/PARTIAL REALIZATION:
+ * - ClosedBookBatchVault has NO carry accrual or partial realization
+ * - All redemptions settle at the locked clearing price at batch settlement
+ * - No mark-to-market estimates after price lock
+ *
  * This provider uses the CustomVaultClient for contract interactions.
  */
 
 import type { Address, Hex } from "viem";
-import {
-  createPublicClient,
-  createWalletClient,
-  erc20Abi,
-  formatUnits,
-  type WalletClient,
-} from "viem";
+import { createWalletClient, formatUnits, type WalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Chain } from "viem/chains";
 import { logger } from "../logger.js";
-import { USDC_E_ADDRESS } from "../constants.js";
 import type {
   CapitalRebalanceResult,
   IVaultProvider,
   VaultProviderConfig,
   VaultProviderType,
   VaultMetadata,
-  EpochStatus,
   RedemptionRequest,
   RequestResult,
   ClaimResult,
@@ -51,11 +65,8 @@ import { createNetworkTransport } from "../rpcTransport.js";
 import { getNetworkConfigFromEnv, getRpcUrlForNetwork } from "../config/network.js";
 import { getVaultConfig } from "../config/index.js";
 import type { VaultInstanceConfig } from "../config/types.js";
-import { SUPPORTS_POLYMARKET_TRADING } from "../constants.js";
+import { FlatnessDetector, type FlatnessCheckResult } from "./flatnessDetector.js";
 import { SafeWalletService } from "./safeWallet.js";
-
-// Default epoch duration: 7 days in seconds
-const DEFAULT_EPOCH_DURATION_SECONDS = 604800;
 
 // Default NAV staleness threshold: 6 hours in seconds
 const DEFAULT_NAV_STALENESS_SECONDS = 21600;
@@ -70,14 +81,15 @@ interface RoleKeyConfig {
   settlerKey?: string;
   snapshotterKey?: string;
   depositProcessorKey?: string;
+  safeOperatorKey?: string;
 }
 
 /**
- * Map contract request status to domain request status
+ * Map contract redemption status to domain request status
  *
- * EpochTrancheVault Lifecycle Semantics (requestId-based):
- * - Pending (0): Request submitted, waiting for epoch freeze
- * - Frozen (1): Epoch frozen, waiting for settlement
+ * ClosedBookBatchVault Lifecycle Semantics (requestId-based):
+ * - Pending (0): Request submitted, waiting for batch cutoff
+ * - Escrowed (1): Shares escrowed, waiting for settlement
  * - Claimable (2): Settlement complete, ready to claim
  * - Claimed (3): Assets claimed
  * - Cancelled (4): Request was cancelled
@@ -85,7 +97,7 @@ interface RoleKeyConfig {
 function mapContractStatusToDomain(status: number): RedemptionRequest["status"] {
   const statusMap: RedemptionRequest["status"][] = [
     "pending",
-    "frozen",
+    "frozen", // Escrowed maps to frozen (shares locked)
     "claimable",
     "claimed",
     "cancelled",
@@ -96,7 +108,7 @@ function mapContractStatusToDomain(status: number): RedemptionRequest["status"] 
 /**
  * Custom Vault Provider
  *
- * Manages interactions with the EpochTrancheVault contract.
+ * Manages interactions with the ClosedBookBatchVault contract.
  */
 export class CustomVaultProvider implements IVaultProvider {
   readonly providerType: VaultProviderType = "custom";
@@ -111,11 +123,12 @@ export class CustomVaultProvider implements IVaultProvider {
   private readonly settlerKey?: string;
   private readonly snapshotterKey?: string;
   private readonly depositProcessorKey?: string;
+  private readonly safeOperatorKey?: string;
   private adminWalletClient?: WalletClient;
-  private safeWalletService?: SafeWalletService;
   private settlerWalletClient?: WalletClient;
   private snapshotterWalletClient?: WalletClient;
   private depositProcessorWalletClient?: WalletClient;
+  private safeWalletService?: SafeWalletService;
 
   constructor(config: VaultProviderConfig, roleKeys?: string | RoleKeyConfig, chain?: Chain) {
     if (config.providerType !== "custom") {
@@ -137,22 +150,24 @@ export class CustomVaultProvider implements IVaultProvider {
             settlerKey: roleKeys,
             snapshotterKey: roleKeys,
             depositProcessorKey: roleKeys,
+            safeOperatorKey: roleKeys,
           }
         : {
             adminKey: roleKeys?.adminKey,
             settlerKey: roleKeys?.settlerKey,
             snapshotterKey: roleKeys?.snapshotterKey ?? roleKeys?.settlerKey,
             depositProcessorKey: roleKeys?.depositProcessorKey ?? roleKeys?.settlerKey,
+            safeOperatorKey: roleKeys?.safeOperatorKey,
           };
     this.adminKey = resolvedKeys.adminKey;
     this.settlerKey = resolvedKeys.settlerKey;
     this.snapshotterKey = resolvedKeys.snapshotterKey;
     this.depositProcessorKey = resolvedKeys.depositProcessorKey;
+    this.safeOperatorKey = resolvedKeys.safeOperatorKey;
     const networkConfig = getNetworkConfigFromEnv();
     this.chain = chain ?? networkConfig.chain;
     this.rpcUrl = getRpcUrlForNetwork(networkConfig.name);
     this.customConfig = {
-      epochDurationSeconds: DEFAULT_EPOCH_DURATION_SECONDS,
       navStalenessThresholdSeconds: DEFAULT_NAV_STALENESS_SECONDS,
       ...config.customConfig,
     } as Required<CustomVaultConfig>;
@@ -164,11 +179,11 @@ export class CustomVaultProvider implements IVaultProvider {
       vaultAddress: config.vaultAddress,
       chainId: this.chain.id,
       network: networkConfig.name,
-      epochDuration: this.customConfig.epochDurationSeconds,
       hasAdminKey: !!this.adminKey,
       hasSettlerKey: !!this.settlerKey,
       hasSnapshotterKey: !!this.snapshotterKey,
       hasDepositProcessorKey: !!this.depositProcessorKey,
+      hasSafeOperatorKey: !!this.safeOperatorKey,
     });
   }
 
@@ -180,11 +195,10 @@ export class CustomVaultProvider implements IVaultProvider {
     logger.debug("CustomVaultProvider.getVaultInfo", { vaultId: this.config.vaultId });
 
     try {
-      const [asset, vaultConfig, navStatus, currentEpoch, totalSupply] = await Promise.all([
+      const [asset, navStatus, currentBatchId, totalSupply] = await Promise.all([
         this.client.getAsset(),
-        this.client.getVaultConfig(),
         this.client.getNAVStatus(),
-        this.client.getCurrentEpoch(),
+        this.client.getCurrentBatch(),
         this.client.getTotalSupply(),
       ]);
 
@@ -193,11 +207,23 @@ export class CustomVaultProvider implements IVaultProvider {
 
       const totalAssets = await this.client.getTotalAssets();
 
-      const sharePrice = Number(formatUnits(navStatus.currentNAV, 18));
+      // CLOSED-BOOK: No live mark-to-market estimates after price lock
+      // Return 1.0 as placeholder (actual clearing price is batch-specific)
+      const sharePrice = 1.0;
 
-      // Calculate current epoch info
-      const epochEnd = await this.client.getEpochEnd(currentEpoch);
-      const epochStart = epochEnd - BigInt(vaultConfig.epochDuration);
+      // Get current batch info
+      const currentBatch = await this.client.getBatch(currentBatchId);
+      const batchStart = currentBatch
+        ? new Date(Number(currentBatch.startTime) * 1000)
+        : new Date();
+      const batchEnd =
+        currentBatch && currentBatch.endTime > 0n
+          ? new Date(Number(currentBatch.endTime) * 1000)
+          : null;
+
+      // Get next batch info
+      const nextBatchId = currentBatchId + 1n;
+      const nextBatch = await this.client.getBatch(nextBatchId);
 
       return {
         vaultId: this.config.vaultId,
@@ -209,13 +235,17 @@ export class CustomVaultProvider implements IVaultProvider {
         totalAssets,
         totalSupply,
         sharePrice,
-        epochInfo: {
-          currentEpochId: Number(currentEpoch),
-          currentEpochStart: new Date(Number(epochStart) * 1000),
-          currentEpochEnd: new Date(Number(epochEnd) * 1000),
-          nextSettlementTime: new Date(Number(epochEnd) * 1000),
-          epochDurationSeconds: Number(vaultConfig.epochDuration),
+        // Batch lifecycle info (replacing epochInfo)
+        batchInfo: {
+          currentBatchId: Number(currentBatchId),
+          currentBatchStart: batchStart,
+          currentBatchEnd: batchEnd,
+          currentBatchStatus: currentBatch?.status ?? "open",
+          nextBatchId: Number(nextBatchId),
+          nextBatchExists: !!nextBatch,
+          batchDurationSeconds: null,
         },
+        // CLOSED-BOOK: No estimatedSettlementTime (depends on when batch is sealed)
         navLastUpdated,
         navIsStale,
       };
@@ -228,30 +258,123 @@ export class CustomVaultProvider implements IVaultProvider {
     }
   }
 
-  async getEpochStatus(epochId?: number): Promise<EpochStatus> {
-    const contractEpochId = BigInt(epochId ?? (await this.client.getCurrentEpoch()));
-    logger.debug("CustomVaultProvider.getEpochStatus", {
+  /**
+   * Get batch status with closed-book lifecycle fields
+   *
+   * Exposes:
+   * - active batch id, next batch id
+   * - batch state (open/cutoff/flattening/settling/settled/closed/reopen)
+   * - cutoff time
+   * - flattening blockers (if applicable)
+   * - settlement status and progress
+   * - locked clearing price (only after flatten)
+   * - claimable redemptions count
+   * - minted deposits (processed deposits)
+   */
+  async getBatchStatus(batchId?: number): Promise<{
+    batchId: number;
+    nextBatchId: number;
+    status: string;
+    startTime: Date;
+    endTime: Date;
+    cutoffTime?: Date;
+    isPriceLocked: boolean;
+    lockedClearingPrice?: string; // Only after flatten
+    settlementProgress?: {
+      processed: number;
+      total: number;
+      isComplete: boolean;
+    };
+    totalSharesPending: bigint;
+    totalAssetsSnapshot?: string;
+    proRataRatio: number;
+    totalQueuedDeposits: bigint;
+    claimableRedemptions: number;
+    mintedDeposits: number; // Approximate from deposit queue
+  }> {
+    const contractBatchId = BigInt(batchId ?? (await this.client.getCurrentBatch()));
+    logger.debug("CustomVaultProvider.getBatchStatus", {
       vaultId: this.config.vaultId,
-      epochId: contractEpochId.toString(),
+      batchId: contractBatchId.toString(),
     });
 
-    const epoch = await this.client.getEpoch(contractEpochId);
-    if (!epoch) {
-      throw new Error(`Failed to get epoch status for epoch ${contractEpochId}`);
+    const batch = await this.client.getBatch(contractBatchId);
+    if (!batch) {
+      throw new Error(`Failed to get batch status for batch ${contractBatchId}`);
     }
 
-    // Convert bigint proRataRatio to number factor (0-1)
-    const proRataFactor = epoch.proRataRatio ? Number(epoch.proRataRatio) / 1e18 : undefined;
+    const nextBatchId = Number(contractBatchId + 1n);
+    const nextBatch = await this.client.getBatch(BigInt(nextBatchId));
+
+    // Get settlement progress if settling or settled
+    let settlementProgress;
+    if (batch.status === "settling" || batch.status === "settled") {
+      const progress = await this.client.getSettlementProgress(contractBatchId);
+      if (progress) {
+        settlementProgress = {
+          processed: Number(progress.processed),
+          total: Number(progress.total),
+          isComplete: progress.isComplete,
+        };
+      }
+    }
+
+    // Get claimable redemption count
+    const claimableRedemptions =
+      batch.status === "settled" ? Number(batch.totalSharesPending > 0n ? 1 : 0) : 0;
+
+    // Calculate pro-rata factor (0-1)
+    const proRataFactor = batch.proRataRatio ? Number(batch.proRataRatio) / 1e18 : 1.0;
 
     return {
-      epochId: Number(epoch.epochId),
-      startTime: new Date(Number(epoch.startTime) * 1000),
-      endTime: new Date(Number(epoch.endTime) * 1000),
-      settlementTime: new Date(Number(epoch.endTime) * 1000), // Settlement happens at end time
-      totalRequests: Number(epoch.totalSharesPending > 0n ? 1 : 0), // Approximate
-      totalShares: epoch.totalSharesPending,
-      settled: epoch.status === "settled" || epoch.status === "finalized",
-      proRataFactor,
+      batchId: Number(batch.batchId),
+      nextBatchId,
+      status: batch.status,
+      startTime: new Date(Number(batch.startTime) * 1000),
+      endTime: new Date(Number(batch.endTime) * 1000),
+      cutoffTime: batch.cutoffTime > 0n ? new Date(Number(batch.cutoffTime) * 1000) : undefined,
+      isPriceLocked: batch.isPriceLocked,
+      // CLOSED-BOOK: Only expose lockedClearingPrice after flatten (price lock)
+      lockedClearingPrice: batch.isPriceLocked ? batch.lockedClearingPrice.toString() : undefined,
+      settlementProgress,
+      totalSharesPending: batch.totalSharesPending,
+      totalAssetsSnapshot:
+        batch.totalAssetsSnapshot > 0n ? batch.totalAssetsSnapshot.toString() : undefined,
+      proRataRatio: proRataFactor,
+      totalQueuedDeposits: batch.totalQueuedDeposits,
+      claimableRedemptions,
+      // Approximate: would need to query deposit request count
+      mintedDeposits: 0,
+    };
+  }
+
+  /**
+   * @deprecated Use getBatchStatus instead. Kept for backward compatibility during migration.
+   */
+  async getEpochStatus(epochId?: number): Promise<{
+    epochId: number;
+    batchId: number;
+    startTime: Date;
+    endTime: Date;
+    settlementTime: Date;
+    totalRequests: number;
+    totalShares: bigint;
+    settled: boolean;
+    proRataFactor?: number;
+    lockedClearingPrice?: string;
+  }> {
+    const status = await this.getBatchStatus(epochId);
+    return {
+      epochId: status.batchId,
+      batchId: status.batchId,
+      startTime: status.startTime,
+      endTime: status.endTime,
+      settlementTime: status.endTime,
+      totalRequests: status.claimableRedemptions,
+      totalShares: status.totalSharesPending,
+      settled: status.status === "settled" || status.status === "closed",
+      proRataFactor: status.proRataRatio,
+      lockedClearingPrice: status.lockedClearingPrice,
     };
   }
 
@@ -285,16 +408,11 @@ export class CustomVaultProvider implements IVaultProvider {
     }
 
     const request = this.mapRedemptionDataToRequest(redemptionData);
-    const claimable = redemptionData.status === "claimable";
+    const claimable = redemptionData.status === "claimable" && redemptionData.assetsClaimable > 0n;
 
-    // Calculate estimated settlement time based on epoch
-    let estimatedSettlementTime: Date | undefined;
-    if (redemptionData.status === "pending" || redemptionData.status === "frozen") {
-      const epoch = await this.client.getEpoch(redemptionData.epochId);
-      if (epoch) {
-        estimatedSettlementTime = new Date(Number(epoch.endTime) * 1000);
-      }
-    }
+    // CLOSED-BOOK: No estimated settlement time (depends on batch sealing and settlement)
+    // Return undefined as settlement is not time-based
+    const estimatedSettlementTime = undefined;
 
     return {
       request,
@@ -309,23 +427,19 @@ export class CustomVaultProvider implements IVaultProvider {
       userAddress,
     });
 
-    // Get the requestId for this user (controller)
-    const requestId = await this.client.getControllerRequestId(userAddress);
-
-    if (requestId === 0n) {
-      return []; // No request found
-    }
-
-    const redemptionData = await this.client.getRedemptionRequest(requestId);
-    if (
-      !redemptionData ||
-      redemptionData.status === "claimed" ||
-      redemptionData.status === "cancelled"
-    ) {
+    const requestIds = await this.client.getControllerRequestIds(userAddress);
+    if (requestIds.length === 0) {
       return [];
     }
 
-    return [this.mapRedemptionDataToRequest(redemptionData)];
+    const requests = await Promise.all(
+      requestIds.map(async (requestId) => this.client.getRedemptionRequest(requestId)),
+    );
+
+    return requests
+      .filter((request): request is RedemptionRequestData => request !== null)
+      .map((request) => this.mapRedemptionDataToRequest(request))
+      .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
   }
 
   async getUserRedemptionState(userAddress: Address): Promise<UserRedemptionState> {
@@ -334,35 +448,35 @@ export class CustomVaultProvider implements IVaultProvider {
       userAddress,
     });
 
-    // Get the requestId for this user
-    const requestId = await this.client.getControllerRequestId(userAddress);
+    const requests = await this.getUserRequests(userAddress);
 
-    // Build request objects
     const pendingRequests: RedemptionRequest[] = [];
     const claimableRequests: RedemptionRequest[] = [];
 
     let totalSharesPending = 0n;
     let totalSharesClaimable = 0n;
 
-    if (requestId !== 0n) {
-      const redemptionData = await this.client.getRedemptionRequest(requestId);
-      if (redemptionData) {
-        const request = this.mapRedemptionDataToRequest(redemptionData);
-
-        if (redemptionData.status === "pending" || redemptionData.status === "frozen") {
-          pendingRequests.push(request);
-          totalSharesPending = redemptionData.shares;
-        } else if (redemptionData.status === "claimable") {
-          claimableRequests.push(request);
-          totalSharesClaimable = redemptionData.shares;
-        }
+    for (const request of requests) {
+      if (request.status === "pending" || request.status === "frozen") {
+        pendingRequests.push(request);
+        totalSharesPending += request.shares;
+      } else if (request.status === "claimable" && (request.assetsActual ?? 0n) > 0n) {
+        claimableRequests.push(request);
+        totalSharesClaimable += request.shares;
+      } else if (request.status === "claimable") {
+        pendingRequests.push({
+          ...request,
+          status: "frozen",
+        });
+        totalSharesPending += request.shares;
       }
     }
 
-    const estimatedAssetsPending =
-      totalSharesPending > 0n ? await this.previewRedeem(totalSharesPending) : 0n;
+    // CLOSED-BOOK: No previewRedeem estimates (no live mark-to-market)
+    // Use actual claimable assets from settlement if available
+    const estimatedAssetsPending = 0n;
     const estimatedAssetsClaimable = claimableRequests.reduce(
-      (sum, request) => sum + (request.assetsActual ?? request.assetsEstimated),
+      (sum, request) => sum + (request.assetsActual ?? 0n),
       0n,
     );
 
@@ -378,15 +492,23 @@ export class CustomVaultProvider implements IVaultProvider {
     };
   }
 
+  /**
+   * @deprecated ClosedBookBatchVault has no previewRedeem (no live mark-to-market)
+   * Use actual assetsClaimable from settlement instead.
+   */
   async previewRedeem(shares: bigint): Promise<bigint> {
     logger.debug("CustomVaultProvider.previewRedeem", {
       vaultId: this.config.vaultId,
       shares: shares.toString(),
     });
 
-    const navStatus = await this.client.getNAVStatus();
-    if (navStatus.currentNAV === 0n) return shares;
-    return (shares * navStatus.currentNAV) / 10n ** 18n;
+    // CLOSED-BOOK: Return 0 as preview is not supported
+    // Settlement uses locked clearing price, not current NAV
+    logger.warn("CustomVaultProvider.previewRedeem is deprecated in closed-book model", {
+      vaultId: this.config.vaultId,
+      shares: shares.toString(),
+    });
+    return 0n;
   }
 
   // ============================================================================
@@ -431,8 +553,9 @@ export class CustomVaultProvider implements IVaultProvider {
       };
     }
 
-    // Calculate estimated assets
-    const assetsEstimated = await this.previewRedeem(shares);
+    // CLOSED-BOOK: No live asset estimation
+    // Actual assets determined at settlement using locked clearing price
+    const assetsEstimated = 0n;
 
     // Note: Actual requestRedeem requires a wallet client
     // The contract will return a unique requestId (not controller-aggregated)
@@ -466,7 +589,8 @@ export class CustomVaultProvider implements IVaultProvider {
     });
     return {
       success: false,
-      error: "Redemption cancellation is disabled. Redeem requests are irreversible.",
+      error:
+        "Redemption cancellation is disabled. Redeem requests are irreversible after batch cutoff.",
     };
   }
 
@@ -525,9 +649,8 @@ export class CustomVaultProvider implements IVaultProvider {
       };
     }
 
-    // Calculate assets received (after carry deduction)
+    // CLOSED-BOOK: Assets received from settlement (no carry deduction)
     const assetsReceived = redemptionData.assetsClaimable;
-    const carryDeducted = redemptionData.carryDeducted;
 
     // Note: Actual claim requires wallet client with redeem(requestId, shares, receiver)
     logger.info("CustomVaultProvider: Redemption claim authorized", {
@@ -536,27 +659,35 @@ export class CustomVaultProvider implements IVaultProvider {
       controller: redemptionData.controller,
       shares: redemptionData.shares.toString(),
       assetsReceived: assetsReceived.toString(),
-      carryDeducted: carryDeducted.toString(),
     });
 
     return {
       success: true,
       requestId,
       assetsReceived,
-      carryDeducted,
+      // CLOSED-BOOK: No carry deducted
+      carryDeducted: 0n,
     };
   }
 
   // ============================================================================
-  // Settlement Operations
+  // Settlement Operations (Closed-Book Batch Lifecycle)
   // ============================================================================
 
-  async isSettlementReady(epochId?: number): Promise<boolean> {
-    const currentEpochId = Number(await this.client.getCurrentEpoch());
-    const targetEpochId = epochId ?? currentEpochId;
+  /**
+   * Check if batch settlement is ready
+   *
+   * CLOSED-BOOK: Settlement requires:
+   * 1. Batch status is Flattening (price locked) or later
+   * 2. NAV is fresh (for flatten)
+   * 3. Flatness check passes (for settle)
+   */
+  async isSettlementReady(batchId?: number): Promise<boolean> {
+    const currentBatchId = Number(await this.client.getCurrentBatch());
+    const targetBatchId = batchId ?? currentBatchId;
     logger.debug("CustomVaultProvider.isSettlementReady", {
       vaultId: this.config.vaultId,
-      epochId: targetEpochId,
+      batchId: targetBatchId,
     });
 
     const navStatus = await this.client.getNAVStatus();
@@ -564,40 +695,858 @@ export class CustomVaultProvider implements IVaultProvider {
       return false;
     }
 
-    const now = BigInt(Math.floor(Date.now() / 1000));
+    const batch = await this.client.getBatch(BigInt(targetBatchId));
+    if (!batch) {
+      return false;
+    }
 
-    if (epochId !== undefined) {
-      const epoch = await this.client.getEpoch(BigInt(targetEpochId));
-      if (!epoch) {
+    // Can settle if:
+    // - Batch is in Flattening, Settling, or Settled status
+    // - Price is locked (after flatten)
+    if (
+      batch.status === "flattening" ||
+      batch.status === "settling" ||
+      batch.status === "settled"
+    ) {
+      return batch.isPriceLocked;
+    }
+
+    if (batch.status === "open" || batch.status === "cutoff") {
+      const hasActionableWork = await this.hasActionableBatchWork(targetBatchId);
+      if (!hasActionableWork) {
         return false;
       }
 
-      const totalQueuedAssets = await this.client.getTotalQueuedAssets();
-      const hasPendingWork = epoch.totalSharesPending > 0n || totalQueuedAssets > 0n;
-
-      return (
-        now >= epoch.endTime &&
-        (epoch.status === "active" ||
-          ((epoch.status === "frozen" || epoch.status === "settling") && hasPendingWork))
-      );
+      const flattenCheck = await this.canFlattenBatch(targetBatchId);
+      return flattenCheck.canFlatten;
     }
 
-    const [currentEpoch, previousEpoch, totalQueuedAssets] = await Promise.all([
-      this.client.getEpoch(BigInt(currentEpochId)),
-      currentEpochId > 0 ? this.client.getEpoch(BigInt(currentEpochId - 1)) : Promise.resolve(null),
-      this.client.getTotalQueuedAssets(),
-    ]);
-
-    const currentNeedsFreeze =
-      currentEpoch !== null && currentEpoch.status === "active" && now >= currentEpoch.endTime;
-    const previousNeedsSettlement =
-      previousEpoch !== null &&
-      (previousEpoch.status === "frozen" || previousEpoch.status === "settling") &&
-      now >= previousEpoch.endTime &&
-      (previousEpoch.totalSharesPending > 0n || totalQueuedAssets > 0n);
-
-    return currentNeedsFreeze || previousNeedsSettlement;
+    return false;
   }
+
+  async hasActionableBatchWork(batchId?: number): Promise<boolean> {
+    const currentBatchId = Number(await this.client.getCurrentBatch());
+    const targetBatchId = batchId ?? currentBatchId;
+    const batch = await this.client.getBatch(BigInt(targetBatchId));
+    if (!batch) {
+      return false;
+    }
+
+    if (batch.status === "flattening" || batch.status === "settling") {
+      return true;
+    }
+
+    if (batch.totalSharesPending > 0n || batch.totalQueuedDeposits > 0n) {
+      return true;
+    }
+
+    if (targetBatchId !== currentBatchId) {
+      return false;
+    }
+
+    if (batch.status !== "open" && batch.status !== "cutoff") {
+      return false;
+    }
+
+    const nextBatch = await this.client.getBatch(BigInt(targetBatchId + 1));
+    return (nextBatch?.totalQueuedDeposits ?? 0n) > 0n;
+  }
+
+  async needsNavRefreshForActionableWork(batchId?: number): Promise<boolean> {
+    const hasActionableWork = await this.hasActionableBatchWork(batchId);
+    if (!hasActionableWork) {
+      return false;
+    }
+
+    const navStatus = await this.client.getNAVStatus();
+    return !navStatus.isFresh || navStatus.currentNAV === 0n;
+  }
+
+  async estimatePendingWithdrawalLiability(batchId?: number): Promise<bigint> {
+    const currentBatchId = Number(await this.client.getCurrentBatch());
+    const targetBatchId = batchId ?? currentBatchId;
+    const batch = await this.client.getBatch(BigInt(targetBatchId));
+    if (!batch || batch.totalSharesPending === 0n) {
+      return 0n;
+    }
+
+    if (
+      (batch.status === "flattening" || batch.status === "settling") &&
+      batch.totalAssetsSnapshot > 0n
+    ) {
+      return batch.totalAssetsSnapshot;
+    }
+
+    if (batch.status === "settled" || batch.status === "closed" || batch.status === "reopen") {
+      return 0n;
+    }
+
+    const navStatus = await this.client.getNAVStatus();
+    return (batch.totalSharesPending * navStatus.currentNAV) / 10n ** 18n;
+  }
+
+  /**
+   * Check if batch can be flattened (flatness check)
+   *
+   * CLOSED-BOOK FLATNESS GATE: Flattening is blocked unless all flatness conditions are met:
+   * 1. Zero open Polymarket positions
+   * 2. Zero resting orders on CLOB
+   * 3. deployedCapital == 0
+   * 4. Zero non-dust CTF token balances
+   * 5. Successful reconciliation pass
+   */
+  async canFlattenBatch(batchId?: number): Promise<{
+    canFlatten: boolean;
+    flatnessCheck?: FlatnessCheckResult;
+    blockingConditions?: string[];
+  }> {
+    const targetBatchId = batchId ?? Number(await this.client.getCurrentBatch());
+    logger.info("CustomVaultProvider.canFlattenBatch", {
+      vaultId: this.config.vaultId,
+      batchId: targetBatchId,
+    });
+
+    const batch = await this.client.getBatch(BigInt(targetBatchId));
+    if (!batch) {
+      return { canFlatten: false, blockingConditions: ["Batch not found"] };
+    }
+
+    // Check batch status
+    if (batch.status !== "cutoff" && batch.status !== "open") {
+      return {
+        canFlatten: false,
+        blockingConditions: [`Batch status is ${batch.status}, expected cutoff or open`],
+      };
+    }
+
+    // Run flatness check
+    const flatnessDetector = new FlatnessDetector();
+    const flatnessCheck = await flatnessDetector.checkFlatness(
+      this.vaultConfig,
+      this.vaultConfig.tradingSafeAddress ?? this.vaultConfig.safeAddress,
+    );
+
+    if (!flatnessCheck.isFlat) {
+      logger.error("CustomVaultProvider: Flattening blocked - flatness check failed", {
+        vaultId: this.config.vaultId,
+        batchId: targetBatchId,
+        blockingConditions: flatnessCheck.blockingConditions,
+      });
+      return {
+        canFlatten: false,
+        flatnessCheck,
+        blockingConditions: flatnessCheck.blockingConditions,
+      };
+    }
+
+    return {
+      canFlatten: true,
+      flatnessCheck,
+    };
+  }
+
+  /**
+   * Execute batch settlement with closed-book lifecycle
+   *
+   * CLOSED-BOOK BATCH FLOW:
+   * 1. CUTOFF: Close deposits for current batch (optional, automatic on first redeem)
+   * 2. FLATTEN: Lock clearing price, snapshot NAV, escrow shares
+   * 3. SETTLE: Compute claimable assets using locked price
+   * 4. CLOSE: Mark batch as closed after claims period
+   * 5. REOPEN: Start next batch cycle
+   */
+  async executeSettlement(
+    epochId?: number,
+    skipFlatnessCheck?: boolean,
+  ): Promise<{
+    success: boolean;
+    txHash?: Hex;
+    /** LEGACY: Epoch ID for backward compatibility */
+    epochId: number;
+    /** CLOSED-BOOK: Batch ID for batch-based vaults */
+    batchId?: number;
+    requestsSettled: number;
+    totalShares: bigint;
+    totalAssets: bigint;
+    lockedClearingPrice?: string;
+    error?: string;
+  }> {
+    const targetBatchId = await this.resolveMaintenanceBatch(epochId);
+    logger.info("CustomVaultProvider.executeSettlement", {
+      vaultId: this.config.vaultId,
+      batchId: targetBatchId,
+    });
+
+    if (!this.settlerKey && !this.snapshotterKey && !this.depositProcessorKey && !this.adminKey) {
+      return {
+        success: false,
+        epochId: targetBatchId,
+        batchId: targetBatchId,
+        requestsSettled: 0,
+        totalShares: 0n,
+        totalAssets: 0n,
+        error: "Batch maintenance requires at least one configured signer",
+      };
+    }
+
+    // Get batch data
+    let batch = await this.client.getBatch(BigInt(targetBatchId));
+    if (!batch) {
+      return {
+        success: false,
+        epochId: targetBatchId,
+        batchId: targetBatchId,
+        requestsSettled: 0,
+        totalShares: 0n,
+        totalAssets: 0n,
+        error: `Batch ${targetBatchId} not found`,
+      };
+    }
+
+    const reopenIfNeeded = async (
+      settledBatch: NonNullable<typeof batch>,
+    ): Promise<{ success: boolean; txHash?: Hex; error?: string }> => {
+      if (settledBatch.status !== "settled" && settledBatch.status !== "closed") {
+        return { success: true };
+      }
+
+      let maintenanceWalletClient: WalletClient;
+      try {
+        maintenanceWalletClient = this.getMaintenanceWalletClient();
+      } catch (error) {
+        return {
+          success: false,
+          error: `Failed to initialize maintenance wallet for reopen: ${(error as Error).message}`,
+        };
+      }
+
+      const reopenResult = await this.retryWithBackoff(() =>
+        this.client.reopenBatch(maintenanceWalletClient),
+      );
+      if (!reopenResult.success) {
+        return {
+          success: false,
+          txHash: reopenResult.txHash,
+          error: `Failed to reopen next batch: ${reopenResult.error}`,
+        };
+      }
+
+      const reopenConfirmResult = await this.retryWithBackoff(() =>
+        this.client.waitForTransaction(reopenResult.txHash!),
+      );
+      if (!reopenConfirmResult.success) {
+        return {
+          success: false,
+          txHash: reopenResult.txHash,
+          error: `Reopen transaction failed to confirm: ${reopenConfirmResult.error}`,
+        };
+      }
+
+      logger.info("CustomVaultProvider: Next batch reopened successfully", {
+        txHash: reopenResult.txHash,
+        previousBatchId: targetBatchId,
+      });
+
+      return { success: true, txHash: reopenResult.txHash };
+    };
+
+    if (batch.status === "settled" || batch.status === "closed") {
+      logger.info("CustomVaultProvider: Batch already finalized - skipping automatic reopen", {
+        batchId: targetBatchId,
+        status: batch.status,
+      });
+      return {
+        success: true,
+        epochId: targetBatchId,
+        batchId: targetBatchId,
+        requestsSettled: Number(batch.totalSharesPending > 0n ? 1 : 0),
+        totalShares: batch.totalSharesPending,
+        totalAssets: batch.totalAssetsSnapshot,
+        lockedClearingPrice: batch.lockedClearingPrice.toString(),
+      };
+    }
+
+    // Step 1: Cutoff batch if open
+    let cutoffTxHash: Hex | undefined;
+    if (batch.status === "open") {
+      logger.info("CustomVaultProvider: Cutting off batch", { batchId: targetBatchId });
+
+      let maintenanceWalletClient: WalletClient;
+      try {
+        maintenanceWalletClient = this.getMaintenanceWalletClient();
+      } catch (error) {
+        return {
+          success: false,
+          epochId: targetBatchId,
+          batchId: targetBatchId,
+          requestsSettled: 0,
+          totalShares: 0n,
+          totalAssets: 0n,
+          error: `Failed to initialize maintenance wallet: ${(error as Error).message}`,
+        };
+      }
+
+      const cutoffResult = await this.retryWithBackoff(() =>
+        this.client.cutoffBatch(maintenanceWalletClient),
+      );
+
+      if (!cutoffResult.success) {
+        return {
+          success: false,
+          epochId: targetBatchId,
+          batchId: targetBatchId,
+          requestsSettled: 0,
+          totalShares: 0n,
+          totalAssets: 0n,
+          error: `Failed to cutoff batch: ${cutoffResult.error}`,
+        };
+      }
+
+      cutoffTxHash = cutoffResult.txHash;
+
+      // Wait for cutoff transaction confirmation
+      const cutoffConfirmResult = await this.retryWithBackoff(() =>
+        this.client.waitForTransaction(cutoffTxHash!),
+      );
+      if (!cutoffConfirmResult.success) {
+        return {
+          success: false,
+          txHash: cutoffTxHash,
+          epochId: targetBatchId,
+          batchId: targetBatchId,
+          requestsSettled: 0,
+          totalShares: 0n,
+          totalAssets: 0n,
+          error: `Cutoff transaction failed to confirm: ${cutoffConfirmResult.error}`,
+        };
+      }
+
+      logger.info("CustomVaultProvider: Batch cutoff successfully", {
+        txHash: cutoffTxHash,
+        batchId: targetBatchId,
+      });
+
+      // Refresh batch data
+      batch = await this.client.getBatch(BigInt(targetBatchId));
+      if (!batch) {
+        return {
+          success: false,
+          txHash: cutoffTxHash,
+          epochId: targetBatchId,
+          batchId: targetBatchId,
+          requestsSettled: 0,
+          totalShares: 0n,
+          totalAssets: 0n,
+          error: `Batch ${targetBatchId} missing after cutoff`,
+        };
+      }
+    }
+
+    // Step 2: Flatten batch (lock clearing price) if cutoff
+    let flattenTxHash: Hex | undefined;
+    if (batch.status === "cutoff") {
+      // FLATNESS GATE: Verify vault is flat before flattening
+      if (!skipFlatnessCheck) {
+        const canFlattenResult = await this.canFlattenBatch(targetBatchId);
+        if (!canFlattenResult.canFlatten) {
+          return {
+            success: false,
+            txHash: cutoffTxHash,
+            epochId: targetBatchId,
+            batchId: targetBatchId,
+            requestsSettled: 0,
+            totalShares: 0n,
+            totalAssets: 0n,
+            error: `Flattening blocked: ${canFlattenResult.blockingConditions?.join(", ")}`,
+          };
+        }
+      }
+
+      logger.info("CustomVaultProvider: Flattening batch", { batchId: targetBatchId });
+
+      let maintenanceWalletClient: WalletClient;
+      try {
+        maintenanceWalletClient = this.getMaintenanceWalletClient();
+      } catch (error) {
+        return {
+          success: false,
+          txHash: cutoffTxHash,
+          epochId: targetBatchId,
+          batchId: targetBatchId,
+          requestsSettled: 0,
+          totalShares: 0n,
+          totalAssets: 0n,
+          error: `Failed to initialize maintenance wallet: ${(error as Error).message}`,
+        };
+      }
+
+      // Generate snapshot hash (placeholder - in production this would be a merkle root or similar)
+      const snapshotHash = `0x${"0".repeat(64)}` as Hex;
+
+      const flattenResult = await this.retryWithBackoff(() =>
+        this.client.flattenBatch(maintenanceWalletClient, snapshotHash),
+      );
+
+      if (!flattenResult.success) {
+        return {
+          success: false,
+          txHash: cutoffTxHash,
+          epochId: targetBatchId,
+          batchId: targetBatchId,
+          requestsSettled: 0,
+          totalShares: 0n,
+          totalAssets: 0n,
+          error: `Failed to flatten batch: ${flattenResult.error}`,
+        };
+      }
+
+      flattenTxHash = flattenResult.txHash;
+
+      // Wait for flatten transaction confirmation
+      const flattenConfirmResult = await this.retryWithBackoff(() =>
+        this.client.waitForTransaction(flattenTxHash!),
+      );
+      if (!flattenConfirmResult.success) {
+        return {
+          success: false,
+          txHash: flattenTxHash,
+          epochId: targetBatchId,
+          batchId: targetBatchId,
+          requestsSettled: 0,
+          totalShares: 0n,
+          totalAssets: 0n,
+          error: `Flatten transaction failed to confirm: ${flattenConfirmResult.error}`,
+        };
+      }
+
+      logger.info("CustomVaultProvider: Batch flattened successfully", {
+        txHash: flattenTxHash,
+        batchId: targetBatchId,
+      });
+
+      const nextBatch = await this.client.getBatch(BigInt(targetBatchId + 1));
+      if ((nextBatch?.totalQueuedDeposits ?? 0n) > 0n) {
+        const processResult = await this.processCurrentDepositQueue(targetBatchId + 1);
+        if (!processResult.success) {
+          return {
+            success: false,
+            txHash: flattenTxHash,
+            epochId: targetBatchId,
+            batchId: targetBatchId,
+            requestsSettled: 0,
+            totalShares: 0n,
+            totalAssets: 0n,
+            error: `Failed to process deposit queue for batch ${targetBatchId}: ${processResult.error}`,
+          };
+        }
+      }
+
+      // Refresh batch data
+      batch = await this.client.getBatch(BigInt(targetBatchId));
+      if (!batch) {
+        return {
+          success: false,
+          txHash: flattenTxHash,
+          epochId: targetBatchId,
+          batchId: targetBatchId,
+          requestsSettled: 0,
+          totalShares: 0n,
+          totalAssets: 0n,
+          error: `Batch ${targetBatchId} missing after flatten`,
+        };
+      }
+    }
+
+    // Step 3: Settle batch if flattening
+    let settleTxHash: Hex | undefined;
+    if (batch.status === "flattening" || batch.status === "settling") {
+      logger.info("CustomVaultProvider: Settling batch", {
+        batchId: targetBatchId,
+        lockedClearingPrice: batch.lockedClearingPrice.toString(),
+      });
+
+      let maintenanceWalletClient: WalletClient;
+      try {
+        maintenanceWalletClient = this.getMaintenanceWalletClient();
+      } catch (error) {
+        return {
+          success: false,
+          txHash: flattenTxHash ?? cutoffTxHash,
+          epochId: targetBatchId,
+          batchId: targetBatchId,
+          requestsSettled: 0,
+          totalShares: 0n,
+          totalAssets: 0n,
+          error: `Failed to initialize maintenance wallet: ${(error as Error).message}`,
+        };
+      }
+
+      const settleResult = await this.retryWithBackoff(() =>
+        this.client.settleBatch(maintenanceWalletClient, BigInt(targetBatchId)),
+      );
+
+      if (!settleResult.success) {
+        return {
+          success: false,
+          txHash: flattenTxHash ?? cutoffTxHash,
+          epochId: targetBatchId,
+          batchId: targetBatchId,
+          requestsSettled: 0,
+          totalShares: 0n,
+          totalAssets: 0n,
+          error: `Failed to settle batch: ${settleResult.error}`,
+        };
+      }
+
+      settleTxHash = settleResult.txHash;
+
+      // Wait for settlement transaction confirmation
+      const settleConfirmResult = await this.retryWithBackoff(() =>
+        this.client.waitForTransaction(settleTxHash!),
+      );
+      if (!settleConfirmResult.success) {
+        return {
+          success: false,
+          txHash: settleTxHash,
+          epochId: targetBatchId,
+          batchId: targetBatchId,
+          requestsSettled: 0,
+          totalShares: 0n,
+          totalAssets: 0n,
+          error: `Settlement transaction failed to confirm: ${settleConfirmResult.error}`,
+        };
+      }
+
+      logger.info("CustomVaultProvider: Batch settled successfully", {
+        txHash: settleTxHash,
+        batchId: targetBatchId,
+      });
+
+      // Refresh batch data
+      batch = await this.client.getBatch(BigInt(targetBatchId));
+    }
+
+    // Get final batch data
+    const settledBatch = await this.client.getBatch(BigInt(targetBatchId));
+    const reopenResult = settledBatch ? await reopenIfNeeded(settledBatch) : { success: true };
+    if (!reopenResult.success) {
+      return {
+        success: false,
+        txHash: reopenResult.txHash,
+        epochId: targetBatchId,
+        batchId: targetBatchId,
+        requestsSettled: 0,
+        totalShares: settledBatch?.totalSharesPending ?? 0n,
+        totalAssets: settledBatch?.totalAssetsSnapshot ?? 0n,
+        lockedClearingPrice: settledBatch ? settledBatch.lockedClearingPrice.toString() : undefined,
+        error: reopenResult.error,
+      };
+    }
+    const totalShares = settledBatch?.totalSharesPending ?? 0n;
+    const totalAssets = settledBatch?.totalAssetsSnapshot ?? 0n;
+    const requestsSettled = Number(totalShares > 0n ? 1 : 0);
+
+    logger.info("CustomVaultProvider: Settlement completed successfully", {
+      batchId: targetBatchId,
+      cutoffTxHash,
+      flattenTxHash,
+      settleTxHash,
+      totalShares: totalShares.toString(),
+      totalAssets: totalAssets.toString(),
+      requestsSettled,
+      lockedClearingPrice: settledBatch?.lockedClearingPrice.toString(),
+    });
+
+    return {
+      success: true,
+      txHash: reopenResult.txHash ?? settleTxHash ?? flattenTxHash ?? cutoffTxHash,
+      epochId: targetBatchId,
+      batchId: targetBatchId,
+      requestsSettled,
+      totalShares,
+      totalAssets,
+      lockedClearingPrice: settledBatch?.lockedClearingPrice.toString(),
+    };
+  }
+
+  // ============================================================================
+  // Capital Management
+  // ============================================================================
+
+  async rebalanceCapital(params: {
+    vaultUsdcBalance: bigint;
+    safeUsdcBalance: bigint;
+    pendingWithdrawalLiability: bigint;
+  }): Promise<CapitalRebalanceResult> {
+    const queuedAssets = await this.client.getTotalQueuedAssets();
+    const reservedRedemptionAssets = await this.client.getReservedRedemptionAssets();
+
+    // CLOSED-BOOK: No previewRedeem - use conservative estimate
+    const estimatedPendingRedemptionAssets = 0n;
+
+    const reserveBuffer = BigInt(
+      Math.max(0, Math.round(this.vaultConfig.vaultReserveUsdc * 10 ** USDC_DECIMALS)),
+    );
+    const minTransferAmount = BigInt(
+      Math.max(0, Math.round(this.vaultConfig.minAllocationAmountUsdc * 10 ** USDC_DECIMALS)),
+    );
+    const withdrawalLiability = [
+      reservedRedemptionAssets,
+      params.pendingWithdrawalLiability,
+      estimatedPendingRedemptionAssets,
+    ].reduce((max, value) => (value > max ? value : max), 0n);
+    const requiredVaultBalance = queuedAssets + withdrawalLiability + reserveBuffer;
+
+    if (!this.vaultConfig.autoLiquidityManagement) {
+      return {
+        success: true,
+        action: "none",
+        amount: 0n,
+        requiredVaultBalance,
+        queuedAssets,
+        reservedRedemptionAssets,
+        pendingWithdrawalLiability: withdrawalLiability,
+        details: "Automatic liquidity management disabled in vault config.",
+      };
+    }
+
+    const shortfall =
+      requiredVaultBalance > params.vaultUsdcBalance
+        ? requiredVaultBalance - params.vaultUsdcBalance
+        : 0n;
+
+    if (shortfall > 0) {
+      if (!this.safeOperatorKey) {
+        return {
+          success: false,
+          action: "none",
+          amount: 0n,
+          requiredVaultBalance,
+          queuedAssets,
+          reservedRedemptionAssets,
+          pendingWithdrawalLiability: withdrawalLiability,
+          error: "Safe operator key not configured for capital recall.",
+          details:
+            "Vault cash is below required liabilities but recall from trading wallet is unavailable.",
+        };
+      }
+
+      const recallAmount = params.safeUsdcBalance < shortfall ? params.safeUsdcBalance : shortfall;
+      if (recallAmount < minTransferAmount) {
+        return {
+          success: true,
+          action: "none",
+          amount: 0n,
+          requiredVaultBalance,
+          queuedAssets,
+          reservedRedemptionAssets,
+          pendingWithdrawalLiability: withdrawalLiability,
+          details:
+            "Capital recall needed, but trading wallet balance is below minimum transfer amount.",
+        };
+      }
+
+      const safeWallet = await this.getSafeWalletService();
+      const assetAddress = await this.client.getAsset();
+      const recallResult = await safeWallet.transferToken(
+        assetAddress,
+        this.config.vaultAddress,
+        recallAmount.toString(),
+      );
+
+      if (!recallResult.success) {
+        return {
+          success: false,
+          action: "none",
+          amount: 0n,
+          requiredVaultBalance,
+          queuedAssets,
+          reservedRedemptionAssets,
+          pendingWithdrawalLiability: withdrawalLiability,
+          txHash: recallResult.txHash as Hex | undefined,
+          error: recallResult.error,
+          details: "Capital recall from trading wallet failed.",
+        };
+      }
+
+      return {
+        success: true,
+        action: "deallocated",
+        amount: recallAmount,
+        requiredVaultBalance,
+        queuedAssets,
+        reservedRedemptionAssets,
+        pendingWithdrawalLiability: withdrawalLiability,
+        txHash: recallResult.txHash as Hex | undefined,
+        details: `Recalled ${Number(recallAmount) / 10 ** USDC_DECIMALS} USDC from trading wallet to vault.`,
+      };
+    }
+
+    const excessVaultBalance =
+      params.vaultUsdcBalance > requiredVaultBalance
+        ? params.vaultUsdcBalance - requiredVaultBalance
+        : 0n;
+
+    if (excessVaultBalance >= minTransferAmount) {
+      if (!this.adminKey) {
+        return {
+          success: false,
+          action: "none",
+          amount: 0n,
+          requiredVaultBalance,
+          queuedAssets,
+          reservedRedemptionAssets,
+          pendingWithdrawalLiability: withdrawalLiability,
+          error: "Admin key not configured for capital allocation.",
+          details: "Vault has excess capital but allocation signer is unavailable.",
+        };
+      }
+
+      const allocatableAssets = await this.client.getMaxAllocatableAssets();
+      const allocationAmount =
+        allocatableAssets < excessVaultBalance ? allocatableAssets : excessVaultBalance;
+
+      if (allocationAmount >= minTransferAmount) {
+        const walletClient = this.getAdminWalletClient();
+        const allocationResult = await this.client.allocateToTradingWallet(
+          walletClient,
+          allocationAmount,
+        );
+        if (!allocationResult.success) {
+          return {
+            success: false,
+            action: "none",
+            amount: 0n,
+            requiredVaultBalance,
+            queuedAssets,
+            reservedRedemptionAssets,
+            pendingWithdrawalLiability: withdrawalLiability,
+            txHash: allocationResult.txHash,
+            error: allocationResult.error,
+            details: "Capital allocation to trading wallet failed.",
+          };
+        }
+
+        return {
+          success: true,
+          action: "allocated",
+          amount: allocationAmount,
+          requiredVaultBalance,
+          queuedAssets,
+          reservedRedemptionAssets,
+          pendingWithdrawalLiability: withdrawalLiability,
+          txHash: allocationResult.txHash,
+          details: `Allocated ${Number(allocationAmount) / 10 ** USDC_DECIMALS} USDC from vault to trading wallet.`,
+        };
+      }
+    }
+
+    return {
+      success: true,
+      action: "none",
+      amount: 0n,
+      requiredVaultBalance,
+      queuedAssets,
+      reservedRedemptionAssets,
+      pendingWithdrawalLiability: withdrawalLiability,
+      details: "No rebalancing required.",
+    };
+  }
+
+  // ============================================================================
+  // Operator Authorization
+  // ============================================================================
+
+  /**
+   * Check if an address is authorized to act on behalf of a controller
+   * Authorization is granted if:
+   * 1. The address IS the controller
+   * 2. The address is an approved operator for the controller
+   */
+  async isAuthorizedForController(callerAddress: Address, controller: Address): Promise<boolean> {
+    // Direct authorization
+    if (callerAddress.toLowerCase() === controller.toLowerCase()) {
+      return true;
+    }
+
+    // CLOSED-BOOK: setOperator is not queryable, return false
+    return false;
+  }
+
+  /**
+   * Grant operator approval (requires wallet)
+   */
+  async setOperator(
+    walletClient: WalletClient,
+    operator: Address,
+    approved: boolean,
+  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
+    const result = await this.client.setOperator(walletClient, operator, approved);
+    return {
+      success: result.success,
+      txHash: result.txHash,
+      error: result.error,
+    };
+  }
+
+  /**
+   * Check if address is an operator for a controller
+   * CLOSED-BOOK: Always returns false (operator state not queryable)
+   */
+  async isOperator(controller: Address, operator: Address): Promise<boolean> {
+    return this.client.isOperator(controller, operator);
+  }
+
+  // ============================================================================
+  // Utility
+  // ============================================================================
+
+  async validateConfig(): Promise<{ valid: boolean; errors: string[] }> {
+    const errors: string[] = [];
+
+    if (!this.config.vaultAddress) {
+      errors.push("vaultAddress is required");
+    }
+
+    if (this.config.providerType !== "custom") {
+      errors.push(`Invalid providerType: ${this.config.providerType}`);
+    }
+
+    if (this.customConfig.navStalenessThresholdSeconds <= 0) {
+      errors.push("navStalenessThresholdSeconds must be positive");
+    }
+
+    // Validate contract connection
+    try {
+      await this.client.getVaultConfig();
+    } catch (error) {
+      errors.push(`Failed to connect to vault contract: ${(error as Error).message}`);
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors,
+    };
+  }
+
+  getCapabilities(): VaultCapabilities {
+    return {
+      asyncRedemption: true,
+      instantRedemption: false,
+      // CLOSED-BOOK BATCH: Cancellation impossible after CUTOFF
+      cancelBeforeSettlement: false,
+      proRataSettlement: true,
+      requiresNavForSettlement: true,
+      supportsRollover: false,
+      // CLOSED-BOOK BATCH: Uses batch/cycle terminology (not epoch-based)
+      batchBased: true,
+      epochBased: false,
+    };
+  }
+
+  // ============================================================================
+  // Private Helpers
+  // ============================================================================
 
   private getRoleWalletClient(
     key: string | undefined,
@@ -663,117 +1612,6 @@ export class CustomVaultProvider implements IVaultProvider {
     return this.snapshotterWalletClient;
   }
 
-  private getSafeWalletService(): SafeWalletService {
-    if (this.safeWalletService) {
-      return this.safeWalletService;
-    }
-
-    const tradingSafeAddress = this.vaultConfig.tradingSafeAddress ?? this.vaultConfig.safeAddress;
-    const safeOperatorKey = process.env[this.vaultConfig.safeOperatorKeyEnv] ?? "";
-    this.safeWalletService = new SafeWalletService(
-      tradingSafeAddress,
-      safeOperatorKey,
-      this.rpcUrl,
-      this.chain,
-    );
-    return this.safeWalletService;
-  }
-
-  private async ensureRecallAllowance(
-    requiredAmount: bigint,
-  ): Promise<{ success: boolean; error?: string }> {
-    const tradingSafeAddress = (this.vaultConfig.tradingSafeAddress ??
-      this.vaultConfig.safeAddress) as Address;
-    const publicClient = createPublicClient({
-      chain: this.chain,
-      transport: createNetworkTransport(this.rpcUrl),
-    });
-    const code = await publicClient.getCode({ address: tradingSafeAddress });
-
-    if (!code || code === "0x") {
-      const safeOperatorKey = process.env[this.vaultConfig.safeOperatorKeyEnv] ?? "";
-      if (!safeOperatorKey) {
-        return {
-          success: false,
-          error:
-            "Safe operator key is required to approve recall allowance from the trading-safe EOA.",
-        };
-      }
-
-      const account = privateKeyToAccount(safeOperatorKey as Hex);
-      if (account.address.toLowerCase() !== tradingSafeAddress.toLowerCase()) {
-        return {
-          success: false,
-          error:
-            `Safe operator key resolves to ${account.address}, but tradingSafeAddress is ${tradingSafeAddress}. ` +
-            "Set the safe operator key to the trading-safe EOA private key.",
-        };
-      }
-
-      const allowance = (await publicClient.readContract({
-        address: USDC_E_ADDRESS as Address,
-        abi: erc20Abi,
-        functionName: "allowance",
-        args: [tradingSafeAddress, this.config.vaultAddress],
-      })) as bigint;
-      if (allowance >= requiredAmount) {
-        return { success: true };
-      }
-
-      const walletClient = createWalletClient({
-        account,
-        chain: this.chain,
-        transport: createNetworkTransport(this.rpcUrl),
-      });
-      const txHash = await walletClient.writeContract({
-        address: USDC_E_ADDRESS as Address,
-        abi: erc20Abi,
-        functionName: "approve",
-        args: [this.config.vaultAddress, 2n ** 256n - 1n],
-        chain: this.chain,
-        account,
-      });
-      const confirmResult = await this.client.waitForTransaction(txHash);
-      if (!confirmResult.success) {
-        return {
-          success: false,
-          error: confirmResult.error ?? "Trading-safe EOA approval transaction failed to confirm.",
-        };
-      }
-
-      return { success: true };
-    }
-
-    const safeWallet = this.getSafeWalletService();
-    await safeWallet.initialize();
-    const allowance = await safeWallet.getAllowance(USDC_E_ADDRESS, this.config.vaultAddress);
-    if (allowance >= requiredAmount) {
-      return { success: true };
-    }
-
-    const approveResult = await safeWallet.approveToken(
-      USDC_E_ADDRESS,
-      this.config.vaultAddress,
-      safeWallet.getMaxUint256().toString(),
-    );
-    if (!approveResult.success || !approveResult.txHash) {
-      return {
-        success: false,
-        error: approveResult.error ?? "Failed to approve vault recall allowance from trading safe.",
-      };
-    }
-
-    const confirmResult = await this.client.waitForTransaction(approveResult.txHash as Hex);
-    if (!confirmResult.success) {
-      return {
-        success: false,
-        error: confirmResult.error ?? "Trading safe approval transaction failed to confirm.",
-      };
-    }
-
-    return { success: true };
-  }
-
   private getDepositProcessorWalletClient(): WalletClient {
     this.depositProcessorWalletClient = this.getRoleWalletClient(
       this.depositProcessorKey,
@@ -784,21 +1622,59 @@ export class CustomVaultProvider implements IVaultProvider {
     return this.depositProcessorWalletClient;
   }
 
+  private getMaintenanceWalletClient(): WalletClient {
+    if (this.snapshotterKey) {
+      return this.getSnapshotterWalletClient();
+    }
+    if (this.settlerKey) {
+      return this.getSettlerWalletClient();
+    }
+    if (this.depositProcessorKey) {
+      return this.getDepositProcessorWalletClient();
+    }
+    if (this.adminKey) {
+      return this.getAdminWalletClient();
+    }
+
+    throw new Error("CustomVaultProvider: a maintenance signer is required for batch operations");
+  }
+
+  private async getSafeWalletService(): Promise<SafeWalletService> {
+    if (!this.safeOperatorKey) {
+      throw new Error(
+        "CustomVaultProvider: safe operator key is required for trading wallet transfers",
+      );
+    }
+
+    if (!this.safeWalletService) {
+      const safeAddress = this.vaultConfig.tradingSafeAddress ?? this.vaultConfig.safeAddress;
+      this.safeWalletService = new SafeWalletService(
+        safeAddress,
+        this.safeOperatorKey,
+        this.rpcUrl,
+        this.chain,
+      );
+      await this.safeWalletService.initialize();
+    }
+
+    return this.safeWalletService;
+  }
+
   private async processCurrentDepositQueue(
-    epochId: number,
+    batchId: number,
   ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
     let walletClient: WalletClient;
     try {
-      walletClient = this.getDepositProcessorWalletClient();
+      walletClient = this.getMaintenanceWalletClient();
     } catch (error) {
       return {
         success: false,
-        error: `Failed to initialize deposit processor wallet: ${(error as Error).message}`,
+        error: `Failed to initialize maintenance wallet: ${(error as Error).message}`,
       };
     }
 
     const result = await this.retryWithBackoff(() =>
-      this.client.processDepositQueue(walletClient, BigInt(epochId), 0n, DEPOSIT_QUEUE_BATCH_SIZE),
+      this.client.processDepositQueue(walletClient, BigInt(batchId), 0n, DEPOSIT_QUEUE_BATCH_SIZE),
     );
 
     if (!result.success || !result.txHash) {
@@ -819,682 +1695,13 @@ export class CustomVaultProvider implements IVaultProvider {
     return result;
   }
 
-  private async resolveMaintenanceEpoch(epochId?: number): Promise<number> {
-    if (epochId !== undefined) {
-      return epochId;
+  private async resolveMaintenanceBatch(batchId?: number): Promise<number> {
+    if (batchId !== undefined) {
+      return batchId;
     }
 
-    const currentEpochId = Number(await this.client.getCurrentEpoch());
-    const currentEpoch = await this.client.getEpoch(BigInt(currentEpochId));
-    if (!currentEpoch) {
-      throw new Error(`Epoch ${currentEpochId} not found`);
-    }
-
-    const now = BigInt(Math.floor(Date.now() / 1000));
-    if (currentEpoch.status === "active" && now >= currentEpoch.endTime) {
-      return currentEpochId;
-    }
-
-    if (currentEpochId > 0) {
-      const totalQueuedAssets = await this.client.getTotalQueuedAssets();
-      const previousEpoch = await this.client.getEpoch(BigInt(currentEpochId - 1));
-      if (
-        previousEpoch &&
-        (previousEpoch.status === "frozen" || previousEpoch.status === "settling") &&
-        (previousEpoch.totalSharesPending > 0n || totalQueuedAssets > 0n)
-      ) {
-        return currentEpochId - 1;
-      }
-    }
-
-    return currentEpochId;
+    return Number(await this.client.getCurrentBatch());
   }
-
-  /**
-   * Execute settlement with retry logic
-   */
-  async executeSettlement(epochId?: number): Promise<{
-    success: boolean;
-    txHash?: Hex;
-    epochId: number;
-    requestsSettled: number;
-    totalShares: bigint;
-    totalAssets: bigint;
-    error?: string;
-  }> {
-    const targetEpochId = await this.resolveMaintenanceEpoch(epochId);
-    logger.info("CustomVaultProvider.executeSettlement", {
-      vaultId: this.config.vaultId,
-      epochId: targetEpochId,
-    });
-
-    if (!this.settlerKey && !this.snapshotterKey && !this.depositProcessorKey) {
-      return {
-        success: false,
-        epochId: targetEpochId,
-        requestsSettled: 0,
-        totalShares: 0n,
-        totalAssets: 0n,
-        error: "Epoch maintenance requires settlerKey or equivalent operator keys - not configured",
-      };
-    }
-
-    // Get epoch data
-    let epoch = await this.client.getEpoch(BigInt(targetEpochId));
-    if (!epoch) {
-      return {
-        success: false,
-        epochId: targetEpochId,
-        requestsSettled: 0,
-        totalShares: 0n,
-        totalAssets: 0n,
-        error: `Epoch ${targetEpochId} not found`,
-      };
-    }
-
-    const now = BigInt(Math.floor(Date.now() / 1000));
-
-    // Check if already settled
-    if (epoch.status === "settled" || epoch.status === "finalized") {
-      logger.info("CustomVaultProvider: Epoch already settled", {
-        epochId: targetEpochId,
-        status: epoch.status,
-      });
-      return {
-        success: true,
-        epochId: targetEpochId,
-        requestsSettled: Number(epoch.totalSharesPending > 0n ? 1 : 0),
-        totalShares: epoch.totalSharesPending,
-        totalAssets: epoch.frozenAssets,
-      };
-    }
-
-    // Check if epoch has ended
-    if (now < epoch.endTime) {
-      return {
-        success: false,
-        epochId: targetEpochId,
-        requestsSettled: 0,
-        totalShares: 0n,
-        totalAssets: 0n,
-        error: `Epoch ${targetEpochId} has not ended yet. End time: ${new Date(Number(epoch.endTime) * 1000).toISOString()}`,
-      };
-    }
-
-    // Step 1: Freeze epoch if not frozen
-    let freezeTxHash: Hex | undefined;
-    let depositProcessingTxHash: Hex | undefined;
-    if (epoch.status === "active") {
-      logger.info("CustomVaultProvider: Freezing epoch", {
-        epochId: targetEpochId,
-      });
-
-      // Generate snapshot hash (placeholder - in production this would be a merkle root or similar)
-      const snapshotHash = `0x${"0".repeat(64)}` as Hex;
-
-      let snapshotterWalletClient: WalletClient;
-      try {
-        snapshotterWalletClient = this.getSnapshotterWalletClient();
-      } catch (error) {
-        return {
-          success: false,
-          epochId: targetEpochId,
-          requestsSettled: 0,
-          totalShares: 0n,
-          totalAssets: 0n,
-          error: `Failed to initialize snapshotter wallet: ${(error as Error).message}`,
-        };
-      }
-
-      const freezeResult = await this.retryWithBackoff(() =>
-        this.client.freezeEpoch(snapshotterWalletClient, BigInt(targetEpochId), snapshotHash),
-      );
-
-      if (!freezeResult.success) {
-        return {
-          success: false,
-          epochId: targetEpochId,
-          requestsSettled: 0,
-          totalShares: 0n,
-          totalAssets: 0n,
-          error: `Failed to freeze epoch: ${freezeResult.error}`,
-        };
-      }
-
-      freezeTxHash = freezeResult.txHash;
-
-      // Wait for freeze transaction confirmation with retry
-      const freezeConfirmResult = await this.retryWithBackoff(() =>
-        this.client.waitForTransaction(freezeTxHash!),
-      );
-      if (!freezeConfirmResult.success) {
-        return {
-          success: false,
-          txHash: freezeTxHash,
-          epochId: targetEpochId,
-          requestsSettled: 0,
-          totalShares: 0n,
-          totalAssets: 0n,
-          error: `Freeze transaction failed to confirm: ${freezeConfirmResult.error}`,
-        };
-      }
-
-      logger.info("CustomVaultProvider: Epoch frozen successfully", {
-        txHash: freezeTxHash,
-        epochId: targetEpochId,
-      });
-
-      const totalQueuedAssets = await this.client.getTotalQueuedAssets();
-      if (totalQueuedAssets > 0n) {
-        const processResult = await this.processCurrentDepositQueue(targetEpochId + 1);
-        if (!processResult.success) {
-          return {
-            success: false,
-            txHash: freezeTxHash,
-            epochId: targetEpochId,
-            requestsSettled: 0,
-            totalShares: 0n,
-            totalAssets: 0n,
-            error: `Failed to process deposit queue for epoch ${targetEpochId + 1}: ${processResult.error}`,
-          };
-        }
-
-        depositProcessingTxHash = processResult.txHash;
-      }
-      epoch = await this.client.getEpoch(BigInt(targetEpochId));
-      if (!epoch) {
-        return {
-          success: false,
-          txHash: depositProcessingTxHash ?? freezeTxHash,
-          epochId: targetEpochId,
-          requestsSettled: 0,
-          totalShares: 0n,
-          totalAssets: 0n,
-          error: `Epoch ${targetEpochId} missing after freeze`,
-        };
-      }
-
-      logger.info("CustomVaultProvider: Deposit queue processed for new active epoch", {
-        epochId: targetEpochId + 1,
-        txHash: depositProcessingTxHash,
-      });
-    }
-
-    if (epoch.totalSharesPending === 0n) {
-      if (!depositProcessingTxHash) {
-        const totalQueuedAssets = await this.client.getTotalQueuedAssets();
-        if (totalQueuedAssets > 0n) {
-          const processResult = await this.processCurrentDepositQueue(targetEpochId + 1);
-          if (!processResult.success) {
-            return {
-              success: false,
-              txHash: freezeTxHash,
-              epochId: targetEpochId,
-              requestsSettled: 0,
-              totalShares: 0n,
-              totalAssets: epoch.frozenAssets,
-              error: `Failed to process deposit queue for epoch ${targetEpochId + 1}: ${processResult.error}`,
-            };
-          }
-
-          depositProcessingTxHash = processResult.txHash;
-        }
-      }
-
-      logger.info(
-        "CustomVaultProvider: Epoch maintenance completed with no redemption settlement required",
-        {
-          epochId: targetEpochId,
-          freezeTxHash,
-          depositProcessingTxHash,
-        },
-      );
-
-      return {
-        success: true,
-        txHash: depositProcessingTxHash ?? freezeTxHash,
-        epochId: targetEpochId,
-        requestsSettled: 0,
-        totalShares: 0n,
-        totalAssets: epoch.frozenAssets,
-      };
-    }
-
-    let walletClient: WalletClient;
-    try {
-      walletClient = this.getSettlerWalletClient();
-    } catch (error) {
-      return {
-        success: false,
-        txHash: depositProcessingTxHash ?? freezeTxHash,
-        epochId: targetEpochId,
-        requestsSettled: 0,
-        totalShares: 0n,
-        totalAssets: epoch.frozenAssets,
-        error: `Failed to initialize settler wallet: ${(error as Error).message}`,
-      };
-    }
-
-    const carryAmount = 0n;
-
-    // Step 3: Settle epoch
-    logger.info("CustomVaultProvider: Settling epoch", {
-      epochId: targetEpochId,
-      carryAmount: carryAmount.toString(),
-    });
-
-    const settleResult = await this.retryWithBackoff(() =>
-      this.client.settleEpoch(walletClient, BigInt(targetEpochId), carryAmount),
-    );
-
-    if (!settleResult.success) {
-      return {
-        success: false,
-        txHash: freezeTxHash,
-        epochId: targetEpochId,
-        requestsSettled: 0,
-        totalShares: 0n,
-        totalAssets: 0n,
-        error: `Failed to settle epoch: ${settleResult.error}`,
-      };
-    }
-
-    const settleTxHash = settleResult.txHash!;
-
-    // Wait for settlement transaction confirmation with retry
-    const settleConfirmResult = await this.retryWithBackoff(() =>
-      this.client.waitForTransaction(settleTxHash),
-    );
-    if (!settleConfirmResult.success) {
-      return {
-        success: false,
-        txHash: settleTxHash,
-        epochId: targetEpochId,
-        requestsSettled: 0,
-        totalShares: 0n,
-        totalAssets: 0n,
-        error: `Settlement transaction failed to confirm: ${settleConfirmResult.error}`,
-      };
-    }
-
-    // Step 4: Finalize epoch
-    logger.info("CustomVaultProvider: Finalizing epoch", {
-      epochId: targetEpochId,
-    });
-
-    const finalizeResult = await this.retryWithBackoff(() =>
-      this.client.finalizeEpoch(walletClient, BigInt(targetEpochId)),
-    );
-
-    if (!finalizeResult.success) {
-      return {
-        success: false,
-        txHash: settleTxHash,
-        epochId: targetEpochId,
-        requestsSettled: 0,
-        totalShares: 0n,
-        totalAssets: 0n,
-        error: `Failed to finalize epoch: ${finalizeResult.error}`,
-      };
-    }
-
-    const finalizeTxHash = finalizeResult.txHash!;
-
-    // Wait for finalize transaction confirmation with retry
-    const finalizeConfirmResult = await this.retryWithBackoff(() =>
-      this.client.waitForTransaction(finalizeTxHash),
-    );
-    if (!finalizeConfirmResult.success) {
-      return {
-        success: false,
-        txHash: settleTxHash,
-        epochId: targetEpochId,
-        requestsSettled: 0,
-        totalShares: 0n,
-        totalAssets: 0n,
-        error: `Finalize transaction failed to confirm: ${finalizeConfirmResult.error}`,
-      };
-    }
-
-    // Get updated epoch data after settlement
-    const settledEpoch = await this.client.getEpoch(BigInt(targetEpochId));
-    const totalShares = settledEpoch?.totalSharesPending ?? 0n;
-    const totalAssets = settledEpoch?.frozenAssets ?? 0n;
-    const requestsSettled = Number(totalShares > 0n ? 1 : 0);
-
-    logger.info("CustomVaultProvider: Settlement completed successfully", {
-      epochId: targetEpochId,
-      freezeTxHash,
-      settleTxHash,
-      finalizeTxHash,
-      totalShares: totalShares.toString(),
-      totalAssets: totalAssets.toString(),
-      requestsSettled,
-    });
-
-    return {
-      success: true,
-      txHash: settleTxHash,
-      epochId: targetEpochId,
-      requestsSettled,
-      totalShares,
-      totalAssets,
-    };
-  }
-
-  async rebalanceCapital(params: {
-    vaultUsdcBalance: bigint;
-    safeUsdcBalance: bigint;
-    pendingWithdrawalLiability: bigint;
-  }): Promise<CapitalRebalanceResult> {
-    const queuedAssets = await this.client.getTotalQueuedAssets();
-    const reservedRedemptionAssets = await this.client.getReservedRedemptionAssets();
-    const deployedCapital = await this.client.getDeployedCapital();
-    const totalPendingRedeemShares = await this.client.getTotalPendingRedeemShares();
-    const estimatedPendingRedemptionAssets =
-      totalPendingRedeemShares > 0n ? await this.previewRedeem(totalPendingRedeemShares) : 0n;
-    const reserveBuffer = BigInt(
-      Math.max(0, Math.round(this.vaultConfig.vaultReserveUsdc * 10 ** USDC_DECIMALS)),
-    );
-    const minTransferAmount = BigInt(
-      Math.max(0, Math.round(this.vaultConfig.minAllocationAmountUsdc * 10 ** USDC_DECIMALS)),
-    );
-    const withdrawalLiability = [
-      reservedRedemptionAssets,
-      params.pendingWithdrawalLiability,
-      estimatedPendingRedemptionAssets,
-    ].reduce((max, value) => (value > max ? value : max), 0n);
-    const requiredVaultBalance = queuedAssets + withdrawalLiability + reserveBuffer;
-
-    if (!this.vaultConfig.autoLiquidityManagement) {
-      return {
-        success: true,
-        action: "none",
-        amount: 0n,
-        requiredVaultBalance,
-        queuedAssets,
-        reservedRedemptionAssets,
-        pendingWithdrawalLiability: withdrawalLiability,
-        details: "Automatic liquidity management disabled in vault config.",
-      };
-    }
-
-    const shortfall =
-      requiredVaultBalance > params.vaultUsdcBalance
-        ? requiredVaultBalance - params.vaultUsdcBalance
-        : 0n;
-
-    if (shortfall > 0n) {
-      if (!this.adminKey) {
-        return {
-          success: false,
-          action: "none",
-          amount: 0n,
-          requiredVaultBalance,
-          queuedAssets,
-          reservedRedemptionAssets,
-          pendingWithdrawalLiability: withdrawalLiability,
-          error: "Admin key not configured for capital recall.",
-          details: "Vault cash is below required liabilities but admin recall is unavailable.",
-        };
-      }
-
-      let recallAmount = shortfall;
-      if (params.safeUsdcBalance < recallAmount) {
-        recallAmount = params.safeUsdcBalance;
-      }
-      if (deployedCapital < recallAmount) {
-        recallAmount = deployedCapital;
-      }
-
-      if (recallAmount < minTransferAmount || recallAmount === 0n) {
-        return {
-          success: true,
-          action: "none",
-          amount: 0n,
-          requiredVaultBalance,
-          queuedAssets,
-          reservedRedemptionAssets,
-          pendingWithdrawalLiability: withdrawalLiability,
-          details:
-            "Vault cash is below the liability target, but recallable capital is below the minimum transfer amount or currently unavailable.",
-        };
-      }
-
-      const walletClient = this.getAdminWalletClient();
-      const approvalResult = await this.ensureRecallAllowance(recallAmount);
-      if (!approvalResult.success) {
-        return {
-          success: false,
-          action: "none",
-          amount: 0n,
-          requiredVaultBalance,
-          queuedAssets,
-          reservedRedemptionAssets,
-          pendingWithdrawalLiability: withdrawalLiability,
-          error: approvalResult.error,
-          details: "Failed to approve the vault to recall USDC from the trading safe.",
-        };
-      }
-      const result = await this.retryWithBackoff(() =>
-        this.client.recallCapital(walletClient, recallAmount),
-      );
-      if (!result.success || !result.txHash) {
-        return {
-          success: false,
-          action: "none",
-          amount: 0n,
-          requiredVaultBalance,
-          queuedAssets,
-          reservedRedemptionAssets,
-          pendingWithdrawalLiability: withdrawalLiability,
-          error: result.error,
-          details: "Failed to recall capital from the trading safe.",
-        };
-      }
-
-      const confirmResult = await this.retryWithBackoff(() =>
-        this.client.waitForTransaction(result.txHash!),
-      );
-      if (!confirmResult.success) {
-        return {
-          success: false,
-          action: "none",
-          amount: 0n,
-          requiredVaultBalance,
-          queuedAssets,
-          reservedRedemptionAssets,
-          pendingWithdrawalLiability: withdrawalLiability,
-          txHash: result.txHash,
-          error: confirmResult.error,
-          details: "Capital recall transaction failed to confirm.",
-        };
-      }
-
-      return {
-        success: true,
-        action: "deallocated",
-        amount: recallAmount,
-        requiredVaultBalance,
-        queuedAssets,
-        reservedRedemptionAssets,
-        pendingWithdrawalLiability: withdrawalLiability,
-        txHash: result.txHash,
-        details: `Recalled ${formatUnits(recallAmount, USDC_DECIMALS)} USDC to restore withdrawal and queue coverage.`,
-      };
-    }
-
-    const hasWithdrawalPressure = withdrawalLiability > 0n || reservedRedemptionAssets > 0n;
-    const excessVaultBalance =
-      params.vaultUsdcBalance > requiredVaultBalance
-        ? params.vaultUsdcBalance - requiredVaultBalance
-        : 0n;
-
-    if (
-      this.vaultConfig.defaultMode !== "live" ||
-      !SUPPORTS_POLYMARKET_TRADING ||
-      !this.adminKey ||
-      hasWithdrawalPressure ||
-      excessVaultBalance < minTransferAmount ||
-      excessVaultBalance === 0n
-    ) {
-      return {
-        success: true,
-        action: "none",
-        amount: 0n,
-        requiredVaultBalance,
-        queuedAssets,
-        reservedRedemptionAssets,
-        pendingWithdrawalLiability: withdrawalLiability,
-        details: hasWithdrawalPressure
-          ? "Withdrawal liabilities still exist, so excess vault cash remains in the vault."
-          : "No deployable excess vault cash above liabilities and reserve buffer.",
-      };
-    }
-
-    const walletClient = this.getAdminWalletClient();
-    const result = await this.retryWithBackoff(() =>
-      this.client.deployCapital(walletClient, excessVaultBalance),
-    );
-    if (!result.success || !result.txHash) {
-      return {
-        success: false,
-        action: "none",
-        amount: 0n,
-        requiredVaultBalance,
-        queuedAssets,
-        reservedRedemptionAssets,
-        pendingWithdrawalLiability: withdrawalLiability,
-        error: result.error,
-        details: "Failed to deploy excess vault cash to the trading safe.",
-      };
-    }
-
-    const confirmResult = await this.retryWithBackoff(() =>
-      this.client.waitForTransaction(result.txHash!),
-    );
-    if (!confirmResult.success) {
-      return {
-        success: false,
-        action: "none",
-        amount: 0n,
-        requiredVaultBalance,
-        queuedAssets,
-        reservedRedemptionAssets,
-        pendingWithdrawalLiability: withdrawalLiability,
-        txHash: result.txHash,
-        error: confirmResult.error,
-        details: "Capital deployment transaction failed to confirm.",
-      };
-    }
-
-    return {
-      success: true,
-      action: "allocated",
-      amount: excessVaultBalance,
-      requiredVaultBalance,
-      queuedAssets,
-      reservedRedemptionAssets,
-      pendingWithdrawalLiability: withdrawalLiability,
-      txHash: result.txHash,
-      details: `Deployed ${formatUnits(excessVaultBalance, USDC_DECIMALS)} USDC of excess vault cash to the trading safe.`,
-    };
-  }
-
-  // ============================================================================
-  // Operator Authorization
-  // ============================================================================
-
-  /**
-   * Check if an address is authorized to act on behalf of a controller
-   * Authorization is granted if:
-   * 1. The address IS the controller
-   * 2. The address is an approved operator for the controller
-   */
-  async isAuthorizedForController(callerAddress: Address, controller: Address): Promise<boolean> {
-    // Direct authorization
-    if (callerAddress.toLowerCase() === controller.toLowerCase()) {
-      return true;
-    }
-
-    // Operator authorization
-    return this.client.isOperator(controller, callerAddress);
-  }
-
-  /**
-   * Grant operator approval (requires wallet)
-   */
-  async setOperator(
-    walletClient: import("viem").WalletClient,
-    operator: Address,
-    approved: boolean,
-  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
-    const result = await this.client.setOperator(walletClient, operator, approved);
-    return {
-      success: result.success,
-      txHash: result.txHash,
-      error: result.error,
-    };
-  }
-
-  /**
-   * Check if address is an operator for a controller
-   */
-  async isOperator(controller: Address, operator: Address): Promise<boolean> {
-    return this.client.isOperator(controller, operator);
-  }
-
-  // ============================================================================
-  // Utility
-  // ============================================================================
-
-  async validateConfig(): Promise<{ valid: boolean; errors: string[] }> {
-    const errors: string[] = [];
-
-    if (!this.config.vaultAddress) {
-      errors.push("vaultAddress is required");
-    }
-
-    if (this.config.providerType !== "custom") {
-      errors.push(`Invalid providerType: ${this.config.providerType}`);
-    }
-
-    if (this.customConfig.epochDurationSeconds <= 0) {
-      errors.push("epochDurationSeconds must be positive");
-    }
-
-    if (this.customConfig.navStalenessThresholdSeconds <= 0) {
-      errors.push("navStalenessThresholdSeconds must be positive");
-    }
-
-    // Validate contract connection
-    try {
-      await this.client.getVaultConfig();
-    } catch (error) {
-      errors.push(`Failed to connect to vault contract: ${(error as Error).message}`);
-    }
-
-    return {
-      valid: errors.length === 0,
-      errors,
-    };
-  }
-
-  getCapabilities(): VaultCapabilities {
-    return {
-      asyncRedemption: true,
-      instantRedemption: false,
-      cancelBeforeSettlement: false,
-      proRataSettlement: true,
-      requiresNavForSettlement: true,
-      supportsRollover: false,
-      epochBased: true,
-    };
-  }
-
-  // ============================================================================
-  // Private Helpers
-  // ============================================================================
 
   /**
    * Retry a function with exponential backoff
@@ -1536,14 +1743,19 @@ export class CustomVaultProvider implements IVaultProvider {
     return {
       requestId: data.requestId.toString(),
       vaultId: this.config.vaultId,
-      userAddress: data.controller,
+      userAddress: data.owner,
       controller: data.controller,
       owner: data.owner,
-      epochId: Number(data.epochId),
+      // CLOSED-BOOK: Use batchId instead of epochId
+      batchId: Number(data.batchId),
+      epochId: Number(data.batchId), // Backward compatibility
       shares: data.shares,
+      // CLOSED-BOOK: Assets from settlement, not estimated
       assetsEstimated: data.assetsClaimable,
       assetsActual: data.assetsClaimable,
-      status: data.status,
+      status: mapContractStatusToDomain(
+        ["pending", "escrowed", "claimable", "claimed", "cancelled"].indexOf(data.status),
+      ),
       createdAt: new Date(Number(data.createdAt) * 1000),
       settledAt: data.settledAt ? new Date(Number(data.settledAt) * 1000) : undefined,
     };

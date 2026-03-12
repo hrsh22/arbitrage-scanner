@@ -44,6 +44,8 @@ export interface VaultMetadata {
   totalSupply: bigint;
   sharePrice: number;
   epochInfo?: EpochInfo;
+  /** CLOSED-BOOK: Batch lifecycle info (replaces epochInfo for batch-based vaults) */
+  batchInfo?: BatchInfo;
   /** NAV freshness indicator */
   navLastUpdated: Date;
   /** Whether NAV is considered stale for settlement */
@@ -56,6 +58,24 @@ export interface EpochInfo {
   currentEpochEnd: Date;
   nextSettlementTime: Date;
   epochDurationSeconds: number;
+}
+
+/** CLOSED-BOOK: Batch lifecycle information */
+export interface BatchInfo {
+  currentBatchId: number;
+  currentBatchStart: Date;
+  currentBatchEnd: Date | null;
+  currentBatchStatus:
+    | "open"
+    | "cutoff"
+    | "flattening"
+    | "settling"
+    | "settled"
+    | "closed"
+    | "reopen";
+  nextBatchId: number;
+  nextBatchExists: boolean;
+  batchDurationSeconds: number | null;
 }
 
 export type RequestStatus =
@@ -73,6 +93,9 @@ export interface RedemptionRequest {
   controller?: Address; // Controller address (defaults to userAddress)
   owner?: Address; // Owner address (defaults to userAddress)
   operator?: Address; // Address authorized to act on behalf of owner
+  /** CLOSED-BOOK: Batch ID (replaces epochId for batch-based vaults) */
+  batchId?: number;
+  /** LEGACY: Epoch ID for backward compatibility */
   epochId: number;
   shares: bigint;
   assetsEstimated: bigint;
@@ -89,6 +112,9 @@ export interface RedemptionRequest {
 export interface RequestResult {
   success: boolean;
   requestId?: string;
+  /** CLOSED-BOOK: Batch ID for batch-based vaults */
+  batchId?: number;
+  /** LEGACY: Epoch ID for backward compatibility */
   epochId?: number;
   shares: bigint;
   assetsEstimated: bigint;
@@ -101,7 +127,8 @@ export interface ClaimResult {
   success: boolean;
   requestId: string;
   assetsReceived: bigint;
-  carryDeducted?: bigint; // Carry fee deducted from claim
+  /** CLOSED-BOOK: No carry in closed-book model, always 0 */
+  carryDeducted?: bigint;
   txHash?: Hex;
   error?: string;
 }
@@ -114,6 +141,8 @@ export interface RequestStatusResult {
 
 export interface EpochStatus {
   epochId: number;
+  /** CLOSED-BOOK: Batch ID alias for batch-based vaults */
+  batchId?: number;
   startTime: Date;
   endTime: Date;
   settlementTime: Date;
@@ -123,6 +152,8 @@ export interface EpochStatus {
   settlementTxHash?: Hex;
   /** Pro-rata factor if applicable (0-1) */
   proRataFactor?: number;
+  /** CLOSED-BOOK: Locked clearing price (only after flatten) */
+  lockedClearingPrice?: string;
 }
 
 export interface UserRedemptionState {
@@ -274,6 +305,9 @@ export interface IVaultProvider {
    * @param epochId - Epoch to check
    */
   isSettlementReady(epochId?: number): Promise<boolean>;
+  hasActionableBatchWork(epochId?: number): Promise<boolean>;
+  needsNavRefreshForActionableWork(epochId?: number): Promise<boolean>;
+  estimatePendingWithdrawalLiability(epochId?: number): Promise<bigint>;
 
   /**
    * Execute epoch settlement (pro-rata distribution)
@@ -283,10 +317,15 @@ export interface IVaultProvider {
   executeSettlement(epochId?: number): Promise<{
     success: boolean;
     txHash?: Hex;
+    /** LEGACY: Epoch ID for backward compatibility */
     epochId: number;
+    /** CLOSED-BOOK: Batch ID for batch-based vaults */
+    batchId?: number;
     requestsSettled: number;
     totalShares: bigint;
     totalAssets: bigint;
+    /** CLOSED-BOOK: Locked clearing price after flatten */
+    lockedClearingPrice?: string;
     error?: string;
   }>;
 
@@ -317,7 +356,7 @@ export interface IVaultProvider {
  * Provider capability flags
  */
 export interface VaultCapabilities {
-  /** Supports async redemption with epochs */
+  /** Supports async redemption with batches/cycles */
   asyncRedemption: boolean;
   instantRedemption: boolean;
   /** Supports request cancellation before settlement */
@@ -328,8 +367,10 @@ export interface VaultCapabilities {
   requiresNavForSettlement: boolean;
   /** Supports rollover of unsettled requests */
   supportsRollover: boolean;
-  /** Epoch-based (vs instant) */
+  /** Epoch-based (vs instant) - LEGACY: use batchBased for closed-book model */
   epochBased: boolean;
+  /** Batch-based closed-book processing (new closed-book batch model) */
+  batchBased?: boolean;
 }
 
 // ============================================================================

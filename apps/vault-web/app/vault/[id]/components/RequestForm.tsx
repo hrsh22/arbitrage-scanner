@@ -9,10 +9,10 @@ import { Skeleton } from "@workspace/ui/components/skeleton";
 import { Alert, AlertDescription } from "@workspace/ui/components/alert";
 import { Info, AlertTriangle } from "lucide-react";
 import { useAppKitAccount } from "@reown/appkit/react";
-import type { VaultInstance, RedemptionRequest, Epoch } from "../../../../src/types";
+import type { VaultInstance, RedemptionRequest, Cycle } from "../../../../src/types";
+import { getCyclePresentation } from "../../../../src/lib/cyclePresentation";
 import {
   useCustomVaultRequestRedeem,
-  usePreviewRedeem,
   useTokenAllowance,
   useTokenApprove,
 } from "../../../../src/lib/hooks";
@@ -21,7 +21,7 @@ const CUSTOM_VAULT_SHARE_DECIMALS = 6;
 
 interface RequestFormProps {
   vault: VaultInstance;
-  epochInfo?: Epoch | null;
+  cycleInfo?: Cycle | null;
   userShares: bigint;
   isLoading: boolean;
   existingRequest?: RedemptionRequest | null;
@@ -30,7 +30,7 @@ interface RequestFormProps {
 
 export function RequestForm({
   vault,
-  epochInfo: _epochInfo,
+  cycleInfo,
   userShares,
   isLoading,
   existingRequest,
@@ -62,6 +62,11 @@ export function RequestForm({
     reset: resetApprove,
   } = useTokenApprove(vault.config.vaultAddress);
   const formattedShares = formatUnits(userShares, CUSTOM_VAULT_SHARE_DECIMALS);
+  const isBrokenZeroEntitlementRequest =
+    !!existingRequest &&
+    existingRequest.lifecycleError === "No entitlement record found" &&
+    Number(existingRequest.claimableAssetsFormatted ?? "0") === 0;
+  const cyclePresentation = getCyclePresentation(cycleInfo?.batchState);
 
   const parsedShares = (() => {
     if (!amount) return undefined;
@@ -72,13 +77,11 @@ export function RequestForm({
     }
   })();
 
-  const { assets: previewAssets } = usePreviewRedeem(vault.config.vaultAddress, parsedShares);
-
   const isValidAmount =
     parsedShares !== undefined && parsedShares > 0n && parsedShares <= userShares;
   const needsShareApproval = parsedShares !== undefined ? shareAllowance < parsedShares : false;
 
-  const hasExistingRequest = !!existingRequest;
+  const hasExistingRequest = !!existingRequest && !isBrokenZeroEntitlementRequest;
 
   const handleMax = () => {
     setAmount(formattedShares);
@@ -121,7 +124,7 @@ export function RequestForm({
 
   useEffect(() => {
     if (!isConfirmed) return;
-    setSuccessMessage("Redemption request submitted successfully!");
+    setSuccessMessage("Exit request submitted. It will move forward when the current cycle locks.");
     setAmount("");
     onSuccess();
   }, [isConfirmed, onSuccess]);
@@ -150,8 +153,8 @@ export function RequestForm({
 
   if (!isConnected) {
     return (
-      <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50/50 p-6 text-center">
-        <p className="text-sm text-muted-foreground">Connect your wallet to request redemption</p>
+      <div className="rounded-2xl border border-dashed border-white/15 bg-white/[0.03] p-6 text-center">
+        <p className="text-sm text-slate-300">Connect your wallet to start an exit request.</p>
       </div>
     );
   }
@@ -170,16 +173,18 @@ export function RequestForm({
     <div className="space-y-4" data-testid="request-form">
       {/* Shares Balance */}
       <div className="flex items-center justify-between text-sm">
-        <span className="text-muted-foreground">Available Shares</span>
-        <span className="font-medium font-mono" data-testid="share-balance">
+        <span className="text-slate-400">Available shares</span>
+        <span className="font-medium font-mono text-slate-100" data-testid="share-balance">
           {Number(formattedShares).toFixed(6)} shares
         </span>
       </div>
 
-      {/* Amount Input */}
       <div className="space-y-2">
-        <Label htmlFor="shares-input" className="text-xs font-medium">
-          Shares to Redeem
+        <Label
+          htmlFor="shares-input"
+          className="text-xs font-medium uppercase tracking-[0.16em] text-slate-400"
+        >
+          Shares to exit
         </Label>
         <div className="flex gap-2">
           <div className="relative flex-1">
@@ -196,7 +201,7 @@ export function RequestForm({
                 resetApprove();
               }}
               disabled={isBusy || hasExistingRequest}
-              className="pr-16 font-mono"
+              className="border-white/10 bg-white/5 pr-16 font-mono text-white placeholder:text-slate-500"
               aria-describedby="shares-input-help"
               data-testid="shares-input"
             />
@@ -204,7 +209,7 @@ export function RequestForm({
               type="button"
               onClick={handleMax}
               disabled={isBusy || hasExistingRequest}
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-200 disabled:opacity-50"
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded bg-white/10 px-2 py-0.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-white/15 disabled:opacity-50"
               aria-label="Use maximum available shares"
             >
               MAX
@@ -215,7 +220,7 @@ export function RequestForm({
               type="button"
               onClick={handleApproveShares}
               disabled={!isValidAmount || isBusy || hasExistingRequest}
-              className="min-w-[140px]"
+              className="min-w-[140px] bg-white text-slate-950 hover:bg-slate-100"
             >
               {approvePending
                 ? "Approve in Wallet..."
@@ -228,68 +233,76 @@ export function RequestForm({
               type="button"
               onClick={handleSubmit}
               disabled={!isValidAmount || isBusy || hasExistingRequest}
-              className="min-w-[120px] request-redeem-button"
+              className="min-w-[140px] bg-cyan-300 text-slate-950 hover:bg-cyan-200 request-redeem-button"
               data-testid="request-redeem-button"
             >
-              {isPending ? "Confirm in Wallet..." : isConfirming ? "Confirming..." : "Request"}
+              {isPending ? "Confirm in wallet..." : isConfirming ? "Submitting..." : "Start exit"}
             </Button>
           )}
         </div>
-        <p id="shares-input-help" className="text-xs text-muted-foreground">
-          Enter the number of shares you want to redeem
+        <p id="shares-input-help" className="text-xs leading-6 text-slate-400">
+          Choose how many shares you want settled at the end of the assigned cycle.
         </p>
       </div>
 
-      {/* Preview */}
-      {previewAssets !== undefined && parsedShares && parsedShares > 0n && (
-        <div className="rounded-lg bg-slate-50 p-3 space-y-2">
+      {parsedShares !== undefined && parsedShares > 0n && (
+        <div className="space-y-2 rounded-2xl border border-cyan-400/20 bg-cyan-400/10 p-3">
           <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Estimated USDC</span>
-            <span className="font-mono font-medium" data-testid="estimated-usdc">
-              ${Number(formatUnits(previewAssets, 6)).toFixed(2)}
-            </span>
+            <span className="text-cyan-50/70">Shares queued for exit</span>
+            <span className="font-mono font-medium text-cyan-50">{amount} shares</span>
           </div>
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Shares to Burn</span>
-            <span className="font-mono">{amount} shares</span>
-          </div>
+          <p className="text-xs leading-6 text-cyan-50/90">
+            Your final USDC amount is set when the cycle reaches{" "}
+            <span className="font-medium">{cyclePresentation.label.toLowerCase()}</span> and
+            settlement completes.
+          </p>
         </div>
       )}
 
-      {/* Existing Request Warning */}
       {hasExistingRequest && (
-        <Alert className="bg-amber-50 border-amber-200" data-testid="existing-request-warning">
-          <AlertTriangle className="h-4 w-4 text-amber-600" aria-hidden="true" />
-          <AlertDescription className="text-xs text-amber-700">
-            You have an active redemption request (#{existingRequest?.requestId.slice(0, 8)}).
-            Submit a new request after the current one is fully realized or closed.
+        <Alert
+          className="border-amber-400/20 bg-amber-400/10"
+          data-testid="existing-request-warning"
+        >
+          <AlertTriangle className="h-4 w-4 text-amber-200" aria-hidden="true" />
+          <AlertDescription className="text-xs leading-6 text-amber-50/90">
+            You have an active redemption request (#{existingRequest?.requestId.slice(0, 8)}). Start
+            a new one after the current request finishes or is cleared.
           </AlertDescription>
         </Alert>
       )}
 
-      {/* Progressive Payout Info */}
-      <Alert className="bg-blue-50/50 border-blue-200">
-        <Info className="h-4 w-4 text-blue-600" aria-hidden="true" />
-        <AlertDescription className="text-xs text-blue-700">
-          <span className="font-medium">Progressive Payouts:</span> Redemptions are processed at
-          epoch close with frozen position snapshots. Your payout will be distributed progressively
-          as frozen positions resolve over time, not all at once.
-        </AlertDescription>
-      </Alert>
-
-      {/* Error */}
-      {error && (
-        <Alert className="bg-rose-50 border-rose-200" data-testid="request-error">
-          <AlertTriangle className="h-4 w-4 text-rose-600" aria-hidden="true" />
-          <AlertDescription className="text-xs text-rose-700">{error}</AlertDescription>
+      {isBrokenZeroEntitlementRequest && (
+        <Alert className="border-amber-400/20 bg-amber-400/10" data-testid="broken-request-warning">
+          <AlertTriangle className="h-4 w-4 text-amber-200" aria-hidden="true" />
+          <AlertDescription className="text-xs leading-6 text-amber-50/90">
+            Request #{existingRequest?.requestId.slice(0, 8)} has zero settled entitlement and will
+            need manual recovery. It will not block you from submitting a new redemption request.
+          </AlertDescription>
         </Alert>
       )}
 
-      {/* Success */}
+      <Alert className="border-cyan-400/20 bg-cyan-400/10">
+        <Info className="h-4 w-4 text-cyan-200" aria-hidden="true" />
+        <AlertDescription className="text-xs leading-6 text-cyan-50/90">
+          <span className="font-medium">How exits work:</span> requests lock into a cycle, the vault
+          finalizes positions, then settlement turns your shares into claimable USDC.
+        </AlertDescription>
+      </Alert>
+
+      {error && (
+        <Alert className="border-rose-400/20 bg-rose-400/10" data-testid="request-error">
+          <AlertTriangle className="h-4 w-4 text-rose-200" aria-hidden="true" />
+          <AlertDescription className="text-xs leading-6 text-rose-50/90">{error}</AlertDescription>
+        </Alert>
+      )}
+
       {successMessage && (
-        <Alert className="bg-emerald-50 border-emerald-200" data-testid="request-success">
-          <Info className="h-4 w-4 text-emerald-600" aria-hidden="true" />
-          <AlertDescription className="text-xs text-emerald-700">{successMessage}</AlertDescription>
+        <Alert className="border-emerald-400/20 bg-emerald-400/10" data-testid="request-success">
+          <Info className="h-4 w-4 text-emerald-200" aria-hidden="true" />
+          <AlertDescription className="text-xs leading-6 text-emerald-50/90">
+            {successMessage}
+          </AlertDescription>
         </Alert>
       )}
     </div>

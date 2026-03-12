@@ -1,1 +1,1 @@
-testDeployCapitalRevertsInsufficientBalance
+testBatchStateTransitions|testCannotRequestRedeemAfterCutoff|testDepositInNewBatchAfterReopen|testProRataDistribution|testReopenBatch

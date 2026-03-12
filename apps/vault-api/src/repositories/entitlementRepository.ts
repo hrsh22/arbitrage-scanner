@@ -1,9 +1,25 @@
 /**
  * Entitlement Repository
- * CRUD operations for user redemption entitlements per epoch.
+ * CRUD operations for user redemption entitlements per epoch/batch.
  * Manages immutable entitlement ratios and tracks cumulative realized/claimed amounts.
  * Enforces entitlement caps to prevent over-distribution.
+ *
+ * DUAL-MODE SUPPORT:
+ * - Legacy (cohort-carry): Progressive payout with tranche-based distribution
+ * - Closed-book (sealed): Deterministic settlement with batch processing
+ *
+ * CLOSED-BOOK BATCH SEMANTICS:
+ * - Entitlements are calculated once at batch settlement (sealed)
+ * - No progressive accrual - all payouts available after settlement
+ * - Uses truthful 'settled' status (no proxy mapping to 'ready')
+ * - batchId replaces trancheId for custom vaults
+ *
+ * LEGACY COHORT-CARRY SEMANTICS:
+ * - Progressive payout as positions realize value
+ * - Tranche-based distribution for large cohorts
+ * - Carry remaining tracked per tranche
  */
+
 
 import { eq, and, sql } from "drizzle-orm";
 import { db as defaultDb } from "../db/index.js";

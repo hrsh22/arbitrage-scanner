@@ -47,6 +47,13 @@ export interface VaultInstanceConfig {
   profile?: VaultProfile;
 
   /**
+   * Vault contract implementation selection (T14)
+   * - "epochTrancheVault": Legacy dual-safe vault (currently active)
+   * - "closedBookBatchVault": New batch-based vault (prepared, not yet deployed)
+   */
+  vaultContractType?: "epochTrancheVault" | "closedBookBatchVault";
+
+  /**
    * Contracts (network-specific based on VAULT_NETWORK env var)
    */
   vaultAddress: string;
@@ -129,4 +136,12 @@ export interface VaultInstanceConfig {
    * Mode
    */
   defaultMode: VaultMode;
+
+  /**
+   * Starvation policy & emergency pause configuration (T5)
+   */
+  maxFlatteningWindowMs?: number; // Default: 1 hour (3600000ms)
+  forceUnwindSlippageCap?: number; // Default: 5% (0.05)
+  maxSlippageBreachCount?: number; // Default: 3
+  allowOperatorOverride?: boolean; // Default: false
 }

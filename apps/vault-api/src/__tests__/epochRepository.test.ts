@@ -55,13 +55,18 @@ describe("Epoch State Machine", () => {
       expect(isValidEpochRequestTransition("pending", "cancelled")).toBe(true);
     });
 
-    it("allows pending -> settled transition", () => {
-      expect(isValidEpochRequestTransition("pending", "claimable")).toBe(true);
+    it("allows pending -> frozen transition", () => {
+      expect(isValidEpochRequestTransition("pending", "frozen")).toBe(true);
     });
 
-    it("allows settled -> claimed transition", () => {
+    it("allows frozen -> claimable transition", () => {
+      expect(isValidEpochRequestTransition("frozen", "claimable")).toBe(true);
+    });
+
+    it("allows claimable -> claimed transition", () => {
       expect(isValidEpochRequestTransition("claimable", "claimed")).toBe(true);
     });
+
 
     it("allows same-state transitions (idempotent)", () => {
       expect(isValidEpochRequestTransition("pending", "pending")).toBe(true);
@@ -89,51 +94,61 @@ describe("Epoch State Machine", () => {
   });
 
   describe("Epoch Status Transitions", () => {
-    it("allows pending -> settling transition", () => {
-      expect(isValidEpochTransition("pending", "settling")).toBe(true);
+    it("allows pending -> frozen transition", () => {
+      expect(isValidEpochTransition("pending", "frozen")).toBe(true);
     });
 
     it("allows pending -> cancelled transition", () => {
       expect(isValidEpochTransition("pending", "cancelled")).toBe(true);
     });
 
-    it("allows settling -> settled transition", () => {
-      expect(isValidEpochTransition("settling", "claimable")).toBe(true);
+    it("allows frozen -> claimable transition", () => {
+      expect(isValidEpochTransition("frozen", "claimable")).toBe(true);
     });
 
-    it("allows settling -> cancelled transition", () => {
-      expect(isValidEpochTransition("settling", "cancelled")).toBe(true);
+    it("allows frozen -> cancelled transition", () => {
+      expect(isValidEpochTransition("frozen", "cancelled")).toBe(true);
     });
 
-    it("rejects settled -> any transition", () => {
-      expect(isValidEpochTransition("settled", "pending")).toBe(false);
-      expect(isValidEpochTransition("settled", "settling")).toBe(false);
-      expect(isValidEpochTransition("settled", "cancelled")).toBe(false);
+    it("rejects claimable -> pending transition", () => {
+      expect(isValidEpochTransition("claimable", "pending")).toBe(false);
+    });
+
+    it("rejects closed -> any transition", () => {
+      expect(isValidEpochTransition("closed", "pending")).toBe(false);
+      expect(isValidEpochTransition("closed", "frozen")).toBe(false);
+      expect(isValidEpochTransition("closed", "claimable")).toBe(false);
     });
 
     it("rejects cancelled -> any transition", () => {
       expect(isValidEpochTransition("cancelled", "pending")).toBe(false);
-      expect(isValidEpochTransition("cancelled", "settling")).toBe(false);
-      expect(isValidEpochTransition("cancelled", "settled")).toBe(false);
+      expect(isValidEpochTransition("cancelled", "frozen")).toBe(false);
+      expect(isValidEpochTransition("cancelled", "claimable")).toBe(false);
     });
   });
 
   describe("Transition Maps", () => {
     it("has expected valid epoch request transitions", () => {
-      expect(validEpochRequestTransitions.pending).toEqual(["cancelled", "claimable"]);
-      expect(validEpochRequestTransitions.claimable).toEqual(["claimed"]);
+      expect(validEpochRequestTransitions.pending).toEqual(["frozen", "cancelled"]);
+      expect(validEpochRequestTransitions.frozen).toEqual(["claimable", "cancelled"]);
+      expect(validEpochRequestTransitions.claimable).toEqual(["claimed", "closed"]);
+      expect(validEpochRequestTransitions.claimed).toEqual(["closed"]);
+      expect(validEpochRequestTransitions.closed).toEqual([]);
       expect(validEpochRequestTransitions.cancelled).toEqual([]);
-      expect(validEpochRequestTransitions.claimed).toEqual([]);
     });
 
     it("has expected valid epoch transitions", () => {
-      expect(validEpochTransitions.pending).toEqual(["settling", "cancelled"]);
-      expect(validEpochTransitions.settling).toEqual(["claimable", "cancelled"]);
-      expect(validEpochTransitions.settled).toEqual([]);
+      expect(validEpochTransitions.pending).toEqual(["frozen", "cancelled"]);
+      expect(validEpochTransitions.frozen).toEqual(["claimable", "cancelled"]);
+      expect(validEpochTransitions.claimable).toEqual(["closed", "cancelled"]);
+      expect(validEpochTransitions.closed).toEqual([]);
       expect(validEpochTransitions.cancelled).toEqual([]);
     });
   });
 });
+
+
+
 
 describe("Epoch Repository Operations", () => {
   let repo: EpochRepository;
@@ -478,7 +493,8 @@ describe("Epoch Repository Operations", () => {
         vaultAddress: "0xVault",
         shares: "1000000000000000000",
         epochId: "epoch-123",
-        status: "pending",
+        status: "frozen",
+        frozenAt: new Date(),
         claimableAssets: null,
         claimedAssets: "0",
         claimTxHash: null,
@@ -511,7 +527,7 @@ describe("Epoch Repository Operations", () => {
         }),
       });
 
-      const result = await repo.settleRequest("req-123", "950000");
+      const result = await repo.makeRequestClaimable("req-123", "950000");
 
       expect(result.success).toBe(true);
       expect(result.entity?.status).toBe("claimable");
@@ -657,7 +673,7 @@ describe("Schema Correctness", () => {
     expect(Object.keys(validEpochRequestTransitions)).toContain("claimed");
 
     expect(Object.keys(validEpochTransitions)).toContain("pending");
-    expect(Object.keys(validEpochTransitions)).toContain("settling");
+    expect(Object.keys(validEpochTransitions)).toContain("frozen");
     expect(Object.keys(validEpochTransitions)).toContain("claimable");
     expect(Object.keys(validEpochTransitions)).toContain("cancelled");
   });
@@ -665,7 +681,8 @@ describe("Schema Correctness", () => {
   it("validates transition helpers work correctly", () => {
     // Test valid transitions
     expect(isValidEpochRequestTransition("pending", "cancelled")).toBe(true);
-    expect(isValidEpochRequestTransition("pending", "claimable")).toBe(true);
+    expect(isValidEpochRequestTransition("pending", "frozen")).toBe(true);
+    expect(isValidEpochRequestTransition("frozen", "claimable")).toBe(true);
     expect(isValidEpochRequestTransition("claimable", "claimed")).toBe(true);
 
     // Test invalid transitions
@@ -674,3 +691,5 @@ describe("Schema Correctness", () => {
     expect(isValidEpochRequestTransition("claimed", "pending")).toBe(false);
   });
 });
+
+

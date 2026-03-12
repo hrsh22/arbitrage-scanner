@@ -1,0 +1,60 @@
+Task 5 Evidence: Related Tests
+================================
+
+## Test File
+apps/vault-api/src/__tests__/starvationPolicy.test.ts
+
+## Test Coverage: 27 Tests
+
+### Initial State Tests (4 tests)
+- should start in 'normal' operational state
+- should not be in emergency pause initially
+- should have no active flattening attempt
+- should allow reopen initially
+- should return policy config with defaults
+
+### Flattening & Timeout Tests (5 tests)
+- should start flattening attempt with correct deadline
+- should transition to 'flattening' operational state
+- should block reopen when flattening in progress
+- should detect timeout when deadline is exceeded
+- should transition to 'forced_unwind' state on timeout
+- should complete flattening successfully
+
+### Slippage Cap & Emergency Pause Tests (6 tests)
+- should record slippage breach
+- should trigger emergency pause when slippage exceeds cap
+- should trigger emergency pause after max breach count
+- should block all operations when emergency paused
+- should return complete emergency pause state
+
+### Operator Recovery Tests (4 tests)
+- should clear emergency pause with operator action (override enabled)
+- should reject clearing pause when vault not flat (override disabled)
+- should reject clearing pause when not in emergency state
+- should allow clearing pause when vault is flat even without override
+
+### Settlement Gating Tests (3 tests)
+- should block reopen when settlement in progress
+- should allow reopen after settlement completes
+- should clear flattening attempt on settlement complete
+
+### Policy Configuration Tests (2 tests)
+- should use custom policy values from config
+- should use defaults when policy values not in config
+
+### Manual Emergency Pause Tests (2 tests)
+- should allow operator to trigger emergency pause
+- should block all reopen attempts when manually paused
+
+## Test Results
+```
+✓ src/__tests__/starvationPolicy.test.ts  (27 tests) 5ms
+
+Test Files  1 passed (1)
+Tests  27 passed (27)
+```
+
+## Other Related Tests
+- ✓ src/__tests__/closedBookBatch.test.ts (33 tests)
+- Flatness detector tests (1 timeout, unrelated to T5 changes)

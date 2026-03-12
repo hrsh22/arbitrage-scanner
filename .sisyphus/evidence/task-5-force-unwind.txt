@@ -1,0 +1,48 @@
+Task 5 Evidence: Forced-Unwind Implementation
+===============================================
+
+## Summary
+Implemented starvation, force-unwind, and emergency-pause rules for the vault trading orchestrator.
+
+## Key Implementation Details
+
+### 1. MAX_FLATTENING_WINDOW
+- Location: apps/vault-api/src/services/tradingOrchestrator.ts
+- Default: 1 hour (3600000 ms)
+- Export: MAX_FLATTENING_WINDOW_MS constant
+- Behavior: If book cannot be flattened within this window, starvation protocol triggers forced-unwind
+
+### 2. Forced-Unwind Slippage Caps
+- Location: apps/vault-api/src/services/tradingOrchestrator.ts
+- Default: 5% (0.05)
+- Export: DEFAULT_FORCE_UNWIND_SLIPPAGE_CAP constant
+- Behavior: If unwind would incur >5% slippage, emergency pause triggers instead of unsafe unwind
+
+### 3. Implementation in TradingOrchestratorService
+
+#### New State Tracking:
+- vaultOperationalState: Tracks current state (normal | flattening | forced_unwind | emergency_paused | settling | settled)
+- currentFlatteningAttempt: Tracks active flattening with deadline
+- emergencyPauseState: Tracks pause state with reason and timestamp
+- vaultPolicyConfig: Policy configuration (timeouts, slippage caps)
+
+#### New Methods:
+- startFlatteningAttempt(): Initiates flattening with deadline tracking
+- updateFlatteningProgress(): Updates status and checks for timeout
+- hasFlatteningTimeout(): Returns true if deadline exceeded
+- recordSlippageBreach(): Records slippage and triggers pause if cap exceeded
+- triggerEmergencyPause(): Activates emergency pause
+- clearEmergencyPause(): Operator recovery action
+- canReopen(): Checks if reopen (trading) is allowed
+- startSettlement()/completeSettlement(): Settlement gating
+
+## Test Results
+- 27 focused tests for timeout/slippage/emergency behavior
+- All tests passing
+- Build passes successfully
+
+## Files Modified
+- apps/vault-api/src/services/tradingOrchestrator.ts
+- apps/vault-api/src/services/vaultHealthMonitor.ts
+- apps/vault-api/src/config/alerts.ts
+- apps/vault-api/src/config/types.ts

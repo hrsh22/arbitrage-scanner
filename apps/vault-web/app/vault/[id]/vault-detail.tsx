@@ -39,9 +39,9 @@ import {
   useVaultDeposit,
   useVaultRedeem,
   useRequests,
-  useEpochStatus,
+  useCycleStatus,
   useDepositQueue,
-  useEpochHistory,
+  useCycleHistory,
 } from "../../../src/lib/hooks";
 import {
   postCancelWithdrawalRequest,
@@ -51,7 +51,7 @@ import {
   postWithdrawalRequest,
 } from "../../../src/lib/api";
 import type {
-  Epoch,
+  Cycle,
   VaultAllocation,
   VaultInstance,
   VaultNavHistoryItem,
@@ -64,6 +64,11 @@ import {
   SUPPORTS_POLYMARKET_TRADING,
 } from "../../../src/constants";
 import { getNetworkDisplayInfo } from "../../../src/lib/network";
+import {
+  CYCLE_STEPS,
+  getCyclePresentation,
+  getCycleStepIndex,
+} from "../../../src/lib/cyclePresentation";
 
 // ============================================
 // Formatters
@@ -128,22 +133,22 @@ function StatCard({
   isLoading: boolean;
 }) {
   return (
-    <div className="rounded-lg border border-border/50 bg-white p-4">
+    <div className="rounded-[22px] border border-white/10 bg-white/[0.04] p-4 shadow-[0_20px_60px_-40px_rgba(8,15,36,0.9)] backdrop-blur-xl transition-transform duration-300 hover:-translate-y-0.5">
       <p
-        className="text-xs font-medium uppercase tracking-wider text-muted-foreground"
+        className="text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400"
         title={tooltip}
       >
         {title}
       </p>
       {isLoading ? (
         <div className="mt-2 space-y-1">
-          <Skeleton className="h-7 w-24" />
-          {subtitle && <Skeleton className="h-3 w-16" />}
+          <Skeleton className="h-7 w-24 bg-white/10" />
+          {subtitle && <Skeleton className="h-3 w-16 bg-white/10" />}
         </div>
       ) : (
         <div className="mt-2">
-          <p className="text-2xl font-bold tracking-tight text-foreground">{value}</p>
-          {subtitle && <p className="mt-0.5 text-xs text-muted-foreground">{subtitle}</p>}
+          <p className="text-2xl font-semibold tracking-tight text-white">{value}</p>
+          {subtitle && <p className="mt-1 text-xs leading-5 text-slate-400">{subtitle}</p>}
         </div>
       )}
     </div>
@@ -153,7 +158,7 @@ function StatCard({
 function NavSparkline({ snapshots }: { snapshots: VaultNavHistoryItem[] }) {
   if (snapshots.length < 2) {
     return (
-      <div className="rounded-lg border border-border/50 bg-white p-4 text-xs text-muted-foreground">
+      <div className="rounded-[24px] border border-white/10 bg-white/[0.045] p-4 text-xs text-slate-400 backdrop-blur-xl">
         Not enough NAV history yet to render chart.
       </div>
     );
@@ -181,26 +186,24 @@ function NavSparkline({ snapshots }: { snapshots: VaultNavHistoryItem[] }) {
   const deltaPct = first > 0 ? (delta / first) * 100 : 0;
 
   return (
-    <div className="rounded-lg border border-border/50 bg-white p-4">
+    <div className="rounded-[24px] border border-white/10 bg-white/[0.045] p-4 backdrop-blur-xl">
       <div className="mb-3 flex items-center justify-between">
-        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          NAV Trend
-        </p>
-        <p className="text-xs text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">NAV path</p>
+        <p className="text-xs text-slate-400">
           {formatCurrency(first)} {"->"} {formatCurrency(latest)} ({delta >= 0 ? "+" : ""}
           {deltaPct.toFixed(2)}%)
         </p>
       </div>
       <svg viewBox={`0 0 ${width} ${height}`} className="h-36 w-full" preserveAspectRatio="none">
-        <polyline
-          fill="none"
-          stroke="currentColor"
-          className="text-primary"
-          strokeWidth="3"
-          points={points}
-        />
+        <defs>
+          <linearGradient id="nav-line" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="rgba(34,211,238,0.9)" />
+            <stop offset="100%" stopColor="rgba(244,114,182,0.9)" />
+          </linearGradient>
+        </defs>
+        <polyline fill="none" stroke="url(#nav-line)" strokeWidth="3" points={points} />
       </svg>
-      <p className="mt-2 text-[11px] text-muted-foreground">
+      <p className="mt-2 text-[11px] text-slate-500">
         Last {series.length} snapshots (newest:{" "}
         {formatDate(series[series.length - 1]?.timestamp ?? "")})
       </p>
@@ -214,15 +217,18 @@ function NavSparkline({ snapshots }: { snapshots: VaultNavHistoryItem[] }) {
 
 function NetworkBadge({ network }: { network: "mainnet" | "amoy" }) {
   const displayInfo = getNetworkDisplayInfo(network);
-  const { badgeClasses } = displayInfo;
+  const badgeClassName = displayInfo.isTestnet
+    ? "border-amber-400/25 bg-amber-400/12 text-amber-200"
+    : "border-emerald-400/25 bg-emerald-400/12 text-emerald-200";
+  const dotClassName = displayInfo.isTestnet ? "bg-amber-300" : "bg-emerald-300";
 
   return (
     <Badge
       variant="outline"
-      className={`gap-1.5 font-normal ${badgeClasses.border} ${badgeClasses.bg} ${badgeClasses.text}`}
+      className={`gap-1.5 font-normal ${badgeClassName}`}
       title={displayInfo.isTestnet ? "Testnet - Polymarket trading disabled" : "Mainnet"}
     >
-      <span className={`h-1.5 w-1.5 rounded-full ${badgeClasses.dot}`} />
+      <span className={`h-1.5 w-1.5 rounded-full ${dotClassName}`} />
       {displayInfo.name}
     </Badge>
   );
@@ -240,8 +246,8 @@ function ModeBadge({ mode }: { mode: "simulation" | "live" }) {
       variant="outline"
       className={`text-xs font-medium ${
         mode === "live"
-          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
-          : "border-amber-500/30 bg-amber-500/10 text-amber-600"
+          ? "border-emerald-400/25 bg-emerald-400/12 text-emerald-200"
+          : "border-amber-400/25 bg-amber-400/12 text-amber-200"
       }`}
     >
       {mode === "live" ? "Live Trading" : "Simulation"}
@@ -249,64 +255,93 @@ function ModeBadge({ mode }: { mode: "simulation" | "live" }) {
   );
 }
 
-function EpochLifecycleCard({
-  epoch,
+function CycleLifecycleCard({
+  cycle,
   queuedFormatted,
-  targetEpochId,
-  activationTime,
+  targetCycleId,
   isLoading,
 }: {
-  epoch: Epoch | null;
+  cycle: Cycle | null;
   queuedFormatted: string;
-  targetEpochId: number | null;
-  activationTime: string | null;
+  targetCycleId: number | null;
   isLoading: boolean;
 }) {
+  const presentation = getCyclePresentation(cycle?.batchState);
+  const activeStep = getCycleStepIndex(cycle?.batchState);
+
   return (
-    <Card className="border-border/50">
+    <Card className="rounded-[28px] border border-white/10 bg-white/[0.045] backdrop-blur-xl">
       <CardHeader className="pb-3">
-        <CardTitle className="text-base font-semibold">Epoch Schedule</CardTitle>
+        <CardTitle className="text-lg font-semibold text-white">Cycle status</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4 text-sm">
-        {isLoading || !epoch ? (
+        {isLoading || !cycle ? (
           <div className="space-y-2">
-            <Skeleton className="h-5 w-48" />
-            <Skeleton className="h-4 w-64" />
-            <Skeleton className="h-4 w-56" />
+            <Skeleton className="h-5 w-48 bg-white/10" />
+            <Skeleton className="h-4 w-64 bg-white/10" />
+            <Skeleton className="h-4 w-56 bg-white/10" />
           </div>
         ) : (
           <>
             <div className="grid gap-3 md:grid-cols-2">
-              <div className="rounded-lg border border-border/50 bg-white p-3">
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">
-                  Current Epoch
-                </p>
-                <p className="mt-1 text-lg font-semibold">#{epoch.epochId}</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {formatDateTime(epoch.startTime)} {"->"} {formatDateTime(epoch.endTime)}
+              <div className="rounded-[22px] border border-white/10 bg-slate-950/35 p-4">
+                <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Current cycle</p>
+                <p className="mt-2 text-2xl font-semibold text-white">#{cycle.cycleId}</p>
+                <p className="mt-2 text-xs leading-6 text-slate-400">
+                  Cycles advance when the vault finishes each operational step, not on a fixed
+                  countdown.
                 </p>
               </div>
-              <div className="rounded-lg border border-border/50 bg-white p-3">
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">
-                  Next Boundary
-                </p>
-                <p className="mt-1 text-lg font-semibold">{epoch.timeRemainingFormatted}</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Current epoch ends at {formatDateTime(epoch.endTime)}
-                </p>
+              <div className={`rounded-[22px] border p-4 ${presentation.panelClassName}`}>
+                <p className="text-xs uppercase tracking-[0.18em] text-current/70">Current state</p>
+                <div className="mt-2 flex items-center gap-2">
+                  <span
+                    className={`h-2.5 w-2.5 rounded-full ${presentation.dotClassName} animate-pulse`}
+                  />
+                  <p className="text-lg font-semibold">{presentation.label}</p>
+                </div>
+                <p className="mt-2 text-xs leading-6 text-current/85">{presentation.description}</p>
               </div>
             </div>
 
-            <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sky-900">
-              <p className="text-sm font-medium">How deposits work</p>
-              <p className="mt-1 text-sm">
-                Deposits made now queue for epoch #{targetEpochId ?? epoch.epochId + 1}. They start
-                earning only after current epoch #{epoch.epochId} ends and the next epoch opens.
-              </p>
-              <p className="mt-2 text-xs text-sky-800">
+            <div className="grid gap-3 sm:grid-cols-5">
+              {CYCLE_STEPS.map((step, index) => {
+                const isDone = index <= activeStep;
+                const isCurrent = index === activeStep;
+
+                return (
+                  <div
+                    key={step.state}
+                    className={`rounded-2xl border px-3 py-3 transition-all duration-300 ${
+                      isCurrent
+                        ? "border-cyan-300/30 bg-cyan-300/12 text-cyan-50"
+                        : isDone
+                          ? "border-white/10 bg-white/[0.05] text-slate-100"
+                          : "border-white/8 bg-white/[0.03] text-slate-500"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`h-2 w-2 rounded-full ${
+                          isCurrent ? "bg-cyan-300" : isDone ? "bg-white" : "bg-slate-600"
+                        }`}
+                      />
+                      <span className="text-xs font-medium uppercase tracking-[0.16em]">
+                        Step {index + 1}
+                      </span>
+                    </div>
+                    <p className="mt-3 text-sm font-medium">{step.label}</p>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="rounded-[22px] border border-cyan-400/20 bg-cyan-400/10 p-4 text-cyan-50">
+              <p className="text-sm font-medium">What this means for your cash</p>
+              <p className="mt-2 text-sm leading-7 text-cyan-50/90">
                 {Number(queuedFormatted) > 0
-                  ? `You currently have ${queuedFormatted} USDC queued. Activation is expected around ${activationTime ? formatDateTime(activationTime) : formatDateTime(epoch.endTime)}.`
-                  : `If you deposit now, it should activate around ${activationTime ? formatDateTime(activationTime) : formatDateTime(epoch.endTime)}.`}
+                  ? `You have ${queuedFormatted} USDC lined up for cycle #${targetCycleId ?? cycle.cycleId + 1}. Those funds mint only after the target cycle locks pricing and the deposit queue is processed.`
+                  : presentation.detail}
               </p>
             </div>
           </>
@@ -319,68 +354,129 @@ function EpochLifecycleCard({
 function DepositQueueCard({
   queuedFormatted,
   queuedSharesFormatted,
-  estimateNavFormatted,
+  cycleOpenNavFormatted,
   estimateBasis,
   depositRequestId,
   depositCreatedAt,
-  targetEpochId,
-  activationTime,
+  targetCycleId,
   queueStatus,
   mintRule,
+  batchState,
   isLoading,
 }: {
   queuedFormatted: string;
   queuedSharesFormatted: string;
-  estimateNavFormatted: string;
+  cycleOpenNavFormatted: string | null;
   estimateBasis: string | null;
   depositRequestId: string | null;
   depositCreatedAt: string | null;
-  targetEpochId: number | null;
-  activationTime: string | null;
+  targetCycleId: number | null;
   queueStatus: string | null;
   mintRule: string | null;
+  batchState: string | null;
   isLoading: boolean;
 }) {
   const hasQueuedDeposit = Number(queuedFormatted) > 0;
 
+  // Helper to get batch state display info
+  const getBatchStateInfo = (state: string | null) => {
+    switch (state) {
+      case "open":
+        return {
+          label: "Accepting requests",
+          color: "text-emerald-200",
+          bg: "bg-emerald-400/12",
+          border: "border-emerald-400/25",
+        };
+      case "cutoff":
+        return {
+          label: "Queue locked",
+          color: "text-amber-200",
+          bg: "bg-amber-400/12",
+          border: "border-amber-400/25",
+        };
+      case "flattening":
+        return {
+          label: "Pricing locked",
+          color: "text-sky-200",
+          bg: "bg-sky-400/12",
+          border: "border-sky-400/25",
+        };
+      case "settling":
+        return {
+          label: "Settlement running",
+          color: "text-violet-200",
+          bg: "bg-violet-400/12",
+          border: "border-violet-400/25",
+        };
+      case "settled":
+        return {
+          label: "Claims ready",
+          color: "text-cyan-200",
+          bg: "bg-cyan-400/12",
+          border: "border-cyan-400/25",
+        };
+      default:
+        return {
+          label: "Unknown",
+          color: "text-slate-200",
+          bg: "bg-white/6",
+          border: "border-white/10",
+        };
+    }
+  };
+
+  const batchInfo = getBatchStateInfo(batchState);
+
   return (
-    <Card className="border-border/50">
+    <Card className="rounded-[28px] border border-white/10 bg-white/[0.045] backdrop-blur-xl">
       <CardHeader className="pb-3">
-        <CardTitle className="text-base font-semibold">Your Deposit Status</CardTitle>
+        <CardTitle className="text-lg font-semibold text-white">Your deposit queue</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4 text-sm">
         {isLoading ? (
           <div className="space-y-2">
-            <Skeleton className="h-5 w-40" />
-            <Skeleton className="h-4 w-56" />
-            <Skeleton className="h-4 w-52" />
+            <Skeleton className="h-5 w-40 bg-white/10" />
+            <Skeleton className="h-4 w-56 bg-white/10" />
+            <Skeleton className="h-4 w-52 bg-white/10" />
           </div>
         ) : hasQueuedDeposit ? (
           <>
             <div className="grid gap-3 md:grid-cols-2">
-              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-                <p className="text-xs uppercase tracking-wide text-amber-700">Queued Deposit</p>
-                <p className="mt-1 text-lg font-semibold text-amber-950">${queuedFormatted}</p>
-                <p className="mt-1 text-xs text-amber-800">
-                  Estimated shares at NAV ${Number(estimateNavFormatted || "0").toFixed(6)}:{" "}
-                  {queuedSharesFormatted}
+              <div className="rounded-[22px] border border-cyan-400/20 bg-cyan-400/10 p-4 text-cyan-50">
+                <p className="text-xs uppercase tracking-[0.18em] text-cyan-50/70">
+                  Waiting to mint
                 </p>
-                {estimateBasis && <p className="mt-1 text-xs text-amber-700">{estimateBasis}</p>}
+                <p className="mt-2 text-2xl font-semibold">${queuedFormatted}</p>
+                <p className="mt-2 text-xs leading-6 text-cyan-50/85">
+                  Final shares are set at the next cycle&rsquo;s locked opening NAV
+                  {cycleOpenNavFormatted && ` (~$${Number(cycleOpenNavFormatted).toFixed(4)})`}
+                </p>
+                <p className="mt-2 text-xs text-cyan-50/85">
+                  Estimated shares: {queuedSharesFormatted}
+                </p>
+                {estimateBasis && <p className="mt-2 text-xs text-cyan-50/70">{estimateBasis}</p>}
               </div>
-              <div className="rounded-lg border border-border/50 bg-white p-3">
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">
-                  Target Epoch
+              <div className="rounded-[22px] border border-white/10 bg-slate-950/35 p-4">
+                <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Target cycle</p>
+                <p className="mt-2 text-2xl font-semibold text-white">#{targetCycleId ?? "-"}</p>
+                <p className="mt-2 text-xs leading-6 text-slate-400">
+                  Deposits are processed by lifecycle state, not by a simple timer.
                 </p>
-                <p className="mt-1 text-lg font-semibold">#{targetEpochId ?? "-"}</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {activationTime
-                    ? `Expected activation: ${formatDateTime(activationTime)}`
-                    : "Activation time pending"}
-                </p>
+                {batchState && (
+                  <div
+                    className={`mt-3 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs ${batchInfo.bg} ${batchInfo.border} border`}
+                  >
+                    <span
+                      className={`h-1.5 w-1.5 rounded-full ${batchInfo.color.replace("text-", "bg-")}`}
+                    />
+                    <span className={batchInfo.color}>{batchInfo.label}</span>
+                  </div>
+                )}
               </div>
             </div>
 
-            <div className="space-y-1 rounded-lg border border-border/50 bg-white p-3 text-xs text-muted-foreground">
+            <div className="space-y-2 rounded-[22px] border border-white/10 bg-slate-950/35 p-4 text-xs leading-6 text-slate-300">
               <p>Status: {queueStatus}</p>
               {depositRequestId && <p>Deposit request ID: {depositRequestId}</p>}
               {depositCreatedAt && <p>Queued at: {formatDateTime(depositCreatedAt)}</p>}
@@ -388,9 +484,10 @@ function DepositQueueCard({
             </div>
           </>
         ) : (
-          <div className="rounded-lg border border-border/50 bg-white p-3 text-sm text-muted-foreground">
-            You have no queued deposit right now. Once you queue a deposit, this card will show the
-            amount, target epoch, and when shares should activate.
+          <div className="rounded-[22px] border border-dashed border-white/15 bg-white/[0.03] p-4 text-sm leading-7 text-slate-400">
+            You have no deposit waiting right now. Once you join the next cycle, this card will show
+            the amount, target cycle, and the exact conditions that need to finish before shares
+            mint.
           </div>
         )}
       </CardContent>
@@ -398,62 +495,101 @@ function DepositQueueCard({
   );
 }
 
-function EpochHistoryCard({
-  epochs,
+function CycleHistoryCard({
+  cycles,
   isLoading,
 }: {
-  epochs: Array<{
-    epochId: number;
+  cycles: Array<{
+    cycleId: number;
     startTime: string;
     endTime: string;
     status: string;
     totalSharesPendingFormatted: string;
     frozenAssetsFormatted: string;
     snapshotNAVFormatted: string;
+    batchState: string;
   }>;
   isLoading: boolean;
 }) {
+  // Helper to get batch state display info
+  const getBatchStateInfo = (state: string) => {
+    switch (state) {
+      case "open":
+        return { label: "Accepting requests", color: "text-emerald-200" };
+      case "cutoff":
+        return { label: "Queue locked", color: "text-amber-200" };
+      case "flattening":
+        return { label: "Pricing locked", color: "text-sky-200" };
+      case "settling":
+        return { label: "Settlement running", color: "text-violet-200" };
+      case "settled":
+        return { label: "Claims ready", color: "text-cyan-200" };
+      default:
+        return { label: state, color: "text-slate-200" };
+    }
+  };
+
   return (
-    <Card className="border-border/50">
+    <Card className="rounded-[28px] border border-white/10 bg-white/[0.045] backdrop-blur-xl">
       <CardHeader className="pb-3">
-        <CardTitle className="text-base font-semibold">Recent Epochs</CardTitle>
+        <CardTitle className="text-lg font-semibold text-white">Recent cycles</CardTitle>
       </CardHeader>
       <CardContent className="p-0">
         {isLoading ? (
           <div className="space-y-2 p-4">
-            <Skeleton className="h-5 w-full" />
-            <Skeleton className="h-5 w-full" />
-            <Skeleton className="h-5 w-full" />
+            <Skeleton className="h-5 w-full bg-white/10" />
+            <Skeleton className="h-5 w-full bg-white/10" />
+            <Skeleton className="h-5 w-full bg-white/10" />
           </div>
-        ) : epochs.length === 0 ? (
-          <div className="p-4 text-sm text-muted-foreground">
-            No epoch history yet. Once epochs freeze and settle, you will see what happened here.
+        ) : cycles.length === 0 ? (
+          <div className="p-4 text-sm text-slate-400">
+            No cycle history yet. Once cycles settle, you will see the archived record here.
           </div>
         ) : (
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>Epoch</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Window</TableHead>
-                <TableHead>Queued Shares</TableHead>
-                <TableHead>Frozen Assets</TableHead>
-                <TableHead>Snapshot NAV</TableHead>
+              <TableRow className="border-white/10 bg-white/[0.03]">
+                <TableHead className="text-slate-400">Cycle</TableHead>
+                <TableHead className="text-slate-400">Cycle state</TableHead>
+                <TableHead className="text-slate-400">What happened</TableHead>
+                <TableHead className="text-slate-400">Shares in queue</TableHead>
+                <TableHead className="text-slate-400">Assets reserved</TableHead>
+                <TableHead className="text-slate-400">Locked NAV</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {epochs.map((epoch) => (
-                <TableRow key={epoch.epochId}>
-                  <TableCell className="font-mono">#{epoch.epochId}</TableCell>
-                  <TableCell>{epoch.status}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {formatDateTime(epoch.startTime)} {"->"} {formatDateTime(epoch.endTime)}
-                  </TableCell>
-                  <TableCell>{epoch.totalSharesPendingFormatted}</TableCell>
-                  <TableCell>{epoch.frozenAssetsFormatted}</TableCell>
-                  <TableCell>{epoch.snapshotNAVFormatted}</TableCell>
-                </TableRow>
-              ))}
+              {cycles.map((cycle) => {
+                const batchInfo = getBatchStateInfo(cycle.batchState);
+                return (
+                  <TableRow key={cycle.cycleId} className="border-white/10">
+                    <TableCell className="font-mono text-slate-100">#{cycle.cycleId}</TableCell>
+                    <TableCell>
+                      <span className={`inline-flex items-center gap-1.5 ${batchInfo.color}`}>
+                        <span
+                          className={`h-1.5 w-1.5 rounded-full ${batchInfo.color.replace("text-", "bg-")}`}
+                        />
+                        {batchInfo.label}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-xs text-slate-400">
+                      {cycle.batchState === "open"
+                        ? "Taking in deposits and exits"
+                        : cycle.batchState === "cutoff"
+                          ? "Queue locked and waiting for pricing"
+                          : cycle.batchState === "flattening"
+                            ? "Positions flattened and price locked"
+                            : cycle.batchState === "settling"
+                              ? "Settlement calculations in progress"
+                              : "Settlement finished for this cycle"}
+                    </TableCell>
+                    <TableCell className="text-slate-200">
+                      {cycle.totalSharesPendingFormatted}
+                    </TableCell>
+                    <TableCell className="text-slate-200">{cycle.frozenAssetsFormatted}</TableCell>
+                    <TableCell className="text-slate-200">{cycle.snapshotNAVFormatted}</TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         )}
@@ -646,13 +782,13 @@ function DepositForm({ vault, onSuccess }: { vault: VaultInstance; onSuccess?: (
   };
 
   return (
-    <Card className="border-border/50">
+    <Card className="rounded-[28px] border border-white/10 bg-white/[0.045] backdrop-blur-xl">
       <CardHeader className="pb-3">
         <CardTitle className="text-base font-semibold">Deposit</CardTitle>
       </CardHeader>
       <CardContent>
         {!isConnected ? (
-          <p className="text-sm text-muted-foreground">Connect wallet to deposit</p>
+          <p className="text-sm text-slate-300">Connect wallet to deposit</p>
         ) : (
           <form
             onSubmit={(e) => {
@@ -662,7 +798,7 @@ function DepositForm({ vault, onSuccess }: { vault: VaultInstance; onSuccess?: (
           >
             {/* Wallet balance */}
             <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Wallet Balance</span>
+              <span className="text-slate-400">Wallet balance</span>
               {balanceLoading ? (
                 <Skeleton className="h-4 w-20" />
               ) : (
@@ -692,12 +828,12 @@ function DepositForm({ vault, onSuccess }: { vault: VaultInstance; onSuccess?: (
                     queueDepositPending ||
                     queueDepositConfirming
                   }
-                  className="pr-16 font-mono"
+                  className="border-white/10 bg-white/5 pr-16 font-mono text-white placeholder:text-slate-500"
                 />
                 <button
                   type="button"
                   onClick={handleMax}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-200"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded bg-white/10 px-2 py-0.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-white/15"
                 >
                   MAX
                 </button>
@@ -709,7 +845,7 @@ function DepositForm({ vault, onSuccess }: { vault: VaultInstance; onSuccess?: (
                   disabled={
                     !isAddressReady || !isValidAmount || approvePending || approveConfirming
                   }
-                  className="min-w-[140px]"
+                  className="min-w-[140px] bg-white text-slate-950 hover:bg-slate-100"
                 >
                   Approve USDC.e
                 </Button>
@@ -730,12 +866,12 @@ function DepositForm({ vault, onSuccess }: { vault: VaultInstance; onSuccess?: (
                     approveConfirming ||
                     navSyncPending
                   }
-                  className="min-w-[100px]"
+                  className="min-w-[140px] bg-cyan-300 text-slate-950 hover:bg-cyan-200"
                 >
                   {navSyncPending
                     ? "Refreshing NAV..."
                     : isCustomVault
-                      ? "Queue Deposit"
+                      ? "Join Next Cycle"
                       : "Deposit"}
                 </Button>
               )}
@@ -743,7 +879,7 @@ function DepositForm({ vault, onSuccess }: { vault: VaultInstance; onSuccess?: (
 
             {/* Share conversion preview */}
             {!isCustomVault && previewShares !== undefined && parsedAmount && parsedAmount > 0n && (
-              <p className="text-xs text-muted-foreground">
+              <p className="text-xs text-slate-400">
                 You will receive ~
                 <span className="font-mono">
                   {Number(formatUnits(previewShares, 6)).toFixed(6)}
@@ -752,16 +888,16 @@ function DepositForm({ vault, onSuccess }: { vault: VaultInstance; onSuccess?: (
               </p>
             )}
             {isCustomVault && parsedAmount && parsedAmount > 0n && (
-              <p className="text-xs text-muted-foreground">
-                Deposit is queued for the next epoch. Shares mint when that epoch is processed using
-                the epoch-open NAV.
+              <p className="text-xs leading-6 text-slate-400">
+                This deposit joins the next cycle. Shares mint after that cycle locks pricing and
+                the queue is processed.
               </p>
             )}
 
             {navSyncError && <p className="text-xs text-rose-600">{navSyncError}</p>}
 
             {/* Limits */}
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-slate-400">
               Min: ${vault.profile.minDeposit} &middot; Max: ${vault.profile.maxDeposit}
             </p>
 
@@ -1023,13 +1159,13 @@ function WithdrawForm({ vault }: { vault: VaultInstance }) {
     !readyRequest || !address || queuePending || navSyncPending || isPending || isConfirming;
 
   return (
-    <Card className="border-border/50">
+    <Card className="rounded-[28px] border border-white/10 bg-white/[0.045] backdrop-blur-xl">
       <CardHeader className="pb-3">
         <CardTitle className="text-base font-semibold">Withdraw</CardTitle>
       </CardHeader>
       <CardContent>
         {!isConnected ? (
-          <p className="text-sm text-muted-foreground">Connect wallet to withdraw</p>
+          <p className="text-sm text-slate-300">Connect wallet to withdraw</p>
         ) : (
           <form
             onSubmit={(e) => {
@@ -1038,7 +1174,7 @@ function WithdrawForm({ vault }: { vault: VaultInstance }) {
             className="space-y-4"
           >
             <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Vault Share Balance</span>
+              <span className="text-slate-400">Vault share balance</span>
               <span className="font-medium font-mono">
                 {Number(formattedShares).toFixed(6)} shares
               </span>
@@ -1060,7 +1196,7 @@ function WithdrawForm({ vault }: { vault: VaultInstance }) {
                     reset();
                   }}
                   disabled={isPending || isConfirming || queuePending || !!activeRequest}
-                  className="pr-16 font-mono"
+                  className="border-white/10 bg-white/5 pr-16 font-mono text-white placeholder:text-slate-500"
                 />
                 <button
                   type="button"
@@ -1071,7 +1207,7 @@ function WithdrawForm({ vault }: { vault: VaultInstance }) {
                     reset();
                   }}
                   disabled={isPending || isConfirming || queuePending || !!activeRequest}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-200"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded bg-white/10 px-2 py-0.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-white/15"
                 >
                   MAX
                 </button>
@@ -1082,7 +1218,7 @@ function WithdrawForm({ vault }: { vault: VaultInstance }) {
                   void handleRequestWithdrawal();
                 }}
                 disabled={requestDisabled}
-                className="min-w-[100px]"
+                className="min-w-[140px] bg-white text-slate-950 hover:bg-slate-100"
               >
                 {queuePending
                   ? "Submitting..."
@@ -1093,20 +1229,20 @@ function WithdrawForm({ vault }: { vault: VaultInstance }) {
             </div>
 
             {activeRequest && (
-              <div className="rounded-md border border-amber-200 bg-amber-50 p-3 space-y-2">
-                <p className="text-xs text-amber-700">
+              <div className="space-y-2 rounded-xl border border-amber-400/20 bg-amber-400/10 p-3">
+                <p className="text-xs leading-6 text-amber-50/90">
                   {activeRequest.status === "pending"
                     ? `Withdrawal ${activeRequest.requestId} is queued. Worker will move funds Safe -> Vault in FIFO order.`
                     : `Withdrawal ${activeRequest.requestId} is ready to claim.`}
                 </p>
-                <p className="text-xs text-amber-700">
+                <p className="text-xs leading-6 text-amber-50/90">
                   Estimated payout: $
                   {Number.isFinite(displayedEstimatedAssets)
                     ? displayedEstimatedAssets.toFixed(2)
                     : activeRequest.assetsEstimated}{" "}
                   USDC.e
                 </p>
-                <p className="text-xs text-amber-700">
+                <p className="text-xs leading-6 text-amber-50/90">
                   Requested: {formatDate(activeRequest.requestedAt)}
                 </p>
 
@@ -1118,7 +1254,7 @@ function WithdrawForm({ vault }: { vault: VaultInstance }) {
                         void handleClaimReadyWithdrawal();
                       }}
                       disabled={claimDisabled}
-                      className="w-full"
+                      className="w-full bg-emerald-300 text-slate-950 hover:bg-emerald-200"
                     >
                       Claim Withdrawal
                     </Button>
@@ -1129,7 +1265,7 @@ function WithdrawForm({ vault }: { vault: VaultInstance }) {
                         void handleCancelWithdrawalRequest();
                       }}
                       disabled={queuePending || isPending || isConfirming}
-                      className="w-full"
+                      className="w-full border-white/10 bg-white/5 text-white hover:bg-white/10"
                     >
                       Cancel Request
                     </Button>
@@ -1144,7 +1280,7 @@ function WithdrawForm({ vault }: { vault: VaultInstance }) {
                       void handleCancelWithdrawalRequest();
                     }}
                     disabled={queuePending || isPending || isConfirming}
-                    className="w-full"
+                    className="w-full border-white/10 bg-white/5 text-white hover:bg-white/10"
                   >
                     Cancel Request
                   </Button>
@@ -1153,7 +1289,7 @@ function WithdrawForm({ vault }: { vault: VaultInstance }) {
             )}
 
             {previewAssets !== undefined && parsedShares && parsedShares > 0n && (
-              <p className="text-xs text-muted-foreground">
+              <p className="text-xs text-slate-400">
                 You will receive ~
                 <span className="font-mono">
                   {Number(formatUnits(previewAssets, 6)).toFixed(2)}
@@ -1162,7 +1298,7 @@ function WithdrawForm({ vault }: { vault: VaultInstance }) {
               </p>
             )}
 
-            {queueLoading && <Skeleton className="h-4 w-56" />}
+            {queueLoading && <Skeleton className="h-4 w-56 bg-white/10" />}
             {queueMessage && <p className="text-xs text-emerald-600">{queueMessage}</p>}
             {queueError && <p className="text-xs text-rose-600">{queueError}</p>}
 
@@ -1238,8 +1374,8 @@ function PositionsTable({
   if (positions.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-center">
-        <p className="text-sm font-medium text-muted-foreground">No positions found</p>
-        <p className="mt-1 text-xs text-muted-foreground">
+        <p className="text-sm font-medium text-slate-300">No positions found</p>
+        <p className="mt-1 text-xs text-slate-500">
           Positions will appear here once the vault starts trading
         </p>
       </div>
@@ -1249,7 +1385,7 @@ function PositionsTable({
   return (
     <Table>
       <TableHeader>
-        <TableRow className="bg-slate-50/50">
+        <TableRow className="border-white/10 bg-white/[0.03]">
           <TableHead className="font-semibold">Market</TableHead>
           <TableHead className="font-semibold">Token</TableHead>
           <TableHead className="font-semibold">Outcome</TableHead>
@@ -1272,16 +1408,16 @@ function PositionsTable({
                 {pos.title}
               </a>
             </TableCell>
-            <TableCell className="font-mono text-sm text-muted-foreground">
+            <TableCell className="font-mono text-sm text-slate-400">
               {truncateId(pos.tokenId)}
             </TableCell>
             <TableCell>
               <OutcomeBadge outcome={pos.outcome} />
             </TableCell>
-            <TableCell className="text-right text-muted-foreground font-mono">
+            <TableCell className="text-right font-mono text-slate-400">
               {pos.size.toFixed(2)}
             </TableCell>
-            <TableCell className="text-right text-muted-foreground font-mono">
+            <TableCell className="text-right font-mono text-slate-400">
               {formatCurrency(pos.avgPrice)}
             </TableCell>
             <TableCell className="text-right font-medium font-mono">
@@ -1321,10 +1457,8 @@ function PositionHistoryTable({
   if (positions.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-center">
-        <p className="text-sm font-medium text-muted-foreground">No position history yet</p>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Redeemable and closed positions appear here
-        </p>
+        <p className="text-sm font-medium text-slate-300">No position history yet</p>
+        <p className="mt-1 text-xs text-slate-500">Redeemable and closed positions appear here</p>
       </div>
     );
   }
@@ -1332,7 +1466,7 @@ function PositionHistoryTable({
   return (
     <Table>
       <TableHeader>
-        <TableRow className="bg-slate-50/50">
+        <TableRow className="border-white/10 bg-white/[0.03]">
           <TableHead className="font-semibold">Market</TableHead>
           <TableHead className="font-semibold">Outcome</TableHead>
           <TableHead className="font-semibold">Status</TableHead>
@@ -1361,16 +1495,16 @@ function PositionHistoryTable({
             <TableCell>
               <PositionStatusBadge status={position.status} />
             </TableCell>
-            <TableCell className="text-right text-muted-foreground font-mono">
+            <TableCell className="text-right font-mono text-slate-400">
               {position.size.toFixed(2)}
             </TableCell>
-            <TableCell className="text-right text-muted-foreground font-mono">
+            <TableCell className="text-right font-mono text-slate-400">
               {formatCurrency(position.costBasis)}
             </TableCell>
-            <TableCell className="text-right text-muted-foreground font-mono">
+            <TableCell className="text-right font-mono text-slate-400">
               {formatCurrency(position.currentValue ?? 0)}
             </TableCell>
-            <TableCell className="text-right text-muted-foreground font-mono">
+            <TableCell className="text-right font-mono text-slate-400">
               {formatCurrency((position.realizedPnl ?? 0) + (position.cashPnl ?? 0))}
             </TableCell>
           </TableRow>
@@ -1400,8 +1534,8 @@ function FlowHistoryTable({
   if (allocations.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-center">
-        <p className="text-sm font-medium text-muted-foreground">No vault-safe flow events</p>
-        <p className="mt-1 text-xs text-muted-foreground">Allocate/deallocate events appear here</p>
+        <p className="text-sm font-medium text-slate-300">No treasury transfer events</p>
+        <p className="mt-1 text-xs text-slate-500">Vault and Safe cash movements appear here</p>
       </div>
     );
   }
@@ -1409,7 +1543,7 @@ function FlowHistoryTable({
   return (
     <Table>
       <TableHeader>
-        <TableRow className="bg-slate-50/50">
+        <TableRow className="border-white/10 bg-white/[0.03]">
           <TableHead className="font-semibold">Direction</TableHead>
           <TableHead className="font-semibold text-right">Amount</TableHead>
           <TableHead className="font-semibold">Tx Hash</TableHead>
@@ -1434,12 +1568,10 @@ function FlowHistoryTable({
             <TableCell className="text-right font-medium font-mono">
               {formatCurrency(parseFloat(alloc.amount))}
             </TableCell>
-            <TableCell className="font-mono text-sm text-muted-foreground">
+            <TableCell className="font-mono text-sm text-slate-400">
               {truncateId(alloc.txHash, 10)}
             </TableCell>
-            <TableCell className="text-sm text-muted-foreground">
-              {formatDate(alloc.timestamp)}
-            </TableCell>
+            <TableCell className="text-sm text-slate-400">{formatDate(alloc.timestamp)}</TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -1453,16 +1585,14 @@ function FlowHistoryTable({
 
 function VaultNotFound() {
   return (
-    <main className="flex-1 p-6 md:p-8 lg:p-10">
+    <main className="flex-1 px-4 py-8 md:px-8 lg:px-10 lg:py-10">
       <div className="mx-auto max-w-5xl">
         <div className="flex flex-col items-center justify-center py-24 text-center">
-          <h1 className="text-2xl font-bold text-foreground">Vault Not Found</h1>
-          <p className="mt-2 text-muted-foreground">
-            The vault you are looking for does not exist.
-          </p>
+          <h1 className="text-2xl font-bold text-white">Vault not found</h1>
+          <p className="mt-2 text-slate-400">The vault you are looking for does not exist.</p>
           <Link
             href="/"
-            className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+            className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-cyan-200 hover:underline"
           >
             Back to Vaults
           </Link>
@@ -1478,8 +1608,9 @@ function VaultNotFound() {
 
 export default function VaultDetailPage() {
   const params = useParams();
-  const { address } = useAppKitAccount();
+  const { address, isConnected } = useAppKitAccount();
   const routeVaultId = Number.parseInt(params.id as string, 10);
+  const isAuthenticated = Boolean(isConnected && address);
   const { data: instancesData, isLoading: instancesLoading } = useVaultInstances();
   const vault = instancesData?.instances.find((instance) => instance.id === routeVaultId);
 
@@ -1501,27 +1632,27 @@ export default function VaultDetailPage() {
     claimableRequests,
     isLoading: redemptionRequestsLoading,
     refetch: refetchRedemptionRequests,
-  } = useRequests(vault?.id);
-  const { epoch, isLoading: epochLoading, refetch: refetchEpochStatus } = useEpochStatus(vault?.id);
+  } = useRequests(vault?.id, isAuthenticated);
+  const { cycle, isLoading: cycleLoading, refetch: refetchCycleStatus } = useCycleStatus(vault?.id);
   const {
     queuedFormatted,
     queuedSharesFormatted,
-    estimateNavFormatted,
+    cycleOpenNavFormatted,
     estimateBasis,
     depositRequestId,
     depositCreatedAt,
-    targetEpochId,
-    activationTime,
+    targetCycleId,
     queueStatus,
     mintRule,
+    batchState,
     isLoading: depositQueueLoading,
     refetch: refetchDepositQueue,
-  } = useDepositQueue(vault?.id);
+  } = useDepositQueue(vault?.id, isAuthenticated);
   const {
-    epochs: epochHistory,
-    isLoading: epochHistoryLoading,
-    refetch: refetchEpochHistory,
-  } = useEpochHistory(vault?.id);
+    cycles: cycleHistory,
+    isLoading: cycleHistoryLoading,
+    refetch: refetchCycleHistory,
+  } = useCycleHistory(vault?.id);
   const { shares: redemptionUserShares } = useVaultShares(
     vault?.config.vaultAddress,
     address,
@@ -1556,19 +1687,19 @@ export default function VaultDetailPage() {
   const refreshRedemptionData = async () => {
     await Promise.all([
       refetchRedemptionRequests(),
-      refetchEpochStatus(),
+      refetchCycleStatus(),
       refetchDepositQueue(),
-      refetchEpochHistory(),
+      refetchCycleHistory(),
     ]);
   };
 
   return (
-    <main className="flex-1 p-6 md:p-8 lg:p-10">
-      <div className="mx-auto max-w-5xl space-y-8">
+    <main className="flex-1 px-4 py-8 md:px-8 lg:px-10 lg:py-10">
+      <div className="mx-auto max-w-6xl space-y-8">
         {/* Back link */}
         <Link
           href="/"
-          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          className="inline-flex items-center gap-1.5 text-sm text-slate-400 transition-colors hover:text-white"
         >
           <svg
             width="16"
@@ -1590,10 +1721,10 @@ export default function VaultDetailPage() {
 
         {/* Testnet Warning Banner */}
         {VAULT_NETWORK === "amoy" && (
-          <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+          <div className="rounded-[24px] border border-amber-400/20 bg-amber-400/10 p-4 text-amber-50">
             <div className="flex items-start gap-3">
               <svg
-                className="h-5 w-5 text-amber-600 mt-0.5"
+                className="mt-0.5 h-5 w-5 text-amber-200"
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
@@ -1606,8 +1737,8 @@ export default function VaultDetailPage() {
                 />
               </svg>
               <div>
-                <h3 className="text-sm font-medium text-amber-800">Testnet Mode: Amoy</h3>
-                <p className="mt-1 text-sm text-amber-700">
+                <h3 className="text-sm font-medium text-amber-100">Testnet mode: Amoy</h3>
+                <p className="mt-1 text-sm leading-7 text-amber-50/85">
                   You are connected to Polygon Amoy Testnet. Vault testing is supported, but
                   Polymarket trading is disabled.
                   {!SUPPORTS_POLYMARKET_TRADING &&
@@ -1618,51 +1749,72 @@ export default function VaultDetailPage() {
           </div>
         )}
 
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-2">
-            <div className="flex items-center gap-3">
-              <h1 className="text-3xl font-bold tracking-tight text-foreground">{vault.name}</h1>
-              {!statusLoading && status && <ModeBadge mode={status.mode} />}
-              <NetworkBadge network={VAULT_NETWORK} />
-            </div>
+        <section className="relative overflow-hidden rounded-[32px] border border-white/10 bg-white/[0.045] px-6 py-6 shadow-[0_40px_100px_-50px_rgba(8,15,36,0.95)] backdrop-blur-xl sm:px-8">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_30%),radial-gradient(circle_at_88%_18%,_rgba(244,114,182,0.12),_transparent_18%)]" />
+          <div className="relative flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <h1 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+                  {vault.name}
+                </h1>
+                {!statusLoading && status && <ModeBadge mode={status.mode} />}
+                <NetworkBadge network={VAULT_NETWORK} />
+              </div>
 
-            <div className="flex items-center gap-2">
-              <Badge variant="secondary" className="bg-slate-100 text-slate-700">
-                {vault.profile.strategyLabel}
-              </Badge>
-              <Badge
-                variant="outline"
-                className={`text-xs ${
-                  vault.profile.riskLevel === "low"
-                    ? "border-emerald-500/30 text-emerald-600"
-                    : vault.profile.riskLevel === "medium"
-                      ? "border-amber-500/30 text-amber-600"
-                      : "border-rose-500/30 text-rose-600"
-                }`}
-              >
-                {vault.profile.riskLevel.charAt(0).toUpperCase() + vault.profile.riskLevel.slice(1)}{" "}
-                Risk
-              </Badge>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge
+                  variant="secondary"
+                  className="border border-cyan-300/15 bg-cyan-300/10 text-cyan-100"
+                >
+                  {vault.profile.strategyLabel}
+                </Badge>
+                <Badge
+                  variant="outline"
+                  className={`text-xs ${
+                    vault.profile.riskLevel === "low"
+                      ? "border-emerald-400/25 text-emerald-200"
+                      : vault.profile.riskLevel === "medium"
+                        ? "border-amber-400/25 text-amber-200"
+                        : "border-rose-400/25 text-rose-200"
+                  }`}
+                >
+                  {vault.profile.riskLevel.charAt(0).toUpperCase() +
+                    vault.profile.riskLevel.slice(1)}{" "}
+                  Risk
+                </Badge>
+              </div>
+              <p className="max-w-2xl text-sm leading-7 text-slate-300">
+                {vault.profile.longDescription}
+              </p>
             </div>
-            <p className="max-w-2xl text-sm text-muted-foreground">
-              {vault.profile.longDescription}
-            </p>
+            <div className="rounded-[22px] border border-white/10 bg-slate-950/35 p-4 sm:min-w-[260px]">
+              <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Lifecycle now</p>
+              <p className="mt-2 text-lg font-semibold text-white">
+                {getCyclePresentation(cycle?.batchState).label}
+              </p>
+              <p className="mt-2 text-sm leading-7 text-slate-400">
+                {getCyclePresentation(cycle?.batchState).description}
+              </p>
+              {status?.nav?.lastUpdated && (
+                <p className="mt-3 text-xs text-slate-500">
+                  NAV updated {formatDate(status.nav.lastUpdated)}
+                </p>
+              )}
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            {status?.nav?.lastUpdated && (
-              <span className="text-xs text-muted-foreground">
-                NAV updated {formatDate(status.nav.lastUpdated)}
-              </span>
-            )}
-          </div>
-        </div>
+        </section>
 
         {/* Error state */}
         {statusError && (
-          <Card className="border-rose-200 bg-rose-50">
+          <Card className="border-rose-400/20 bg-rose-400/10 text-rose-50">
             <CardContent className="flex items-center justify-between py-4">
-              <p className="text-sm text-rose-600">{statusError}</p>
-              <Button variant="outline" size="sm" onClick={refetchStatus}>
+              <p className="text-sm">{statusError}</p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={refetchStatus}
+                className="border-white/15 bg-white/5 text-white hover:bg-white/10"
+              >
                 Retry
               </Button>
             </CardContent>
@@ -1670,9 +1822,9 @@ export default function VaultDetailPage() {
         )}
 
         {/* Stats Grid */}
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <StatCard
-            title="Total Assets"
+            title="Total value locked"
             value={
               status
                 ? formatCurrency(status.nav.totalAssets)
@@ -1680,29 +1832,29 @@ export default function VaultDetailPage() {
                   ? formatCurrency(onChainTotalAssets)
                   : "$0.00"
             }
-            subtitle="Vault TVL"
+            subtitle="All assets currently tracked by the vault"
             isLoading={statusLoading}
           />
           <StatCard
-            title="Idle Assets"
+            title="Available cash"
             value={status ? formatCurrency(status.nav.idleAssets) : "$0.00"}
-            subtitle="Available to deploy"
+            subtitle="Idle funds that are not currently in active positions"
             isLoading={statusLoading}
           />
           <StatCard
-            title="Cold (Vault)"
+            title="Vault reserve"
             value={status ? formatCurrency(status.nav.vaultUsdc) : "$0.00"}
-            subtitle="USDC in vault"
+            subtitle="Cash sitting directly in the vault contract"
             isLoading={statusLoading}
           />
           <StatCard
-            title="Hot (Safe)"
+            title="Trading wallet"
             value={status ? formatCurrency(status.nav.safeUsdc) : "$0.00"}
-            subtitle="USDC in safe"
+            subtitle="Cash currently sitting in the Safe for operations"
             isLoading={statusLoading}
           />
           <StatCard
-            title="Share Price"
+            title="Share price"
             value={
               status
                 ? formatSharePrice(status.nav.sharePrice)
@@ -1710,70 +1862,60 @@ export default function VaultDetailPage() {
                   ? formatSharePrice(sharePrice)
                   : "$1.0000"
             }
-            subtitle="Per vault share"
+            subtitle="Most recent value per vault share"
             isLoading={statusLoading}
           />
           <StatCard
-            title="Deployed Ratio"
+            title="Capital deployed"
             value={status ? formatPercent(status.deployedRatio) : "0.0%"}
-            subtitle="Capital utilization"
+            subtitle="Share of total capital currently in markets"
             tooltip="Open-position exposure ratio = open position cost basis / total assets"
             isLoading={statusLoading}
           />
           <StatCard
-            title="Committed Exposure"
-            value={
-              status ? formatPercent(status.committedExposureRatio ?? status.deployedRatio) : "0.0%"
-            }
-            subtitle="Open + redeemable"
-            tooltip="Includes open and redeemable positions that can still impact settlement outcomes"
-            isLoading={statusLoading}
-          />
-          <StatCard
-            title="Positions"
+            title="Live positions"
             value={status ? String(status.positionCount) : "0"}
-            subtitle="Active positions"
+            subtitle="Markets that are still open and affecting current NAV"
             tooltip="Active positions are currently open markets (redeemables move to History)"
             isLoading={statusLoading}
           />
           <StatCard
-            title="Total Supply"
+            title="Share supply"
             value={
               hasOnChainStats
                 ? onChainTotalSupply.toLocaleString(undefined, { maximumFractionDigits: 2 })
                 : apiTotalSupply.toLocaleString(undefined, { maximumFractionDigits: 2 })
             }
-            subtitle="Vault shares"
+            subtitle="Total shares currently outstanding"
             isLoading={statusLoading}
           />
         </div>
 
         {navHistoryLoading ? (
-          <Skeleton className="h-44 w-full" />
+          <Skeleton className="h-44 w-full rounded-[24px] bg-white/10" />
         ) : (
           <NavSparkline snapshots={navHistoryData?.snapshots ?? []} />
         )}
 
         {vault.type === "custom" && (
           <div className="grid gap-6 lg:grid-cols-2">
-            <EpochLifecycleCard
-              epoch={epoch}
+            <CycleLifecycleCard
+              cycle={cycle}
               queuedFormatted={queuedFormatted}
-              targetEpochId={targetEpochId ?? (epoch ? epoch.epochId + 1 : null)}
-              activationTime={activationTime ?? epoch?.endTime ?? null}
-              isLoading={epochLoading || depositQueueLoading}
+              targetCycleId={targetCycleId ?? (cycle ? cycle.cycleId + 1 : null)}
+              isLoading={cycleLoading || depositQueueLoading}
             />
             <DepositQueueCard
               queuedFormatted={queuedFormatted}
               queuedSharesFormatted={queuedSharesFormatted}
-              estimateNavFormatted={estimateNavFormatted}
+              cycleOpenNavFormatted={cycleOpenNavFormatted}
               estimateBasis={estimateBasis}
               depositRequestId={depositRequestId}
               depositCreatedAt={depositCreatedAt}
-              targetEpochId={targetEpochId}
-              activationTime={activationTime ?? epoch?.endTime ?? null}
+              targetCycleId={targetCycleId}
               queueStatus={queueStatus}
               mintRule={mintRule}
+              batchState={batchState}
               isLoading={depositQueueLoading}
             />
           </div>
@@ -1787,10 +1929,10 @@ export default function VaultDetailPage() {
           {vault.type !== "custom" && <WithdrawForm vault={vault} />}
           <RedemptionPanel
             vault={vault}
-            epochInfo={epoch}
+            cycleInfo={cycle}
             pendingRequests={pendingRequests}
             claimableRequests={claimableRequests}
-            isLoading={redemptionRequestsLoading || epochLoading}
+            isLoading={redemptionRequestsLoading || cycleLoading}
             onRequestCreated={() => {
               void refreshRedemptionData();
             }}
@@ -1802,31 +1944,40 @@ export default function VaultDetailPage() {
         </div>
 
         {vault.type === "custom" && (
-          <EpochHistoryCard epochs={epochHistory} isLoading={epochHistoryLoading} />
+          <CycleHistoryCard cycles={cycleHistory} isLoading={cycleHistoryLoading} />
         )}
 
         <Tabs defaultValue="positions" className="space-y-4">
-          <TabsList>
-            <TabsTrigger value="positions">
+          <TabsList className="border border-white/10 bg-white/5">
+            <TabsTrigger
+              value="positions"
+              className="data-[state=active]:bg-white data-[state=active]:text-slate-950"
+            >
               Positions
               {positionsData && (
-                <span className="ml-1.5 inline-flex items-center justify-center rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">
+                <span className="ml-1.5 inline-flex items-center justify-center rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-medium text-slate-200">
                   {positionsData.total}
                 </span>
               )}
             </TabsTrigger>
-            <TabsTrigger value="history">
+            <TabsTrigger
+              value="history"
+              className="data-[state=active]:bg-white data-[state=active]:text-slate-950"
+            >
               History
               {positionHistoryData && (
-                <span className="ml-1.5 inline-flex items-center justify-center rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">
+                <span className="ml-1.5 inline-flex items-center justify-center rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-medium text-slate-200">
                   {positionHistoryData.total}
                 </span>
               )}
             </TabsTrigger>
-            <TabsTrigger value="flows">
-              Flows
+            <TabsTrigger
+              value="flows"
+              className="data-[state=active]:bg-white data-[state=active]:text-slate-950"
+            >
+              Treasury
               {allocationsData && (
-                <span className="ml-1.5 inline-flex items-center justify-center rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">
+                <span className="ml-1.5 inline-flex items-center justify-center rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-medium text-slate-200">
                   {allocationsData.total}
                 </span>
               )}
@@ -1834,7 +1985,7 @@ export default function VaultDetailPage() {
           </TabsList>
 
           <TabsContent value="positions">
-            <Card className="border-border/50">
+            <Card className="rounded-[28px] border border-white/10 bg-white/[0.045] backdrop-blur-xl">
               <CardContent className="p-0">
                 <PositionsTable
                   positions={positionsData?.positions ?? []}
@@ -1845,7 +1996,7 @@ export default function VaultDetailPage() {
           </TabsContent>
 
           <TabsContent value="history">
-            <Card className="border-border/50">
+            <Card className="rounded-[28px] border border-white/10 bg-white/[0.045] backdrop-blur-xl">
               <CardContent className="p-0">
                 <PositionHistoryTable
                   positions={positionHistoryData?.positions ?? []}
@@ -1856,7 +2007,7 @@ export default function VaultDetailPage() {
           </TabsContent>
 
           <TabsContent value="flows">
-            <Card className="border-border/50">
+            <Card className="rounded-[28px] border border-white/10 bg-white/[0.045] backdrop-blur-xl">
               <CardContent className="p-0">
                 <FlowHistoryTable
                   allocations={allocationsData?.allocations ?? []}
@@ -1869,14 +2020,14 @@ export default function VaultDetailPage() {
 
         {/* Footer info */}
         {!statusLoading && status && (
-          <Card className="border-border/30 bg-slate-50/50">
+          <Card className="rounded-[22px] border border-white/10 bg-white/[0.04] backdrop-blur-xl">
             <CardContent className="flex items-center justify-between py-3">
-              <div className="flex items-center gap-4 text-xs text-muted-foreground">
+              <div className="flex items-center gap-4 text-xs text-slate-400">
                 <span>Vault: {truncateId(vault.config.vaultAddress, 12)}</span>
-                <Separator orientation="vertical" className="h-3" />
+                <Separator orientation="vertical" className="h-3 bg-white/10" />
                 <span>Safe: {truncateId(vault.config.safeAddress, 12)}</span>
               </div>
-              <Badge variant="outline" className="text-xs text-muted-foreground">
+              <Badge variant="outline" className="border-white/10 text-xs text-slate-300">
                 Auto-refresh: 30s
               </Badge>
             </CardContent>

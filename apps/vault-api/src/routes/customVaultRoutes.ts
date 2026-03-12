@@ -39,6 +39,7 @@
 import { Router } from "express";
 import type { Address } from "viem";
 import { parseUnits, formatUnits } from "viem";
+import { getVaultConfig } from "../config/index.js";
 import { logger } from "../logger.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getVaultProviderFactory } from "../services/vaultProviderFactory.js";
@@ -48,9 +49,9 @@ import { entitlementRepository } from "../repositories/entitlementRepository.js"
 import { payoutRepository } from "../repositories/payoutRepository.js";
 import {
   ClaimState,
-  guardClaimOperation,
   mapRequestStatusToClaimState,
   ClaimOperation,
+  validateClaimOperation,
 } from "../services/claimStateMachine.js";
 
 // ============================================================================
@@ -149,7 +150,11 @@ async function formatRedemptionRequest(
     controller: request.controller ?? request.userAddress,
     owner: request.owner ?? request.userAddress,
     operator: request.operator ?? null,
+    batchId: request.epochId,
+    cycleId: request.epochId,
     epochId: request.epochId,
+    targetCycle: request.epochId,
+    targetCycleEndTime: request.settledAt?.toISOString() ?? request.createdAt.toISOString(),
     targetEpoch: request.epochId,
     targetEpochEndTime: request.settledAt?.toISOString() ?? request.createdAt.toISOString(),
     settlementTime: request.settledAt?.toISOString() ?? null,
@@ -329,55 +334,125 @@ function formatEpochStatus(epochStatus: {
   };
 }
 
-function formatEpochHistoryItem(epoch: {
-  epochId: bigint;
+function formatEpochHistoryItem(batch: {
+  batchId: bigint;
   startTime: bigint;
   endTime: bigint;
-  epochOpenNAV: bigint;
   snapshotNAV: bigint;
   snapshotTimestamp: bigint;
   totalSharesPending: bigint;
-  frozenShares: bigint;
-  frozenAssets: bigint;
+  totalAssetsSnapshot: bigint;
   proRataRatio: bigint;
-  carryAccrued: bigint;
-  cohortTotalEntitlement: bigint;
-  cohortTotalAccrued: bigint;
-  cohortTotalClaimed: bigint;
-  cohortCarryRemaining: bigint;
   status: string;
 }): Record<string, unknown> {
   return {
-    epochId: Number(epoch.epochId),
-    startTime: new Date(Number(epoch.startTime) * 1000).toISOString(),
-    endTime: new Date(Number(epoch.endTime) * 1000).toISOString(),
-    epochOpenNAV: epoch.epochOpenNAV.toString(),
-    epochOpenNAVFormatted: formatUnits(epoch.epochOpenNAV, 18),
-    snapshotNAV: epoch.snapshotNAV.toString(),
-    snapshotNAVFormatted: formatUnits(epoch.snapshotNAV, 18),
+    epochId: Number(batch.batchId),
+    cycleId: Number(batch.batchId),
+    batchId: Number(batch.batchId),
+    startTime: new Date(Number(batch.startTime) * 1000).toISOString(),
+    endTime: new Date(Number(batch.endTime) * 1000).toISOString(),
+    epochOpenNAV: batch.snapshotNAV.toString(),
+    epochOpenNAVFormatted: formatUnits(batch.snapshotNAV, 18),
+    snapshotNAV: batch.snapshotNAV.toString(),
+    snapshotNAVFormatted: formatUnits(batch.snapshotNAV, 18),
     snapshotTimestamp:
-      epoch.snapshotTimestamp > 0n
-        ? new Date(Number(epoch.snapshotTimestamp) * 1000).toISOString()
+      batch.snapshotTimestamp > 0n
+        ? new Date(Number(batch.snapshotTimestamp) * 1000).toISOString()
         : null,
-    totalSharesPending: epoch.totalSharesPending.toString(),
-    totalSharesPendingFormatted: formatUnits(epoch.totalSharesPending, 6),
-    frozenShares: epoch.frozenShares.toString(),
-    frozenSharesFormatted: formatUnits(epoch.frozenShares, 6),
-    frozenAssets: epoch.frozenAssets.toString(),
-    frozenAssetsFormatted: formatUnits(epoch.frozenAssets, 6),
-    proRataRatio: epoch.proRataRatio.toString(),
-    proRataRatioFormatted: (Number(epoch.proRataRatio) / 1e18).toFixed(6),
-    carryAccrued: epoch.carryAccrued.toString(),
-    carryAccruedFormatted: formatUnits(epoch.carryAccrued, 6),
-    cohortTotalEntitlement: epoch.cohortTotalEntitlement.toString(),
-    cohortTotalEntitlementFormatted: formatUnits(epoch.cohortTotalEntitlement, 6),
-    cohortTotalAccrued: epoch.cohortTotalAccrued.toString(),
-    cohortTotalAccruedFormatted: formatUnits(epoch.cohortTotalAccrued, 6),
-    cohortTotalClaimed: epoch.cohortTotalClaimed.toString(),
-    cohortTotalClaimedFormatted: formatUnits(epoch.cohortTotalClaimed, 6),
-    cohortCarryRemaining: epoch.cohortCarryRemaining.toString(),
-    cohortCarryRemainingFormatted: formatUnits(epoch.cohortCarryRemaining, 6),
-    status: epoch.status,
+    totalSharesPending: batch.totalSharesPending.toString(),
+    totalSharesPendingFormatted: formatUnits(batch.totalSharesPending, 6),
+    frozenShares: batch.totalSharesPending.toString(),
+    frozenSharesFormatted: formatUnits(batch.totalSharesPending, 6),
+    frozenAssets: batch.totalAssetsSnapshot.toString(),
+    frozenAssetsFormatted: formatUnits(batch.totalAssetsSnapshot, 6),
+    proRataRatio: batch.proRataRatio.toString(),
+    proRataRatioFormatted: (Number(batch.proRataRatio) / 1e18).toFixed(6),
+    // CLOSED-BOOK: No carry/epoch accounting - these are always 0
+    carryAccrued: "0",
+    carryAccruedFormatted: "0",
+    cohortTotalEntitlement: "0",
+    cohortTotalEntitlementFormatted: "0",
+    cohortTotalAccrued: "0",
+    cohortTotalAccruedFormatted: "0",
+    cohortTotalClaimed: "0",
+    cohortTotalClaimedFormatted: "0",
+    cohortCarryRemaining: "0",
+    cohortCarryRemainingFormatted: "0",
+    batchState: batch.status,
+    status: batch.status,
+  };
+}
+
+function formatCycleStatus(batchStatus: {
+  batchId: number;
+  nextBatchId: number;
+  status: string;
+  startTime: Date;
+  endTime: Date;
+  cutoffTime?: Date;
+  isPriceLocked: boolean;
+  lockedClearingPrice?: string;
+  settlementProgress?: {
+    processed: number;
+    total: number;
+    isComplete: boolean;
+  };
+  totalSharesPending: bigint;
+  totalAssetsSnapshot?: string;
+  proRataRatio: number;
+  totalQueuedDeposits: bigint;
+  claimableRedemptions: number;
+  mintedDeposits: number;
+}) {
+  const batchState = batchStatus.status;
+  const isActive = ["open", "cutoff", "flattening", "settling"].includes(batchState);
+  const isPast = ["settled", "closed", "reopen"].includes(batchState);
+
+  let timeRemainingFormatted = "Awaiting cycle close";
+  if (batchState === "cutoff") {
+    timeRemainingFormatted = "Awaiting flatten";
+  } else if (batchState === "flattening") {
+    timeRemainingFormatted = "Flattening in progress";
+  } else if (batchState === "settling") {
+    timeRemainingFormatted = "Settlement in progress";
+  } else if (batchState === "settled") {
+    timeRemainingFormatted = "Claims available";
+  } else if (batchState === "reopen") {
+    timeRemainingFormatted = "Ready for next cycle";
+  }
+
+  return {
+    cycleId: batchStatus.batchId,
+    batchId: batchStatus.batchId,
+    startTime: batchStatus.startTime.toISOString(),
+    endTime: batchStatus.endTime.toISOString(),
+    settlementTime: batchStatus.endTime.toISOString(),
+    isActive,
+    isPast,
+    timeRemainingMs: 0,
+    timeRemainingFormatted,
+    totalRequests: batchStatus.claimableRedemptions,
+    totalShares: batchStatus.totalSharesPending.toString(),
+    totalSharesFormatted: formatUnits(batchStatus.totalSharesPending, 6),
+    settled: ["settled", "closed", "reopen"].includes(batchState),
+    batchState,
+    proRataRatio: Math.round(batchStatus.proRataRatio * 1e18).toString(),
+    availableAssets: batchStatus.totalAssetsSnapshot,
+    availableAssetsFormatted: batchStatus.totalAssetsSnapshot
+      ? formatUnits(BigInt(batchStatus.totalAssetsSnapshot), 6)
+      : undefined,
+    flatteningProgress: batchState === "flattening" ? 50 : undefined,
+    settlementProgress: batchStatus.settlementProgress
+      ? batchStatus.settlementProgress.total > 0
+        ? Math.round(
+            (batchStatus.settlementProgress.processed / batchStatus.settlementProgress.total) * 100,
+          )
+        : batchStatus.settlementProgress.isComplete
+          ? 100
+          : 0
+      : undefined,
+    isCutoff: batchState === "cutoff",
+    cutoffTime: batchStatus.cutoffTime?.toISOString() ?? null,
   };
 }
 
@@ -501,7 +576,18 @@ export function buildCustomVaultRouter(): Router {
         return;
       }
 
-      const estimatedSettlementTime = vaultInfo.epochInfo?.currentEpochEnd;
+      if (!result.requestId) {
+        res.status(501).json({
+          success: false,
+          error:
+            "vault-api does not execute user-signed redeem requests on-chain. Use the direct wallet request flow in vault-web.",
+          vaultId,
+          shares,
+        });
+        return;
+      }
+
+      const estimatedSettlementTime = undefined;
 
       logger.info("CustomVault API: Redemption request created", {
         vaultId,
@@ -527,8 +613,9 @@ export function buildCustomVaultRouter(): Router {
         assetsEstimated: assetsEstimated.toString(),
         assetsEstimatedFormatted: formatUnits(assetsEstimated, 6),
         status: "pending",
-        estimatedSettlementTime: estimatedSettlementTime?.toISOString(),
-        message: "Redemption request created. Shares will be locked until epoch settlement.",
+        estimatedSettlementTime: null,
+        message:
+          "Redemption request created. Shares will remain pending until the current cycle is sealed, flattened, and settled.",
       });
     } catch (error) {
       logger.error("CustomVault API: Failed to create redemption request", {
@@ -629,9 +716,13 @@ export function buildCustomVaultRouter(): Router {
       const statusResult = await provider.getRequestStatus(requestId);
       const request = statusResult.request;
 
-      const isOwner = request.userAddress.toLowerCase() === userAddress.toLowerCase();
-      const isController = request.controller?.toLowerCase() === userAddress.toLowerCase();
-      const isOperator = request.operator?.toLowerCase() === userAddress.toLowerCase();
+      const ownerAddress = (request.owner ?? request.userAddress).toLowerCase();
+      const controllerAddress = (request.controller ?? request.userAddress).toLowerCase();
+      const isOwner = ownerAddress === userAddress.toLowerCase();
+      const isController = controllerAddress === userAddress.toLowerCase();
+      const isOperator = await provider
+        .getClient()
+        .isOperator(controllerAddress as Address, userAddress);
 
       const isAuthorized = isOwner || isController || isOperator;
 
@@ -639,9 +730,9 @@ export function buildCustomVaultRouter(): Router {
         logger.warn("CustomVault API: Unauthorized claim attempt blocked", {
           vaultId,
           requestId,
-          requestOwner: request.userAddress,
+          requestOwner: ownerAddress,
           requestController: request.controller,
-          requestOperator: request.operator,
+          requestOperatorApproved: isOperator,
           attemptingUser: userAddress,
         });
         res.status(403).json({
@@ -656,14 +747,9 @@ export function buildCustomVaultRouter(): Router {
 
       const currentState = mapRequestStatusToClaimState(request.status);
 
-      const guard = guardClaimOperation({
-        claimOwner: request.userAddress,
-        requestingUser: userAddress,
-        currentState,
-        operation: ClaimOperation.CLAIM,
-      });
+      const guard = validateClaimOperation(ClaimOperation.CLAIM, currentState);
 
-      if (!guard.allowed) {
+      if (!guard.valid) {
         logger.warn("CustomVault API: Claim operation blocked by state machine", {
           vaultId,
           requestId,
@@ -671,7 +757,7 @@ export function buildCustomVaultRouter(): Router {
           currentState,
           error: guard.error,
         });
-        res.status(guard.code || 409).json({
+        res.status(409).json({
           success: false,
           error: guard.error,
           requestId,
@@ -754,6 +840,17 @@ export function buildCustomVaultRouter(): Router {
         return;
       }
 
+      if (!result.txHash) {
+        res.status(501).json({
+          success: false,
+          error:
+            "vault-api does not execute on-chain claim transactions for users. Use the direct wallet claim flow in vault-web.",
+          requestId,
+          vaultId,
+        });
+        return;
+      }
+
       if (entitlement) {
         const claimResult = await payoutRepository.claimAllForEntitlement(
           entitlement.id,
@@ -824,7 +921,7 @@ export function buildCustomVaultRouter(): Router {
       }
 
       const client = provider.getClient();
-      const currentEpoch = await client.getCurrentEpoch();
+      const currentEpoch = await client.getCurrentBatch();
       const epochStatus = await provider.getEpochStatus(Number(currentEpoch));
 
       if (!epochStatus) {
@@ -869,7 +966,7 @@ export function buildCustomVaultRouter(): Router {
       }
 
       const client = provider.getClient();
-      const currentEpoch = Number(await client.getCurrentEpoch());
+      const currentEpoch = Number(await client.getCurrentBatch());
       const minEpoch = Math.max(0, currentEpoch - limit + 1);
       const epochIds: number[] = [];
 
@@ -879,7 +976,7 @@ export function buildCustomVaultRouter(): Router {
 
       const epochs = await Promise.all(
         epochIds.map(async (epochId) => {
-          const epoch = await client.getEpoch(BigInt(epochId));
+          const epoch = await client.getBatch(BigInt(epochId));
           return epoch ? formatEpochHistoryItem(epoch) : null;
         }),
       );
@@ -950,6 +1047,160 @@ export function buildCustomVaultRouter(): Router {
       });
       res.status(500).json({
         error: "Failed to get epoch details",
+        message: (error as Error).message,
+      });
+    }
+  });
+
+  // ============================================================================
+  // CYCLE ALIASES: /cycles/* routes are aliases for /epochs/* routes
+  // These provide the cycle-based naming convention for the frontend
+  // ============================================================================
+
+  router.get("/:vaultId/cycles/current", async (req, res) => {
+    try {
+      const vaultId = parseInt(req.params.vaultId, 10);
+
+      if (isNaN(vaultId)) {
+        res.status(400).json({ error: "Invalid vault ID" });
+        return;
+      }
+
+      const provider = await getCustomVaultProvider(vaultId);
+      if (!provider) {
+        res.status(404).json({
+          error: `Custom vault ${vaultId} not found`,
+        });
+        return;
+      }
+
+      const client = provider.getClient();
+      const currentEpoch = await client.getCurrentBatch();
+      const batchStatus = await provider.getBatchStatus(Number(currentEpoch));
+
+      if (!batchStatus) {
+        res.status(500).json({
+          error: "Failed to get current cycle status",
+        });
+        return;
+      }
+
+      res.json({
+        success: true,
+        cycle: formatCycleStatus(batchStatus),
+        vaultId,
+      });
+    } catch (error) {
+      logger.error("CustomVault API: Failed to get current cycle", {
+        error: (error as Error).message,
+        vaultId: req.params.vaultId,
+      });
+      res.status(500).json({
+        error: "Failed to get current cycle",
+        message: (error as Error).message,
+      });
+    }
+  });
+
+  router.get("/:vaultId/cycles", async (req, res) => {
+    try {
+      const vaultId = parseInt(req.params.vaultId, 10);
+      const limitParam = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : 6;
+      const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 20) : 6;
+
+      if (isNaN(vaultId)) {
+        res.status(400).json({ error: "Invalid vault ID" });
+        return;
+      }
+
+      const provider = await getCustomVaultProvider(vaultId);
+      if (!provider) {
+        res.status(404).json({ error: `Custom vault ${vaultId} not found` });
+        return;
+      }
+
+      const client = provider.getClient();
+      const currentEpoch = Number(await client.getCurrentBatch());
+      const minEpoch = Math.max(0, currentEpoch - limit + 1);
+      const epochIds: number[] = [];
+
+      for (let epochId = currentEpoch; epochId >= minEpoch; epochId -= 1) {
+        epochIds.push(epochId);
+      }
+
+      const cycles = await Promise.all(
+        epochIds.map(async (epochId) => {
+          const epoch = await client.getBatch(BigInt(epochId));
+          return epoch ? formatEpochHistoryItem(epoch) : null;
+        }),
+      );
+
+      res.json({
+        success: true,
+        vaultId,
+        currentCycleId: currentEpoch,
+        cycles: cycles.filter((cycle): cycle is Record<string, unknown> => cycle !== null),
+      });
+    } catch (error) {
+      logger.error("CustomVault API: Failed to get cycle history", {
+        error: (error as Error).message,
+        vaultId: req.params.vaultId,
+      });
+      res.status(500).json({
+        error: "Failed to get cycle history",
+        message: (error as Error).message,
+      });
+    }
+  });
+
+  router.get("/:vaultId/cycles/:cycleId", async (req, res) => {
+    try {
+      const vaultId = parseInt(req.params.vaultId, 10);
+      const cycleId = parseInt(req.params.cycleId, 10);
+
+      if (isNaN(vaultId)) {
+        res.status(400).json({ error: "Invalid vault ID" });
+        return;
+      }
+
+      if (isNaN(cycleId)) {
+        res.status(400).json({ error: "Invalid cycle ID" });
+        return;
+      }
+
+      const provider = await getCustomVaultProvider(vaultId);
+      if (!provider) {
+        res.status(404).json({
+          error: `Custom vault ${vaultId} not found`,
+        });
+        return;
+      }
+
+      const batchStatus = await provider.getBatchStatus(cycleId);
+
+      if (!batchStatus) {
+        res.status(404).json({
+          error: `Cycle ${cycleId} not found`,
+        });
+        return;
+      }
+
+      const canSettle = await provider.isSettlementReady(cycleId);
+
+      res.json({
+        success: true,
+        cycle: formatCycleStatus(batchStatus),
+        canSettle,
+        vaultId,
+      });
+    } catch (error) {
+      logger.error("CustomVault API: Failed to get cycle details", {
+        error: (error as Error).message,
+        vaultId: req.params.vaultId,
+        cycleId: req.params.cycleId,
+      });
+      res.status(500).json({
+        error: "Failed to get cycle details",
         message: (error as Error).message,
       });
     }
@@ -1054,6 +1305,17 @@ export function buildCustomVaultRouter(): Router {
                 epochDurationSeconds: vaultInfo.epochInfo.epochDurationSeconds,
               }
             : null,
+          batchInfo: vaultInfo.batchInfo
+            ? {
+                currentBatchId: vaultInfo.batchInfo.currentBatchId,
+                currentBatchStart: vaultInfo.batchInfo.currentBatchStart.toISOString(),
+                currentBatchEnd: vaultInfo.batchInfo.currentBatchEnd?.toISOString() ?? null,
+                currentBatchStatus: vaultInfo.batchInfo.currentBatchStatus,
+                nextBatchId: vaultInfo.batchInfo.nextBatchId,
+                nextBatchExists: vaultInfo.batchInfo.nextBatchExists,
+                batchDurationSeconds: vaultInfo.batchInfo.batchDurationSeconds,
+              }
+            : null,
           navLastUpdated: vaultInfo.navLastUpdated.toISOString(),
           navIsStale: vaultInfo.navIsStale,
         },
@@ -1100,23 +1362,24 @@ export function buildCustomVaultRouter(): Router {
       }
 
       const client = provider.getClient();
-      const currentEpochId = await client.getCurrentEpoch();
+      const currentEpochId = await client.getCurrentBatch();
       const targetEpochId = currentEpochId + 1n;
-      const depositRequestId = await client.getDepositorEpochRequest(userAddress, targetEpochId);
+      const depositRequestId = await client.getDepositorBatchRequest(userAddress, targetEpochId);
       const depositRequest =
         depositRequestId > 0n ? await client.getDepositRequest(depositRequestId) : null;
 
-      const [navStatus, epoch, targetEpoch, requestId] = await Promise.all([
+      const [navStatus, epoch, targetEpoch, requestIds] = await Promise.all([
         client.getNAVStatus(),
-        client.getEpoch(currentEpochId),
-        client.getEpoch(targetEpochId),
-        client.getControllerRequestId(userAddress),
+        client.getBatch(currentEpochId),
+        client.getBatch(targetEpochId),
+        client.getControllerRequestIds(userAddress),
       ]);
 
-      const queuedAssets = depositRequest && !depositRequest.processed ? depositRequest.assets : 0n;
+      const queuedAssets =
+        depositRequest && depositRequest.status !== "processed" ? depositRequest.assets : 0n;
       const estimateNav =
-        targetEpoch?.epochOpenNAV && targetEpoch.epochOpenNAV > 0n
-          ? targetEpoch.epochOpenNAV
+        targetEpoch?.snapshotNAV && targetEpoch.snapshotNAV > 0n
+          ? targetEpoch.snapshotNAV
           : navStatus.currentNAV;
       const estimatedQueuedShares =
         queuedAssets > 0n
@@ -1125,17 +1388,25 @@ export function buildCustomVaultRouter(): Router {
             : queuedAssets
           : queuedAssets;
 
-      const redemptionRequest =
-        requestId > 0n ? await client.getRedemptionRequest(requestId) : null;
-      const frozenShares =
-        redemptionRequest?.status === "claimable" ? redemptionRequest.shares : 0n;
-      const frozenAssets =
-        redemptionRequest?.status === "claimable" ? redemptionRequest.assetsClaimable : 0n;
+      const redemptionRequests = await Promise.all(
+        requestIds.map(async (requestId) => client.getRedemptionRequest(requestId)),
+      );
+      const frozenShares = redemptionRequests.reduce((sum, request) => {
+        if (!request || request.status !== "claimable") {
+          return sum;
+        }
+        return sum + request.shares;
+      }, 0n);
+      const frozenAssets = redemptionRequests.reduce((sum, request) => {
+        if (!request || request.status !== "claimable") {
+          return sum;
+        }
+        return sum + request.assetsClaimable;
+      }, 0n);
 
       const currentEpochStart = epoch
         ? new Date(Number(epoch.startTime) * 1000).toISOString()
         : null;
-      const currentEpochEnd = epoch ? new Date(Number(epoch.endTime) * 1000).toISOString() : null;
 
       res.json({
         success: true,
@@ -1148,9 +1419,9 @@ export function buildCustomVaultRouter(): Router {
         estimateNav: estimateNav.toString(),
         estimateNavFormatted: formatUnits(estimateNav, 18),
         estimateBasis:
-          targetEpoch?.epochOpenNAV && targetEpoch.epochOpenNAV > 0n
-            ? "Estimated from the target epoch open NAV."
-            : "Estimated from current NAV. Final minted shares use the target epoch open NAV when the epoch activates.",
+          targetEpoch?.snapshotNAV && targetEpoch.snapshotNAV > 0n
+            ? "Estimated from the target batch snapshot NAV."
+            : "Estimated from current NAV. Final minted shares use the target cycle snapshot NAV when the batch is eventually processed.",
         frozen: frozenAssets.toString(),
         frozenFormatted: formatUnits(frozenAssets, 6),
         frozenShares: frozenShares.toString(),
@@ -1160,15 +1431,20 @@ export function buildCustomVaultRouter(): Router {
           depositRequest?.createdAt && depositRequest.createdAt > 0n
             ? new Date(Number(depositRequest.createdAt) * 1000).toISOString()
             : null,
-        targetEpochId: Number(depositRequest?.targetEpoch ?? targetEpochId),
+        targetEpochId: Number(depositRequest?.targetBatch ?? targetEpochId),
         currentEpochId: Number(currentEpochId),
         currentEpochStart,
-        currentEpochEnd,
-        nextEpochStart: currentEpochEnd,
-        activationTime: currentEpochEnd,
-        queueStatus: depositRequest ? (depositRequest.processed ? "processed" : "queued") : "idle",
+        currentEpochEnd: null,
+        nextEpochStart: null,
+        activationTime: null,
+        batchState: epoch?.status ?? null,
+        queueStatus: depositRequest
+          ? depositRequest.status === "processed"
+            ? "processed"
+            : "queued"
+          : "idle",
         mintRule:
-          "Deposits queue for the next epoch and shares mint when that epoch opens using the epoch-open NAV.",
+          "Deposits queue for the next cycle and mint only after that cycle is sealed, flattened, and processed using the locked cycle-open NAV.",
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
@@ -1224,7 +1500,7 @@ export function buildCustomVaultRouter(): Router {
         }
       } else {
         const client = provider.getClient();
-        epochId = Number(await client.getCurrentEpoch());
+        epochId = Number(await client.getCurrentBatch());
       }
 
       // Get epoch status

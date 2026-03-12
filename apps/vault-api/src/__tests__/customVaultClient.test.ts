@@ -75,16 +75,14 @@ describe("CustomVaultClient", () => {
   describe("getVaultConfig", () => {
     it("should return vault configuration", async () => {
       (mockPublicClient.readContract as ReturnType<typeof vi.fn>)
-        .mockResolvedValueOnce(604800n) // EPOCH_DURATION
-        .mockResolvedValueOnce(1700000000n) // DEPLOY_TIME
+        .mockResolvedValueOnce(604800n)
         .mockResolvedValueOnce(21600n);
 
       const result = await client.getVaultConfig();
 
       expect(result).toEqual({
-        epochDuration: 604800n,
-        deployTime: 1700000000n,
-        navStalenessThreshold: 21600,
+        deployTime: 604800n,
+        navStalenessThreshold: 21600n,
       });
     });
   });

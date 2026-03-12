@@ -1,0 +1,266 @@
+import { describe, expect, it, vi } from "vitest";
+
+const mockVaultInstanceConfig = {
+  id: 1,
+  name: "test-vault",
+  enabled: true,
+  type: "custom",
+  network: "amoy",
+  vaultAddress: "0x1234567890123456789012345678901234567890",
+  safeAddress: "0x0987654321098765432109876543210987654321",
+  tradingSafeAddress: "0x0987654321098765432109876543210987654321",
+  allocatorNavSignerKeyEnv: "TEST_ALLOCATOR_KEY",
+  safeOperatorKeyEnv: "TEST_SAFE_KEY",
+  tradingSignerKeyEnv: "TEST_TRADING_KEY",
+  settlerKeyEnv: "TEST_SETTLER_KEY",
+  tradingSignatureType: 2,
+  tradingFunderAddress: "0x0987654321098765432109876543210987654321",
+  singleSafeMode: false,
+  customVaultConfig: {
+    epochDurationSeconds: 3600,
+    navStalenessThresholdSeconds: 3600,
+    minClaimThresholdUsdc: 1000000,
+    balancedUpfrontBps: 0,
+  },
+  betSize: 1,
+  dailyBudget: Infinity,
+  minOdds: 0.9,
+  maxOdds: 0.995,
+  maxHoursGeneral: 1,
+  maxHoursForHighOdds: 1,
+  highOddsThreshold: 0.99,
+  marketFetchMaxEvents: 10,
+  categoryTimeLimits: {
+    crypto: 1,
+  },
+  skipCategories: [],
+  minWalletReserve: 0,
+  maxDailyLoss: Infinity,
+  enableEarlyExit: true,
+  earlyExitMinPrice: 0.9995,
+  useMarketOrders: true,
+  vaultReserveUsdc: 0,
+  minAllocationAmountUsdc: 1,
+  maxDeployedRatio: 1,
+  autoLiquidityManagement: true,
+  enforceEpochBoundarySafety: true,
+  epochBoundarySafetyBufferMinutes: 5,
+  hedging: {
+    enabled: false,
+    dropThresholdPercent: 0,
+    multiplier: 0,
+    spreadTolerance: 0,
+    minPositionAgeMinutes: 0,
+    onlyNearResolution: false,
+    nearResolutionMinutes: 0,
+    skipCategories: [],
+  },
+  navRefreshIntervalMin: 2,
+  reconciliationIntervalMin: 2,
+  tradingScanIntervalMin: 1,
+  resolutionCheckIntervalMin: 5,
+  defaultMode: "live",
+} as const;
+
+const mockMaintenanceKey = "0x1111111111111111111111111111111111111111111111111111111111111111";
+
+vi.mock("../logger.js", () => ({
+  logger: {
+    info: vi.fn(),
+    debug: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
+
+vi.mock("../config/index.js", () => ({
+  getVaultConfig: vi.fn(() => mockVaultInstanceConfig),
+}));
+
+vi.mock("../config/network.js", () => ({
+  getNetworkConfigFromEnv: vi.fn(() => ({
+    name: "amoy",
+    chain: { id: 80002 },
+  })),
+  getRpcUrlForNetwork: vi.fn(() => "https://rpc.example.test"),
+}));
+
+vi.mock("../services/customVaultClient.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/customVaultClient.js")>(
+    "../services/customVaultClient.js",
+  );
+
+  return {
+    ...actual,
+    createCustomVaultClient: vi.fn(() => ({})),
+  };
+});
+
+vi.mock("../services/flatnessDetector.js", () => ({
+  FlatnessDetector: vi.fn().mockImplementation(() => ({
+    checkFlatness: vi.fn().mockResolvedValue({
+      isFlat: true,
+      blockingConditions: [],
+    }),
+  })),
+}));
+
+vi.mock("../services/safeWallet.js", () => ({
+  SafeWalletService: vi.fn().mockImplementation(() => ({
+    initialize: vi.fn().mockResolvedValue(undefined),
+    transferToken: vi.fn().mockResolvedValue({ success: true, txHash: "0xmock" }),
+  })),
+}));
+
+import { CustomVaultProvider } from "../services/customVaultProvider.js";
+import type { BatchData, CustomVaultClient } from "../services/customVaultClient.js";
+
+function makeBatch(overrides: Partial<BatchData>): BatchData {
+  return {
+    batchId: 0n,
+    startTime: 0n,
+    endTime: 0n,
+    cutoffTime: 0n,
+    snapshotNAV: 0n,
+    lockedClearingPrice: 0n,
+    snapshotTimestamp: 0n,
+    totalSharesPending: 0n,
+    totalAssetsSnapshot: 0n,
+    proRataRatio: 1000000000000000000n,
+    totalQueuedDeposits: 0n,
+    status: "open",
+    isPriceLocked: false,
+    ...overrides,
+  };
+}
+
+describe("CustomVaultProvider settlement readiness", () => {
+  it("treats next-batch queued deposits as actionable work for current batch advancement", async () => {
+    const mockClient = {
+      getCurrentBatch: vi.fn().mockResolvedValue(0n),
+      getNAVStatus: vi.fn().mockResolvedValue({
+        currentNAV: 1000000000000000000n,
+        lastNAVUpdate: 1700000000n,
+        isFresh: true,
+      }),
+      getBatch: vi.fn(async (batchId: bigint) => {
+        if (batchId === 0n) {
+          return makeBatch({ batchId: 0n, totalQueuedDeposits: 0n, totalSharesPending: 0n });
+        }
+
+        if (batchId === 1n) {
+          return makeBatch({ batchId: 1n, totalQueuedDeposits: 1000000n });
+        }
+
+        return null;
+      }),
+    };
+
+    const provider = new CustomVaultProvider(
+      {
+        vaultId: 1,
+        vaultAddress: "0x1234567890123456789012345678901234567890",
+        providerType: "custom",
+      },
+      mockMaintenanceKey,
+    );
+
+    (provider as unknown as { client: CustomVaultClient }).client =
+      mockClient as unknown as CustomVaultClient;
+
+    await expect(provider.hasActionableBatchWork()).resolves.toBe(true);
+    await expect(provider.isSettlementReady()).resolves.toBe(true);
+    expect(mockClient.getBatch).toHaveBeenCalledWith(1n);
+  });
+
+  it("requires a NAV refresh when actionable work exists but NAV is stale or zero", async () => {
+    const mockClient = {
+      getCurrentBatch: vi.fn().mockResolvedValue(0n),
+      getNAVStatus: vi.fn().mockResolvedValue({
+        currentNAV: 0n,
+        lastNAVUpdate: 1700000000n,
+        isFresh: false,
+      }),
+      getBatch: vi.fn(async (batchId: bigint) => {
+        if (batchId === 0n) {
+          return makeBatch({ batchId: 0n, totalQueuedDeposits: 0n, totalSharesPending: 0n });
+        }
+
+        if (batchId === 1n) {
+          return makeBatch({ batchId: 1n, totalQueuedDeposits: 1000000n });
+        }
+
+        return null;
+      }),
+    };
+
+    const provider = new CustomVaultProvider({
+      vaultId: 1,
+      vaultAddress: "0x1234567890123456789012345678901234567890",
+      providerType: "custom",
+    });
+
+    (provider as unknown as { client: CustomVaultClient }).client =
+      mockClient as unknown as CustomVaultClient;
+
+    await expect(provider.needsNavRefreshForActionableWork()).resolves.toBe(true);
+    await expect(provider.isSettlementReady()).resolves.toBe(false);
+  });
+
+  it("estimates pending custom withdrawal liability before settlement", async () => {
+    const mockClient = {
+      getCurrentBatch: vi.fn().mockResolvedValue(1n),
+      getBatch: vi.fn().mockResolvedValue(
+        makeBatch({
+          batchId: 1n,
+          totalSharesPending: 1000000n,
+          status: "open",
+        }),
+      ),
+      getNAVStatus: vi.fn().mockResolvedValue({
+        currentNAV: 1000000000000000000n,
+        lastNAVUpdate: 1700000000n,
+        isFresh: true,
+      }),
+    };
+
+    const provider = new CustomVaultProvider({
+      vaultId: 1,
+      vaultAddress: "0x1234567890123456789012345678901234567890",
+      providerType: "custom",
+    });
+
+    (provider as unknown as { client: CustomVaultClient }).client =
+      mockClient as unknown as CustomVaultClient;
+
+    await expect(provider.estimatePendingWithdrawalLiability()).resolves.toBe(1000000n);
+  });
+
+  it("does not report zero-asset claimable requests as claimable", async () => {
+    const mockClient = {
+      getRedemptionRequest: vi.fn().mockResolvedValue({
+        requestId: 1n,
+        controller: "0x1111111111111111111111111111111111111111",
+        owner: "0x1111111111111111111111111111111111111111",
+        shares: 1000000n,
+        assetsClaimable: 0n,
+        batchId: 1n,
+        status: "claimable",
+        createdAt: 1700000000n,
+        settledAt: 1700000100n,
+        exists: true,
+      }),
+    };
+
+    const provider = new CustomVaultProvider({
+      vaultId: 1,
+      vaultAddress: "0x1234567890123456789012345678901234567890",
+      providerType: "custom",
+    });
+
+    (provider as unknown as { client: CustomVaultClient }).client =
+      mockClient as unknown as CustomVaultClient;
+
+    await expect(provider.getRequestStatus("1")).resolves.toMatchObject({ claimable: false });
+  });
+});

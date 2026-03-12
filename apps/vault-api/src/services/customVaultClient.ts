@@ -1,15 +1,26 @@
 /**
- * Custom Vault Contract Client (ERC-7540 Compliant)
+ * Custom Vault Contract Client (ERC-7540 Compliant with Closed-Book Batch Lifecycle)
  *
- * viem-based client for interacting with the EpochTrancheVault canonical contract.
- * Implements ERC-7540 async redemption with deposit queue, epoch mint, and carry accrual.
+ * viem-based client for interacting with the ClosedBookBatchVault canonical contract.
+ * Implements ERC-7540 async redemption with deposit queue, batch lifecycle, and settlement.
  *
- * Canonical Contract: EpochTrancheVault (supersedes WeeklyEpochVault)
- * Breaking Changes from WeeklyEpochVault:
- *   - requestRedeem returns actual requestId (not always 0)
- *   - Added deposit queue support
- *   - Settlement requires freezeEpoch before settleEpoch
- *   - Carry accrual applied on claim
+ * Canonical Contract: ClosedBookBatchVault
+ *
+ * BATCH LIFECYCLE (Closed-Book Model):
+ * - OPEN: Batch accepting deposits and redemption requests
+ * - CUTOFF: First redemption request seals batch; deposits closed
+ * - FLATTENING: NAV snapshot taken, clearing price locked
+ * - SETTLING: Settlement in progress (chunked processing)
+ * - SETTLED: Settlement complete, claims available
+ * - CLOSED: Claims window ended
+ * - REOPEN: Ready for next batch cycle
+ *
+ * KEY DIFFERENCES FROM EpochTrancheVault:
+ *   - Uses 'batch' terminology instead of 'epoch'
+ *   - No carry/partial-realization accounting
+ *   - Shares remain economically live until settlement
+ *   - Locked clearing price computed at flatten time
+ *   - Cancellation disabled after cutoff
  */
 
 import type { Address, Hex, PublicClient, WalletClient } from "viem";
@@ -18,10 +29,10 @@ import type { Chain } from "viem/chains";
 import { logger } from "../logger.js";
 
 // ============================================================================
-// Contract ABI for EpochTrancheVault (Canonical)
+// Contract ABI for ClosedBookBatchVault (Canonical)
 // ============================================================================
 
-export const EPOCH_TRANCHE_VAULT_ABI = [
+export const CLOSED_BOOK_BATCH_VAULT_ABI = [
   // View functions - Configuration
   {
     type: "function",
@@ -29,13 +40,6 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "", type: "address" }],
-  },
-  {
-    type: "function",
-    name: "EPOCH_DURATION",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
   },
   {
     type: "function",
@@ -53,27 +57,11 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
   },
   {
     type: "function",
-    name: "MIN_CLAIM_THRESHOLD",
+    name: "currentBatchId",
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],
   },
-  {
-    type: "function",
-    name: "BALANCED_UPFRONT_BPS",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "currentEpochId",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-
-  // View functions - NAV
   {
     type: "function",
     name: "currentNAV",
@@ -95,6 +83,85 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
     inputs: [],
     outputs: [{ name: "fresh", type: "bool" }],
   },
+  {
+    type: "function",
+    name: "emergencyMode",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "totalSupply",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "totalAssets",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+
+  // View functions - Batch
+  {
+    type: "function",
+    name: "batches",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "uint256" }],
+    outputs: [
+      { name: "batchId", type: "uint256" },
+      { name: "startTime", type: "uint256" },
+      { name: "endTime", type: "uint256" },
+      { name: "cutoffTime", type: "uint256" },
+      { name: "snapshotNAV", type: "uint256" },
+      { name: "lockedClearingPrice", type: "uint256" },
+      { name: "snapshotTimestamp", type: "uint256" },
+      { name: "totalSharesPending", type: "uint256" },
+      { name: "totalAssetsSnapshot", type: "uint256" },
+      { name: "proRataRatio", type: "uint256" },
+      { name: "totalQueuedDeposits", type: "uint256" },
+      { name: "status", type: "uint8" },
+      { name: "isPriceLocked", type: "bool" },
+      { name: "exists", type: "bool" },
+    ],
+  },
+  {
+    type: "function",
+    name: "getCurrentBatch",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "getBatchEnd",
+    stateMutability: "view",
+    inputs: [{ name: "batchId", type: "uint256" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "getBatchStatus",
+    stateMutability: "view",
+    inputs: [{ name: "batchId", type: "uint256" }],
+    outputs: [{ name: "", type: "uint8" }],
+  },
+  {
+    type: "function",
+    name: "getSettlementProgress",
+    stateMutability: "view",
+    inputs: [{ name: "batchId", type: "uint256" }],
+    outputs: [
+      { name: "processed", type: "uint256" },
+      { name: "total", type: "uint256" },
+      { name: "lastIndex", type: "uint256" },
+      { name: "reservedAssetsAllocated", type: "uint256" },
+      { name: "isComplete", type: "bool" },
+    ],
+  },
 
   // View functions - Deposit Queue
   {
@@ -106,11 +173,21 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
       { name: "requestId", type: "uint256" },
       { name: "depositor", type: "address" },
       { name: "assets", type: "uint256" },
-      { name: "targetEpoch", type: "uint256" },
+      { name: "targetBatch", type: "uint256" },
       { name: "createdAt", type: "uint256" },
-      { name: "processed", type: "bool" },
+      { name: "status", type: "uint8" },
       { name: "exists", type: "bool" },
     ],
+  },
+  {
+    type: "function",
+    name: "depositorBatchRequest",
+    stateMutability: "view",
+    inputs: [
+      { name: "", type: "address" },
+      { name: "", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
   },
   {
     type: "function",
@@ -133,16 +210,6 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],
   },
-  {
-    type: "function",
-    name: "depositorEpochRequest",
-    stateMutability: "view",
-    inputs: [
-      { name: "", type: "address" },
-      { name: "", type: "uint256" },
-    ],
-    outputs: [{ name: "", type: "uint256" }],
-  },
 
   // View functions - Redemption
   {
@@ -156,12 +223,7 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
       { name: "owner", type: "address" },
       { name: "shares", type: "uint256" },
       { name: "assetsClaimable", type: "uint256" },
-      { name: "carryDeducted", type: "uint256" },
-      { name: "entitlement", type: "uint256" },
-      { name: "accrued", type: "uint256" },
-      { name: "claimed", type: "uint256" },
-      { name: "carryRemaining", type: "uint256" },
-      { name: "epochId", type: "uint256" },
+      { name: "batchId", type: "uint256" },
       { name: "status", type: "uint8" },
       { name: "createdAt", type: "uint256" },
       { name: "settledAt", type: "uint256" },
@@ -177,86 +239,54 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
   },
   {
     type: "function",
+    name: "getControllerRequestIds",
+    stateMutability: "view",
+    inputs: [{ name: "controller", type: "address" }],
+    outputs: [{ name: "requestIds", type: "uint256[]" }],
+  },
+  {
+    type: "function",
+    name: "isOperator",
+    stateMutability: "view",
+    inputs: [
+      { name: "", type: "address" },
+      { name: "", type: "address" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    type: "function",
     name: "totalPendingRedeemShares",
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],
   },
-
-  // View functions - Epoch
   {
     type: "function",
-    name: "epochs",
+    name: "nextRedemptionRequestId",
     stateMutability: "view",
-    inputs: [{ name: "", type: "uint256" }],
-    outputs: [
-      { name: "epochId", type: "uint256" },
-      { name: "startTime", type: "uint256" },
-      { name: "endTime", type: "uint256" },
-      { name: "epochOpenNAV", type: "uint256" },
-      { name: "snapshotNAV", type: "uint256" },
-      { name: "snapshotTimestamp", type: "uint256" },
-      { name: "totalSharesPending", type: "uint256" },
-      { name: "frozenShares", type: "uint256" },
-      { name: "frozenAssets", type: "uint256" },
-      { name: "proRataRatio", type: "uint256" },
-      { name: "carryAccrued", type: "uint256" },
-      { name: "cohortTotalEntitlement", type: "uint256" },
-      { name: "cohortTotalAccrued", type: "uint256" },
-      { name: "cohortTotalClaimed", type: "uint256" },
-      { name: "cohortCarryRemaining", type: "uint256" },
-      { name: "status", type: "uint8" },
-      { name: "exists", type: "bool" },
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "pendingRedeemRequest",
+    stateMutability: "view",
+    inputs: [
+      { name: "requestId", type: "uint256" },
+      { name: "controller", type: "address" },
     ],
+    outputs: [{ name: "shares", type: "uint256" }],
   },
   {
     type: "function",
-    name: "totalSupply",
+    name: "claimableRedeemRequest",
     stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "deployedCapital",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "getCurrentEpoch",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "getEpochEnd",
-    stateMutability: "view",
-    inputs: [{ name: "epochId", type: "uint256" }],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "deployCapital",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "amount", type: "uint256" }],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "recallCapital",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "amount", type: "uint256" }],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "totalAssets",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
+    inputs: [
+      { name: "requestId", type: "uint256" },
+      { name: "controller", type: "address" },
+    ],
+    outputs: [{ name: "shares", type: "uint256" }],
   },
 
   // Write functions - Deposit
@@ -269,10 +299,17 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
   },
   {
     type: "function",
+    name: "cancelDeposit",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "requestId", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    type: "function",
     name: "processDepositQueue",
     stateMutability: "nonpayable",
     inputs: [
-      { name: "epochId", type: "uint256" },
+      { name: "batchId", type: "uint256" },
       { name: "startIndex", type: "uint256" },
       { name: "endIndex", type: "uint256" },
     ],
@@ -296,7 +333,7 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
     name: "cancelRedeemRequest",
     stateMutability: "nonpayable",
     inputs: [{ name: "requestId", type: "uint256" }],
-    outputs: [{ name: "cancelledShares", type: "uint256" }],
+    outputs: [],
   },
   {
     type: "function",
@@ -321,29 +358,57 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
     outputs: [{ name: "shares", type: "uint256" }],
   },
 
-  // Write functions - Epoch Management
+  // Write functions - Batch Lifecycle
   {
     type: "function",
-    name: "freezeEpoch",
+    name: "cutoffBatch",
+    stateMutability: "nonpayable",
+    inputs: [],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "flattenBatch",
     stateMutability: "nonpayable",
     inputs: [{ name: "snapshotHash", type: "bytes32" }],
     outputs: [],
   },
   {
     type: "function",
-    name: "settleEpoch",
+    name: "settleBatch",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "batchId", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "settleBatchChunk",
     stateMutability: "nonpayable",
     inputs: [
-      { name: "epochId", type: "uint256" },
-      { name: "carryAmount", type: "uint256" },
+      { name: "batchId", type: "uint256" },
+      { name: "startIndex", type: "uint256" },
     ],
     outputs: [],
   },
   {
     type: "function",
-    name: "finalizeEpoch",
+    name: "resumeSettlement",
     stateMutability: "nonpayable",
-    inputs: [{ name: "epochId", type: "uint256" }],
+    inputs: [{ name: "batchId", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "closeBatch",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "batchId", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "reopenBatch",
+    stateMutability: "nonpayable",
+    inputs: [],
     outputs: [],
   },
 
@@ -362,6 +427,65 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
     inputs: [{ name: "_active", type: "bool" }],
     outputs: [],
   },
+  {
+    type: "function",
+    name: "maxRescueableUnderlying",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "tradingWallet",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+  {
+    type: "function",
+    name: "maxAllocatableAssets",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "allocateToTradingWallet",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "amount", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "rescueERC20",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "token", type: "address" },
+      { name: "receiver", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "rescueUnderlyingSurplus",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "receiver", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "setOperator",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "operator", type: "address" },
+      { name: "approved", type: "bool" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
 
   // Events - Deposit
   {
@@ -371,7 +495,7 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
       { name: "requestId", type: "uint256", indexed: true },
       { name: "depositor", type: "address", indexed: true },
       { name: "assets", type: "uint256", indexed: false },
-      { name: "targetEpoch", type: "uint256", indexed: false },
+      { name: "targetBatch", type: "uint256", indexed: false },
     ],
   },
   {
@@ -382,11 +506,20 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
       { name: "depositor", type: "address", indexed: true },
       { name: "assets", type: "uint256", indexed: false },
       { name: "sharesMinted", type: "uint256", indexed: false },
-      { name: "epochId", type: "uint256", indexed: false },
+      { name: "batchId", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "DepositCancelled",
+    inputs: [
+      { name: "requestId", type: "uint256", indexed: true },
+      { name: "depositor", type: "address", indexed: true },
+      { name: "assets", type: "uint256", indexed: false },
     ],
   },
 
-  // Events - Redemption (ERC-7540)
+  // Events - Redemption
   {
     type: "event",
     name: "RedeemRequest",
@@ -395,6 +528,15 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
       { name: "owner", type: "address", indexed: true },
       { name: "requestId", type: "uint256", indexed: true },
       { name: "sender", type: "address", indexed: false },
+      { name: "shares", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "SharesEscrowed",
+    inputs: [
+      { name: "requestId", type: "uint256", indexed: true },
+      { name: "controller", type: "address", indexed: true },
       { name: "shares", type: "uint256", indexed: false },
     ],
   },
@@ -419,12 +561,20 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
     ],
   },
 
-  // Events - Epoch
+  // Events - Batch
   {
     type: "event",
-    name: "EpochFrozen",
+    name: "BatchCutoff",
     inputs: [
-      { name: "epochId", type: "uint256", indexed: true },
+      { name: "batchId", type: "uint256", indexed: true },
+      { name: "cutoffTime", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "BatchFlattened",
+    inputs: [
+      { name: "batchId", type: "uint256", indexed: true },
       { name: "snapshotHash", type: "bytes32", indexed: true },
       { name: "nav", type: "uint256", indexed: false },
       { name: "timestamp", type: "uint256", indexed: false },
@@ -432,38 +582,38 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
   },
   {
     type: "event",
-    name: "EpochSettled",
+    name: "BatchSettled",
     inputs: [
-      { name: "epochId", type: "uint256", indexed: true },
+      { name: "batchId", type: "uint256", indexed: true },
       { name: "totalShares", type: "uint256", indexed: false },
       { name: "totalAssets", type: "uint256", indexed: false },
-      { name: "carryAccrued", type: "uint256", indexed: false },
       { name: "proRataRatio", type: "uint256", indexed: false },
+      { name: "processedCount", type: "uint256", indexed: false },
     ],
   },
   {
     type: "event",
-    name: "EpochFinalized",
-    inputs: [{ name: "epochId", type: "uint256", indexed: true }],
-  },
-
-  // Events - Carry
-  {
-    type: "event",
-    name: "CarryAccrued",
+    name: "SettlementChunkProcessed",
     inputs: [
-      { name: "epochId", type: "uint256", indexed: true },
-      { name: "totalCarry", type: "uint256", indexed: false },
-      { name: "distributionRate", type: "uint256", indexed: false },
+      { name: "batchId", type: "uint256", indexed: true },
+      { name: "startIndex", type: "uint256", indexed: false },
+      { name: "endIndex", type: "uint256", indexed: false },
+      { name: "processedInChunk", type: "uint256", indexed: false },
+      { name: "totalProcessed", type: "uint256", indexed: false },
     ],
   },
   {
     type: "event",
-    name: "CarryClaimed",
+    name: "BatchClosed",
+    inputs: [{ name: "batchId", type: "uint256", indexed: true }],
+  },
+  {
+    type: "event",
+    name: "BatchReopened",
     inputs: [
-      { name: "requestId", type: "uint256", indexed: true },
-      { name: "controller", type: "address", indexed: true },
-      { name: "carryAmount", type: "uint256", indexed: false },
+      { name: "newBatchId", type: "uint256", indexed: true },
+      { name: "startTime", type: "uint256", indexed: false },
+      { name: "endTime", type: "uint256", indexed: false },
     ],
   },
 
@@ -482,58 +632,45 @@ export const EPOCH_TRANCHE_VAULT_ABI = [
     ],
   },
   {
-    type: "function",
-    name: "emergencyMode",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "bool" }],
-  },
-  {
-    type: "function",
-    name: "isOperator",
-    stateMutability: "view",
+    type: "event",
+    name: "OperatorSet",
     inputs: [
-      { name: "controller", type: "address" },
-      { name: "operator", type: "address" },
+      { name: "controller", type: "address", indexed: true },
+      { name: "operator", type: "address", indexed: true },
+      { name: "approved", type: "bool", indexed: false },
     ],
-    outputs: [{ name: "", type: "bool" }],
-  },
-  {
-    type: "function",
-    name: "setOperator",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "operator", type: "address" },
-      { name: "approved", type: "bool" },
-    ],
-    outputs: [],
   },
 ] as const;
 
 // ============================================================================
-// Types (EpochTrancheVault Canonical)
+// Types (ClosedBookBatchVault Canonical)
 // ============================================================================
 
-/** Request Status: 0=Pending, 1=Frozen, 2=Claimable, 3=Claimed, 4=Cancelled */
-export type RequestStatus = "pending" | "frozen" | "claimable" | "claimed" | "cancelled";
+/** Batch Status: 0=Open, 1=Cutoff, 2=Flattening, 3=Settling, 4=Settled, 5=Closed, 6=Reopen */
+export type BatchStatus =
+  | "open"
+  | "cutoff"
+  | "flattening"
+  | "settling"
+  | "settled"
+  | "closed"
+  | "reopen";
 
-/** Epoch Status: 0=Active, 1=Frozen, 2=Settling, 3=Settled, 4=Finalized */
-export type EpochStatus = "active" | "frozen" | "settling" | "settled" | "finalized";
+/** Redemption Status: 0=Pending, 1=Escrowed, 2=Claimable, 3=Claimed, 4=Cancelled */
+export type RedemptionStatus = "pending" | "escrowed" | "claimable" | "claimed" | "cancelled";
 
-/** Redemption Request Data (with requestId) */
+/** Deposit Status: 0=Pending, 1=Processed, 2=Cancelled */
+export type DepositStatus = "pending" | "processed" | "cancelled";
+
+/** Redemption Request Data (ClosedBookBatchVault) - NO carry fields */
 export interface RedemptionRequestData {
   requestId: bigint;
   controller: Address;
   owner: Address;
   shares: bigint;
   assetsClaimable: bigint;
-  carryDeducted: bigint;
-  entitlement: bigint;
-  accrued: bigint;
-  claimed: bigint;
-  carryRemaining: bigint;
-  epochId: bigint;
-  status: RequestStatus;
+  batchId: bigint;
+  status: RedemptionStatus;
   createdAt: bigint;
   settledAt?: bigint;
 }
@@ -543,29 +680,35 @@ export interface DepositRequestData {
   requestId: bigint;
   depositor: Address;
   assets: bigint;
-  targetEpoch: bigint;
+  targetBatch: bigint;
   createdAt: bigint;
-  processed: boolean;
+  status: DepositStatus;
 }
 
-/** Epoch Data */
-export interface EpochData {
-  epochId: bigint;
+/** Batch Data (ClosedBookBatchVault) - NO carry/epoch fields */
+export interface BatchData {
+  batchId: bigint;
   startTime: bigint;
   endTime: bigint;
-  epochOpenNAV: bigint;
+  cutoffTime: bigint;
   snapshotNAV: bigint;
+  lockedClearingPrice: bigint;
   snapshotTimestamp: bigint;
   totalSharesPending: bigint;
-  frozenShares: bigint;
-  frozenAssets: bigint;
+  totalAssetsSnapshot: bigint;
   proRataRatio: bigint;
-  carryAccrued: bigint;
-  cohortTotalEntitlement: bigint;
-  cohortTotalAccrued: bigint;
-  cohortTotalClaimed: bigint;
-  cohortCarryRemaining: bigint;
-  status: EpochStatus;
+  totalQueuedDeposits: bigint;
+  status: BatchStatus;
+  isPriceLocked: boolean;
+}
+
+/** Settlement Progress Data */
+export interface SettlementProgressData {
+  processed: bigint;
+  total: bigint;
+  lastIndex: bigint;
+  reservedAssetsAllocated: bigint;
+  isComplete: boolean;
 }
 
 /** Result of queueDeposit call */
@@ -574,19 +717,19 @@ export interface QueueDepositResult {
   requestId?: bigint;
   depositor?: Address;
   assets?: bigint;
-  targetEpoch?: bigint;
+  targetBatch?: bigint;
   txHash?: Hex;
   error?: string;
 }
 
-/** Result of requestRedeem call (now with actual requestId) */
+/** Result of requestRedeem call */
 export interface RequestRedeemResult {
   success: boolean;
   requestId?: bigint;
   controller?: Address;
   owner?: Address;
   shares?: bigint;
-  epochId?: bigint;
+  batchId?: bigint;
   txHash?: Hex;
   error?: string;
 }
@@ -596,14 +739,13 @@ export interface RedeemResult {
   success: boolean;
   assets?: bigint;
   shares?: bigint;
-  carryDeducted?: bigint;
   controller?: Address;
   receiver?: Address;
   txHash?: Hex;
   error?: string;
 }
 
-/** Result of cancelRedeemRequest call (now requires requestId) */
+/** Result of cancelRedeemRequest call */
 export interface CancelResult {
   success: boolean;
   requestId?: bigint;
@@ -621,7 +763,7 @@ export interface VaultContractConfig {
 }
 
 // ============================================================================
-// Error Mapping (EpochTrancheVault)
+// Error Mapping (ClosedBookBatchVault)
 // ============================================================================
 
 const CONTRACT_ERRORS: Record<string, string> = {
@@ -634,22 +776,29 @@ const CONTRACT_ERRORS: Record<string, string> = {
   // State
   InvalidRequest: "Invalid request ID",
   RequestNotPending: "Request is not in pending status",
+  RequestNotEscrowed: "Request is not in escrowed status",
   RequestNotClaimable: "Request is not in claimable status",
   InsufficientShares: "Insufficient shares for operation",
   ZeroAmount: "Amount must be greater than zero",
   InvalidAddress: "Invalid address (zero address)",
 
-  // Epoch
-  EpochNotActive: "Epoch is not active",
-  EpochNotFrozen: "Epoch is not frozen",
-  EpochNotEnded: "Epoch has not ended yet",
-  EpochAlreadySettled: "Epoch has already been settled",
-  EpochNotSettled: "Epoch has not been settled",
-  NoPendingRequests: "No pending requests in epoch",
+  // Batch
+  BatchNotOpen: "Batch is not open",
+  BatchNotCutoff: "Batch is not in cutoff state",
+  BatchNotFlattening: "Batch is not in flattening state",
+  BatchNotSettling: "Batch is not in settling state",
+  BatchNotSettled: "Batch is not settled",
+  BatchAlreadySettled: "Batch has already been settled",
+  BatchNotClosed: "Batch is not closed",
+  NoPendingRequests: "No pending requests in batch",
 
-  // Deposit/Cancellation
-  CannotCancelAfterFreeze: "Cannot cancel after epoch freeze",
-  BelowClaimThreshold: "Claim amount below minimum threshold",
+  // Settlement
+  SettlementIncomplete: "Settlement is incomplete",
+  SettlementAlreadyComplete: "Settlement is already complete",
+  PriceNotLocked: "Price is not locked for batch",
+
+  // Cancellation
+  CannotCancelAfterCutoff: "Cannot cancel after batch cutoff",
 
   // NAV
   NAVStale: "NAV is stale (older than threshold)",
@@ -678,7 +827,7 @@ function parseContractError(error: unknown): string {
 }
 
 // ============================================================================
-// Canonical Vault Client (EpochTrancheVault)
+// Canonical Vault Client (ClosedBookBatchVault)
 // ============================================================================
 
 export class CustomVaultClient {
@@ -699,57 +848,30 @@ export class CustomVaultClient {
   async getAsset(): Promise<Address> {
     return this.publicClient.readContract({
       address: this.vaultAddress,
-      abi: EPOCH_TRANCHE_VAULT_ABI,
+      abi: CLOSED_BOOK_BATCH_VAULT_ABI,
       functionName: "asset",
     }) as Promise<Address>;
   }
 
   async getVaultConfig(): Promise<{
-    epochDuration: bigint;
     deployTime: bigint;
     navStalenessThreshold: bigint;
-    minClaimThreshold: bigint;
-    balancedUpfrontBps: bigint;
   }> {
-    const [
-      epochDuration,
-      deployTime,
-      navStalenessThreshold,
-      minClaimThreshold,
-      balancedUpfrontBps,
-    ] = await Promise.all([
+    const [deployTime, navStalenessThreshold] = await Promise.all([
       this.publicClient.readContract({
         address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
-        functionName: "EPOCH_DURATION",
-      }) as Promise<bigint>,
-      this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
         functionName: "DEPLOY_TIME",
       }) as Promise<bigint>,
       this.publicClient.readContract({
         address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
         functionName: "NAV_STALENESS_THRESHOLD",
-      }) as Promise<bigint>,
-      this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
-        functionName: "MIN_CLAIM_THRESHOLD",
-      }) as Promise<bigint>,
-      this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
-        functionName: "BALANCED_UPFRONT_BPS",
       }) as Promise<bigint>,
     ]);
     return {
-      epochDuration,
       deployTime,
       navStalenessThreshold,
-      minClaimThreshold,
-      balancedUpfrontBps,
     };
   }
 
@@ -758,17 +880,17 @@ export class CustomVaultClient {
     const [currentNAV, lastNAVUpdate, isFresh] = await Promise.all([
       this.publicClient.readContract({
         address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
         functionName: "currentNAV",
       }) as Promise<bigint>,
       this.publicClient.readContract({
         address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
         functionName: "lastNAVUpdate",
       }) as Promise<bigint>,
       this.publicClient.readContract({
         address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
         functionName: "isNAVFresh",
       }) as Promise<boolean>,
     ]);
@@ -780,18 +902,19 @@ export class CustomVaultClient {
     try {
       const result = (await this.publicClient.readContract({
         address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
         functionName: "depositRequests",
         args: [requestId],
-      })) as [bigint, Address, bigint, bigint, bigint, boolean, boolean];
+      })) as [bigint, Address, bigint, bigint, bigint, number, boolean];
       if (!result[6]) return null;
+      const statusMap: DepositStatus[] = ["pending", "processed", "cancelled"];
       return {
         requestId: result[0],
         depositor: result[1],
         assets: result[2],
-        targetEpoch: result[3],
+        targetBatch: result[3],
         createdAt: result[4],
-        processed: result[5],
+        status: statusMap[result[5]] ?? "pending",
       };
     } catch (error) {
       logger.error("getDepositRequest failed", {
@@ -802,13 +925,13 @@ export class CustomVaultClient {
     }
   }
 
-  async getDepositorEpochRequest(depositor: Address, epochId: bigint): Promise<bigint> {
+  async getDepositorBatchRequest(depositor: Address, batchId: bigint): Promise<bigint> {
     try {
       return (await this.publicClient.readContract({
         address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
-        functionName: "depositorEpochRequest",
-        args: [depositor, epochId],
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+        functionName: "depositorBatchRequest",
+        args: [depositor, batchId],
       })) as bigint;
     } catch {
       return 0n;
@@ -819,7 +942,7 @@ export class CustomVaultClient {
     try {
       return this.publicClient.readContract({
         address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
         functionName: "totalQueuedAssets",
       }) as Promise<bigint>;
     } catch {
@@ -831,7 +954,7 @@ export class CustomVaultClient {
     try {
       return this.publicClient.readContract({
         address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
         functionName: "reservedRedemptionAssets",
       }) as Promise<bigint>;
     } catch {
@@ -844,7 +967,7 @@ export class CustomVaultClient {
     try {
       const result = (await this.publicClient.readContract({
         address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
         functionName: "redemptionRequests",
         args: [requestId],
       })) as readonly [
@@ -854,33 +977,29 @@ export class CustomVaultClient {
         bigint,
         bigint,
         bigint,
-        bigint,
-        bigint,
-        bigint,
-        bigint,
-        bigint,
         number,
         bigint,
         bigint,
         boolean,
       ];
-      if (!result[14]) return null;
-      const statusMap: RequestStatus[] = ["pending", "frozen", "claimable", "claimed", "cancelled"];
+      if (!result[9]) return null;
+      const statusMap: RedemptionStatus[] = [
+        "pending",
+        "escrowed",
+        "claimable",
+        "claimed",
+        "cancelled",
+      ];
       return {
         requestId: result[0],
         controller: result[1],
         owner: result[2],
         shares: result[3],
         assetsClaimable: result[4],
-        carryDeducted: result[5],
-        entitlement: result[6],
-        accrued: result[7],
-        claimed: result[8],
-        carryRemaining: result[9],
-        epochId: result[10],
-        status: statusMap[result[11]] ?? "pending",
-        createdAt: result[12],
-        settledAt: result[13] || undefined,
+        batchId: result[5],
+        status: statusMap[result[6]] ?? "pending",
+        createdAt: result[7],
+        settledAt: result[8] || undefined,
       };
     } catch (error) {
       logger.error("getRedemptionRequest failed", {
@@ -895,7 +1014,7 @@ export class CustomVaultClient {
     try {
       return this.publicClient.readContract({
         address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
         functionName: "controllerToRequestId",
         args: [controller],
       }) as Promise<bigint>;
@@ -904,19 +1023,66 @@ export class CustomVaultClient {
     }
   }
 
-  // Read Operations - Epoch
-  async getEpoch(epochId: bigint): Promise<EpochData | null> {
+  async getControllerRequestIds(controller: Address): Promise<bigint[]> {
+    try {
+      return this.publicClient.readContract({
+        address: this.vaultAddress,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+        functionName: "getControllerRequestIds",
+        args: [controller],
+      }) as Promise<bigint[]>;
+    } catch {
+      return [];
+    }
+  }
+
+  async getTotalPendingRedeemShares(): Promise<bigint> {
+    try {
+      return this.publicClient.readContract({
+        address: this.vaultAddress,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+        functionName: "totalPendingRedeemShares",
+      }) as Promise<bigint>;
+    } catch {
+      return 0n;
+    }
+  }
+
+  async getPendingRedeemRequest(requestId: bigint, controller: Address): Promise<bigint> {
+    try {
+      return this.publicClient.readContract({
+        address: this.vaultAddress,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+        functionName: "pendingRedeemRequest",
+        args: [requestId, controller],
+      }) as Promise<bigint>;
+    } catch {
+      return 0n;
+    }
+  }
+
+  async getClaimableRedeemRequest(requestId: bigint, controller: Address): Promise<bigint> {
+    try {
+      return this.publicClient.readContract({
+        address: this.vaultAddress,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+        functionName: "claimableRedeemRequest",
+        args: [requestId, controller],
+      }) as Promise<bigint>;
+    } catch {
+      return 0n;
+    }
+  }
+
+  // Read Operations - Batch
+  async getBatch(batchId: bigint): Promise<BatchData | null> {
     try {
       const result = (await this.publicClient.readContract({
         address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
-        functionName: "epochs",
-        args: [epochId],
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+        functionName: "batches",
+        args: [batchId],
       })) as readonly [
-        bigint,
-        bigint,
-        bigint,
-        bigint,
         bigint,
         bigint,
         bigint,
@@ -930,56 +1096,126 @@ export class CustomVaultClient {
         bigint,
         number,
         boolean,
+        boolean,
       ];
-      if (!result[16]) return null;
-      const statusMap: EpochStatus[] = ["active", "frozen", "settling", "settled", "finalized"];
+      if (!result[13]) return null;
+      const statusMap: BatchStatus[] = [
+        "open",
+        "cutoff",
+        "flattening",
+        "settling",
+        "settled",
+        "closed",
+        "reopen",
+      ];
       return {
-        epochId: result[0],
+        batchId: result[0],
         startTime: result[1],
         endTime: result[2],
-        epochOpenNAV: result[3],
+        cutoffTime: result[3],
         snapshotNAV: result[4],
-        snapshotTimestamp: result[5],
-        totalSharesPending: result[6],
-        frozenShares: result[7],
-        frozenAssets: result[8],
+        lockedClearingPrice: result[5],
+        snapshotTimestamp: result[6],
+        totalSharesPending: result[7],
+        totalAssetsSnapshot: result[8],
         proRataRatio: result[9],
-        carryAccrued: result[10],
-        cohortTotalEntitlement: result[11],
-        cohortTotalAccrued: result[12],
-        cohortTotalClaimed: result[13],
-        cohortCarryRemaining: result[14],
-        status: statusMap[result[15]] ?? "active",
+        totalQueuedDeposits: result[10],
+        status: statusMap[result[11]] ?? "open",
+        isPriceLocked: result[12],
       };
     } catch (error) {
-      logger.error("getEpoch failed", {
-        epochId: epochId.toString(),
+      logger.error("getBatch failed", {
+        batchId: batchId.toString(),
         error: parseContractError(error),
       });
       return null;
     }
   }
 
-  async getCurrentEpochId(): Promise<bigint> {
+  async getCurrentBatchId(): Promise<bigint> {
     return this.publicClient.readContract({
       address: this.vaultAddress,
-      abi: EPOCH_TRANCHE_VAULT_ABI,
-      functionName: "currentEpochId",
+      abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+      functionName: "currentBatchId",
     }) as Promise<bigint>;
   }
 
-  async getCurrentEpoch(): Promise<bigint> {
+  async getCurrentBatch(): Promise<bigint> {
     return this.publicClient.readContract({
       address: this.vaultAddress,
-      abi: EPOCH_TRANCHE_VAULT_ABI,
-      functionName: "currentEpochId",
+      abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+      functionName: "currentBatchId",
     }) as Promise<bigint>;
+  }
+
+  async getBatchEnd(batchId: bigint): Promise<bigint> {
+    try {
+      return this.publicClient.readContract({
+        address: this.vaultAddress,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+        functionName: "getBatchEnd",
+        args: [batchId],
+      }) as Promise<bigint>;
+    } catch (error) {
+      logger.error("getBatchEnd failed", {
+        batchId: batchId.toString(),
+        error: parseContractError(error),
+      });
+      return 0n;
+    }
+  }
+
+  async getBatchStatus(batchId: bigint): Promise<BatchStatus> {
+    try {
+      const result = (await this.publicClient.readContract({
+        address: this.vaultAddress,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+        functionName: "getBatchStatus",
+        args: [batchId],
+      })) as number;
+      const statusMap: BatchStatus[] = [
+        "open",
+        "cutoff",
+        "flattening",
+        "settling",
+        "settled",
+        "closed",
+        "reopen",
+      ];
+      return statusMap[result] ?? "open";
+    } catch {
+      return "open";
+    }
+  }
+
+  async getSettlementProgress(batchId: bigint): Promise<SettlementProgressData | null> {
+    try {
+      const result = (await this.publicClient.readContract({
+        address: this.vaultAddress,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+        functionName: "getSettlementProgress",
+        args: [batchId],
+      })) as [bigint, bigint, bigint, bigint, boolean];
+      return {
+        processed: result[0],
+        total: result[1],
+        lastIndex: result[2],
+        reservedAssetsAllocated: result[3],
+        isComplete: result[4],
+      };
+    } catch (error) {
+      logger.error("getSettlementProgress failed", {
+        batchId: batchId.toString(),
+        error: parseContractError(error),
+      });
+      return null;
+    }
   }
 
   async getTotalAssets(): Promise<bigint> {
     return this.publicClient.readContract({
       address: this.vaultAddress,
-      abi: EPOCH_TRANCHE_VAULT_ABI,
+      abi: CLOSED_BOOK_BATCH_VAULT_ABI,
       functionName: "totalAssets",
     }) as Promise<bigint>;
   }
@@ -987,45 +1223,16 @@ export class CustomVaultClient {
   async getTotalSupply(): Promise<bigint> {
     return this.publicClient.readContract({
       address: this.vaultAddress,
-      abi: EPOCH_TRANCHE_VAULT_ABI,
+      abi: CLOSED_BOOK_BATCH_VAULT_ABI,
       functionName: "totalSupply",
     }) as Promise<bigint>;
-  }
-
-  async getDeployedCapital(): Promise<bigint> {
-    try {
-      return this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
-        functionName: "deployedCapital",
-      }) as Promise<bigint>;
-    } catch {
-      return 0n;
-    }
-  }
-
-  async getEpochEnd(epochId: bigint): Promise<bigint> {
-    try {
-      return this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
-        functionName: "getEpochEnd",
-        args: [epochId],
-      }) as Promise<bigint>;
-    } catch (error) {
-      logger.error("getEpochEnd failed", {
-        epochId: epochId.toString(),
-        error: parseContractError(error),
-      });
-      return 0n;
-    }
   }
 
   async getEmergencyMode(): Promise<boolean> {
     try {
       return this.publicClient.readContract({
         address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
         functionName: "emergencyMode",
       }) as Promise<boolean>;
     } catch {
@@ -1033,11 +1240,27 @@ export class CustomVaultClient {
     }
   }
 
+  async getTradingWallet(): Promise<Address> {
+    return this.publicClient.readContract({
+      address: this.vaultAddress,
+      abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+      functionName: "tradingWallet",
+    }) as Promise<Address>;
+  }
+
+  async getMaxAllocatableAssets(): Promise<bigint> {
+    return this.publicClient.readContract({
+      address: this.vaultAddress,
+      abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+      functionName: "maxAllocatableAssets",
+    }) as Promise<bigint>;
+  }
+
   async isOperator(controller: Address, operator: Address): Promise<boolean> {
     try {
       return this.publicClient.readContract({
         address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
         functionName: "isOperator",
         args: [controller, operator],
       }) as Promise<boolean>;
@@ -1054,7 +1277,7 @@ export class CustomVaultClient {
     try {
       const hash = await walletClient.writeContract({
         address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
         functionName: "setOperator",
         args: [operator, approved],
         chain: walletClient.chain,
@@ -1068,93 +1291,33 @@ export class CustomVaultClient {
     }
   }
 
-  async getTotalPendingRedeemShares(): Promise<bigint> {
-    try {
-      return this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
-        functionName: "totalPendingRedeemShares",
-      }) as Promise<bigint>;
-    } catch {
-      return 0n;
-    }
-  }
-
-  async canSettleEpoch(epochId: bigint): Promise<boolean> {
-    const epoch = await this.getEpoch(epochId);
-    if (!epoch) return false;
-    const now = BigInt(Math.floor(Date.now() / 1000));
-    return epoch.status === "frozen" && now >= epoch.endTime;
-  }
-
-  /**
-   * Freeze an epoch in preparation for settlement
-   * Requires settler role
-   */
-  async freezeEpoch(
-    walletClient: WalletClient,
-    epochId: bigint,
-    snapshotHash: Hex,
-  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
-    try {
-      logger.info("CustomVaultClient: Freezing epoch", {
-        vaultAddress: this.vaultAddress,
-        epochId: epochId.toString(),
-        snapshotHash,
-      });
-
-      const hash = await walletClient.writeContract({
-        address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
-        functionName: "freezeEpoch",
-        args: [snapshotHash],
-        chain: walletClient.chain,
-        account: walletClient.account!,
-      });
-
-      logger.info("CustomVaultClient: Epoch freeze transaction submitted", {
-        txHash: hash,
-        epochId: epochId.toString(),
-      });
-
-      return { success: true, txHash: hash };
-    } catch (error) {
-      const errorMsg = parseContractError(error);
-      logger.error("CustomVaultClient: Failed to freeze epoch", {
-        epochId: epochId.toString(),
-        snapshotHash,
-        error: errorMsg,
-      });
-      return { success: false, error: errorMsg };
-    }
-  }
-
+  // Write Operations - Deposit Queue Processing
   async processDepositQueue(
     walletClient: WalletClient,
-    epochId: bigint,
+    batchId: bigint,
     startIndex: bigint,
     endIndex: bigint,
   ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
     try {
       logger.info("CustomVaultClient: Processing deposit queue", {
         vaultAddress: this.vaultAddress,
-        epochId: epochId.toString(),
+        batchId: batchId.toString(),
         startIndex: startIndex.toString(),
         endIndex: endIndex.toString(),
       });
 
       const hash = await walletClient.writeContract({
         address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
         functionName: "processDepositQueue",
-        args: [epochId, startIndex, endIndex],
+        args: [batchId, startIndex, endIndex],
         chain: walletClient.chain,
         account: walletClient.account!,
       });
 
       logger.info("CustomVaultClient: Deposit queue processing transaction submitted", {
         txHash: hash,
-        epochId: epochId.toString(),
+        batchId: batchId.toString(),
         startIndex: startIndex.toString(),
         endIndex: endIndex.toString(),
       });
@@ -1163,7 +1326,7 @@ export class CustomVaultClient {
     } catch (error) {
       const errorMsg = parseContractError(error);
       logger.error("CustomVaultClient: Failed to process deposit queue", {
-        epochId: epochId.toString(),
+        batchId: batchId.toString(),
         startIndex: startIndex.toString(),
         endIndex: endIndex.toString(),
         error: errorMsg,
@@ -1172,143 +1335,303 @@ export class CustomVaultClient {
     }
   }
 
-  async deployCapital(
+  // Write Operations - Batch Lifecycle
+  async cutoffBatch(
+    walletClient: WalletClient,
+  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
+    try {
+      logger.info("CustomVaultClient: Cutting off batch", {
+        vaultAddress: this.vaultAddress,
+      });
+
+      const hash = await walletClient.writeContract({
+        address: this.vaultAddress,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+        functionName: "cutoffBatch",
+        args: [],
+        chain: walletClient.chain,
+        account: walletClient.account!,
+      });
+
+      logger.info("CustomVaultClient: Batch cutoff transaction submitted", { txHash: hash });
+      return { success: true, txHash: hash };
+    } catch (error) {
+      const errorMsg = parseContractError(error);
+      logger.error("CustomVaultClient: Failed to cutoff batch", { error: errorMsg });
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  async flattenBatch(
+    walletClient: WalletClient,
+    snapshotHash: Hex,
+  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
+    try {
+      logger.info("CustomVaultClient: Flattening batch", {
+        vaultAddress: this.vaultAddress,
+        snapshotHash,
+      });
+
+      const hash = await walletClient.writeContract({
+        address: this.vaultAddress,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+        functionName: "flattenBatch",
+        args: [snapshotHash],
+        chain: walletClient.chain,
+        account: walletClient.account!,
+      });
+
+      logger.info("CustomVaultClient: Batch flatten transaction submitted", { txHash: hash });
+      return { success: true, txHash: hash };
+    } catch (error) {
+      const errorMsg = parseContractError(error);
+      logger.error("CustomVaultClient: Failed to flatten batch", { snapshotHash, error: errorMsg });
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  async settleBatch(
+    walletClient: WalletClient,
+    batchId: bigint,
+  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
+    try {
+      logger.info("CustomVaultClient: Settling batch", {
+        vaultAddress: this.vaultAddress,
+        batchId: batchId.toString(),
+      });
+
+      const hash = await walletClient.writeContract({
+        address: this.vaultAddress,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+        functionName: "settleBatch",
+        args: [batchId],
+        chain: walletClient.chain,
+        account: walletClient.account!,
+      });
+
+      logger.info("CustomVaultClient: Batch settlement transaction submitted", {
+        txHash: hash,
+        batchId: batchId.toString(),
+      });
+      return { success: true, txHash: hash };
+    } catch (error) {
+      const errorMsg = parseContractError(error);
+      logger.error("CustomVaultClient: Failed to settle batch", {
+        batchId: batchId.toString(),
+        error: errorMsg,
+      });
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  async settleBatchChunk(
+    walletClient: WalletClient,
+    batchId: bigint,
+    startIndex: bigint,
+  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
+    try {
+      logger.info("CustomVaultClient: Settling batch chunk", {
+        vaultAddress: this.vaultAddress,
+        batchId: batchId.toString(),
+        startIndex: startIndex.toString(),
+      });
+
+      const hash = await walletClient.writeContract({
+        address: this.vaultAddress,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+        functionName: "settleBatchChunk",
+        args: [batchId, startIndex],
+        chain: walletClient.chain,
+        account: walletClient.account!,
+      });
+
+      logger.info("CustomVaultClient: Batch chunk settlement transaction submitted", {
+        txHash: hash,
+        batchId: batchId.toString(),
+        startIndex: startIndex.toString(),
+      });
+      return { success: true, txHash: hash };
+    } catch (error) {
+      const errorMsg = parseContractError(error);
+      logger.error("CustomVaultClient: Failed to settle batch chunk", {
+        batchId: batchId.toString(),
+        startIndex: startIndex.toString(),
+        error: errorMsg,
+      });
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  async resumeSettlement(
+    walletClient: WalletClient,
+    batchId: bigint,
+  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
+    try {
+      logger.info("CustomVaultClient: Resuming settlement", {
+        vaultAddress: this.vaultAddress,
+        batchId: batchId.toString(),
+      });
+
+      const hash = await walletClient.writeContract({
+        address: this.vaultAddress,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+        functionName: "resumeSettlement",
+        args: [batchId],
+        chain: walletClient.chain,
+        account: walletClient.account!,
+      });
+
+      logger.info("CustomVaultClient: Resume settlement transaction submitted", {
+        txHash: hash,
+        batchId: batchId.toString(),
+      });
+      return { success: true, txHash: hash };
+    } catch (error) {
+      const errorMsg = parseContractError(error);
+      logger.error("CustomVaultClient: Failed to resume settlement", {
+        batchId: batchId.toString(),
+        error: errorMsg,
+      });
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  async allocateToTradingWallet(
     walletClient: WalletClient,
     amount: bigint,
   ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
     try {
-      logger.info("CustomVaultClient: Deploying capital", {
+      logger.info("CustomVaultClient: Allocating capital to trading wallet", {
         vaultAddress: this.vaultAddress,
         amount: amount.toString(),
       });
 
       const hash = await walletClient.writeContract({
         address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
-        functionName: "deployCapital",
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+        functionName: "allocateToTradingWallet",
         args: [amount],
         chain: walletClient.chain,
         account: walletClient.account!,
       });
 
-      return { success: true, txHash: hash };
-    } catch (error) {
-      const errorMsg = parseContractError(error);
-      logger.error("CustomVaultClient: Failed to deploy capital", {
-        amount: amount.toString(),
-        error: errorMsg,
-      });
-      return { success: false, error: errorMsg };
-    }
-  }
-
-  async recallCapital(
-    walletClient: WalletClient,
-    amount: bigint,
-  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
-    try {
-      logger.info("CustomVaultClient: Recalling capital", {
-        vaultAddress: this.vaultAddress,
-        amount: amount.toString(),
-      });
-
-      const hash = await walletClient.writeContract({
-        address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
-        functionName: "recallCapital",
-        args: [amount],
-        chain: walletClient.chain,
-        account: walletClient.account!,
-      });
-
-      return { success: true, txHash: hash };
-    } catch (error) {
-      const errorMsg = parseContractError(error);
-      logger.error("CustomVaultClient: Failed to recall capital", {
-        amount: amount.toString(),
-        error: errorMsg,
-      });
-      return { success: false, error: errorMsg };
-    }
-  }
-
-  /**
-   * Settle an epoch after it has been frozen
-   * Requires settler role
-   */
-  async settleEpoch(
-    walletClient: WalletClient,
-    epochId: bigint,
-    carryAmount: bigint,
-  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
-    try {
-      logger.info("CustomVaultClient: Settling epoch", {
-        vaultAddress: this.vaultAddress,
-        epochId: epochId.toString(),
-        carryAmount: carryAmount.toString(),
-      });
-
-      const hash = await walletClient.writeContract({
-        address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
-        functionName: "settleEpoch",
-        args: [epochId, carryAmount],
-        chain: walletClient.chain,
-        account: walletClient.account!,
-      });
-
-      logger.info("CustomVaultClient: Epoch settlement transaction submitted", {
+      logger.info("CustomVaultClient: Capital allocation transaction submitted", {
         txHash: hash,
-        epochId: epochId.toString(),
+        amount: amount.toString(),
       });
-
       return { success: true, txHash: hash };
     } catch (error) {
       const errorMsg = parseContractError(error);
-      logger.error("CustomVaultClient: Failed to settle epoch", {
-        epochId: epochId.toString(),
-        carryAmount: carryAmount.toString(),
+      logger.error("CustomVaultClient: Failed to allocate capital", {
+        amount: amount.toString(),
         error: errorMsg,
       });
       return { success: false, error: errorMsg };
     }
   }
 
-  /**
-   * Finalize an epoch after settlement
-   * Requires settler role
-   */
-  async finalizeEpoch(
+  async closeBatch(
     walletClient: WalletClient,
-    epochId: bigint,
+    batchId: bigint,
   ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
     try {
-      logger.info("CustomVaultClient: Finalizing epoch", {
+      logger.info("CustomVaultClient: Closing batch", {
         vaultAddress: this.vaultAddress,
-        epochId: epochId.toString(),
+        batchId: batchId.toString(),
       });
 
       const hash = await walletClient.writeContract({
         address: this.vaultAddress,
-        abi: EPOCH_TRANCHE_VAULT_ABI,
-        functionName: "finalizeEpoch",
-        args: [epochId],
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+        functionName: "closeBatch",
+        args: [batchId],
         chain: walletClient.chain,
         account: walletClient.account!,
       });
 
-      logger.info("CustomVaultClient: Epoch finalize transaction submitted", {
+      logger.info("CustomVaultClient: Batch close transaction submitted", {
         txHash: hash,
-        epochId: epochId.toString(),
+        batchId: batchId.toString(),
       });
-
       return { success: true, txHash: hash };
     } catch (error) {
       const errorMsg = parseContractError(error);
-      logger.error("CustomVaultClient: Failed to finalize epoch", {
-        epochId: epochId.toString(),
+      logger.error("CustomVaultClient: Failed to close batch", {
+        batchId: batchId.toString(),
         error: errorMsg,
       });
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  async reopenBatch(
+    walletClient: WalletClient,
+  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
+    try {
+      logger.info("CustomVaultClient: Reopening batch", {
+        vaultAddress: this.vaultAddress,
+      });
+
+      const hash = await walletClient.writeContract({
+        address: this.vaultAddress,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+        functionName: "reopenBatch",
+        args: [],
+        chain: walletClient.chain,
+        account: walletClient.account!,
+      });
+
+      logger.info("CustomVaultClient: Batch reopen transaction submitted", { txHash: hash });
+      return { success: true, txHash: hash };
+    } catch (error) {
+      const errorMsg = parseContractError(error);
+      logger.error("CustomVaultClient: Failed to reopen batch", { error: errorMsg });
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  // Write Operations - Admin
+  async updateNAV(
+    walletClient: WalletClient,
+    nav: bigint,
+  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
+    try {
+      const hash = await walletClient.writeContract({
+        address: this.vaultAddress,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+        functionName: "updateNAV",
+        args: [nav],
+        chain: walletClient.chain,
+        account: walletClient.account!,
+      });
+      return { success: true, txHash: hash };
+    } catch (error) {
+      const errorMsg = parseContractError(error);
+      logger.error("CustomVaultClient: Failed to update NAV", {
+        nav: nav.toString(),
+        error: errorMsg,
+      });
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  async setEmergencyMode(
+    walletClient: WalletClient,
+    active: boolean,
+  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
+    try {
+      const hash = await walletClient.writeContract({
+        address: this.vaultAddress,
+        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
+        functionName: "setEmergencyMode",
+        args: [active],
+        chain: walletClient.chain,
+        account: walletClient.account!,
+      });
+      return { success: true, txHash: hash };
+    } catch (error) {
+      const errorMsg = parseContractError(error);
+      logger.error("CustomVaultClient: Failed to set emergency mode", { active, error: errorMsg });
       return { success: false, error: errorMsg };
     }
   }
@@ -1360,3 +1683,11 @@ export function createCustomVaultClient(
 }
 
 export { parseContractError };
+
+// Re-export types for backward compatibility during migration
+// These exports help existing code gradually migrate to batch terminology
+export type {
+  BatchData as EpochData,
+  BatchStatus as EpochStatus,
+  RedemptionStatus as RequestStatus,
+};
