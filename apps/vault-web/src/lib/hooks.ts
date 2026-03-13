@@ -868,16 +868,17 @@ export function useRequests(vaultId?: number, isAuthenticated = false): UseReque
         };
       };
 
-      const isBrokenZeroEntitlementRequest = (request: RedemptionRequest): boolean =>
-        request.lifecycleError === "No entitlement record found" &&
-        Number(request.claimableAssetsFormatted ?? "0") === 0;
+      const isRecoveredLegacyRequest = (request: RedemptionRequest): boolean => {
+        const claimableNow = Number(request.claimableAssetsFormatted ?? "0");
+        return Boolean(request.lifecycleError) && claimableNow <= 0;
+      };
 
       const pendingRequests = result.pendingRequests
         .map(normalizeRequest)
-        .filter((request) => !isBrokenZeroEntitlementRequest(request));
+        .filter((request) => !isRecoveredLegacyRequest(request));
       const claimableRequests = result.claimableRequests
         .map(normalizeRequest)
-        .filter((request) => !isBrokenZeroEntitlementRequest(request));
+        .filter((request) => !isRecoveredLegacyRequest(request));
 
       setData({
         ...result,

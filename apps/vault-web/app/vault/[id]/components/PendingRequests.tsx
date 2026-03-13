@@ -178,16 +178,6 @@ function PendingRequestCard({
           Exit requests cannot be cancelled after the queue locks.
         </p>
       </div>
-
-      {request.lifecycleError && (
-        <Alert className="border-rose-400/20 bg-rose-400/10">
-          <Info className="h-4 w-4 text-rose-200" aria-hidden="true" />
-          <AlertDescription className="text-xs leading-6 text-rose-50/90">
-            This request did not receive a valid settled entitlement and will need manual recovery.
-            You can still submit a new redemption request for other shares.
-          </AlertDescription>
-        </Alert>
-      )}
     </div>
   );
 }
