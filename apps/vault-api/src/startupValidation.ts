@@ -18,6 +18,7 @@ import {
   getNetworkConfigFromEnv,
   type NetworkType,
 } from "./config/network.js";
+import { pool } from "./db/index.js";
 
 /**
  * Result of startup validation
@@ -54,16 +55,43 @@ export async function runStartupValidation(): Promise<void> {
     errors.push(`Network validation failed: ${message}`);
   }
 
+  // Validate 2: Database connectivity (ensure we can open a connection)
+  try {
+    await validateDatabaseConnection();
+    logger.info("StartupValidation: Database connectivity validated");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    errors.push(`Database validation failed: ${message}`);
+  }
+
   // If any validations failed, throw with all errors
   if (errors.length > 0) {
     logger.error("StartupValidation: Validation failed", { errors });
     throw new Error(
       `Startup validation failed with ${errors.length} error(s):\n` +
-        errors.map((e) => `  - ${e}`).join("\n"),
+      errors.map((e) => `  - ${e}`).join("\n"),
     );
   }
 
   logger.info("StartupValidation: All startup validations passed");
+}
+
+async function validateDatabaseConnection(): Promise<void> {
+  let client;
+  try {
+    client = await pool.connect();
+    // Simple no-op to ensure the connection is actually usable
+    await client.query("SELECT 1");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Unable to establish database connection using VAULT_DATABASE_URL or DATABASE_URL: ${message}`,
+    );
+  } finally {
+    if (client) {
+      client.release();
+    }
+  }
 }
 
 /**
