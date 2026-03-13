@@ -43,6 +43,13 @@
       "when": 1772365634846,
       "tag": "0005_huge_nocturne",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1773393639157,
+      "tag": "0006_naive_mariko_yashida",
+      "breakpoints": true
     }
   ]
 }
