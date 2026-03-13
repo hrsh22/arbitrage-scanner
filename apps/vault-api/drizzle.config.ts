@@ -14,7 +14,11 @@ function withSslMode(url: string): string {
   }
 
   const separator = url.includes("?") ? "&" : "?";
-  return `${url}${separator}sslmode=require`;
+  // Use `sslmode=no-verify` so drizzle-kit:
+  // - connects over SSL (required by RDS/pg_hba for this DB)
+  // - but does not fail on self-signed certs, matching runtime Pool's
+  //   `rejectUnauthorized: false` behavior.
+  return `${url}${separator}sslmode=no-verify`;
 }
 
 const baseUrl = process.env.VAULT_DATABASE_URL ?? process.env.DATABASE_URL ?? "";
