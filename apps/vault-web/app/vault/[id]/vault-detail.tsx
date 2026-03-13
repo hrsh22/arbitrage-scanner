@@ -159,13 +159,13 @@ function NavSparkline({ snapshots }: { snapshots: VaultNavHistoryItem[] }) {
   if (snapshots.length < 2) {
     return (
       <div className="rounded-[24px] border border-white/10 bg-white/[0.045] p-4 text-xs text-slate-400 backdrop-blur-xl">
-        Not enough NAV history yet to render chart.
+        Not enough NAV-per-share history yet to render chart.
       </div>
     );
   }
 
   const series = [...snapshots].reverse();
-  const values = series.map((item) => Number.parseFloat(item.totalAssets));
+  const values = series.map((item) => Number.parseFloat(item.sharePrice));
   const min = Math.min(...values);
   const max = Math.max(...values);
   const range = Math.max(max - min, 0.000001);
@@ -188,9 +188,11 @@ function NavSparkline({ snapshots }: { snapshots: VaultNavHistoryItem[] }) {
   return (
     <div className="rounded-[24px] border border-white/10 bg-white/[0.045] p-4 backdrop-blur-xl">
       <div className="mb-3 flex items-center justify-between">
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">NAV path</p>
+        <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">
+          NAV per share
+        </p>
         <p className="text-xs text-slate-400">
-          {formatCurrency(first)} {"->"} {formatCurrency(latest)} ({delta >= 0 ? "+" : ""}
+          {formatSharePrice(first)} {"->"} {formatSharePrice(latest)} ({delta >= 0 ? "+" : ""}
           {deltaPct.toFixed(2)}%)
         </p>
       </div>
