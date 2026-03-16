@@ -1,0 +1,1 @@
+2026-03-15: Suppressed startup and periodic NAV refresh for FlatBookVaultV2 in custom lifecycle by updating vault worker scheduling logic; added targeted test to prove flat/open idle case does not trigger NAV refresh.

@@ -57,13 +57,16 @@ export const VAULT_V2_FACTORY_ADDRESS = networkConfig.addresses.vaultV2Factory a
 
 // Vault config
 export const MAX_DEPLOYED_RATIO = 0.25;
-export const WITHDRAWAL_FEE_BPS = 50;
+export const WITHDRAWAL_FEE_BPS = 0;
 export const NAV_STALENESS_THRESHOLD = 3600; // 1 hour in seconds
 
 // API Config
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
 export const VAULT_API_PREFIX = "/vault";
 export const CUSTOM_VAULT_API_PREFIX = "/api/vaults";
+
+// Convenience: explicit deposit endpoint for custom vaults (frontend API routing)
+export const CUSTOM_VAULT_DEPOSIT_ENDPOINT = `${CUSTOM_VAULT_API_PREFIX}/deposit` as const;
 
 // Reown Kit Config
 export const REOWN_PROJECT_ID = process.env.NEXT_PUBLIC_REOWN_PROJECT_ID || "vault-web-project-id";
@@ -124,6 +127,13 @@ export const ERC20_BALANCE_ABI = ERC20_ABI;
 
 // Vault ABI (deposit, withdraw, redeem, previews, accounting)
 export const VAULT_ABI = [
+  {
+    inputs: [{ name: "assets", type: "uint256" }],
+    name: "requestDeposit",
+    outputs: [{ name: "requestId", type: "uint256" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
   {
     inputs: [{ name: "assets", type: "uint256" }],
     name: "queueDeposit",
@@ -247,6 +257,13 @@ export const VAULT_ABI = [
   {
     inputs: [],
     name: "totalSupply",
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "currentNAV",
     outputs: [{ name: "", type: "uint256" }],
     stateMutability: "view",
     type: "function",

@@ -5,6 +5,7 @@
  */
 
 import type { Address, Hex } from "viem";
+import type { FlatBookLifecycleDecision } from "./liquidityManager.js";
 
 // ============================================================================
 // Provider Types
@@ -43,8 +44,6 @@ export interface VaultMetadata {
   totalAssets: bigint;
   totalSupply: bigint;
   sharePrice: number;
-  epochInfo?: EpochInfo;
-  /** CLOSED-BOOK: Batch lifecycle info (replaces epochInfo for batch-based vaults) */
   batchInfo?: BatchInfo;
   /** NAV freshness indicator */
   navLastUpdated: Date;
@@ -52,21 +51,14 @@ export interface VaultMetadata {
   navIsStale: boolean;
 }
 
-export interface EpochInfo {
-  currentEpochId: number;
-  currentEpochStart: Date;
-  currentEpochEnd: Date;
-  nextSettlementTime: Date;
-  epochDurationSeconds: number;
-}
-
-/** CLOSED-BOOK: Batch lifecycle information */
 export interface BatchInfo {
   currentBatchId: number;
   currentBatchStart: Date;
   currentBatchEnd: Date | null;
   currentBatchStatus:
     | "open"
+    | "processing"
+    | "processed"
     | "cutoff"
     | "flattening"
     | "settling"
@@ -93,10 +85,7 @@ export interface RedemptionRequest {
   controller?: Address; // Controller address (defaults to userAddress)
   owner?: Address; // Owner address (defaults to userAddress)
   operator?: Address; // Address authorized to act on behalf of owner
-  /** CLOSED-BOOK: Batch ID (replaces epochId for batch-based vaults) */
-  batchId?: number;
-  /** LEGACY: Epoch ID for backward compatibility */
-  epochId: number;
+  batchId: number;
   shares: bigint;
   assetsEstimated: bigint;
   assetsActual?: bigint;
@@ -112,10 +101,7 @@ export interface RedemptionRequest {
 export interface RequestResult {
   success: boolean;
   requestId?: string;
-  /** CLOSED-BOOK: Batch ID for batch-based vaults */
   batchId?: number;
-  /** LEGACY: Epoch ID for backward compatibility */
-  epochId?: number;
   shares: bigint;
   assetsEstimated: bigint;
   controller?: Address; // Controller address used for request
@@ -139,21 +125,26 @@ export interface RequestStatusResult {
   estimatedSettlementTime?: Date;
 }
 
-export interface EpochStatus {
-  epochId: number;
-  /** CLOSED-BOOK: Batch ID alias for batch-based vaults */
-  batchId?: number;
+export interface BatchStatus {
+  batchId: number;
+  nextBatchId: number;
+  status: string;
   startTime: Date;
   endTime: Date;
-  settlementTime: Date;
-  totalRequests: number;
-  totalShares: bigint;
-  settled: boolean;
-  settlementTxHash?: Hex;
-  /** Pro-rata factor if applicable (0-1) */
-  proRataFactor?: number;
-  /** CLOSED-BOOK: Locked clearing price (only after flatten) */
+  cutoffTime?: Date;
+  isPriceLocked: boolean;
   lockedClearingPrice?: string;
+  settlementProgress?: {
+    processed: number;
+    total: number;
+    isComplete: boolean;
+  };
+  totalSharesPending: bigint;
+  totalAssetsSnapshot?: string;
+  proRataRatio: number;
+  totalQueuedDeposits: bigint;
+  claimableRedemptions: number;
+  mintedDeposits: number;
 }
 
 export interface UserRedemptionState {
@@ -177,6 +168,13 @@ export interface CapitalRebalanceResult {
   pendingWithdrawalLiability: bigint;
   details: string;
   txHash?: Hex;
+  error?: string;
+}
+
+export interface LifecycleTransitionResult {
+  success: boolean;
+  txHash?: Hex;
+  skipped?: boolean;
   error?: string;
 }
 
@@ -235,15 +233,18 @@ export interface IVaultProvider {
 
   /**
    * Get vault metadata and current state
-   * @returns VaultMetadata including NAV, share price, epoch info
+   * @returns VaultMetadata including NAV, share price, and batch info
    */
   getVaultInfo(): Promise<VaultMetadata>;
 
   /**
-   * Get current epoch status
-   * @param epochId - Optional specific epoch, defaults to current
+   * Get current batch status
+   * @param batchId - Optional specific batch, defaults to current
    */
-  getEpochStatus(epochId?: number): Promise<EpochStatus>;
+  getBatchStatus(batchId?: number): Promise<BatchStatus>;
+
+  // Expose backend lifecycle fields (Task 6) for current-cycle payloads
+  getLifecycle(): Promise<FlatBookLifecycleDecision>;
 
   /**
    * Get redemption request status
@@ -262,8 +263,6 @@ export interface IVaultProvider {
    * @param userAddress - User wallet address
    */
   getUserRedemptionState(userAddress: Address): Promise<UserRedemptionState>;
-
-  previewRedeem(shares: bigint): Promise<bigint>;
 
   // --------------------------------------------------------------------------
   // Write Operations
@@ -301,26 +300,27 @@ export interface IVaultProvider {
   // --------------------------------------------------------------------------
 
   /**
-   * Check if epoch is ready for settlement (NAV fresh, epoch ended)
-   * @param epochId - Epoch to check
+   * Check if batch is ready for settlement
+   * @param batchId - Batch to check
    */
-  isSettlementReady(epochId?: number): Promise<boolean>;
-  hasActionableBatchWork(epochId?: number): Promise<boolean>;
-  needsNavRefreshForActionableWork(epochId?: number): Promise<boolean>;
-  estimatePendingWithdrawalLiability(epochId?: number): Promise<bigint>;
+  isSettlementReady(batchId?: number): Promise<boolean>;
+  hasActionableBatchWork(batchId?: number): Promise<boolean>;
+  needsNavRefreshForActionableWork(batchId?: number): Promise<boolean>;
+  estimatePendingWithdrawalLiability(batchId?: number): Promise<bigint>;
+  getCurrentNav?(): Promise<bigint>;
 
   /**
-   * Execute epoch settlement (pro-rata distribution)
-   * @param epochId - Epoch to settle
+   * Execute batch settlement (pro-rata distribution)
+   * @param batchId - Batch to settle
    * @returns Transaction hash and settlement details
    */
-  executeSettlement(epochId?: number): Promise<{
+  executeSettlement(
+    batchId?: number,
+    skipFlatnessCheck?: boolean,
+  ): Promise<{
     success: boolean;
     txHash?: Hex;
-    /** LEGACY: Epoch ID for backward compatibility */
-    epochId: number;
-    /** CLOSED-BOOK: Batch ID for batch-based vaults */
-    batchId?: number;
+    batchId: number;
     requestsSettled: number;
     totalShares: bigint;
     totalAssets: bigint;
@@ -334,6 +334,10 @@ export interface IVaultProvider {
     safeUsdcBalance: bigint;
     pendingWithdrawalLiability: bigint;
   }): Promise<CapitalRebalanceResult>;
+
+  closeBook(): Promise<LifecycleTransitionResult>;
+  processQueue(): Promise<LifecycleTransitionResult>;
+  reopenIdleCycle(): Promise<LifecycleTransitionResult>;
 
   // --------------------------------------------------------------------------
   // Utility

@@ -436,8 +436,7 @@ export class FlatnessDetector {
 
       const provider = getVaultProvider(vaultConfig.id);
       const vaultInfo = await provider.getVaultInfo();
-      const currentEpochId =
-        vaultInfo.batchInfo?.currentBatchId ?? vaultInfo.epochInfo?.currentEpochId;
+      const currentEpochId = vaultInfo.batchInfo?.currentBatchId;
 
       if (currentEpochId === undefined) {
         return {

@@ -64,12 +64,20 @@ export async function runStartupValidation(): Promise<void> {
     errors.push(`Database validation failed: ${message}`);
   }
 
+  try {
+    await validateCriticalSchemaColumns();
+    logger.info("StartupValidation: Database schema validated");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    errors.push(`Database schema validation failed: ${message}`);
+  }
+
   // If any validations failed, throw with all errors
   if (errors.length > 0) {
     logger.error("StartupValidation: Validation failed", { errors });
     throw new Error(
       `Startup validation failed with ${errors.length} error(s):\n` +
-      errors.map((e) => `  - ${e}`).join("\n"),
+        errors.map((e) => `  - ${e}`).join("\n"),
     );
   }
 
@@ -91,6 +99,40 @@ async function validateDatabaseConnection(): Promise<void> {
     if (client) {
       client.release();
     }
+  }
+}
+
+async function validateCriticalSchemaColumns(): Promise<void> {
+  const requiredColumns = ["withdrawal_type", "batch_id", "onchain_request_id"] as const;
+
+  let client;
+  try {
+    client = await pool.connect();
+    const result = await client.query<{
+      column_name: string;
+    }>(
+      `SELECT column_name
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'withdrawal_requests'`,
+    );
+
+    const existingColumns = new Set(result.rows.map((row) => row.column_name));
+    const missingColumns = requiredColumns.filter((column) => !existingColumns.has(column));
+
+    if (missingColumns.length > 0) {
+      throw new Error(
+        `withdrawal_requests is missing required columns: ${missingColumns.join(", ")}. ` +
+          `Run vault-api migrations before starting the service (for example: pnpm db:migrate).`,
+      );
+    }
+  } catch (error) {
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw new Error(String(error));
+  } finally {
+    client?.release();
   }
 }
 

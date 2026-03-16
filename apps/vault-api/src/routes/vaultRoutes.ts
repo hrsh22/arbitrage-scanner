@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { desc } from "drizzle-orm";
-import type { Address, Hex } from "viem";
+import type { Address } from "viem";
 import { createPublicClient, formatUnits, parseUnits } from "viem";
 import { getAllVaultConfigs, getVaultConfig } from "../config/index.js";
 import { resolveVaultIdentity } from "../config/identityResolver.js";
@@ -30,16 +30,34 @@ import { createNetworkTransport } from "../rpcTransport.js";
 import { getNetworkConfigFromEnv } from "../config/network.js";
 import { pendingTxRegistry } from "../services/pendingTxRegistry.js";
 import { LiquidityManager } from "../services/liquidityManager.js";
-import { VaultProviderFactory } from "../services/vaultProviderFactory.js";
-import type { EpochInfo } from "../services/vaultProvider.js";
-// Migration imports removed - fresh rollout has no migration
+
+const LIFECYCLE_CACHE_TTL_MS = 5_000;
+const lifecycleCache = new Map<number, { expiresAt: number; value: unknown }>();
+
+async function getCachedLifecycle(config: VaultInstanceConfig): Promise<unknown> {
+  const cached = lifecycleCache.get(config.id);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
+  const lifecycle = await new LiquidityManager({ config }).evaluateFlatBookLifecycle();
+  lifecycleCache.set(config.id, {
+    value: lifecycle,
+    expiresAt: now + LIFECYCLE_CACHE_TTL_MS,
+  });
+  return lifecycle;
+}
 
 /** Helper to trigger event-driven reconciliation with duplicate protection */
 async function triggerEventReconciliation(
   config: VaultInstanceConfig,
   eventType: string,
 ): Promise<void> {
-  if (config.vaultContractType === "closedBookBatchVault") {
+  if (
+    config.vaultContractType === "closedBookBatchVault" ||
+    config.vaultContractType === "flatBookVaultV2"
+  ) {
     logger.info("eventReconciliationSkipped", {
       eventType,
       vaultId: config.id,
@@ -161,6 +179,47 @@ const CUSTOM_VAULT_RESERVED_REDEMPTION_ASSETS_ABI = [
   },
 ] as const;
 
+const CUSTOM_VAULT_CURRENT_CYCLE_ID_ABI = [
+  {
+    type: "function",
+    name: "currentCycleId",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
+const CUSTOM_VAULT_CYCLES_ABI = [
+  {
+    type: "function",
+    name: "cycles",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "uint256" }],
+    outputs: [
+      { name: "lockedNav", type: "uint256" },
+      { name: "totalQueuedDepositAssets", type: "uint256" },
+      { name: "totalQueuedRedeemShares", type: "uint256" },
+      { name: "totalQueuedRedeemAssets", type: "uint256" },
+      { name: "depositCursor", type: "uint256" },
+      { name: "redeemCursor", type: "uint256" },
+      { name: "processingStartedAt", type: "uint256" },
+      { name: "depositsComplete", type: "bool" },
+      { name: "redeemsComplete", type: "bool" },
+      { name: "finalized", type: "bool" },
+    ],
+  },
+] as const;
+
+const CUSTOM_VAULT_TOTAL_CLAIMABLE_REDEEM_ASSETS_ABI = [
+  {
+    type: "function",
+    name: "totalClaimableRedeemAssets",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
 // Legacy vault share price calculation (totalAssets / totalSupply)
 // DEPRECATED: Use boundary NAV from contract for custom vaults
 const VAULT_SHARE_PRICE_ABI = [
@@ -194,7 +253,7 @@ const DEFAULT_VAULT_PROFILE = {
   fees: {
     management: 0,
     performance: 0,
-    withdrawal: 50,
+    withdrawal: 0,
   },
 };
 
@@ -275,31 +334,14 @@ function createResolutionCheckerForConfig(config: VaultInstanceConfig): Resoluti
   return new ResolutionCheckerService(positionRepository, navOracle, safeWallet, config);
 }
 
-async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<{
-  nav: {
-    totalAssets: number;
-    idleAssets: number;
-    vaultUsdc: number;
-    safeUsdc: number;
-    deployedCostBasis: number;
-    redeemableCostBasis: number;
-    sharePrice: number;
-    positionCount: number;
-    redeemableCount: number;
-    lastUpdated: string;
-  };
-  positionCount: number;
-  deployedRatio: number;
-  committedExposureRatio: number;
-  totalCostBasis: number;
-  mode: "simulation" | "live";
-  capState: {
-    maxAllowedDeployed: number;
-    currentDeployed: number;
-    headroom: number;
-    constraintSource: "policy_cap" | "no_headroom" | "nav_stale";
-  } | null;
-}> {
+async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> {
+  let lifecycle: any;
+  try {
+    lifecycle = await getCachedLifecycle(config);
+  } catch {
+    lifecycle = undefined;
+  }
+
   const [openPositions, redeemablePositions, snapshots, capState] = await Promise.all([
     positionFetcher.fetchOpenPositions(config.safeAddress),
     positionFetcher.fetchRedeemablePositions(config.safeAddress),
@@ -371,16 +413,61 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<{
             functionName: "balanceOf",
             args: [config.safeAddress as Address],
           }),
-          publicClient.readContract({
-            address: config.vaultAddress as Address,
-            abi: CUSTOM_VAULT_TOTAL_QUEUED_ASSETS_ABI,
-            functionName: "totalQueuedAssets",
-          }),
-          publicClient.readContract({
-            address: config.vaultAddress as Address,
-            abi: CUSTOM_VAULT_RESERVED_REDEMPTION_ASSETS_ABI,
-            functionName: "reservedRedemptionAssets",
-          }),
+          publicClient
+            .readContract({
+              address: config.vaultAddress as Address,
+              abi: CUSTOM_VAULT_TOTAL_QUEUED_ASSETS_ABI,
+              functionName: "totalQueuedAssets",
+            })
+            .catch(async () => {
+              const currentCycleId = await publicClient.readContract({
+                address: config.vaultAddress as Address,
+                abi: CUSTOM_VAULT_CURRENT_CYCLE_ID_ABI,
+                functionName: "currentCycleId",
+              });
+              const cycle = await publicClient.readContract({
+                address: config.vaultAddress as Address,
+                abi: CUSTOM_VAULT_CYCLES_ABI,
+                functionName: "cycles",
+                args: [currentCycleId],
+              });
+              return cycle[1];
+            }),
+          publicClient
+            .readContract({
+              address: config.vaultAddress as Address,
+              abi: CUSTOM_VAULT_RESERVED_REDEMPTION_ASSETS_ABI,
+              functionName: "reservedRedemptionAssets",
+            })
+            .catch(async () => {
+              const [claimableRedeemAssets, currentCycleId] = await Promise.all([
+                publicClient
+                  .readContract({
+                    address: config.vaultAddress as Address,
+                    abi: CUSTOM_VAULT_TOTAL_CLAIMABLE_REDEEM_ASSETS_ABI,
+                    functionName: "totalClaimableRedeemAssets",
+                  })
+                  .catch(() => 0n),
+                publicClient
+                  .readContract({
+                    address: config.vaultAddress as Address,
+                    abi: CUSTOM_VAULT_CURRENT_CYCLE_ID_ABI,
+                    functionName: "currentCycleId",
+                  })
+                  .catch(() => 0n),
+              ]);
+
+              const cycle = await publicClient
+                .readContract({
+                  address: config.vaultAddress as Address,
+                  abi: CUSTOM_VAULT_CYCLES_ABI,
+                  functionName: "cycles",
+                  args: [currentCycleId],
+                })
+                .catch(() => null);
+
+              return claimableRedeemAssets + (cycle ? cycle[3] : 0n);
+            }),
         ]);
 
         const totalSupply = Number(formatUnits(totalSupplyRaw, VAULT_SHARE_DECIMALS));
@@ -500,6 +587,12 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<{
     totalCostBasis: deployedCostBasis,
     mode: getEffectiveMode(config),
     capState,
+    riskState: lifecycle?.riskState ?? "unknown",
+    executionMode: lifecycle?.executionMode ?? "blocked",
+    telemetryFresh: lifecycle?.telemetryFresh ?? false,
+    openPositionCount: lifecycle?.openPositionCount ?? null,
+    liquidityMode: lifecycle?.liquidityMode ?? "queued_only",
+    reopenReady: lifecycle?.reopenReady ?? false,
   };
 }
 
@@ -1095,7 +1188,7 @@ export function buildVaultRouter(): Router {
     }
   });
 
-  router.post("/mode", requireAuth, async (req, res) => {
+  router.post("/mode", requireAuth, async (_req, res) => {
     try {
       const config = getPrimaryVaultConfig();
       const mode = getEffectiveMode(config);
@@ -1362,6 +1455,133 @@ export function buildVaultRouter(): Router {
     }
   });
 
+  router.post("/withdrawal-request/:requestId/preflight", requireAuth, async (req, res) => {
+    const requestId = req.params.requestId!;
+    const userAddress = req.session!.address as string;
+    const lockKey = `withdrawal-preflight:${requestId}`;
+    const vaultId = 0;
+    const lockResult = pendingTxRegistry.acquireLock(vaultId, lockKey, "reconcile", "api", {
+      ttlMs: 60000,
+    });
+
+    if (!lockResult.acquired) {
+      res.status(423).json({
+        ready: false,
+        mode: "queued",
+        requestId,
+        error: "Concurrent operation in progress. Please retry shortly.",
+        retryable: true,
+      });
+      return;
+    }
+
+    try {
+      const request = await withdrawalRepository.getRequestById(requestId);
+      if (!request) {
+        res.status(404).json({ error: "Withdrawal request not found", requestId });
+        return;
+      }
+
+      if (request.userAddress.toLowerCase() !== userAddress.toLowerCase()) {
+        res.status(403).json({ error: "Not authorized for this withdrawal request", requestId });
+        return;
+      }
+
+      if (request.status === "cancelled" || request.status === "completed") {
+        res.status(400).json({
+          ready: false,
+          mode: "queued",
+          requestId,
+          status: request.status,
+          error: `Cannot preflight request in status '${request.status}'`,
+        });
+        return;
+      }
+
+      if (request.status !== "ready") {
+        res.status(200).json({
+          success: false,
+          ready: false,
+          mode: "queued",
+          requestId,
+          status: request.status,
+          request,
+          reason:
+            "Withdrawal is still queued. Worker will mark it ready once liquidity is available.",
+        });
+        return;
+      }
+
+      let requestedAssets: bigint;
+      try {
+        requestedAssets = parseUnits(request.assetsEstimated, USDC_DECIMALS);
+      } catch {
+        res.status(503).json({
+          ready: false,
+          mode: "queued",
+          requestId,
+          error: "Unable to parse withdrawal estimate for preflight",
+          retryable: true,
+        });
+        return;
+      }
+
+      const config = getPrimaryVaultConfig();
+      if (request.vaultAddress.toLowerCase() !== config.vaultAddress.toLowerCase()) {
+        res.status(400).json({
+          ready: false,
+          mode: "queued",
+          requestId,
+          error: "Withdrawal request vault does not match configured vault",
+        });
+        return;
+      }
+
+      const preflight = await new LiquidityManager({ config }).preflightInstantWithdrawal(
+        requestedAssets,
+      );
+
+      const responseRequest: unknown = request;
+      const responseStatus: string = request.status;
+
+      const statusCode = preflight.ready ? 200 : preflight.error ? 503 : 200;
+
+      res.status(statusCode).json({
+        success: preflight.ready,
+        requestId,
+        status: responseStatus,
+        request: responseRequest,
+        ready: preflight.ready,
+        mode: preflight.mode,
+        executionMode: preflight.executionMode,
+        telemetryFresh: preflight.telemetryFresh,
+        liquidityMode: preflight.liquidityMode,
+        triggeredRecall: preflight.triggeredRecall,
+        requestedAssets: preflight.requestedAssets,
+        vaultBalance: preflight.vaultBalance,
+        safeBalance: preflight.safeBalance,
+        shortfall: preflight.shortfall,
+        reason: preflight.reason,
+        recallTxHash: preflight.recallTxHash,
+        error: preflight.error,
+      });
+    } catch (error) {
+      logger.error("Vault API: Withdrawal instant preflight failed", {
+        requestId,
+        userAddress,
+        error: (error as Error).message,
+      });
+      res.status(500).json({
+        ready: false,
+        mode: "queued",
+        requestId,
+        error: (error as Error).message,
+      });
+    } finally {
+      pendingTxRegistry.releaseLock(vaultId, "reconcile");
+    }
+  });
+
   // POST /vault/withdrawal-request/:requestId/cancel — cancel a pending or ready request (idempotent)
   // State Machine: pending|ready → cancelled (idempotent if already cancelled)
   router.post("/withdrawal-request/:requestId/cancel", requireAuth, async (req, res) => {
@@ -1462,8 +1682,6 @@ export function buildVaultRouter(): Router {
     }
   });
 
-  // POST /vault/withdrawal-request/:requestId/prepare-claim — reprices and validates before claiming
-  // State Machine: pending → ready (idempotent if already ready, but repricing still performed)
   router.post("/withdrawal-request/:requestId/prepare-claim", requireAuth, async (req, res) => {
     const requestId = req.params.requestId!;
     const userAddress = req.session!.address as string;
@@ -1506,40 +1724,14 @@ export function buildVaultRouter(): Router {
         return;
       }
 
-      // STRICT STATE MACHINE VALIDATION:
-      // Valid transitions: pending → ready
-      // Idempotent: ready → ready (allowed, but repricing still happens)
-      // Invalid: cancelled → ready, completed → ready (will return error from transitionState)
-      const transitionResult = await withdrawalRepository.markReadyIdempotent(requestId);
-
-      if (!transitionResult.success) {
-        const statusCode = transitionResult.error?.includes("not found") ? 404 : 400;
-        res.status(statusCode).json({
-          error: transitionResult.error,
+      if (existing.status !== "ready") {
+        res.status(409).json({
+          error: `Withdrawal ${requestId} is ${existing.status}. Wait for the worker to mark it ready.`,
           requestId,
           currentStatus: existing.status,
+          retryable: true,
         });
         return;
-      }
-
-      const getPreparedRequest = async () => {
-        const latest = await withdrawalRepository.getRequestById(requestId);
-        return latest ?? transitionResult.request ?? existing;
-      };
-
-      // Log idempotency if detected
-      const wasAlreadyReady = transitionResult.alreadyInTargetState ?? false;
-      if (wasAlreadyReady) {
-        logger.info("Vault API: Prepare-claim - request already ready (repricing)", {
-          requestId,
-          userAddress,
-        });
-      } else {
-        logger.info("Vault API: Prepare-claim - transitioned to ready", {
-          requestId,
-          userAddress,
-          previousStatus: existing.status,
-        });
       }
 
       // Use cached estimate from the request (no previewRedeem dependency)
@@ -1553,7 +1745,7 @@ export function buildVaultRouter(): Router {
         return;
       }
 
-      const responseRequest = await getPreparedRequest();
+      const responseRequest = existing;
 
       res.json({
         success: true,
@@ -1563,10 +1755,8 @@ export function buildVaultRouter(): Router {
         slippageWarning: false,
         slippagePercent: 0,
         threshold: DEFAULT_SLIPPAGE_THRESHOLD,
-        idempotent: wasAlreadyReady,
-        message: wasAlreadyReady
-          ? "Withdrawal ready to claim. (was already ready)."
-          : "Withdrawal ready to claim.",
+        idempotent: true,
+        message: "Withdrawal ready to claim.",
       });
     } catch (error) {
       logger.error("Vault API: Failed to prepare claim", {

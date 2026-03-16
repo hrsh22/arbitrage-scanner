@@ -1,0 +1,1 @@
+Note: Substep 1 implemented for Task 6 - extend evaluateFlatBookLifecycle() to emit six API-facing lifecycle fields (executionMode, telemetryFresh, openPositionCount, liquidityMode, reopenReady) along with riskState. Deterministic logic applied as per directions.

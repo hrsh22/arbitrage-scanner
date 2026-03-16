@@ -336,31 +336,37 @@ describe("Settlement Lifecycle Integration Tests", () => {
         totalAssets: 1000000000000n,
         totalSupply: 1000000000000000000000000n,
         sharePrice: 1,
-        epochInfo: {
-          currentEpochId: 10,
-          currentEpochStart: new Date("2024-01-14T12:00:00Z"),
-          currentEpochEnd: new Date("2024-01-21T12:00:00Z"),
-          nextSettlementTime: new Date("2024-01-21T12:00:00Z"),
-          epochDurationSeconds: 604800,
+        batchInfo: {
+          currentBatchId: 10,
+          currentBatchStart: new Date("2024-01-14T12:00:00Z"),
+          currentBatchEnd: new Date("2024-01-21T12:00:00Z"),
+          currentBatchStatus: "open",
+          nextBatchId: 11,
+          nextBatchExists: true,
+          batchDurationSeconds: 604800,
         },
         navLastUpdated: new Date(),
         navIsStale: false,
       }),
-      getEpochStatus: vi.fn().mockResolvedValue({
-        epochId: 10,
+      getBatchStatus: vi.fn().mockResolvedValue({
+        batchId: 10,
+        nextBatchId: 11,
+        status: "open",
         startTime: new Date("2024-01-14T12:00:00Z"),
         endTime: new Date("2024-01-21T12:00:00Z"),
-        settlementTime: new Date("2024-01-21T12:00:00Z"),
-        totalRequests: 1,
-        totalShares: 1000000000000000000n,
-        settled: false,
+        isPriceLocked: false,
+        totalSharesPending: 1000000000000000000n,
+        proRataRatio: 1,
+        totalQueuedDeposits: 0n,
+        claimableRedemptions: 0,
+        mintedDeposits: 0,
       }),
       getRequestStatus: vi.fn().mockResolvedValue({
         request: {
           requestId: "1",
           vaultId: 1,
           userAddress: mockUserAddress,
-          epochId: 10,
+          batchId: 10,
           shares: 1000000000000000000n,
           assetsEstimated: 1000000n,
           status: "pending",
@@ -382,7 +388,7 @@ describe("Settlement Lifecycle Integration Tests", () => {
       }),
       requestRedeem: vi.fn().mockResolvedValue({
         success: true,
-        epochId: 10,
+        batchId: 10,
         shares: 1000000000000000000n,
         assetsEstimated: 1000000n,
       }),
@@ -394,13 +400,13 @@ describe("Settlement Lifecycle Integration Tests", () => {
         requestId: "1",
         assetsReceived: 1000000n,
       }),
-      previewRedeem: vi.fn().mockResolvedValue(1000000n),
       getClient: vi.fn().mockReturnValue(mockClient),
       isSettlementReady: vi.fn().mockResolvedValue(false),
+      estimatePendingWithdrawalLiability: vi.fn().mockResolvedValue(0n),
       executeSettlement: vi.fn().mockResolvedValue({
         success: true,
         txHash: "0xsettle" as `0x${string}`,
-        epochId: 10,
+        batchId: 10,
         requestsSettled: 1,
         totalShares: 1000000000000000000n,
         totalAssets: 1000000n,
@@ -423,7 +429,8 @@ describe("Settlement Lifecycle Integration Tests", () => {
         proRataSettlement: true,
         requiresNavForSettlement: true,
         supportsRollover: false,
-        epochBased: true,
+        epochBased: false,
+        batchBased: true,
       }),
     };
 
@@ -444,7 +451,7 @@ describe("Settlement Lifecycle Integration Tests", () => {
   // ============================================================================
 
   describe("Settlement Execution", () => {
-    it("should execute full settlement lifecycle: cutoff -> flatten -> settle", async () => {
+    it("should execute full settlement lifecycle from open via flatten -> settle", async () => {
       // Mock getBatch for different phases
       (mockClient.getBatch as ReturnType<typeof vi.fn>)
         .mockResolvedValueOnce({
@@ -492,13 +499,15 @@ describe("Settlement Lifecycle Integration Tests", () => {
       // Inject mock client
       (provider as unknown as { client: CustomVaultClient }).client =
         mockClient as CustomVaultClient;
+      vi.spyOn(provider, "canFlattenBatch").mockResolvedValue({ canFlatten: true });
 
       // Execute settlement
       const result = await provider.executeSettlement(10);
 
       // Verify settlement succeeded
       expect(result.success).toBe(true);
-      expect(result.epochId).toBe(10);
+      expect(result.batchId).toBe(10);
+      expect(mockClient.cutoffBatch).not.toHaveBeenCalled();
     });
 
     it("should skip cutoff if batch is already in flattening status", async () => {
@@ -586,7 +595,7 @@ describe("Settlement Lifecycle Integration Tests", () => {
       const result = await provider.executeSettlement(10);
 
       expect(result.success).toBe(false);
-      expect(result.error).toContain("settlerKey");
+      expect(result.error).toContain("configured signer");
     });
   });
 
@@ -728,7 +737,7 @@ describe("Settlement Lifecycle Integration Tests", () => {
       (mockProvider.executeSettlement as ReturnType<typeof vi.fn>).mockResolvedValue({
         success: true,
         txHash: "0xsettle" as `0x${string}`,
-        epochId: 10,
+        batchId: 10,
         requestsSettled: 2,
         totalShares: 2000000000000000000n,
         totalAssets: 2000000n,
@@ -935,9 +944,9 @@ describe("Settlement Lifecycle Integration Tests", () => {
         isPriceLocked: false,
         exists: true,
       });
-      (mockClient.cutoffBatch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      (mockClient.flattenBatch as ReturnType<typeof vi.fn>).mockResolvedValue({
         success: false,
-        error: "Batch cutoff failed: transaction reverted",
+        error: "Batch flatten failed: transaction reverted",
       });
 
       const provider = new CustomVaultProvider(
@@ -950,11 +959,12 @@ describe("Settlement Lifecycle Integration Tests", () => {
       );
       (provider as unknown as { client: CustomVaultClient }).client =
         mockClient as CustomVaultClient;
+      vi.spyOn(provider, "canFlattenBatch").mockResolvedValue({ canFlatten: true });
 
       const result = await provider.executeSettlement(10);
 
       expect(result.success).toBe(false);
-      expect(result.error).toContain("cutoff");
+      expect(result.error).toContain("flatten");
     });
 
     it("should handle settlement failure during settle phase", async () => {

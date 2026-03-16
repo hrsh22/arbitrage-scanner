@@ -20,6 +20,8 @@ import {
   fetchVaultNavHistory,
   fetchVaultAllocations,
   fetchWithdrawalQueue,
+  postWithdrawalRequest,
+  postWithdrawalPreflight,
   // Batch/Cycle API functions
   postRedemptionRequest,
   postClaimRedemption,
@@ -40,6 +42,7 @@ import type {
   VaultNavHistoryResponse,
   VaultAllocationsResponse,
   WithdrawalQueueResponse,
+  WithdrawalPreflightResponse,
   // Batch/Cycle types
   RedemptionRequestCreateResponse,
   ClaimRedemptionResponse,
@@ -60,7 +63,7 @@ interface AsyncState<T> {
   isLoading: boolean;
   error: string | null;
   lastRefresh: Date | null;
-  refetch: () => Promise<void>;
+  refetch: () => Promise<T | null>;
 }
 
 interface Eip1193Provider {
@@ -159,14 +162,16 @@ function usePolledFetch<T>(fetcher: () => Promise<T>, intervalMs = 30_000): Asyn
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
 
-  const refetch = useCallback(async () => {
+  const refetch = useCallback(async (): Promise<T | null> => {
     try {
       setError(null);
       const result = await fetcher();
       setData(result);
       setLastRefresh(new Date());
+      return result;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
+      return null;
     } finally {
       setIsLoading(false);
     }
@@ -398,13 +403,27 @@ interface PreviewRedeemResult {
   refetch: () => Promise<unknown>;
 }
 
-export function usePreviewRedeem(vaultAddress?: string, shares?: bigint): PreviewRedeemResult {
+export function usePreviewRedeem(
+  vaultAddress?: string,
+  shares?: bigint,
+  useCurrentNav = false,
+): PreviewRedeemResult {
+  const { data: currentNAV, refetch: refetchNav } = useReadContract({
+    address: vaultAddress as `0x${string}` | undefined,
+    abi: VAULT_ABI,
+    functionName: "currentNAV",
+    query: {
+      enabled: Boolean(useCurrentNav && vaultAddress && shares !== undefined && shares > 0n),
+      refetchInterval: 15_000,
+    },
+  });
+
   const { data: totalAssets, refetch: refetchAssets } = useReadContract({
     address: vaultAddress as `0x${string}` | undefined,
     abi: VAULT_ABI,
     functionName: "totalAssets",
     query: {
-      enabled: Boolean(vaultAddress && shares !== undefined && shares > 0n),
+      enabled: Boolean(!useCurrentNav && vaultAddress && shares !== undefined && shares > 0n),
       refetchInterval: 15_000,
     },
   });
@@ -414,21 +433,43 @@ export function usePreviewRedeem(vaultAddress?: string, shares?: bigint): Previe
     abi: VAULT_ABI,
     functionName: "totalSupply",
     query: {
-      enabled: Boolean(vaultAddress && shares !== undefined && shares > 0n),
+      enabled: Boolean(!useCurrentNav && vaultAddress && shares !== undefined && shares > 0n),
       refetchInterval: 15_000,
     },
   });
 
   const assets = React.useMemo(() => {
+    if (useCurrentNav && currentNAV && shares) {
+      return (shares * currentNAV) / 10n ** 18n;
+    }
     if (!totalAssets || !totalSupply || !shares || totalSupply === 0n) return undefined;
     return (shares * totalAssets) / totalSupply;
-  }, [totalAssets, totalSupply, shares]);
+  }, [currentNAV, shares, totalAssets, totalSupply, useCurrentNav]);
 
   const refetch = useCallback(async () => {
+    if (useCurrentNav) {
+      await refetchNav();
+      return;
+    }
     await Promise.all([refetchAssets(), refetchSupply()]);
-  }, [refetchAssets, refetchSupply]);
+  }, [refetchAssets, refetchNav, refetchSupply, useCurrentNav]);
 
   return { assets, refetch };
+}
+
+// Helper: determine if instant deposit is allowed for a custom vault
+// Instant deposits are allowed only when executionMode is "instant" and
+// telemetryFresh is true. This mirrors frontend routing semantics used in deposits.
+export function isInstantCustomVaultDepositAvailable(
+  executionMode?: string,
+  telemetryFresh?: boolean,
+): boolean {
+  return executionMode === "instant" && telemetryFresh === true;
+}
+
+// Wrapper to expose preflight functionality for custom vault withdrawals
+export async function preflightWithdrawal(requestId: string): Promise<WithdrawalPreflightResponse> {
+  return postWithdrawalPreflight(requestId);
 }
 
 interface UsdcApproveResult {
@@ -618,7 +659,7 @@ export function useQueueDeposit(): QueueDepositResult {
   const queueDeposit = (vaultAddress: `0x${string}`, assets: bigint) => {
     const data = encodeFunctionData({
       abi: VAULT_ABI,
-      functionName: "queueDeposit",
+      functionName: "requestDeposit",
       args: [assets],
     });
 
@@ -813,7 +854,7 @@ export function useRequests(vaultId?: number, isAuthenticated = false): UseReque
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
 
-  const refetch = useCallback(async () => {
+  const refetch = useCallback(async (): Promise<void> => {
     if (vaultId === undefined) {
       setIsLoading(false);
       return;
@@ -840,13 +881,21 @@ export function useRequests(vaultId?: number, isAuthenticated = false): UseReque
 
         const targetCycle =
           request.targetCycle ??
-          request.targetEpoch ??
           request.batchId ??
-          request.epochId ??
           (request as RedemptionRequest & { cycleId?: number }).cycleId ??
           0;
-        const targetCycleEndTime =
-          request.targetCycleEndTime ?? request.targetEpochEndTime ?? request.createdAt;
+        const targetCycleEndTime = request.targetCycleEndTime ?? request.createdAt;
+
+        const ownerAddress =
+          request.ownerAddress ?? (request as RedemptionRequest & { owner?: string }).owner ?? "";
+        const controllerAddress =
+          request.controllerAddress ??
+          (request as RedemptionRequest & { controller?: string }).controller ??
+          ownerAddress;
+        const operatorAddress =
+          request.operatorAddress ??
+          (request as RedemptionRequest & { operator?: string | null }).operator ??
+          null;
 
         return {
           ...request,
@@ -860,25 +909,15 @@ export function useRequests(vaultId?: number, isAuthenticated = false): UseReque
           cancelledAt: request.cancelledAt ?? null,
           proRataApplied: request.proRataApplied ?? false,
           proRataPercentage: request.proRataPercentage ?? null,
-          // Controller-aware defaults (owner==controller initially)
-          ownerAddress: request.ownerAddress ?? request.controllerAddress ?? "",
-          controllerAddress: request.controllerAddress ?? request.ownerAddress ?? "",
-          operatorAddress: request.operatorAddress ?? null,
+          ownerAddress,
+          controllerAddress,
+          operatorAddress,
           lifecycleError: request.lifecycleError ?? null,
         };
       };
 
-      const isRecoveredLegacyRequest = (request: RedemptionRequest): boolean => {
-        const claimableNow = Number(request.claimableAssetsFormatted ?? "0");
-        return Boolean(request.lifecycleError) && claimableNow <= 0;
-      };
-
-      const pendingRequests = result.pendingRequests
-        .map(normalizeRequest)
-        .filter((request) => !isRecoveredLegacyRequest(request));
-      const claimableRequests = result.claimableRequests
-        .map(normalizeRequest)
-        .filter((request) => !isRecoveredLegacyRequest(request));
+      const pendingRequests = result.pendingRequests.map(normalizeRequest);
+      const claimableRequests = result.claimableRequests.map(normalizeRequest);
 
       setData({
         ...result,
@@ -934,6 +973,8 @@ export interface UseCycleStatusResult {
   canSettle: boolean | undefined;
   batchState:
     | "open"
+    | "processing"
+    | "processed"
     | "cutoff"
     | "flattening"
     | "settling"
@@ -944,7 +985,13 @@ export interface UseCycleStatusResult {
   isLoading: boolean;
   error: string | null;
   lastRefresh: Date | null;
-  refetch: () => Promise<void>;
+  refetch: () => Promise<CycleStatusResponse | null>;
+  riskState?: string | null;
+  executionMode?: string | null;
+  telemetryFresh?: boolean | null;
+  liquidityMode?: string | null;
+  reopenReady?: boolean | null;
+  openPositionCount?: number | null;
 }
 
 export interface UseCycleHistoryResult {
@@ -962,10 +1009,10 @@ export function useCycleStatus(vaultId?: number, cycleId?: number): UseCycleStat
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
 
-  const refetch = useCallback(async () => {
+  const refetch = useCallback(async (): Promise<CycleStatusResponse | null> => {
     if (vaultId === undefined) {
       setIsLoading(false);
-      return;
+      return null;
     }
 
     setIsLoading(true);
@@ -978,8 +1025,10 @@ export function useCycleStatus(vaultId?: number, cycleId?: number): UseCycleStat
           : await fetchCurrentCycleStatus(vaultId);
       setData(result);
       setLastRefresh(new Date());
+      return result;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch cycle status");
+      return null;
     } finally {
       setIsLoading(false);
     }
@@ -1001,6 +1050,12 @@ export function useCycleStatus(vaultId?: number, cycleId?: number): UseCycleStat
     error,
     lastRefresh,
     refetch,
+    riskState: data?.cycle?.riskState ?? null,
+    executionMode: data?.cycle?.executionMode ?? null,
+    telemetryFresh: data?.cycle?.telemetryFresh ?? null,
+    liquidityMode: data?.cycle?.liquidityMode ?? null,
+    reopenReady: data?.cycle?.reopenReady ?? null,
+    openPositionCount: data?.cycle?.openPositionCount ?? null,
   };
 }
 
@@ -1119,6 +1174,8 @@ export interface UseDepositQueueResult {
   mintRule: string | null;
   batchState:
     | "open"
+    | "processing"
+    | "processed"
     | "cutoff"
     | "flattening"
     | "settling"
@@ -1130,6 +1187,13 @@ export interface UseDepositQueueResult {
   error: string | null;
   lastRefresh: Date | null;
   refetch: () => Promise<void>;
+  // Lifecycle fields surfaced from backend API
+  riskState?: string | null;
+  executionMode?: string | null;
+  telemetryFresh?: boolean | null;
+  liquidityMode?: string | null;
+  reopenReady?: boolean | null;
+  openPositionCount?: number | null;
 }
 export function useDepositQueue(vaultId?: number, isAuthenticated = false): UseDepositQueueResult {
   const [data, setData] = useState<DepositQueueResponse | null>(null);
@@ -1207,6 +1271,12 @@ export function useDepositQueue(vaultId?: number, isAuthenticated = false): UseD
     error,
     lastRefresh,
     refetch,
+    riskState: data?.riskState ?? null,
+    executionMode: data?.executionMode ?? null,
+    telemetryFresh: data?.telemetryFresh ?? null,
+    liquidityMode: data?.liquidityMode ?? null,
+    reopenReady: data?.reopenReady ?? null,
+    openPositionCount: data?.openPositionCount ?? null,
   };
 }
 
@@ -1222,6 +1292,8 @@ export interface UseTrancheStatusResult {
     // Batch lifecycle
     batchState:
       | "open"
+      | "processing"
+      | "processed"
       | "cutoff"
       | "flattening"
       | "settling"

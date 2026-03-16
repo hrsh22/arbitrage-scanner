@@ -63,7 +63,7 @@ vi.mock("../services/vaultProviderFactory.js", () => ({
     getClient: () => ({
       getDeployedCapital: vi.fn(async () => 0n),
     }),
-    getVaultInfo: vi.fn(async () => ({ epochInfo: { currentEpochId: 1 } })),
+    getVaultInfo: vi.fn(async () => ({ batchInfo: { currentBatchId: 1 } })),
     getCapabilities: vi.fn(() => ({ batchBased: true, epochBased: true })),
   })),
 }));

@@ -24,6 +24,7 @@ import { resolveVaultIdentity } from "../config/identityResolver.js";
 import { getVaultProvider } from "./vaultProviderFactory.js";
 import { createNavOracle } from "./navOracle.js";
 import { FlatnessDetector, type FlatnessCheckResult } from "./flatnessDetector.js";
+import { getTradingOrchestratorForVault } from "./tradingOrchestrator.js";
 
 // ===== Constants =====
 
@@ -195,22 +196,25 @@ export class VaultHealthMonitor {
           const provider = getVaultProvider(vault.id);
           const capabilities = provider.getCapabilities();
 
-          // Only check custom vaults with epochs
-          if (!capabilities.epochBased) continue;
+          if (!capabilities.batchBased) continue;
 
-          // Get current epoch status
-          const epochStatus = await provider.getEpochStatus();
+          const batchStatus = await provider.getBatchStatus();
 
           // Check if epoch has ended but not settled
           const now = new Date();
-          const epochEnd = epochStatus.endTime;
+          const epochEnd = batchStatus.endTime;
+          const isSettled =
+            batchStatus.status === "settled" ||
+            batchStatus.status === "processed" ||
+            batchStatus.status === "reopen" ||
+            batchStatus.status === "closed";
 
-          if (now > epochEnd && !epochStatus.settled) {
+          if (now > epochEnd && !isSettled) {
             const lagSeconds = Math.floor((now.getTime() - epochEnd.getTime()) / 1000);
 
             const check: EpochLagCheck = {
               vaultId: vault.id,
-              epochId: epochStatus.epochId.toString(),
+              epochId: batchStatus.batchId.toString(),
               expectedSettlementTime: epochEnd,
               lagSeconds,
               isDelayed: lagSeconds > ALERT_THRESHOLDS.EPOCH_SETTLEMENT_LAG_SECONDS,
@@ -617,11 +621,12 @@ export class VaultHealthMonitor {
    */
   async checkUnresolvedPositionsTimeout(vaultId?: number): Promise<HealthCheckResult> {
     try {
-      const { positionSnapshotRepository } = await import("../repositories/positionSnapshotRepository.js");
+      const { positionSnapshotRepository } =
+        await import("../repositories/positionSnapshotRepository.js");
       const { epochRepository } = await import("../repositories/epochRepository.js");
 
       // Get all settled epochs that have frozen positions
-      const epochs = vaultId 
+      const epochs = vaultId
         ? await epochRepository.getEpochsByVault(vaultId.toString())
         : await epochRepository.getAllSettledEpochs();
 
@@ -636,14 +641,14 @@ export class VaultHealthMonitor {
 
       for (const epoch of epochs) {
         const frozenSnapshots = await positionSnapshotRepository.getFrozenByEpoch(epoch.epochId);
-        
+
         if (frozenSnapshots.length > 0) {
           totalFrozen += frozenSnapshots.length;
-          
+
           // Calculate days since epoch was settled (when positions were frozen)
           const settledAt = epoch.claimableAt ? new Date(epoch.claimableAt).getTime() : now;
           const daysFrozen = Math.floor((now - settledAt) / (1000 * 60 * 60 * 24));
-          
+
           if (daysFrozen > oldestFrozenDays) {
             oldestFrozenDays = daysFrozen;
             oldestEpochId = epoch.epochId;
@@ -672,7 +677,8 @@ export class VaultHealthMonitor {
           message: `${totalFrozen} unresolved position(s) in ${oldestEpochId} frozen for ${oldestFrozenDays} days (timeout: ${timeoutThresholdDays} days)`,
           details: { ...check } as Record<string, unknown>,
           timestamp: new Date(),
-          runbookUrl: "https://github.com/polymarket-mvp/runbooks/blob/main/snapshot-tranche/unresolved-positions-timeout.md",
+          runbookUrl:
+            "https://github.com/polymarket-mvp/runbooks/blob/main/snapshot-tranche/unresolved-positions-timeout.md",
         };
       }
 
@@ -684,7 +690,8 @@ export class VaultHealthMonitor {
           message: `${positionsNearTimeout} position(s) approaching timeout (${oldestFrozenDays}/${timeoutThresholdDays} days)`,
           details: { ...check } as Record<string, unknown>,
           timestamp: new Date(),
-          runbookUrl: "https://github.com/polymarket-mvp/runbooks/blob/main/snapshot-tranche/unresolved-positions-timeout.md",
+          runbookUrl:
+            "https://github.com/polymarket-mvp/runbooks/blob/main/snapshot-tranche/unresolved-positions-timeout.md",
         };
       }
 
@@ -692,9 +699,10 @@ export class VaultHealthMonitor {
         name: "unresolved_positions_timeout",
         status: "healthy",
         severity: "info",
-        message: totalFrozen > 0 
-          ? `${totalFrozen} frozen position(s), oldest ${oldestFrozenDays} days (within threshold)`
-          : "No frozen positions awaiting resolution",
+        message:
+          totalFrozen > 0
+            ? `${totalFrozen} frozen position(s), oldest ${oldestFrozenDays} days (within threshold)`
+            : "No frozen positions awaiting resolution",
         details: { ...check } as Record<string, unknown>,
         timestamp: new Date(),
       };
@@ -719,7 +727,7 @@ export class VaultHealthMonitor {
       const { epochRepository } = await import("../repositories/epochRepository.js");
 
       // Get all settled epochs
-      const epochs = vaultId 
+      const epochs = vaultId
         ? await epochRepository.getEpochsByVault(vaultId.toString())
         : await epochRepository.getAllSettledEpochs();
 
@@ -727,12 +735,15 @@ export class VaultHealthMonitor {
 
       for (const epoch of epochs) {
         // Get cumulative stats for this epoch
-        const totalDistributed = await payoutRepository.getTotalByEpoch(epoch.epochId, "distributed");
+        const totalDistributed = await payoutRepository.getTotalByEpoch(
+          epoch.epochId,
+          "distributed",
+        );
         const totalClaimed = await payoutRepository.getTotalByEpoch(epoch.epochId, "claimed");
-        
+
         const distributed = BigInt(totalDistributed);
         const claimed = BigInt(totalClaimed);
-        
+
         // Count distributed but not claimed
         if (distributed > claimed) {
           totalDistributedUnclaimed += Number(distributed - claimed);
@@ -758,7 +769,8 @@ export class VaultHealthMonitor {
           message: `Payout backlog: ${pendingPayouts} pending payouts exceeding threshold (${SNAPSHOT_TRANCHE_THRESHOLDS.PAYOUT_BACKLOG_COUNT})`,
           details: { ...check } as Record<string, unknown>,
           timestamp: new Date(),
-          runbookUrl: "https://github.com/polymarket-mvp/runbooks/blob/main/snapshot-tranche/payout-backlog.md",
+          runbookUrl:
+            "https://github.com/polymarket-mvp/runbooks/blob/main/snapshot-tranche/payout-backlog.md",
         };
       }
 
@@ -787,30 +799,36 @@ export class VaultHealthMonitor {
    */
   async checkFrozenSnapshotStaleness(vaultId?: number): Promise<HealthCheckResult> {
     try {
-      const { positionSnapshotRepository } = await import("../repositories/positionSnapshotRepository.js");
+      const { positionSnapshotRepository } =
+        await import("../repositories/positionSnapshotRepository.js");
       const { epochRepository } = await import("../repositories/epochRepository.js");
       const { realizationRepository } = await import("../repositories/realizationRepository.js");
 
       // Get all settled epochs
-      const epochs = vaultId 
+      const epochs = vaultId
         ? await epochRepository.getEpochsByVault(vaultId.toString())
         : await epochRepository.getAllSettledEpochs();
 
       const now = Date.now();
       const staleThresholdDays = SNAPSHOT_TRANCHE_THRESHOLDS.FROZEN_SNAPSHOT_STALE_DAYS;
-      let stalestEpoch: { epochId: string; daysFrozen: number; frozenCount: number; realizationsPending: number } | null = null;
+      let stalestEpoch: {
+        epochId: string;
+        daysFrozen: number;
+        frozenCount: number;
+        realizationsPending: number;
+      } | null = null;
 
       for (const epoch of epochs) {
         const frozenCount = await positionSnapshotRepository.getFrozenByEpoch(epoch.epochId);
-        
+
         if (frozenCount.length > 0) {
           const settledAt = epoch.claimableAt ? new Date(epoch.claimableAt).getTime() : now;
           const daysFrozen = Math.floor((now - settledAt) / (1000 * 60 * 60 * 24));
-          
+
           // Check for realizations in this epoch
           const realizations = await realizationRepository.getByEpoch(epoch.epochId);
           const realizationsPending = frozenCount.length - realizations.length;
-          
+
           if (daysFrozen >= staleThresholdDays && !stalestEpoch) {
             stalestEpoch = {
               epochId: epoch.epochId,
@@ -839,7 +857,8 @@ export class VaultHealthMonitor {
           message: `Frozen snapshot ${check.epochId} is stale: ${check.frozenPositionCount} positions frozen for ${check.daysSinceFrozen} days without realizations`,
           details: { ...check } as Record<string, unknown>,
           timestamp: new Date(),
-          runbookUrl: "https://github.com/polymarket-mvp/runbooks/blob/main/snapshot-tranche/frozen-snapshot-stale.md",
+          runbookUrl:
+            "https://github.com/polymarket-mvp/runbooks/blob/main/snapshot-tranche/frozen-snapshot-stale.md",
         };
       }
 
@@ -917,8 +936,7 @@ export class VaultHealthMonitor {
           name: "vault_flatness",
           status: "degraded",
           severity: "warning",
-          message: `${failedChecks.length} vault(s) are not flat. First: vault ${firstFailure.vaultId} blocked by: ${firstFailure.blockingConditions.join(
-)}`,
+          message: `${failedChecks.length} vault(s) are not flat. First: vault ${firstFailure.vaultId} blocked by: ${firstFailure.blockingConditions.join()}`,
           details: {
             failedCount: failedChecks.length,
             failures: failedChecks,
@@ -953,7 +971,7 @@ export class VaultHealthMonitor {
 
   /**
    * Check for flattening timeout (starvation detection).
-   * 
+   *
    * Alerts if book flattening exceeds MAX_FLATTENING_WINDOW_MS.
    */
   async checkFlatteningTimeout(vaultId?: number): Promise<HealthCheckResult> {
@@ -971,9 +989,7 @@ export class VaultHealthMonitor {
         if (!vault) continue;
 
         try {
-          // Get the trading orchestrator for this vault
-          const { createTradingOrchestrator } = await import("./tradingOrchestrator.js");
-          const orchestrator = createTradingOrchestrator(vault);
+          const orchestrator = getTradingOrchestratorForVault(vault);
 
           const attempt = orchestrator.getCurrentFlatteningAttempt();
           const hasTimeout = orchestrator.hasFlatteningTimeout();
@@ -1008,7 +1024,8 @@ export class VaultHealthMonitor {
             maxFlatteningWindowMs: 60 * 60 * 1000, // 1 hour
           },
           timestamp: new Date(),
-          runbookUrl: "https://github.com/polymarket-mvp/runbooks/blob/main/starvation/flattening-timeout.md",
+          runbookUrl:
+            "https://github.com/polymarket-mvp/runbooks/blob/main/starvation/flattening-timeout.md",
         };
       }
 
@@ -1033,7 +1050,7 @@ export class VaultHealthMonitor {
 
   /**
    * Check for emergency pause state.
-   * 
+   *
    * Critical alert if vault is in emergency pause.
    */
   async checkEmergencyPause(vaultId?: number): Promise<HealthCheckResult> {
@@ -1050,8 +1067,7 @@ export class VaultHealthMonitor {
         if (!vault) continue;
 
         try {
-          const { createTradingOrchestrator } = await import("./tradingOrchestrator.js");
-          const orchestrator = createTradingOrchestrator(vault);
+          const orchestrator = getTradingOrchestratorForVault(vault);
 
           const pauseState = orchestrator.getEmergencyPauseState();
 
@@ -1083,7 +1099,8 @@ export class VaultHealthMonitor {
             pausedVaults,
           },
           timestamp: new Date(),
-          runbookUrl: "https://github.com/polymarket-mvp/runbooks/blob/main/starvation/emergency-pause.md",
+          runbookUrl:
+            "https://github.com/polymarket-mvp/runbooks/blob/main/starvation/emergency-pause.md",
         };
       }
 

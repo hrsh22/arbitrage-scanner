@@ -59,8 +59,7 @@ export const VAULT_V2_FACTORY_ADDRESS = networkConfig.addresses.vaultV2Factory;
 /** Maximum ratio of assets that can be deployed (25%) */
 export const MAX_DEPLOYED_RATIO = 0.25;
 
-/** Withdrawal fee in basis points (0.5% = 50 bps) */
-export const WITHDRAWAL_FEE_BPS = 50;
+export const WITHDRAWAL_FEE_BPS = 0;
 
 /** NAV staleness threshold in seconds (1 hour) */
 export const NAV_STALENESS_THRESHOLD = 3600;

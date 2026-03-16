@@ -22,7 +22,11 @@ import { logger } from "../logger.js";
 import { navCalculator } from "./navCalculator.js";
 import { positionRepository } from "../repositories/positionRepository.js";
 import { SafeWalletService } from "./safeWallet.js";
-import { getVaultTradingClient, VaultTradingClient } from "./tradingClient.js";
+import {
+  createVaultTradingClient,
+  getVaultTradingClient,
+  VaultTradingClient,
+} from "./tradingClient.js";
 import { isValidOpportunity, calculatePPH, calculateExpectedProfit } from "./strategyEngine.js";
 import type { TradeRequest, VaultStatus } from "../types.js";
 import { withdrawalRepository } from "../repositories/withdrawalRepository.js";
@@ -56,13 +60,13 @@ export const DEFAULT_FORCE_UNWIND_SLIPPAGE_CAP = 0.05; // 5%
 export const MAX_SLIPPAGE_BREACH_COUNT = 3;
 
 /** Vault operational states for starvation/emergency handling */
-export type VaultOperationalState = 
-  | "normal"           // Normal trading operations
-  | "flattening"       // Book flattening in progress
-  | "forced_unwind"    // Forced unwind due to timeout
+export type VaultOperationalState =
+  | "normal" // Normal trading operations
+  | "flattening" // Book flattening in progress
+  | "forced_unwind" // Forced unwind due to timeout
   | "emergency_paused" // Emergency pause - manual recovery required
-  | "settling"         // Settlement in progress
-  | "settled";         // Settlement complete, vault flat
+  | "settling" // Settlement in progress
+  | "settled"; // Settlement complete, vault flat
 
 /** Flattening attempt tracking */
 export interface FlatteningAttempt {
@@ -287,7 +291,8 @@ export class TradingOrchestratorService {
         maxFlatteningWindowMs: config.maxFlatteningWindowMs ?? MAX_FLATTENING_WINDOW_MS,
         forceUnwindSlippageCap: config.forceUnwindSlippageCap ?? DEFAULT_FORCE_UNWIND_SLIPPAGE_CAP,
         maxSlippageBreachCount: config.maxSlippageBreachCount ?? MAX_SLIPPAGE_BREACH_COUNT,
-        allowOperatorOverride: config.allowOperatorOverride ?? process.env.VAULT_ALLOW_OPERATOR_OVERRIDE === "true",
+        allowOperatorOverride:
+          config.allowOperatorOverride ?? process.env.VAULT_ALLOW_OPERATOR_OVERRIDE === "true",
       };
     } else {
       // Legacy: env-var fallbacks for backward compatibility
@@ -313,8 +318,8 @@ export class TradingOrchestratorService {
         maxSlippageBreachCount: MAX_SLIPPAGE_BREACH_COUNT,
         allowOperatorOverride: process.env.VAULT_ALLOW_OPERATOR_OVERRIDE === "true",
       };
+    }
   }
-}
 
   async scanAndEvaluate(markets: GammaMarket[]): Promise<TradeCandidate[]> {
     const status = await this.getVaultStatus();
@@ -886,12 +891,12 @@ export class TradingOrchestratorService {
 
     const provider = getVaultProvider(this.vaultConfig.id);
     const vaultInfo = await provider.getVaultInfo();
-    const currentEpochEnd = vaultInfo.epochInfo?.currentEpochEnd;
-    if (!currentEpochEnd) {
+    const currentBatchEnd = vaultInfo.batchInfo?.currentBatchEnd;
+    if (!currentBatchEnd) {
       return null;
     }
 
-    return new Date(currentEpochEnd.getTime() - this.epochBoundarySafetyBufferMinutes * 60 * 1000);
+    return new Date(currentBatchEnd.getTime() - this.epochBoundarySafetyBufferMinutes * 60 * 1000);
   }
 
   private async getCircuitBreakerStatus(): Promise<CircuitBreakerStatus> {
@@ -1028,7 +1033,7 @@ export class TradingOrchestratorService {
       throw new Error("TradingOrchestrator: vaultConfig is required for flatness check");
     }
 
-    const flatnessDetector = new FlatnessDetector();
+    const flatnessDetector = new FlatnessDetector({}, this.tradingClient);
     const tradingSafeAddress = this.vaultConfig.tradingSafeAddress ?? this.vaultConfig.safeAddress;
     return flatnessDetector.checkFlatness(this.vaultConfig, tradingSafeAddress);
   }
@@ -1062,7 +1067,11 @@ export class TradingOrchestratorService {
    *
    * @returns Result of cancellation attempt
    */
-  async cancelAllRestingOrders(): Promise<{ success: boolean; cancelledCount: number; error?: string }> {
+  async cancelAllRestingOrders(): Promise<{
+    success: boolean;
+    cancelledCount: number;
+    error?: string;
+  }> {
     if (!this.tradingClient.isInitialized()) {
       await this.tradingClient.initialize();
     }
@@ -1213,10 +1222,7 @@ export class TradingOrchestratorService {
     }
 
     // Check if close-on-flat has been initiated
-    const validStatesForSettlement: VaultOperationalState[] = [
-      "flattening",
-      "forced_unwind",
-    ];
+    const validStatesForSettlement: VaultOperationalState[] = ["flattening", "forced_unwind"];
     if (!validStatesForSettlement.includes(this.vaultOperationalState)) {
       return {
         allowed: false,
@@ -1385,7 +1391,10 @@ export class TradingOrchestratorService {
 
     // Check for timeout
     const now = new Date();
-    if (now > this.currentFlatteningAttempt.expectedDeadline && !this.currentFlatteningAttempt.timeoutTriggered) {
+    if (
+      now > this.currentFlatteningAttempt.expectedDeadline &&
+      !this.currentFlatteningAttempt.timeoutTriggered
+    ) {
       this.currentFlatteningAttempt.timeoutTriggered = true;
       this.currentFlatteningAttempt.status = "timeout";
 
@@ -1415,7 +1424,8 @@ export class TradingOrchestratorService {
     this.currentFlatteningAttempt.lastSlippagePercent = slippagePercent;
 
     const shouldEmergencyPause =
-      this.currentFlatteningAttempt.slippageBreaches >= this.vaultPolicyConfig.maxSlippageBreachCount ||
+      this.currentFlatteningAttempt.slippageBreaches >=
+        this.vaultPolicyConfig.maxSlippageBreachCount ||
       slippagePercent > this.vaultPolicyConfig.forceUnwindSlippageCap;
 
     logger.warn("TradingOrchestrator: Slippage breach recorded", {
@@ -1428,7 +1438,10 @@ export class TradingOrchestratorService {
     });
 
     if (shouldEmergencyPause) {
-      this.triggerEmergencyPause("slippage", `Slippage breach: ${(slippagePercent * 100).toFixed(2)}% exceeds cap`);
+      this.triggerEmergencyPause(
+        "slippage",
+        `Slippage breach: ${(slippagePercent * 100).toFixed(2)}% exceeds cap`,
+      );
     }
 
     return shouldEmergencyPause;
@@ -1448,7 +1461,8 @@ export class TradingOrchestratorService {
       pausedAt: new Date(),
       reason,
       triggeredBy,
-      recoveryAction: "Manual operator intervention required. Review blocking conditions and take recovery action.",
+      recoveryAction:
+        "Manual operator intervention required. Review blocking conditions and take recovery action.",
     };
 
     this.vaultOperationalState = "emergency_paused";
@@ -1539,7 +1553,10 @@ export class TradingOrchestratorService {
 
     // Forced_unwind state requires explicit state change before reopen
     if (this.vaultOperationalState === "forced_unwind") {
-      return { allowed: false, reason: "Forced unwind in progress - must complete or clear emergency state" };
+      return {
+        allowed: false,
+        reason: "Forced unwind in progress - must complete or clear emergency state",
+      };
     }
 
     return { allowed: true };
@@ -1617,12 +1634,28 @@ export function createTradingOrchestrator(
 ): TradingOrchestratorService {
   // Resolve identity if not provided
   const identity = resolvedIdentity ?? resolveVaultIdentity(config);
+  const resolvedTradingClient = tradingClient ?? createVaultTradingClient(config);
   return new TradingOrchestratorService(
     config,
-    tradingClient ?? getVaultTradingClient(),
+    resolvedTradingClient,
     navOraclePusher ?? null,
     identity,
   );
+}
+
+const tradingOrchestratorRegistry = new Map<number, TradingOrchestratorService>();
+
+export function getTradingOrchestratorForVault(
+  config: VaultInstanceConfig,
+): TradingOrchestratorService {
+  const existing = tradingOrchestratorRegistry.get(config.id);
+  if (existing) {
+    return existing;
+  }
+
+  const orchestrator = createTradingOrchestrator(config);
+  tradingOrchestratorRegistry.set(config.id, orchestrator);
+  return orchestrator;
 }
 
 function buildMarketOffsets(maxEvents: number, batchSize: number): number[] {

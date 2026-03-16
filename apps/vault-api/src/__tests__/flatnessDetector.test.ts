@@ -47,7 +47,7 @@ vi.mock("./vaultProviderFactory.js", () => ({
     getClient: () => ({
       getDeployedCapital: vi.fn(async () => testState.deployedCapital),
     }),
-    getVaultInfo: vi.fn(async () => ({ epochInfo: { currentEpochId: 1 } })),
+    getVaultInfo: vi.fn(async () => ({ batchInfo: { currentBatchId: 1 } })),
   })),
 }));
 
@@ -66,7 +66,7 @@ import { FlatnessDetector } from "../services/flatnessDetector.js";
 describe("FlatnessDetector", () => {
   let detector: FlatnessDetector;
   let mockTradingClient: any;
-  
+
   const mockVaultConfig: VaultInstanceConfig = {
     id: 1,
     name: "test-vault",
@@ -93,20 +93,20 @@ describe("FlatnessDetector", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    
+
     // Reset state
     testState.openPositions = [];
     testState.allPositions = [];
     testState.activeOrders = [];
     testState.deployedCapital = 0n;
     testState.reconciled = true;
-    
+
     // Create mock trading client
     mockTradingClient = {
       isInitialized: vi.fn().mockReturnValue(true),
       getActiveOrders: vi.fn(async () => testState.activeOrders),
     };
-    
+
     detector = new FlatnessDetector({}, mockTradingClient);
   });
 
@@ -119,8 +119,8 @@ describe("FlatnessDetector", () => {
     expect(result).toHaveProperty("blockingConditions");
     expect(result).toHaveProperty("timestamp");
     expect(result.conditions).toHaveLength(5);
-    
-    const names = result.conditions.map(c => c.name);
+
+    const names = result.conditions.map((c) => c.name);
     expect(names).toContain("zero_open_positions");
     expect(names).toContain("zero_resting_orders");
     expect(names).toContain("zero_deployed_capital");

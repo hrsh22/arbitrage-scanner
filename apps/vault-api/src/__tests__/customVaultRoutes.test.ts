@@ -1,16 +1,9 @@
-/**
- * Custom Vault Routes Tests
- *
- * Tests for the custom vault redemption API endpoints.
- */
-
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Request, Response } from "express";
 import { buildCustomVaultRouter } from "../routes/customVaultRoutes.js";
 import { getVaultProviderFactory } from "../services/vaultProviderFactory.js";
-import { CustomVaultProvider } from "../services/customVaultProvider.js";
+import { VaultProviderError } from "../services/vaultProvider.js";
 
-// Mock dependencies
 vi.mock("../services/vaultProviderFactory.js");
 vi.mock("../logger.js", () => ({
   logger: {
@@ -22,8 +15,7 @@ vi.mock("../logger.js", () => ({
 }));
 
 vi.mock("../middleware/auth.js", () => ({
-  requireAuth: (req: Request, res: Response, next: () => void) => {
-    // Mock auth - attach a session
+  requireAuth: (req: Request, _res: Response, next: () => void) => {
     (req as unknown as { session: { address: string } }).session = {
       address: "0x1234567890123456789012345678901234567890",
     };
@@ -31,24 +23,88 @@ vi.mock("../middleware/auth.js", () => ({
   },
 }));
 
+vi.mock("../repositories/entitlementRepository.js", () => ({
+  entitlementRepository: {
+    getByRequest: vi.fn().mockResolvedValue(null),
+    getByUser: vi.fn().mockResolvedValue([]),
+    getClaimEligibility: vi.fn().mockResolvedValue({
+      canClaim: false,
+      unclaimedAmount: "0",
+      currentStatus: "pending",
+      error: "Not claimable",
+    }),
+    incrementClaimed: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
+vi.mock("../repositories/payoutRepository.js", () => ({
+  payoutRepository: {
+    checkClaimCap: vi.fn().mockResolvedValue({ canProceed: true }),
+    claimAllForEntitlement: vi.fn().mockResolvedValue({ success: true }),
+  },
+}));
+
+type MockResponse = Response & { statusCode?: number; payload?: unknown };
+
+function createMockResponse(): MockResponse {
+  const res = {} as MockResponse;
+  res.status = vi.fn((code: number) => {
+    res.statusCode = code;
+    return res;
+  }) as unknown as Response["status"];
+  res.json = vi.fn((body: unknown) => {
+    res.payload = body;
+    return res;
+  }) as unknown as Response["json"];
+  return res;
+}
+
+function getRouteHandler(
+  path: string,
+  method: "get" | "post",
+): (req: Request, res: Response) => Promise<void> {
+  const router = buildCustomVaultRouter();
+  const layer = router.stack.find((entry) => {
+    const route = (entry as { route?: { path?: string; methods?: Record<string, boolean> } }).route;
+    return route?.path === path && route.methods?.[method];
+  });
+
+  if (!layer) {
+    throw new Error(`Route not found: ${method.toUpperCase()} ${path}`);
+  }
+
+  const handlers = (layer as { route: { stack: Array<{ handle: unknown }> } }).route.stack;
+  const finalHandler = handlers[handlers.length - 1]?.handle;
+  if (typeof finalHandler !== "function") {
+    throw new Error(`Route handler missing for ${method.toUpperCase()} ${path}`);
+  }
+
+  return finalHandler as (req: Request, res: Response) => Promise<void>;
+}
+
 describe("Custom Vault Routes", () => {
-  let mockProvider: Partial<CustomVaultProvider>;
-  let mockClient: {
-    getCurrentEpoch: ReturnType<typeof vi.fn>;
-  };
+  const userAddress = "0x1234567890123456789012345678901234567890";
+  let mockProvider: Record<string, ReturnType<typeof vi.fn> | string>;
 
   beforeEach(() => {
     vi.clearAllMocks();
 
-    mockClient = {
-      getCurrentEpoch: vi.fn().mockResolvedValue(10n),
+    const mockClient = {
+      getCurrentBatch: vi.fn().mockResolvedValue(10n),
+      getBatch: vi.fn().mockResolvedValue(null),
+      getNAVStatus: vi.fn().mockResolvedValue({ currentNAV: 1000000000000000000n }),
+      getDepositorBatchRequest: vi.fn().mockResolvedValue(0n),
+      getDepositRequest: vi.fn().mockResolvedValue(null),
+      getControllerRequestIds: vi.fn().mockResolvedValue([]),
+      getRedemptionRequest: vi.fn().mockResolvedValue(null),
+      isOperator: vi.fn().mockResolvedValue(false),
     };
 
     mockProvider = {
       providerType: "custom",
       getVaultInfo: vi.fn().mockResolvedValue({
         vaultId: 1,
-        vaultAddress: "0x1234567890123456789012345678901234567890",
+        vaultAddress: userAddress,
         providerType: "custom",
         asset: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
         assetDecimals: 6,
@@ -56,264 +112,252 @@ describe("Custom Vault Routes", () => {
         totalAssets: 1000000000000n,
         totalSupply: 1000000000000000000000000n,
         sharePrice: 1,
-        epochInfo: {
-          currentEpochId: 10,
-          currentEpochStart: new Date(),
-          currentEpochEnd: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-          nextSettlementTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-          epochDurationSeconds: 604800,
+        batchInfo: {
+          currentBatchId: 10,
+          currentBatchStart: new Date("2026-01-01T00:00:00.000Z"),
+          currentBatchEnd: new Date("2026-01-08T00:00:00.000Z"),
+          currentBatchStatus: "open",
+          nextBatchId: 11,
+          nextBatchExists: true,
+          batchDurationSeconds: 604800,
         },
-        navLastUpdated: new Date(),
+        navLastUpdated: new Date("2026-01-01T00:00:00.000Z"),
         navIsStale: false,
       }),
-      getEpochStatus: vi.fn().mockResolvedValue({
-        epochId: 10,
-        startTime: new Date(),
-        endTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        settlementTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        totalRequests: 5,
-        totalShares: 1000000000000000000n,
-        settled: false,
+      getBatchStatus: vi.fn().mockResolvedValue({
+        batchId: 10,
+        nextBatchId: 11,
+        status: "open",
+        startTime: new Date("2026-01-01T00:00:00.000Z"),
+        endTime: new Date("2026-01-08T00:00:00.000Z"),
+        isPriceLocked: false,
+        totalSharesPending: 1000000n,
+        proRataRatio: 1,
+        totalQueuedDeposits: 0n,
+        claimableRedemptions: 1,
+        mintedDeposits: 0,
+      }),
+      getLifecycle: vi.fn().mockResolvedValue({
+        riskState: "flat",
+        executionMode: "instant",
+        telemetryFresh: true,
+        openPositionCount: null,
+        liquidityMode: "vault_liquid",
+        reopenReady: false,
       }),
       getRequestStatus: vi.fn().mockResolvedValue({
         request: {
           requestId: "1",
           vaultId: 1,
-          userAddress: "0x1234567890123456789012345678901234567890",
-          epochId: 10,
-          shares: 1000000000000000000n,
+          userAddress,
+          controller: userAddress,
+          owner: userAddress,
+          operator: undefined,
+          batchId: 10,
+          shares: 1000000n,
           assetsEstimated: 1000000n,
           status: "pending",
-          createdAt: new Date(),
+          createdAt: new Date("2026-01-01T00:00:00.000Z"),
         },
         claimable: false,
-        estimatedSettlementTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        estimatedSettlementTime: new Date("2026-01-08T00:00:00.000Z"),
       }),
-      getUserRequests: vi.fn().mockResolvedValue([]),
       getUserRedemptionState: vi.fn().mockResolvedValue({
-        userAddress: "0x1234567890123456789012345678901234567890",
+        userAddress,
         vaultId: 1,
-        pendingRequests: [],
+        pendingRequests: [
+          {
+            requestId: "1",
+            vaultId: 1,
+            userAddress,
+            batchId: 10,
+            shares: 1000000n,
+            assetsEstimated: 1000000n,
+            status: "pending",
+            createdAt: new Date("2026-01-01T00:00:00.000Z"),
+          },
+        ],
         claimableRequests: [],
-        totalSharesPending: 0n,
+        totalSharesPending: 1000000n,
         totalSharesClaimable: 0n,
-        estimatedAssetsPending: 0n,
+        estimatedAssetsPending: 1000000n,
         estimatedAssetsClaimable: 0n,
       }),
       requestRedeem: vi.fn().mockResolvedValue({
         success: true,
-        epochId: 10,
-        shares: 1000000000000000000n,
-        assetsEstimated: 1000000n,
-      }),
-      cancelRedemption: vi.fn().mockResolvedValue({
-        success: true,
+        requestId: "1",
+        batchId: 10,
       }),
       claimRedemption: vi.fn().mockResolvedValue({
         success: true,
         requestId: "1",
         assetsReceived: 1000000n,
+        txHash: "0xabc",
       }),
-      previewRedeem: vi.fn().mockResolvedValue(1000000n),
+      isSettlementReady: vi.fn().mockResolvedValue(false),
+      getCapabilities: vi.fn().mockReturnValue({
+        batchBased: true,
+      }),
       getClient: vi.fn().mockReturnValue(mockClient),
     };
 
-    const mockFactory = {
+    (getVaultProviderFactory as ReturnType<typeof vi.fn>).mockReturnValue({
       hasProvider: vi.fn().mockReturnValue(true),
       getProvider: vi.fn().mockReturnValue(mockProvider),
-    };
-
-    (getVaultProviderFactory as ReturnType<typeof vi.fn>).mockReturnValue(mockFactory);
-  });
-
-  describe("Route Structure", () => {
-    it("should build router without errors", () => {
-      const router = buildCustomVaultRouter();
-      expect(router).toBeDefined();
     });
   });
 
-  describe("GET /:vaultId/info", () => {
-    it("should return vault metadata", async () => {
-      const router = buildCustomVaultRouter();
-      const handlers = router.stack.filter(
-        (layer) =>
-          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path ===
-            "/:vaultId/info" &&
-          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get,
-      );
-      expect(handlers.length).toBeGreaterThan(0);
+  // Tests for current-cycle payloads including lifecycle fields
+  it("includes lifecycle fields for current cycle (flat/open telemetry)", async () => {
+    const handler = getRouteHandler("/:vaultId/cycles/current", "get");
+    const req = {
+      params: { vaultId: "1" },
+    } as unknown as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.payload).toMatchObject({
+      success: true,
+      cycle: expect.objectContaining({
+        riskState: "flat",
+        executionMode: "instant",
+        telemetryFresh: true,
+        openPositionCount: null,
+        liquidityMode: "vault_liquid",
+        reopenReady: false,
+      }),
     });
   });
 
-  describe("POST /:vaultId/redeem", () => {
-    it("should handle redemption request", async () => {
-      const router = buildCustomVaultRouter();
-      const handlers = router.stack.filter(
-        (layer) =>
-          (layer as { route?: { path: string; methods: { post?: boolean } } }).route?.path ===
-            "/:vaultId/redeem" &&
-          (layer as { route?: { path: string; methods: { post?: boolean } } }).route?.methods.post,
-      );
-      expect(handlers.length).toBeGreaterThan(0);
+  it("includes lifecycle fields for current cycle (stale telemetry)", async () => {
+    // Override lifecycle mock for this test
+    (mockProvider as any).getLifecycle = vi.fn().mockResolvedValue({
+      riskState: "unknown",
+      executionMode: "blocked",
+      telemetryFresh: false,
+      openPositionCount: null,
+      liquidityMode: "queued_only",
+      reopenReady: false,
+    });
+
+    const handler = getRouteHandler("/:vaultId/cycles/current", "get");
+    const req = {
+      params: { vaultId: "1" },
+    } as unknown as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.payload).toMatchObject({
+      success: true,
+      cycle: expect.objectContaining({
+        riskState: "unknown",
+        executionMode: "blocked",
+        telemetryFresh: false,
+      }),
     });
   });
 
-  describe("GET /:vaultId/requests/:requestId", () => {
-    it("should handle request status query", async () => {
-      const router = buildCustomVaultRouter();
-      const handlers = router.stack.filter(
-        (layer) =>
-          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path ===
-            "/:vaultId/requests/:requestId" &&
-          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get,
-      );
-      expect(handlers.length).toBeGreaterThan(0);
+  it("returns batch/cycle fields in request status response", async () => {
+    const handler = getRouteHandler("/:vaultId/requests/:requestId", "get");
+    const req = {
+      params: { vaultId: "1", requestId: "1" },
+    } as unknown as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalled();
+    expect(res.payload).toMatchObject({
+      success: true,
+      request: {
+        requestId: "1",
+        batchId: 10,
+        cycleId: 10,
+        targetCycle: 10,
+      },
     });
   });
 
-  describe("POST /:vaultId/requests/:requestId/claim", () => {
-    it("should handle claim request", async () => {
-      const router = buildCustomVaultRouter();
-      const handlers = router.stack.filter(
-        (layer) =>
-          (layer as { route?: { path: string; methods: { post?: boolean } } }).route?.path ===
-            "/:vaultId/requests/:requestId/claim" &&
-          (layer as { route?: { path: string; methods: { post?: boolean } } }).route?.methods.post,
-      );
-      expect(handlers.length).toBeGreaterThan(0);
+  it("maps request-not-found provider error to 400 for invalid request ids", async () => {
+    (mockProvider.getRequestStatus as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new VaultProviderError("Invalid requestId format", "REQUEST_NOT_FOUND"),
+    );
+    const handler = getRouteHandler("/:vaultId/requests/:requestId", "get");
+    const req = {
+      params: { vaultId: "1", requestId: "not-a-number" },
+    } as unknown as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.payload).toMatchObject({
+      error: "Invalid request ID",
+      requestId: "not-a-number",
     });
   });
 
-  describe("GET /:vaultId/epochs/current", () => {
-    it("should handle current epoch query", async () => {
-      const router = buildCustomVaultRouter();
-      const handlers = router.stack.filter(
-        (layer) =>
-          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path ===
-            "/:vaultId/epochs/current" &&
-          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get,
-      );
-      expect(handlers.length).toBeGreaterThan(0);
+  it("returns aggregate requests fields in redemptions response", async () => {
+    const handler = getRouteHandler("/:vaultId/redemptions", "get");
+    const req = {
+      params: { vaultId: "1" },
+      session: { address: userAddress },
+    } as unknown as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.payload).toMatchObject({
+      success: true,
+      totalPendingShares: "1000000",
+      totalClaimableShares: "0",
+      requests: expect.any(Array),
+      pendingRequests: expect.any(Array),
+      claimableRequests: expect.any(Array),
     });
   });
 
-  describe("GET /:vaultId/epochs/:epochId", () => {
-    it("should handle specific epoch query", async () => {
-      const router = buildCustomVaultRouter();
-      const handlers = router.stack.filter(
-        (layer) =>
-          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path ===
-            "/:vaultId/epochs/:epochId" &&
-          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get,
-      );
-      expect(handlers.length).toBeGreaterThan(0);
+  it("returns 410 payload for deprecated legacy-claim endpoint", async () => {
+    const handler = getRouteHandler("/:vaultId/legacy-claim", "post");
+    const req = {
+      params: { vaultId: "1" },
+      session: { address: userAddress },
+    } as unknown as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(410);
+    expect(res.payload).toMatchObject({
+      error: "Gone",
+      deprecated: true,
+      replacementEndpoint: "/api/vaults/:vaultId/requests/:requestId/claim",
     });
   });
 
-  describe("GET /:vaultId/redemptions", () => {
-    it("should handle user redemptions query", async () => {
-      const router = buildCustomVaultRouter();
-      const handlers = router.stack.filter(
-        (layer) =>
-          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path ===
-            "/:vaultId/redemptions" &&
-          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get,
-      );
-      expect(handlers.length).toBeGreaterThan(0);
+  it("keeps redeem response cycle aliases aligned", async () => {
+    const handler = getRouteHandler("/:vaultId/redeem", "post");
+    const req = {
+      params: { vaultId: "1" },
+      body: { shares: "1" },
+      session: { address: userAddress },
+    } as unknown as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(res.payload).toMatchObject({
+      success: true,
+      requestId: "1",
+      batchId: 10,
+      cycleId: 10,
     });
-  });
-});
-
-describe("Validation Helpers", () => {
-  // Import the validation functions
-  const isValidDecimalString = (value: unknown): value is string => {
-    return typeof value === "string" && /^\d+(\.\d+)?$/.test(value);
-  };
-
-  describe("isValidDecimalString", () => {
-    it("should accept valid decimal strings", () => {
-      expect(isValidDecimalString("100")).toBe(true);
-      expect(isValidDecimalString("100.5")).toBe(true);
-      expect(isValidDecimalString("0.001")).toBe(true);
-    });
-
-    it("should reject invalid decimal strings", () => {
-      expect(isValidDecimalString("")).toBe(false);
-      expect(isValidDecimalString("abc")).toBe(false);
-      expect(isValidDecimalString("100.5.5")).toBe(false);
-      expect(isValidDecimalString(null)).toBe(false);
-      expect(isValidDecimalString(undefined)).toBe(false);
-    });
-  });
-
-  describe("Lifecycle Fields in API Responses", () => {
-    it("should include corrected lifecycle fields in redemption request responses", async () => {
-      const router = buildCustomVaultRouter();
-      const requestStatusHandler = router.stack.find(
-        (layer: unknown) =>
-          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path ===
-            "/:vaultId/requests/:requestId" &&
-          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get,
-      );
-      expect(requestStatusHandler).toBeDefined();
-    });
-
-    it("should include entitlement field", async () => {
-      const router = buildCustomVaultRouter();
-      expect(router).toBeDefined();
-    });
-
-    it("should include carryRemaining field", async () => {
-      const router = buildCustomVaultRouter();
-      expect(router).toBeDefined();
-    });
-
-    it("should include dustOverrideEligible flag", async () => {
-      const router = buildCustomVaultRouter();
-      expect(router).toBeDefined();
-    });
-
-    it("should include claimableNow calculation", async () => {
-      const router = buildCustomVaultRouter();
-      expect(router).toBeDefined();
-    });
-
-    it("should include minClaimThreshold", async () => {
-      const router = buildCustomVaultRouter();
-      expect(router).toBeDefined();
-    });
-  });
-
-  describe("Deprecated Routes - 410 Gone", () => {
-    it("should have legacy-claim endpoint returning 410", async () => {
-      const router = buildCustomVaultRouter();
-      const legacyClaimHandler = router.stack.find(
-        (layer: unknown) =>
-          (layer as { route?: { path: string; methods: { post?: boolean } } }).route?.path ===
-            "/:vaultId/legacy-claim" &&
-          (layer as { route?: { path: string; methods: { post?: boolean } } }).route?.methods.post,
-      );
-      expect(legacyClaimHandler).toBeDefined();
-    });
-
-    it("should have legacy-status endpoint returning 410", async () => {
-      const router = buildCustomVaultRouter();
-      const legacyStatusHandler = router.stack.find(
-        (layer: unknown) =>
-          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.path ===
-            "/:vaultId/legacy-status" &&
-          (layer as { route?: { path: string; methods: { get?: boolean } } }).route?.methods.get,
-      );
-      expect(legacyStatusHandler).toBeDefined();
-    });
-  });
-});
-
-describe("Format Helpers", () => {
-  it("should format redemption request correctly", () => {
-    // The formatRedemptionRequest function is internal, but we can verify
-    // the route responses contain the expected fields
-    expect(true).toBe(true);
   });
 });

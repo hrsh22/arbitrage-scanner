@@ -50,8 +50,9 @@ export interface VaultInstanceConfig {
    * Vault contract implementation selection (T14)
    * - "epochTrancheVault": Legacy dual-safe vault (currently active)
    * - "closedBookBatchVault": New batch-based vault (prepared, not yet deployed)
+   * - "flatBookVaultV2": Flat-open / invested-closed v2 vault
    */
-  vaultContractType?: "epochTrancheVault" | "closedBookBatchVault";
+  vaultContractType?: "epochTrancheVault" | "closedBookBatchVault" | "flatBookVaultV2";
 
   /**
    * Contracts (network-specific based on VAULT_NETWORK env var)

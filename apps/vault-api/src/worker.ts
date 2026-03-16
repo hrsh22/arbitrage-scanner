@@ -2,7 +2,7 @@ import "dotenv/config";
 
 import type { VaultInstanceConfig } from "./config/types.js";
 import { getEnabledVaultConfigs, resolveVaultIdentity } from "./config/index.js";
-import { env, isTradingEnabled } from "./env.js";
+import { env } from "./env.js";
 import { logger } from "./logger.js";
 import { runStartupValidationOrExit } from "./startupValidation.js";
 import { createNavOracle, NavOracleService } from "./services/navOracle.js";
@@ -26,11 +26,22 @@ function isVaultLiveExecutionAllowed(config: VaultInstanceConfig): boolean {
 }
 
 function shouldSchedulePeriodicNavRefresh(config: VaultInstanceConfig): boolean {
+  // Non-custom vaults follow the default scheduling behavior
   if (config.type !== "custom") {
     return true;
   }
 
-  return config.vaultContractType !== "closedBookBatchVault";
+  // Suppress NAV refresh scheduling for flat/open idle scenarios as well as
+  // closed-book batches. This ensures we don't eagerly refresh NAV for
+  // flatBookVaultV2 in idle states and during startup.
+  if (
+    config.vaultContractType === "closedBookBatchVault" ||
+    config.vaultContractType === "flatBookVaultV2"
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 function scheduleInterval(fn: () => Promise<void>, intervalMs: number, name: string): void {
@@ -46,21 +57,21 @@ function scheduleInterval(fn: () => Promise<void>, intervalMs: number, name: str
   logger.info(`CapitalWorker: Scheduled ${name} every ${intervalMs / 1000}s`);
 }
 
-async function runNavRefreshForVault(vaultId: number): Promise<void> {
-  if (isShuttingDown) return;
+async function runNavRefreshForVault(vaultId: number): Promise<boolean> {
+  if (isShuttingDown) return false;
   if (navInFlight.has(vaultId)) {
     logger.debug("CapitalWorker [NAV]: Skipping vault (previous refresh still running)", {
       vaultId,
     });
-    return;
+    return false;
   }
 
   const oracle = vaultNavOracles.get(vaultId);
-  if (!oracle) return;
+  if (!oracle) return false;
 
   const config = getEnabledVaultConfigs().find((item) => item.id === vaultId);
   if (!config || !isVaultLiveExecutionAllowed(config)) {
-    return;
+    return false;
   }
 
   navInFlight.add(vaultId);
@@ -72,6 +83,7 @@ async function runNavRefreshForVault(vaultId: number): Promise<void> {
       newValue: result.newValue,
       txHash: result.txHash,
     });
+    return true;
   } catch (error) {
     const err = error as Error & { cause?: unknown };
     logger.error("CapitalWorker [NAV]: Refresh failed", {
@@ -85,6 +97,7 @@ async function runNavRefreshForVault(vaultId: number): Promise<void> {
             ? String(err.cause)
             : undefined,
     });
+    return false;
   } finally {
     navInFlight.delete(vaultId);
   }
@@ -144,6 +157,94 @@ async function runReconciliationForVault(vaultId: number): Promise<void> {
   }
 
   const oracle = vaultNavOracles.get(vaultId);
+  let flatBookLifecycleDecision:
+    | Awaited<ReturnType<(typeof manager)["evaluateFlatBookLifecycle"]>>
+    | undefined;
+
+  const isFlatBookLifecycleVault =
+    config.vaultContractType === "closedBookBatchVault" ||
+    config.vaultContractType === "flatBookVaultV2";
+
+  if (isFlatBookLifecycleVault) {
+    try {
+      const lifecycleDecision = await manager.evaluateFlatBookLifecycle();
+      flatBookLifecycleDecision = lifecycleDecision;
+
+      if (lifecycleDecision.riskState === "unknown") {
+        logger.warn(
+          "CapitalWorker [Lifecycle]: Flatness telemetry unavailable, skipping transitions",
+          {
+            vaultId,
+            batchStatus: lifecycleDecision.batchStatus,
+            reason: lifecycleDecision.reason,
+            blockingConditions: lifecycleDecision.flatnessCheck?.blockingConditions,
+          },
+        );
+        return;
+      }
+
+      if (lifecycleDecision.riskState === "risk_on") {
+        if (lifecycleDecision.action === "close_book") {
+          const closeResult = await manager.closeBook();
+          if (!closeResult.success) {
+            logger.error("CapitalWorker [Lifecycle]: Failed to close book on risk-on signal", {
+              vaultId,
+              error: closeResult.error,
+              txHash: closeResult.txHash,
+            });
+          }
+        }
+        return;
+      }
+
+      if (lifecycleDecision.action === "process_queue") {
+        const navReady = await runNavRefreshForVault(vaultId);
+        if (!navReady) {
+          logger.warn(
+            "CapitalWorker [Lifecycle]: Skipping queue processing because NAV refresh failed",
+            { vaultId },
+          );
+          return;
+        }
+        const processResult = await manager.processQueue();
+        if (!processResult.success) {
+          logger.error("CapitalWorker [Lifecycle]: Queue processing failed", {
+            vaultId,
+            error: processResult.error,
+            txHash: processResult.txHash,
+          });
+        }
+        return;
+      }
+
+      if (lifecycleDecision.action === "reopen_idle_cycle") {
+        const navReady = await runNavRefreshForVault(vaultId);
+        if (!navReady) {
+          logger.warn(
+            "CapitalWorker [Lifecycle]: Skipping idle reopen because NAV refresh failed",
+            { vaultId },
+          );
+          return;
+        }
+        const reopenResult = await manager.reopenIdleCycle();
+        if (!reopenResult.success) {
+          logger.error("CapitalWorker [Lifecycle]: Idle cycle reopen failed", {
+            vaultId,
+            error: reopenResult.error,
+            txHash: reopenResult.txHash,
+          });
+        }
+        return;
+      }
+    } catch (error) {
+      logger.warn("CapitalWorker [Lifecycle]: Flat-book lifecycle evaluation failed", {
+        vaultId,
+        error: (error as Error).message,
+      });
+      return;
+    }
+  }
+
   if (oracle) {
     try {
       let health = await oracle.getNavHealth();
@@ -189,28 +290,43 @@ async function runReconciliationForVault(vaultId: number): Promise<void> {
           return;
         }
 
-        logger.warn(
-          "CapitalWorker [Liquidity]: NAV stale, attempting refresh before reconciliation",
-          {
-            vaultId,
-            secondsSinceUpdate: health.secondsSinceUpdate,
-            thresholdSeconds: health.thresholdSeconds,
-          },
-        );
-
-        await runNavRefreshForVault(vaultId);
-        health = await oracle.getNavHealth();
-
-        if (health.stale) {
-          logger.warn(
-            "CapitalWorker [Liquidity]: Skipping reconciliation while NAV remains stale",
+        if (
+          config.vaultContractType === "flatBookVaultV2" &&
+          flatBookLifecycleDecision?.riskState === "flat" &&
+          flatBookLifecycleDecision.action === "none"
+        ) {
+          logger.info(
+            "CapitalWorker [Liquidity]: NAV is stale for flat/open vault; continuing with idle capital reconciliation",
             {
               vaultId,
               secondsSinceUpdate: health.secondsSinceUpdate,
               thresholdSeconds: health.thresholdSeconds,
             },
           );
-          return;
+        } else {
+          logger.warn(
+            "CapitalWorker [Liquidity]: NAV stale, attempting refresh before reconciliation",
+            {
+              vaultId,
+              secondsSinceUpdate: health.secondsSinceUpdate,
+              thresholdSeconds: health.thresholdSeconds,
+            },
+          );
+
+          await runNavRefreshForVault(vaultId);
+          health = await oracle.getNavHealth();
+
+          if (health.stale) {
+            logger.warn(
+              "CapitalWorker [Liquidity]: Skipping reconciliation while NAV remains stale",
+              {
+                vaultId,
+                secondsSinceUpdate: health.secondsSinceUpdate,
+                thresholdSeconds: health.thresholdSeconds,
+              },
+            );
+            return;
+          }
         }
       }
     } catch (error) {
@@ -320,7 +436,9 @@ function scheduleVaultCrons(): void {
 
     if (vaultNavOracles.has(config.id) && shouldSchedulePeriodicNavRefresh(config)) {
       scheduleInterval(
-        () => runNavRefreshForVault(config.id),
+        async () => {
+          await runNavRefreshForVault(config.id);
+        },
         config.navRefreshIntervalMin * 60 * 1000,
         `NAV [${vaultLabel}]`,
       );

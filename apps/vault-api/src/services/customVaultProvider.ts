@@ -1,43 +1,5 @@
-/**
- * Custom Vault Provider (ERC-7540 Compliant with Closed-Book Batch Lifecycle)
- *
- * Implementation for the ClosedBookBatchVault with:
- * - Unique requestIds per redemption (not controller-aggregated)
- * - Deposit queue with queueDeposit/processDepositQueue
- * - Batch open/cutoff/flattening/settling/settled/reopen flow
- * - Locked clearing price at flatten time (no mark-to-market estimates)
- * - Async request/settle/claim flow
- * - Pro-rata settlement for insufficient liquidity
- * - NAV staleness guards
- * - Operator authorization model
- *
- * CLOSED-BOOK BATCH MODEL:
- * - OPEN: Batch is accepting new redemption requests
- * - CUTOFF: First request accepted in OPEN seals the batch; no new requests accepted
- * - FLATTENING: NAV snapshot taken, clearing price locked
- * - SETTLING: Batch settlement in progress, entitlements being calculated
- * - SETTLED: Settlement complete, ready for claims
- * - CLOSED: Claims window ended
- * - REOPEN: Settlement complete, vault ready for next batch
- *
- * BATCH SEALING RULE:
- * - First accepted redemption request in OPEN state seals the active batch
- * - Subsequent requests route to the next batch (queued for future processing)
- *
- * CANCELLATION RULE:
- * - Cancellation is IMPOSSIBLE after CUTOFF
- * - Requests are irreversible once the batch is sealed
- *
- * NO CARRY/PARTIAL REALIZATION:
- * - ClosedBookBatchVault has NO carry accrual or partial realization
- * - All redemptions settle at the locked clearing price at batch settlement
- * - No mark-to-market estimates after price lock
- *
- * This provider uses the CustomVaultClient for contract interactions.
- */
-
 import type { Address, Hex } from "viem";
-import { createWalletClient, formatUnits, type WalletClient } from "viem";
+import { createWalletClient, encodeFunctionData, formatUnits, type WalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Chain } from "viem/chains";
 import { logger } from "../logger.js";
@@ -54,10 +16,13 @@ import type {
   UserRedemptionState,
   VaultCapabilities,
   CustomVaultConfig,
+  BatchStatus,
+  LifecycleTransitionResult,
 } from "./vaultProvider.js";
 import { VaultProviderError } from "./vaultProvider.js";
 import {
   CustomVaultClient,
+  FLAT_BOOK_VAULT_V2_ABI,
   createCustomVaultClient,
   type RedemptionRequestData,
 } from "./customVaultClient.js";
@@ -66,7 +31,10 @@ import { getNetworkConfigFromEnv, getRpcUrlForNetwork } from "../config/network.
 import { getVaultConfig } from "../config/index.js";
 import type { VaultInstanceConfig } from "../config/types.js";
 import { FlatnessDetector, type FlatnessCheckResult } from "./flatnessDetector.js";
+import { createLiquidityManager } from "./liquidityManager.js";
+import type { FlatBookLifecycleDecision } from "./liquidityManager.js";
 import { SafeWalletService } from "./safeWallet.js";
+import { withdrawalRepository } from "../repositories/withdrawalRepository.js";
 
 // Default NAV staleness threshold: 6 hours in seconds
 const DEFAULT_NAV_STALENESS_SECONDS = 21600;
@@ -207,9 +175,7 @@ export class CustomVaultProvider implements IVaultProvider {
 
       const totalAssets = await this.client.getTotalAssets();
 
-      // CLOSED-BOOK: No live mark-to-market estimates after price lock
-      // Return 1.0 as placeholder (actual clearing price is batch-specific)
-      const sharePrice = 1.0;
+      const sharePrice = Number(formatUnits(navStatus.currentNAV, 18));
 
       // Get current batch info
       const currentBatch = await this.client.getBatch(currentBatchId);
@@ -235,7 +201,6 @@ export class CustomVaultProvider implements IVaultProvider {
         totalAssets,
         totalSupply,
         sharePrice,
-        // Batch lifecycle info (replacing epochInfo)
         batchInfo: {
           currentBatchId: Number(currentBatchId),
           currentBatchStart: batchStart,
@@ -259,6 +224,18 @@ export class CustomVaultProvider implements IVaultProvider {
   }
 
   /**
+   * Expose the current-cycle lifecycle fields computed by the backend
+   * lifecycle engine (FlatBook lifecycle). This reuses the existing
+   * LiquidityManager evaluation instead of duplicating logic here.
+   */
+  async getLifecycle(): Promise<FlatBookLifecycleDecision> {
+    // Instantiate a LiquidityManager for this vault and calculate the current lifecycle
+    const lm = createLiquidityManager(this.vaultConfig, undefined, undefined, this.config.vaultId);
+    const decision = await lm.evaluateFlatBookLifecycle();
+    return decision as FlatBookLifecycleDecision;
+  }
+
+  /**
    * Get batch status with closed-book lifecycle fields
    *
    * Exposes:
@@ -271,27 +248,7 @@ export class CustomVaultProvider implements IVaultProvider {
    * - claimable redemptions count
    * - minted deposits (processed deposits)
    */
-  async getBatchStatus(batchId?: number): Promise<{
-    batchId: number;
-    nextBatchId: number;
-    status: string;
-    startTime: Date;
-    endTime: Date;
-    cutoffTime?: Date;
-    isPriceLocked: boolean;
-    lockedClearingPrice?: string; // Only after flatten
-    settlementProgress?: {
-      processed: number;
-      total: number;
-      isComplete: boolean;
-    };
-    totalSharesPending: bigint;
-    totalAssetsSnapshot?: string;
-    proRataRatio: number;
-    totalQueuedDeposits: bigint;
-    claimableRedemptions: number;
-    mintedDeposits: number; // Approximate from deposit queue
-  }> {
+  async getBatchStatus(batchId?: number): Promise<BatchStatus> {
     const contractBatchId = BigInt(batchId ?? (await this.client.getCurrentBatch()));
     logger.debug("CustomVaultProvider.getBatchStatus", {
       vaultId: this.config.vaultId,
@@ -304,7 +261,6 @@ export class CustomVaultProvider implements IVaultProvider {
     }
 
     const nextBatchId = Number(contractBatchId + 1n);
-    const nextBatch = await this.client.getBatch(BigInt(nextBatchId));
 
     // Get settlement progress if settling or settled
     let settlementProgress;
@@ -345,36 +301,6 @@ export class CustomVaultProvider implements IVaultProvider {
       claimableRedemptions,
       // Approximate: would need to query deposit request count
       mintedDeposits: 0,
-    };
-  }
-
-  /**
-   * @deprecated Use getBatchStatus instead. Kept for backward compatibility during migration.
-   */
-  async getEpochStatus(epochId?: number): Promise<{
-    epochId: number;
-    batchId: number;
-    startTime: Date;
-    endTime: Date;
-    settlementTime: Date;
-    totalRequests: number;
-    totalShares: bigint;
-    settled: boolean;
-    proRataFactor?: number;
-    lockedClearingPrice?: string;
-  }> {
-    const status = await this.getBatchStatus(epochId);
-    return {
-      epochId: status.batchId,
-      batchId: status.batchId,
-      startTime: status.startTime,
-      endTime: status.endTime,
-      settlementTime: status.endTime,
-      totalRequests: status.claimableRedemptions,
-      totalShares: status.totalSharesPending,
-      settled: status.status === "settled" || status.status === "closed",
-      proRataFactor: status.proRataRatio,
-      lockedClearingPrice: status.lockedClearingPrice,
     };
   }
 
@@ -492,25 +418,6 @@ export class CustomVaultProvider implements IVaultProvider {
     };
   }
 
-  /**
-   * @deprecated ClosedBookBatchVault has no previewRedeem (no live mark-to-market)
-   * Use actual assetsClaimable from settlement instead.
-   */
-  async previewRedeem(shares: bigint): Promise<bigint> {
-    logger.debug("CustomVaultProvider.previewRedeem", {
-      vaultId: this.config.vaultId,
-      shares: shares.toString(),
-    });
-
-    // CLOSED-BOOK: Return 0 as preview is not supported
-    // Settlement uses locked clearing price, not current NAV
-    logger.warn("CustomVaultProvider.previewRedeem is deprecated in closed-book model", {
-      vaultId: this.config.vaultId,
-      shares: shares.toString(),
-    });
-    return 0n;
-  }
-
   // ============================================================================
   // Write Operations
   // ============================================================================
@@ -553,8 +460,7 @@ export class CustomVaultProvider implements IVaultProvider {
       };
     }
 
-    // CLOSED-BOOK: No live asset estimation
-    // Actual assets determined at settlement using locked clearing price
+    const currentBatchId = Number(await this.client.getCurrentBatch());
     const assetsEstimated = 0n;
 
     // Note: Actual requestRedeem requires a wallet client
@@ -570,7 +476,7 @@ export class CustomVaultProvider implements IVaultProvider {
 
     return {
       success: true,
-      // requestId will be returned by actual contract call
+      batchId: currentBatchId,
       shares,
       assetsEstimated,
       controller: userAddress,
@@ -763,26 +669,42 @@ export class CustomVaultProvider implements IVaultProvider {
   }
 
   async estimatePendingWithdrawalLiability(batchId?: number): Promise<bigint> {
+    const [pendingRequests, readyRequests] = await Promise.all([
+      withdrawalRepository.getPendingRequests(this.config.vaultAddress),
+      withdrawalRepository.getReadyRequests(this.config.vaultAddress),
+    ]);
+    const outstandingInstantLiability = [...pendingRequests, ...readyRequests].reduce(
+      (sum, request) => sum + this.parseUsdcAmount(request.assetsEstimated),
+      0n,
+    );
+
     const currentBatchId = Number(await this.client.getCurrentBatch());
     const targetBatchId = batchId ?? currentBatchId;
     const batch = await this.client.getBatch(BigInt(targetBatchId));
     if (!batch || batch.totalSharesPending === 0n) {
-      return 0n;
+      return outstandingInstantLiability;
     }
 
     if (
       (batch.status === "flattening" || batch.status === "settling") &&
       batch.totalAssetsSnapshot > 0n
     ) {
-      return batch.totalAssetsSnapshot;
+      return batch.totalAssetsSnapshot + outstandingInstantLiability;
     }
 
     if (batch.status === "settled" || batch.status === "closed" || batch.status === "reopen") {
-      return 0n;
+      return outstandingInstantLiability;
     }
 
     const navStatus = await this.client.getNAVStatus();
-    return (batch.totalSharesPending * navStatus.currentNAV) / 10n ** 18n;
+    return (
+      (batch.totalSharesPending * navStatus.currentNAV) / 10n ** 18n + outstandingInstantLiability
+    );
+  }
+
+  async getCurrentNav(): Promise<bigint> {
+    const navStatus = await this.client.getNAVStatus();
+    return navStatus.currentNAV;
   }
 
   /**
@@ -820,7 +742,13 @@ export class CustomVaultProvider implements IVaultProvider {
     }
 
     // Run flatness check
-    const flatnessDetector = new FlatnessDetector();
+    let flatnessDetector: FlatnessDetector;
+    try {
+      const { createVaultTradingClient } = await import("./tradingClient.js");
+      flatnessDetector = new FlatnessDetector({}, createVaultTradingClient(this.vaultConfig));
+    } catch {
+      flatnessDetector = new FlatnessDetector();
+    }
     const flatnessCheck = await flatnessDetector.checkFlatness(
       this.vaultConfig,
       this.vaultConfig.tradingSafeAddress ?? this.vaultConfig.safeAddress,
@@ -856,22 +784,19 @@ export class CustomVaultProvider implements IVaultProvider {
    * 5. REOPEN: Start next batch cycle
    */
   async executeSettlement(
-    epochId?: number,
+    batchId?: number,
     skipFlatnessCheck?: boolean,
   ): Promise<{
     success: boolean;
     txHash?: Hex;
-    /** LEGACY: Epoch ID for backward compatibility */
-    epochId: number;
-    /** CLOSED-BOOK: Batch ID for batch-based vaults */
-    batchId?: number;
+    batchId: number;
     requestsSettled: number;
     totalShares: bigint;
     totalAssets: bigint;
     lockedClearingPrice?: string;
     error?: string;
   }> {
-    const targetBatchId = await this.resolveMaintenanceBatch(epochId);
+    const targetBatchId = await this.resolveMaintenanceBatch(batchId);
     logger.info("CustomVaultProvider.executeSettlement", {
       vaultId: this.config.vaultId,
       batchId: targetBatchId,
@@ -880,7 +805,6 @@ export class CustomVaultProvider implements IVaultProvider {
     if (!this.settlerKey && !this.snapshotterKey && !this.depositProcessorKey && !this.adminKey) {
       return {
         success: false,
-        epochId: targetBatchId,
         batchId: targetBatchId,
         requestsSettled: 0,
         totalShares: 0n,
@@ -894,7 +818,6 @@ export class CustomVaultProvider implements IVaultProvider {
     if (!batch) {
       return {
         success: false,
-        epochId: targetBatchId,
         batchId: targetBatchId,
         requestsSettled: 0,
         totalShares: 0n,
@@ -957,7 +880,6 @@ export class CustomVaultProvider implements IVaultProvider {
       });
       return {
         success: true,
-        epochId: targetBatchId,
         batchId: targetBatchId,
         requestsSettled: Number(batch.totalSharesPending > 0n ? 1 : 0),
         totalShares: batch.totalSharesPending,
@@ -966,85 +888,12 @@ export class CustomVaultProvider implements IVaultProvider {
       };
     }
 
-    // Step 1: Cutoff batch if open
+    // Step 1: Flatten batch if open/cutoff.
+    // `flattenBatch()` auto-cuts an open batch on-chain, so sending a separate
+    // cutoff transaction only burns extra gas without changing the lifecycle outcome.
     let cutoffTxHash: Hex | undefined;
-    if (batch.status === "open") {
-      logger.info("CustomVaultProvider: Cutting off batch", { batchId: targetBatchId });
-
-      let maintenanceWalletClient: WalletClient;
-      try {
-        maintenanceWalletClient = this.getMaintenanceWalletClient();
-      } catch (error) {
-        return {
-          success: false,
-          epochId: targetBatchId,
-          batchId: targetBatchId,
-          requestsSettled: 0,
-          totalShares: 0n,
-          totalAssets: 0n,
-          error: `Failed to initialize maintenance wallet: ${(error as Error).message}`,
-        };
-      }
-
-      const cutoffResult = await this.retryWithBackoff(() =>
-        this.client.cutoffBatch(maintenanceWalletClient),
-      );
-
-      if (!cutoffResult.success) {
-        return {
-          success: false,
-          epochId: targetBatchId,
-          batchId: targetBatchId,
-          requestsSettled: 0,
-          totalShares: 0n,
-          totalAssets: 0n,
-          error: `Failed to cutoff batch: ${cutoffResult.error}`,
-        };
-      }
-
-      cutoffTxHash = cutoffResult.txHash;
-
-      // Wait for cutoff transaction confirmation
-      const cutoffConfirmResult = await this.retryWithBackoff(() =>
-        this.client.waitForTransaction(cutoffTxHash!),
-      );
-      if (!cutoffConfirmResult.success) {
-        return {
-          success: false,
-          txHash: cutoffTxHash,
-          epochId: targetBatchId,
-          batchId: targetBatchId,
-          requestsSettled: 0,
-          totalShares: 0n,
-          totalAssets: 0n,
-          error: `Cutoff transaction failed to confirm: ${cutoffConfirmResult.error}`,
-        };
-      }
-
-      logger.info("CustomVaultProvider: Batch cutoff successfully", {
-        txHash: cutoffTxHash,
-        batchId: targetBatchId,
-      });
-
-      // Refresh batch data
-      batch = await this.client.getBatch(BigInt(targetBatchId));
-      if (!batch) {
-        return {
-          success: false,
-          txHash: cutoffTxHash,
-          epochId: targetBatchId,
-          batchId: targetBatchId,
-          requestsSettled: 0,
-          totalShares: 0n,
-          totalAssets: 0n,
-          error: `Batch ${targetBatchId} missing after cutoff`,
-        };
-      }
-    }
-
-    // Step 2: Flatten batch (lock clearing price) if cutoff
     let flattenTxHash: Hex | undefined;
-    if (batch.status === "cutoff") {
+    if (batch.status === "open" || batch.status === "cutoff") {
       // FLATNESS GATE: Verify vault is flat before flattening
       if (!skipFlatnessCheck) {
         const canFlattenResult = await this.canFlattenBatch(targetBatchId);
@@ -1052,7 +901,6 @@ export class CustomVaultProvider implements IVaultProvider {
           return {
             success: false,
             txHash: cutoffTxHash,
-            epochId: targetBatchId,
             batchId: targetBatchId,
             requestsSettled: 0,
             totalShares: 0n,
@@ -1062,7 +910,10 @@ export class CustomVaultProvider implements IVaultProvider {
         }
       }
 
-      logger.info("CustomVaultProvider: Flattening batch", { batchId: targetBatchId });
+      logger.info("CustomVaultProvider: Flattening batch", {
+        batchId: targetBatchId,
+        batchStatus: batch.status,
+      });
 
       let maintenanceWalletClient: WalletClient;
       try {
@@ -1071,7 +922,6 @@ export class CustomVaultProvider implements IVaultProvider {
         return {
           success: false,
           txHash: cutoffTxHash,
-          epochId: targetBatchId,
           batchId: targetBatchId,
           requestsSettled: 0,
           totalShares: 0n,
@@ -1091,7 +941,6 @@ export class CustomVaultProvider implements IVaultProvider {
         return {
           success: false,
           txHash: cutoffTxHash,
-          epochId: targetBatchId,
           batchId: targetBatchId,
           requestsSettled: 0,
           totalShares: 0n,
@@ -1110,7 +959,6 @@ export class CustomVaultProvider implements IVaultProvider {
         return {
           success: false,
           txHash: flattenTxHash,
-          epochId: targetBatchId,
           batchId: targetBatchId,
           requestsSettled: 0,
           totalShares: 0n,
@@ -1131,7 +979,6 @@ export class CustomVaultProvider implements IVaultProvider {
           return {
             success: false,
             txHash: flattenTxHash,
-            epochId: targetBatchId,
             batchId: targetBatchId,
             requestsSettled: 0,
             totalShares: 0n,
@@ -1147,7 +994,6 @@ export class CustomVaultProvider implements IVaultProvider {
         return {
           success: false,
           txHash: flattenTxHash,
-          epochId: targetBatchId,
           batchId: targetBatchId,
           requestsSettled: 0,
           totalShares: 0n,
@@ -1172,7 +1018,6 @@ export class CustomVaultProvider implements IVaultProvider {
         return {
           success: false,
           txHash: flattenTxHash ?? cutoffTxHash,
-          epochId: targetBatchId,
           batchId: targetBatchId,
           requestsSettled: 0,
           totalShares: 0n,
@@ -1189,7 +1034,6 @@ export class CustomVaultProvider implements IVaultProvider {
         return {
           success: false,
           txHash: flattenTxHash ?? cutoffTxHash,
-          epochId: targetBatchId,
           batchId: targetBatchId,
           requestsSettled: 0,
           totalShares: 0n,
@@ -1208,7 +1052,6 @@ export class CustomVaultProvider implements IVaultProvider {
         return {
           success: false,
           txHash: settleTxHash,
-          epochId: targetBatchId,
           batchId: targetBatchId,
           requestsSettled: 0,
           totalShares: 0n,
@@ -1233,7 +1076,6 @@ export class CustomVaultProvider implements IVaultProvider {
       return {
         success: false,
         txHash: reopenResult.txHash,
-        epochId: targetBatchId,
         batchId: targetBatchId,
         requestsSettled: 0,
         totalShares: settledBatch?.totalSharesPending ?? 0n,
@@ -1260,7 +1102,6 @@ export class CustomVaultProvider implements IVaultProvider {
     return {
       success: true,
       txHash: reopenResult.txHash ?? settleTxHash ?? flattenTxHash ?? cutoffTxHash,
-      epochId: targetBatchId,
       batchId: targetBatchId,
       requestsSettled,
       totalShares,
@@ -1272,6 +1113,116 @@ export class CustomVaultProvider implements IVaultProvider {
   // ============================================================================
   // Capital Management
   // ============================================================================
+
+  async closeBook(): Promise<LifecycleTransitionResult> {
+    const currentBatchId = await this.client.getCurrentBatch();
+    const currentBatch = await this.client.getBatch(currentBatchId);
+    if (!currentBatch) {
+      return {
+        success: false,
+        error: `Batch ${currentBatchId.toString()} not found`,
+      };
+    }
+
+    if (currentBatch.status !== "open") {
+      return {
+        success: true,
+        skipped: true,
+      };
+    }
+
+    let maintenanceWalletClient: WalletClient;
+    try {
+      maintenanceWalletClient = this.getMaintenanceWalletClient();
+    } catch (error) {
+      return {
+        success: false,
+        error: `Failed to initialize maintenance wallet for closeBook: ${(error as Error).message}`,
+      };
+    }
+
+    const closeResult = await this.retryWithBackoff(() =>
+      this.client.closeBook(maintenanceWalletClient),
+    );
+    if (!closeResult.success || !closeResult.txHash) {
+      return {
+        success: false,
+        txHash: closeResult.txHash,
+        error: closeResult.error,
+      };
+    }
+
+    const confirmResult = await this.retryWithBackoff(() =>
+      this.client.waitForTransaction(closeResult.txHash!),
+    );
+    if (!confirmResult.success) {
+      return {
+        success: false,
+        txHash: closeResult.txHash,
+        error: `closeBook transaction failed to confirm: ${confirmResult.error}`,
+      };
+    }
+
+    return {
+      success: true,
+      txHash: closeResult.txHash,
+    };
+  }
+
+  async processQueue(): Promise<LifecycleTransitionResult> {
+    const settlement = await this.executeSettlement(undefined, true);
+    if (!settlement.success) {
+      return {
+        success: false,
+        txHash: settlement.txHash,
+        error: settlement.error,
+      };
+    }
+
+    return {
+      success: true,
+      txHash: settlement.txHash,
+    };
+  }
+
+  async reopenIdleCycle(): Promise<LifecycleTransitionResult> {
+    let maintenanceWalletClient: WalletClient;
+    try {
+      maintenanceWalletClient = this.getMaintenanceWalletClient();
+    } catch (error) {
+      return {
+        success: false,
+        error: `Failed to initialize maintenance wallet for reopenIdleCycle: ${(error as Error).message}`,
+      };
+    }
+
+    const reopenResult = await this.retryWithBackoff(() =>
+      this.client.reopenIdleCycle(maintenanceWalletClient),
+    );
+    if (!reopenResult.success || !reopenResult.txHash) {
+      return {
+        success: false,
+        txHash: reopenResult.txHash,
+        error: reopenResult.error,
+      };
+    }
+
+    const confirmResult = await this.retryWithBackoff(() =>
+      this.client.waitForTransaction(reopenResult.txHash!),
+    );
+    if (!confirmResult.success) {
+      return {
+        success: false,
+        txHash: reopenResult.txHash,
+        error: `reopenIdleCycle transaction failed to confirm: ${confirmResult.error}`,
+      };
+    }
+
+    return {
+      success: true,
+      txHash: reopenResult.txHash,
+    };
+  }
 
   async rebalanceCapital(params: {
     vaultUsdcBalance: bigint;
@@ -1407,11 +1358,7 @@ export class CustomVaultProvider implements IVaultProvider {
         allocatableAssets < excessVaultBalance ? allocatableAssets : excessVaultBalance;
 
       if (allocationAmount >= minTransferAmount) {
-        const walletClient = this.getAdminWalletClient();
-        const allocationResult = await this.client.allocateToTradingWallet(
-          walletClient,
-          allocationAmount,
-        );
+        const allocationResult = await this.allocateToTradingWallet(allocationAmount);
         if (!allocationResult.success) {
           return {
             success: false,
@@ -1453,6 +1400,95 @@ export class CustomVaultProvider implements IVaultProvider {
     };
   }
 
+  async recallWithdrawalLiquidityOnDemand(params: {
+    vaultUsdcBalance: bigint;
+    safeUsdcBalance: bigint;
+    requiredAssets: bigint;
+  }): Promise<CapitalRebalanceResult> {
+    const requiredVaultBalance = params.requiredAssets;
+    const shortfall =
+      requiredVaultBalance > params.vaultUsdcBalance
+        ? requiredVaultBalance - params.vaultUsdcBalance
+        : 0n;
+
+    if (shortfall <= 0n) {
+      return {
+        success: true,
+        action: "none",
+        amount: 0n,
+        requiredVaultBalance,
+        queuedAssets: 0n,
+        reservedRedemptionAssets: 0n,
+        pendingWithdrawalLiability: requiredVaultBalance,
+        details: "Vault already has enough idle liquidity for this withdrawal request.",
+      };
+    }
+
+    if (!this.safeOperatorKey) {
+      return {
+        success: false,
+        action: "none",
+        amount: 0n,
+        requiredVaultBalance,
+        queuedAssets: 0n,
+        reservedRedemptionAssets: 0n,
+        pendingWithdrawalLiability: requiredVaultBalance,
+        error: "Safe operator key not configured for on-demand recall.",
+        details: "Cannot recall withdrawal liquidity without a configured safe operator key.",
+      };
+    }
+
+    if (params.safeUsdcBalance <= 0n) {
+      return {
+        success: false,
+        action: "none",
+        amount: 0n,
+        requiredVaultBalance,
+        queuedAssets: 0n,
+        reservedRedemptionAssets: 0n,
+        pendingWithdrawalLiability: requiredVaultBalance,
+        error: "Trading wallet has no available USDC for recall.",
+        details: "Cannot satisfy instant withdrawal shortfall from trading wallet.",
+      };
+    }
+
+    const recallAmount = params.safeUsdcBalance < shortfall ? params.safeUsdcBalance : shortfall;
+    const safeWallet = await this.getSafeWalletService();
+    const assetAddress = await this.client.getAsset();
+    const recallResult = await safeWallet.transferToken(
+      assetAddress,
+      this.config.vaultAddress,
+      recallAmount.toString(),
+    );
+
+    if (!recallResult.success) {
+      return {
+        success: false,
+        action: "none",
+        amount: 0n,
+        requiredVaultBalance,
+        queuedAssets: 0n,
+        reservedRedemptionAssets: 0n,
+        pendingWithdrawalLiability: requiredVaultBalance,
+        txHash: recallResult.txHash as Hex | undefined,
+        error: recallResult.error,
+        details: "On-demand recall transfer failed.",
+      };
+    }
+
+    return {
+      success: true,
+      action: "deallocated",
+      amount: recallAmount,
+      requiredVaultBalance,
+      queuedAssets: 0n,
+      reservedRedemptionAssets: 0n,
+      pendingWithdrawalLiability: requiredVaultBalance,
+      txHash: recallResult.txHash as Hex | undefined,
+      details: `Recalled ${Number(recallAmount) / 10 ** USDC_DECIMALS} USDC for instant withdrawal preflight.`,
+    };
+  }
+
   // ============================================================================
   // Operator Authorization
   // ============================================================================
@@ -1469,8 +1505,7 @@ export class CustomVaultProvider implements IVaultProvider {
       return true;
     }
 
-    // CLOSED-BOOK: setOperator is not queryable, return false
-    return false;
+    return this.client.isOperator(controller, callerAddress);
   }
 
   /**
@@ -1491,7 +1526,6 @@ export class CustomVaultProvider implements IVaultProvider {
 
   /**
    * Check if address is an operator for a controller
-   * CLOSED-BOOK: Always returns false (operator state not queryable)
    */
   async isOperator(controller: Address, operator: Address): Promise<boolean> {
     return this.client.isOperator(controller, operator);
@@ -1533,12 +1567,10 @@ export class CustomVaultProvider implements IVaultProvider {
     return {
       asyncRedemption: true,
       instantRedemption: false,
-      // CLOSED-BOOK BATCH: Cancellation impossible after CUTOFF
       cancelBeforeSettlement: false,
       proRataSettlement: true,
       requiresNavForSettlement: true,
       supportsRollover: false,
-      // CLOSED-BOOK BATCH: Uses batch/cycle terminology (not epoch-based)
       batchBased: true,
       epochBased: false,
     };
@@ -1660,6 +1692,51 @@ export class CustomVaultProvider implements IVaultProvider {
     return this.safeWalletService;
   }
 
+  private async allocateToTradingWallet(amount: bigint): Promise<{
+    success: boolean;
+    txHash?: Hex;
+    error?: string;
+  }> {
+    const adminRole = await this.client.getAdminRole();
+
+    if (this.adminKey) {
+      const adminWalletClient = this.getAdminWalletClient();
+      const adminAddress = adminWalletClient.account?.address as Address | undefined;
+
+      if (adminAddress && (await this.client.hasRole(adminRole, adminAddress))) {
+        return this.client.allocateToTradingWallet(adminWalletClient, amount);
+      }
+    }
+
+    const safeAddress = (this.vaultConfig.tradingSafeAddress ??
+      this.vaultConfig.safeAddress) as Address;
+    if (this.safeOperatorKey && (await this.client.hasRole(adminRole, safeAddress))) {
+      const safeWallet = await this.getSafeWalletService();
+      const data = encodeFunctionData({
+        abi: FLAT_BOOK_VAULT_V2_ABI,
+        functionName: "allocateToTradingWallet",
+        args: [amount],
+      });
+      const result = await safeWallet.executeRawTransaction(this.config.vaultAddress, data, "0");
+      return {
+        success: result.success,
+        txHash: result.txHash as Hex | undefined,
+        error: result.error,
+      };
+    }
+
+    const adminAddress = this.adminKey
+      ? (this.getAdminWalletClient().account?.address as Address | undefined)
+      : undefined;
+
+    return {
+      success: false,
+      error:
+        "No eligible admin caller found for allocateToTradingWallet. " +
+        `Admin signer ${adminAddress ?? "unavailable"} and trading safe ${safeAddress} both lack ADMIN_ROLE or required operator access.`,
+    };
+  }
+
   private async processCurrentDepositQueue(
     batchId: number,
   ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
@@ -1746,9 +1823,7 @@ export class CustomVaultProvider implements IVaultProvider {
       userAddress: data.owner,
       controller: data.controller,
       owner: data.owner,
-      // CLOSED-BOOK: Use batchId instead of epochId
       batchId: Number(data.batchId),
-      epochId: Number(data.batchId), // Backward compatibility
       shares: data.shares,
       // CLOSED-BOOK: Assets from settlement, not estimated
       assetsEstimated: data.assetsClaimable,
@@ -1766,6 +1841,15 @@ export class CustomVaultProvider implements IVaultProvider {
    */
   getClient(): CustomVaultClient {
     return this.client;
+  }
+
+  private parseUsdcAmount(value: string): bigint {
+    const parts = value.trim().split(".");
+    const wholePartRaw = parts[0] ?? "0";
+    const fractionalPartRaw = parts[1] ?? "";
+    const wholePart = wholePartRaw.length > 0 ? wholePartRaw : "0";
+    const fractionalPart = fractionalPartRaw.padEnd(USDC_DECIMALS, "0").slice(0, USDC_DECIMALS);
+    return BigInt(`${wholePart}${fractionalPart}`);
   }
 }
 

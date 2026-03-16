@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 
+const { mockExecuteRawTransaction } = vi.hoisted(() => ({
+  mockExecuteRawTransaction: vi.fn().mockResolvedValue({ success: true, txHash: "0xsafe" }),
+}));
+
+const { mockGetPendingRequests, mockGetReadyRequests } = vi.hoisted(() => ({
+  mockGetPendingRequests: vi.fn().mockResolvedValue([]),
+  mockGetReadyRequests: vi.fn().mockResolvedValue([]),
+}));
+
 const mockVaultInstanceConfig = {
   id: 1,
   name: "test-vault",
@@ -78,9 +87,19 @@ vi.mock("../config/index.js", () => ({
 }));
 
 vi.mock("../config/network.js", () => ({
+  // Provide a complete mock network config to satisfy constants.ts imports
   getNetworkConfigFromEnv: vi.fn(() => ({
     name: "amoy",
     chain: { id: 80002 },
+    // Minimal addresses surface needed by vault constants
+    addresses: {
+      usdcE: "0x1111111111111111111111111111111111111111",
+      ctf: "0x2222222222222222222222222222222222222222",
+      ctfExchange: "0x3333333333333333333333333333333333333333",
+      negRiskCtfExchange: "0x4444444444444444444444444444444444444444",
+      negRiskAdapter: "0x5555555555555555555555555555555555555555",
+      vaultV2Factory: "0x6666666666666666666666666666666666666666",
+    },
   })),
   getRpcUrlForNetwork: vi.fn(() => "https://rpc.example.test"),
 }));
@@ -109,7 +128,15 @@ vi.mock("../services/safeWallet.js", () => ({
   SafeWalletService: vi.fn().mockImplementation(() => ({
     initialize: vi.fn().mockResolvedValue(undefined),
     transferToken: vi.fn().mockResolvedValue({ success: true, txHash: "0xmock" }),
+    executeRawTransaction: mockExecuteRawTransaction,
   })),
+}));
+
+vi.mock("../repositories/withdrawalRepository.js", () => ({
+  withdrawalRepository: {
+    getPendingRequests: mockGetPendingRequests,
+    getReadyRequests: mockGetReadyRequests,
+  },
 }));
 
 import { CustomVaultProvider } from "../services/customVaultProvider.js";
@@ -135,6 +162,54 @@ function makeBatch(overrides: Partial<BatchData>): BatchData {
 }
 
 describe("CustomVaultProvider settlement readiness", () => {
+  it("allocates via trading safe when the safe holds ADMIN_ROLE", async () => {
+    mockExecuteRawTransaction.mockResolvedValueOnce({ success: true, txHash: "0xsafe" });
+
+    const mockClient = {
+      getTotalQueuedAssets: vi.fn().mockResolvedValue(0n),
+      getReservedRedemptionAssets: vi.fn().mockResolvedValue(0n),
+      getMaxAllocatableAssets: vi.fn().mockResolvedValue(5_000_000n),
+      getAdminRole: vi.fn().mockResolvedValue("0xadminrole"),
+      hasRole: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true),
+      allocateToTradingWallet: vi.fn(),
+    };
+
+    const provider = new CustomVaultProvider(
+      {
+        vaultId: 1,
+        vaultAddress: "0x1234567890123456789012345678901234567890",
+        providerType: "custom",
+      },
+      {
+        adminKey: mockMaintenanceKey,
+        safeOperatorKey: mockMaintenanceKey,
+      },
+    );
+
+    (provider as unknown as { client: CustomVaultClient }).client =
+      mockClient as unknown as CustomVaultClient;
+
+    await expect(
+      provider.rebalanceCapital({
+        vaultUsdcBalance: 5_000_000n,
+        safeUsdcBalance: 0n,
+        pendingWithdrawalLiability: 0n,
+      }),
+    ).resolves.toMatchObject({
+      success: true,
+      action: "allocated",
+      amount: 5_000_000n,
+      txHash: "0xsafe",
+    });
+
+    expect(mockClient.allocateToTradingWallet).not.toHaveBeenCalled();
+    expect(mockExecuteRawTransaction).toHaveBeenCalledWith(
+      "0x1234567890123456789012345678901234567890",
+      expect.stringMatching(/^0x/),
+      "0",
+    );
+  });
+
   it("treats next-batch queued deposits as actionable work for current batch advancement", async () => {
     const mockClient = {
       getCurrentBatch: vi.fn().mockResolvedValue(0n),
@@ -171,6 +246,37 @@ describe("CustomVaultProvider settlement readiness", () => {
     await expect(provider.hasActionableBatchWork()).resolves.toBe(true);
     await expect(provider.isSettlementReady()).resolves.toBe(true);
     expect(mockClient.getBatch).toHaveBeenCalledWith(1n);
+  });
+
+  it("includes pending and ready instant requests in withdrawal liability", async () => {
+    mockGetPendingRequests.mockResolvedValueOnce([
+      { assetsEstimated: "1.250000" },
+      { assetsEstimated: "0.750000" },
+    ]);
+    mockGetReadyRequests.mockResolvedValueOnce([{ assetsEstimated: "2.000000" }]);
+
+    const mockClient = {
+      getCurrentBatch: vi.fn().mockResolvedValue(0n),
+      getBatch: vi
+        .fn()
+        .mockResolvedValue(
+          makeBatch({ batchId: 0n, totalSharesPending: 0n, totalQueuedDeposits: 0n }),
+        ),
+    };
+
+    const provider = new CustomVaultProvider(
+      {
+        vaultId: 1,
+        vaultAddress: "0x1234567890123456789012345678901234567890",
+        providerType: "custom",
+      },
+      mockMaintenanceKey,
+    );
+
+    (provider as unknown as { client: CustomVaultClient }).client =
+      mockClient as unknown as CustomVaultClient;
+
+    await expect(provider.estimatePendingWithdrawalLiability()).resolves.toBe(4_000_000n);
   });
 
   it("requires a NAV refresh when actionable work exists but NAV is stale or zero", async () => {

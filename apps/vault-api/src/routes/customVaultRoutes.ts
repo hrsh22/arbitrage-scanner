@@ -39,11 +39,11 @@
 import { Router } from "express";
 import type { Address } from "viem";
 import { parseUnits, formatUnits } from "viem";
-import { getVaultConfig } from "../config/index.js";
 import { logger } from "../logger.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getVaultProviderFactory } from "../services/vaultProviderFactory.js";
 import type { IVaultProvider } from "../services/vaultProvider.js";
+import { VaultProviderError } from "../services/vaultProvider.js";
 import { CustomVaultProvider } from "../services/customVaultProvider.js";
 import { entitlementRepository } from "../repositories/entitlementRepository.js";
 import { payoutRepository } from "../repositories/payoutRepository.js";
@@ -53,6 +53,9 @@ import {
   ClaimOperation,
   validateClaimOperation,
 } from "../services/claimStateMachine.js";
+
+const LIFECYCLE_CACHE_TTL_MS = 5_000;
+const lifecycleCache = new Map<number, { expiresAt: number; value: Record<string, unknown> }>();
 
 // ============================================================================
 // Validation Helpers
@@ -115,6 +118,24 @@ async function getCustomVaultProvider(vaultId: number): Promise<CustomVaultProvi
   return provider as CustomVaultProvider;
 }
 
+async function getCachedLifecycleFields(
+  vaultId: number,
+  provider: CustomVaultProvider,
+): Promise<Record<string, unknown> | undefined> {
+  const cached = lifecycleCache.get(vaultId);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
+  const lifecycle = { ...(await provider.getLifecycle()) };
+  lifecycleCache.set(vaultId, {
+    value: lifecycle,
+    expiresAt: now + LIFECYCLE_CACHE_TTL_MS,
+  });
+  return lifecycle;
+}
+
 /**
  * Format redemption request with corrected lifecycle fields
  * Includes: entitlement, accrued, claimed, carryRemaining, claimableNow, minClaimThreshold, dustOverrideEligible
@@ -127,7 +148,7 @@ async function formatRedemptionRequest(
     controller?: Address;
     owner?: Address;
     operator?: Address;
-    epochId: number;
+    batchId: number;
     shares: bigint;
     assetsEstimated: bigint;
     assetsActual?: bigint;
@@ -150,13 +171,10 @@ async function formatRedemptionRequest(
     controller: request.controller ?? request.userAddress,
     owner: request.owner ?? request.userAddress,
     operator: request.operator ?? null,
-    batchId: request.epochId,
-    cycleId: request.epochId,
-    epochId: request.epochId,
-    targetCycle: request.epochId,
+    batchId: request.batchId,
+    cycleId: request.batchId,
+    targetCycle: request.batchId,
     targetCycleEndTime: request.settledAt?.toISOString() ?? request.createdAt.toISOString(),
-    targetEpoch: request.epochId,
-    targetEpochEndTime: request.settledAt?.toISOString() ?? request.createdAt.toISOString(),
     settlementTime: request.settledAt?.toISOString() ?? null,
     shares: request.shares.toString(),
     sharesFormatted: formatUnits(request.shares, VAULT_SHARE_DECIMALS),
@@ -294,46 +312,6 @@ async function formatRedemptionRequest(
   }
 }
 
-function formatEpochStatus(epochStatus: {
-  epochId: number;
-  startTime: Date;
-  endTime: Date;
-  settlementTime: Date;
-  totalRequests: number;
-  totalShares: bigint;
-  settled: boolean;
-  proRataRatio?: bigint;
-  availableAssets?: bigint;
-}) {
-  const VAULT_SHARE_DECIMALS = 6;
-  const USDC_DECIMALS = 6;
-
-  const now = new Date();
-  const isActive = now >= epochStatus.startTime && now < epochStatus.endTime;
-  const isPast = now >= epochStatus.endTime;
-  const timeRemainingMs = isPast ? 0 : epochStatus.endTime.getTime() - now.getTime();
-
-  return {
-    epochId: epochStatus.epochId,
-    startTime: epochStatus.startTime.toISOString(),
-    endTime: epochStatus.endTime.toISOString(),
-    settlementTime: epochStatus.settlementTime.toISOString(),
-    isActive,
-    isPast,
-    timeRemainingMs,
-    timeRemainingFormatted: formatDuration(timeRemainingMs),
-    totalRequests: epochStatus.totalRequests,
-    totalShares: epochStatus.totalShares.toString(),
-    totalSharesFormatted: formatUnits(epochStatus.totalShares, VAULT_SHARE_DECIMALS),
-    settled: epochStatus.settled,
-    proRataRatio: epochStatus.proRataRatio?.toString(),
-    availableAssets: epochStatus.availableAssets?.toString(),
-    availableAssetsFormatted: epochStatus.availableAssets
-      ? formatUnits(epochStatus.availableAssets, USDC_DECIMALS)
-      : undefined,
-  };
-}
-
 function formatEpochHistoryItem(batch: {
   batchId: bigint;
   startTime: bigint;
@@ -346,13 +324,12 @@ function formatEpochHistoryItem(batch: {
   status: string;
 }): Record<string, unknown> {
   return {
-    epochId: Number(batch.batchId),
     cycleId: Number(batch.batchId),
     batchId: Number(batch.batchId),
     startTime: new Date(Number(batch.startTime) * 1000).toISOString(),
     endTime: new Date(Number(batch.endTime) * 1000).toISOString(),
-    epochOpenNAV: batch.snapshotNAV.toString(),
-    epochOpenNAVFormatted: formatUnits(batch.snapshotNAV, 18),
+    cycleOpenNAV: batch.snapshotNAV.toString(),
+    cycleOpenNAVFormatted: formatUnits(batch.snapshotNAV, 18),
     snapshotNAV: batch.snapshotNAV.toString(),
     snapshotNAVFormatted: formatUnits(batch.snapshotNAV, 18),
     snapshotTimestamp:
@@ -405,18 +382,26 @@ function formatCycleStatus(batchStatus: {
   mintedDeposits: number;
 }) {
   const batchState = batchStatus.status;
-  const isActive = ["open", "cutoff", "flattening", "settling"].includes(batchState);
-  const isPast = ["settled", "closed", "reopen"].includes(batchState);
+  const isActive = ["open", "closed", "cutoff", "flattening", "settling", "processing"].includes(
+    batchState,
+  );
+  const isPast = ["settled", "processed", "reopen"].includes(batchState);
 
   let timeRemainingFormatted = "Awaiting cycle close";
   if (batchState === "cutoff") {
     timeRemainingFormatted = "Awaiting flatten";
+  } else if (batchState === "closed") {
+    timeRemainingFormatted = "Queueing while invested";
+  } else if (batchState === "processing") {
+    timeRemainingFormatted = "Processing queued requests";
   } else if (batchState === "flattening") {
     timeRemainingFormatted = "Flattening in progress";
   } else if (batchState === "settling") {
     timeRemainingFormatted = "Settlement in progress";
   } else if (batchState === "settled") {
     timeRemainingFormatted = "Claims available";
+  } else if (batchState === "processed") {
+    timeRemainingFormatted = "Cycle processed";
   } else if (batchState === "reopen") {
     timeRemainingFormatted = "Ready for next cycle";
   }
@@ -434,7 +419,7 @@ function formatCycleStatus(batchStatus: {
     totalRequests: batchStatus.claimableRedemptions,
     totalShares: batchStatus.totalSharesPending.toString(),
     totalSharesFormatted: formatUnits(batchStatus.totalSharesPending, 6),
-    settled: ["settled", "closed", "reopen"].includes(batchState),
+    settled: ["settled", "processed", "reopen"].includes(batchState),
     batchState,
     proRataRatio: Math.round(batchStatus.proRataRatio * 1e18).toString(),
     availableAssets: batchStatus.totalAssetsSnapshot,
@@ -454,20 +439,6 @@ function formatCycleStatus(batchStatus: {
     isCutoff: batchState === "cutoff",
     cutoffTime: batchStatus.cutoffTime?.toISOString() ?? null,
   };
-}
-
-function formatDuration(ms: number): string {
-  if (ms <= 0) return "0s";
-
-  const seconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-
-  if (days > 0) return `${days}d ${hours % 24}h`;
-  if (hours > 0) return `${hours}h ${minutes % 60}m`;
-  if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
-  return `${seconds}s`;
 }
 
 // ============================================================================
@@ -513,7 +484,7 @@ export function buildCustomVaultRouter(): Router {
       if (!provider) {
         res.status(404).json({
           error: `Custom vault ${vaultId} not found`,
-          message: "Vault does not exist or is not configured for custom epoch-based redemption",
+          message: "Vault does not exist or is not configured for custom cycle-based redemption",
         });
         return;
       }
@@ -537,12 +508,8 @@ export function buildCustomVaultRouter(): Router {
         });
       }
 
-      const [vaultInfo, assetsEstimated] = await Promise.all([
-        provider.getVaultInfo(),
-        provider.previewRedeem(sharesUnits),
-      ]);
-      const sharesFloat = Number(formatUnits(sharesUnits, 6));
-      const assetsEstimatedFloat = Number(formatUnits(assetsEstimated, 6));
+      await provider.getVaultInfo();
+      const assetsEstimated = 0n;
 
       if (clientAssetsEstimated) {
         const clientEstimateUnits = parseUnits(clientAssetsEstimated, 6);
@@ -558,7 +525,7 @@ export function buildCustomVaultRouter(): Router {
             vaultId,
             userAddress,
             clientEstimate: clientAssetsEstimated,
-            serverEstimate: formatUnits(assetsEstimated, 6),
+            serverEstimate: "0",
             slippagePercent,
           });
         }
@@ -587,8 +554,6 @@ export function buildCustomVaultRouter(): Router {
         return;
       }
 
-      const estimatedSettlementTime = undefined;
-
       logger.info("CustomVault API: Redemption request created", {
         vaultId,
         userAddress,
@@ -596,13 +561,14 @@ export function buildCustomVaultRouter(): Router {
         owner: effectiveOwner,
         operator,
         shares: sharesUnits.toString(),
-        epochId: result.epochId,
+        batchId: result.batchId,
       });
 
       res.status(201).json({
         success: true,
         requestId: result.requestId,
-        epochId: result.epochId,
+        batchId: result.batchId ?? null,
+        cycleId: result.batchId ?? null,
         vaultId,
         userAddress,
         controller: effectiveController,
@@ -615,7 +581,7 @@ export function buildCustomVaultRouter(): Router {
         status: "pending",
         estimatedSettlementTime: null,
         message:
-          "Redemption request created. Shares will remain pending until the current cycle is sealed, flattened, and settled.",
+          "Redemption request created. Shares remain pending while the vault is closed and become claimable after processing.",
       });
     } catch (error) {
       logger.error("CustomVault API: Failed to create redemption request", {
@@ -662,6 +628,17 @@ export function buildCustomVaultRouter(): Router {
         estimatedSettlementTime: statusResult.estimatedSettlementTime?.toISOString(),
       });
     } catch (error) {
+      if (error instanceof VaultProviderError) {
+        if (error.code === "REQUEST_NOT_FOUND") {
+          const statusCode = error.message.includes("Invalid requestId") ? 400 : 404;
+          res.status(statusCode).json({
+            error: statusCode === 400 ? "Invalid request ID" : "Request not found",
+            requestId: req.params.requestId,
+          });
+          return;
+        }
+      }
+
       if ((error as Error).message.includes("Request not found")) {
         res.status(404).json({
           error: "Request not found",
@@ -713,7 +690,22 @@ export function buildCustomVaultRouter(): Router {
         return;
       }
 
-      const statusResult = await provider.getRequestStatus(requestId);
+      let statusResult;
+      try {
+        statusResult = await provider.getRequestStatus(requestId);
+      } catch (error) {
+        if (error instanceof VaultProviderError && error.code === "REQUEST_NOT_FOUND") {
+          const statusCode = error.message.includes("Invalid requestId") ? 400 : 404;
+          res.status(statusCode).json({
+            success: false,
+            error: statusCode === 400 ? "Invalid request ID" : "Request not found",
+            requestId,
+            vaultId,
+          });
+          return;
+        }
+        throw error;
+      }
       const request = statusResult.request;
 
       const ownerAddress = (request.owner ?? request.userAddress).toLowerCase();
@@ -922,9 +914,9 @@ export function buildCustomVaultRouter(): Router {
 
       const client = provider.getClient();
       const currentEpoch = await client.getCurrentBatch();
-      const epochStatus = await provider.getEpochStatus(Number(currentEpoch));
+      const batchStatus = await provider.getBatchStatus(Number(currentEpoch));
 
-      if (!epochStatus) {
+      if (!batchStatus) {
         res.status(500).json({
           error: "Failed to get current epoch status",
         });
@@ -933,7 +925,7 @@ export function buildCustomVaultRouter(): Router {
 
       res.json({
         success: true,
-        epoch: formatEpochStatus(epochStatus),
+        cycle: formatCycleStatus(batchStatus),
         vaultId,
       });
     } catch (error) {
@@ -1022,9 +1014,9 @@ export function buildCustomVaultRouter(): Router {
         return;
       }
 
-      const epochStatus = await provider.getEpochStatus(epochId);
+      const batchStatus = await provider.getBatchStatus(epochId);
 
-      if (!epochStatus) {
+      if (!batchStatus) {
         res.status(404).json({
           error: `Epoch ${epochId} not found`,
         });
@@ -1035,7 +1027,7 @@ export function buildCustomVaultRouter(): Router {
 
       res.json({
         success: true,
-        epoch: formatEpochStatus(epochStatus),
+        cycle: formatCycleStatus(batchStatus),
         canSettle,
         vaultId,
       });
@@ -1085,9 +1077,24 @@ export function buildCustomVaultRouter(): Router {
         return;
       }
 
+      // Attempt to fetch lifecycle telemetry fields from backend lifecycle logic
+      // These fields are computed by the LiquidityManager on the backend
+      // and exposed through a dedicated route method in the provider.
+      let lifecycleFields: Record<string, unknown> | undefined = undefined;
+      try {
+        lifecycleFields = await getCachedLifecycleFields(vaultId, provider);
+      } catch {
+        lifecycleFields = undefined;
+      }
+
+      const cyclePayload = {
+        ...formatCycleStatus(batchStatus),
+        ...(lifecycleFields ?? {}),
+      } as Record<string, unknown>;
+
       res.json({
         success: true,
-        cycle: formatCycleStatus(batchStatus),
+        cycle: cyclePayload,
         vaultId,
       });
     } catch (error) {
@@ -1242,8 +1249,11 @@ export function buildCustomVaultRouter(): Router {
         success: true,
         vaultId,
         userAddress,
+        requests: [...formattedPending, ...formattedClaimable],
         pendingRequests: formattedPending,
         claimableRequests: formattedClaimable,
+        totalPendingShares: state.totalSharesPending.toString(),
+        totalClaimableShares: state.totalSharesClaimable.toString(),
         totalSharesPending: state.totalSharesPending.toString(),
         totalSharesClaimable: state.totalSharesClaimable.toString(),
         estimatedAssetsPending: state.estimatedAssetsPending.toString(),
@@ -1296,15 +1306,6 @@ export function buildCustomVaultRouter(): Router {
           totalAssets: vaultInfo.totalAssets.toString(),
           totalSupply: vaultInfo.totalSupply.toString(),
           sharePrice: vaultInfo.sharePrice,
-          epochInfo: vaultInfo.epochInfo
-            ? {
-                currentEpochId: vaultInfo.epochInfo.currentEpochId,
-                currentEpochStart: vaultInfo.epochInfo.currentEpochStart.toISOString(),
-                currentEpochEnd: vaultInfo.epochInfo.currentEpochEnd.toISOString(),
-                nextSettlementTime: vaultInfo.epochInfo.nextSettlementTime.toISOString(),
-                epochDurationSeconds: vaultInfo.epochInfo.epochDurationSeconds,
-              }
-            : null,
           batchInfo: vaultInfo.batchInfo
             ? {
                 currentBatchId: vaultInfo.batchInfo.currentBatchId,
@@ -1392,19 +1393,19 @@ export function buildCustomVaultRouter(): Router {
         requestIds.map(async (requestId) => client.getRedemptionRequest(requestId)),
       );
       const frozenShares = redemptionRequests.reduce((sum, request) => {
-        if (!request || request.status !== "claimable") {
+        if (!request || (request.status !== "escrowed" && request.status !== "claimable")) {
           return sum;
         }
         return sum + request.shares;
       }, 0n);
       const frozenAssets = redemptionRequests.reduce((sum, request) => {
-        if (!request || request.status !== "claimable") {
+        if (!request || (request.status !== "escrowed" && request.status !== "claimable")) {
           return sum;
         }
         return sum + request.assetsClaimable;
       }, 0n);
 
-      const currentEpochStart = epoch
+      const currentCycleStart = epoch
         ? new Date(Number(epoch.startTime) * 1000).toISOString()
         : null;
 
@@ -1416,12 +1417,12 @@ export function buildCustomVaultRouter(): Router {
         queuedFormatted: formatUnits(queuedAssets, 6),
         queuedShares: estimatedQueuedShares.toString(),
         queuedSharesFormatted: formatUnits(estimatedQueuedShares, 6),
-        estimateNav: estimateNav.toString(),
-        estimateNavFormatted: formatUnits(estimateNav, 18),
+        cycleOpenNavEstimate: estimateNav.toString(),
+        cycleOpenNavFormatted: formatUnits(estimateNav, 18),
         estimateBasis:
           targetEpoch?.snapshotNAV && targetEpoch.snapshotNAV > 0n
-            ? "Estimated from the target batch snapshot NAV."
-            : "Estimated from current NAV. Final minted shares use the target cycle snapshot NAV when the batch is eventually processed.",
+            ? "Estimated from locked processing NAV for the active cycle."
+            : "Estimated from current NAV. Final minted shares use the locked processing NAV when the queue is processed.",
         frozen: frozenAssets.toString(),
         frozenFormatted: formatUnits(frozenAssets, 6),
         frozenShares: frozenShares.toString(),
@@ -1431,11 +1432,11 @@ export function buildCustomVaultRouter(): Router {
           depositRequest?.createdAt && depositRequest.createdAt > 0n
             ? new Date(Number(depositRequest.createdAt) * 1000).toISOString()
             : null,
-        targetEpochId: Number(depositRequest?.targetBatch ?? targetEpochId),
-        currentEpochId: Number(currentEpochId),
-        currentEpochStart,
-        currentEpochEnd: null,
-        nextEpochStart: null,
+        targetCycleId: Number(depositRequest?.targetBatch ?? targetEpochId),
+        currentCycleId: Number(currentEpochId),
+        currentCycleStart,
+        currentCycleEnd: null,
+        nextCycleStart: null,
         activationTime: null,
         batchState: epoch?.status ?? null,
         queueStatus: depositRequest
@@ -1444,7 +1445,7 @@ export function buildCustomVaultRouter(): Router {
             : "queued"
           : "idle",
         mintRule:
-          "Deposits queue for the next cycle and mint only after that cycle is sealed, flattened, and processed using the locked cycle-open NAV.",
+          "Deposits queue while the vault is closed and mint during processing at the locked NAV.",
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
@@ -1467,7 +1468,7 @@ export function buildCustomVaultRouter(): Router {
   router.get("/:vaultId/tranche-status", requireAuth, async (req, res) => {
     try {
       const vaultIdParam = req.params.vaultId;
-      const epochIdParam = req.query.epochId as string | undefined;
+      const cycleIdParam = req.query.cycleId as string | undefined;
 
       if (!vaultIdParam) {
         res.status(400).json({ error: "Vault ID is required" });
@@ -1490,26 +1491,23 @@ export function buildCustomVaultRouter(): Router {
         return;
       }
 
-      // Get current epoch or specified epoch
-      let epochId: number;
-      if (epochIdParam) {
-        epochId = parseInt(epochIdParam, 10);
-        if (isNaN(epochId)) {
-          res.status(400).json({ error: "Invalid epoch ID" });
+      let cycleId: number;
+      if (cycleIdParam) {
+        cycleId = parseInt(cycleIdParam, 10);
+        if (isNaN(cycleId)) {
+          res.status(400).json({ error: "Invalid cycle ID" });
           return;
         }
       } else {
         const client = provider.getClient();
-        epochId = Number(await client.getCurrentBatch());
+        cycleId = Number(await client.getCurrentBatch());
       }
 
-      // Get epoch status
-      const epochStatus = await provider.getEpochStatus(epochId);
+      const batchStatus = await provider.getBatchStatus(cycleId);
 
-      // Get user's entitlements for this epoch
       const userEntitlements = await entitlementRepository.getByUser(
         userAddress,
-        `epoch-${epochId}`,
+        `batch-${cycleId}`,
       );
 
       // Aggregate entitlement data using CORRECTED lifecycle fields
@@ -1539,15 +1537,17 @@ export function buildCustomVaultRouter(): Router {
         success: true,
         vaultId,
         userAddress,
-        epochId,
-        // Epoch status
-        epochStatus: {
-          status: epochStatus.settled ? "settled" : "pending",
-          startTime: epochStatus.startTime.toISOString(),
-          endTime: epochStatus.endTime.toISOString(),
-          settled: epochStatus.settled,
-          totalShares: epochStatus.totalShares.toString(),
-          totalSharesFormatted: formatUnits(epochStatus.totalShares, 6),
+        cycleId,
+        cycleStatus: {
+          status: ["settled", "processed", "reopen"].includes(batchStatus.status)
+            ? "settled"
+            : "pending",
+          startTime: batchStatus.startTime.toISOString(),
+          endTime: batchStatus.endTime.toISOString(),
+          settled: ["settled", "processed", "reopen"].includes(batchStatus.status),
+          totalShares: batchStatus.totalSharesPending.toString(),
+          totalSharesFormatted: formatUnits(batchStatus.totalSharesPending, 6),
+          batchState: batchStatus.status,
         },
         // User's tranche position with corrected lifecycle fields
         tranchePosition: {
@@ -1659,6 +1659,7 @@ export function buildCustomVaultRouter(): Router {
           userAddress,
           requestId: requestIdParam,
           entitlementId: entitlement.id,
+          cycleId: entitlement.epochId,
           // Corrected lifecycle fields per T1 gap matrix
           entitlement: entitlementAmount.toString(),
           entitlementFormatted: formatUnits(entitlementAmount, 6),
@@ -1684,7 +1685,6 @@ export function buildCustomVaultRouter(): Router {
           timestamp: new Date().toISOString(),
         });
       } else {
-        // Get all entitlements for user across all epochs
         const allEntitlements = await entitlementRepository.getByUser(userAddress);
 
         let totalEntitlement = 0n;
@@ -1719,7 +1719,7 @@ export function buildCustomVaultRouter(): Router {
           entitlementDetails.push({
             entitlementId: entitlement.id,
             requestId: entitlement.requestId,
-            epochId: entitlement.epochId,
+            cycleId: entitlement.epochId,
             entitlement: entitlementAmount.toString(),
             accrued: accrued.toString(),
             claimed: claimed.toString(),
@@ -1779,7 +1779,7 @@ export function buildCustomVaultRouter(): Router {
   // LEGACY DEPRECATION: Explicit error for deprecated endpoints
   // ============================================================================
 
-  router.post("/:vaultId/legacy-claim", requireAuth, async (req, res) => {
+  router.post("/:vaultId/legacy-claim", requireAuth, async (_req, res) => {
     res.status(410).json({
       error: "Gone",
       message:
@@ -1790,7 +1790,7 @@ export function buildCustomVaultRouter(): Router {
     });
   });
 
-  router.get("/:vaultId/legacy-status", async (req, res) => {
+  router.get("/:vaultId/legacy-status", async (_req, res) => {
     res.status(410).json({
       error: "Gone",
       message:

@@ -17,6 +17,7 @@ import { env } from "../env.js";
 import { POLYGON_CHAIN_ID, SUPPORTS_POLYMARKET_TRADING, USDC_E_ADDRESS } from "../constants.js";
 import type { TradeResult } from "../types.js";
 import type { VaultInstanceConfig } from "../config/types.js";
+import { resolveVaultIdentity } from "../config/identityResolver.js";
 
 const CLOB_HOST = "https://clob.polymarket.com";
 
@@ -48,7 +49,7 @@ export class VaultTradingClient {
     if (!SUPPORTS_POLYMARKET_TRADING) {
       throw new Error(
         "VaultTradingClient: Polymarket trading is not supported on the current network. " +
-          "Trading is only available on Polygon mainnet."
+          "Trading is only available on Polygon mainnet.",
       );
     }
 
@@ -415,8 +416,6 @@ export function getVaultTradingClient(): VaultTradingClient {
 }
 
 export function createVaultTradingClient(config: VaultInstanceConfig): VaultTradingClient {
-  // Import here to avoid circular dependency
-  const { resolveVaultIdentity } = require("../config/identityResolver.js");
   const identity = resolveVaultIdentity(config);
   return new VaultTradingClient({
     safeAddress: config.safeAddress,

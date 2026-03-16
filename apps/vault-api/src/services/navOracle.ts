@@ -186,6 +186,47 @@ const VAULT_TOTAL_PENDING_REDEEM_SHARES_ABI = [
   },
 ] as const;
 
+const VAULT_CURRENT_CYCLE_ID_ABI = [
+  {
+    type: "function",
+    name: "currentCycleId",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
+const VAULT_CYCLES_ABI = [
+  {
+    type: "function",
+    name: "cycles",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "uint256" }],
+    outputs: [
+      { name: "lockedNav", type: "uint256" },
+      { name: "totalQueuedDepositAssets", type: "uint256" },
+      { name: "totalQueuedRedeemShares", type: "uint256" },
+      { name: "totalQueuedRedeemAssets", type: "uint256" },
+      { name: "depositCursor", type: "uint256" },
+      { name: "redeemCursor", type: "uint256" },
+      { name: "processingStartedAt", type: "uint256" },
+      { name: "depositsComplete", type: "bool" },
+      { name: "redeemsComplete", type: "bool" },
+      { name: "finalized", type: "bool" },
+    ],
+  },
+] as const;
+
+const VAULT_TOTAL_CLAIMABLE_REDEEM_ASSETS_ABI = [
+  {
+    type: "function",
+    name: "totalClaimableRedeemAssets",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
 // ===== Constants =====
 
 const USDC_DECIMALS = 6;
@@ -391,7 +432,7 @@ export class NavOracleService {
     // Determine vault type
     this.vaultId = options.vaultId ?? null;
     const mappedType: "legacy" | "custom" = "custom";
-    this.vaultType = options.vaultType === "legacy" ? "custom" : (options.vaultType ?? mappedType);
+    this.vaultType = options.vaultType ?? mappedType;
     this.navSnapshotAddress = options.navSnapshotAddress ?? null;
     // Initialize provider if vault ID provided
     if (this.vaultId !== null) {
@@ -440,6 +481,105 @@ export class NavOracleService {
     }
 
     return this.adapterAddress;
+  }
+
+  private async readCustomLiabilityState(): Promise<{
+    totalQueuedAssetsRaw: bigint;
+    reservedRedemptionAssetsRaw: bigint;
+    totalPendingRedeemSharesRaw: bigint;
+  }> {
+    const [queuedAssetsDirect, reservedRedemptionDirect, totalPendingRedeemSharesDirect] =
+      await Promise.all([
+        this.publicClient
+          .readContract({
+            address: this.vaultAddress,
+            abi: VAULT_TOTAL_QUEUED_ASSETS_ABI,
+            functionName: "totalQueuedAssets",
+          })
+          .catch(() => null),
+        this.publicClient
+          .readContract({
+            address: this.vaultAddress,
+            abi: VAULT_RESERVED_REDEMPTION_ASSETS_ABI,
+            functionName: "reservedRedemptionAssets",
+          })
+          .catch(() => null),
+        this.publicClient
+          .readContract({
+            address: this.vaultAddress,
+            abi: VAULT_TOTAL_PENDING_REDEEM_SHARES_ABI,
+            functionName: "totalPendingRedeemShares",
+          })
+          .catch(() => null),
+      ]);
+
+    let cycleTotals: {
+      totalQueuedDepositAssets: bigint;
+      totalQueuedRedeemShares: bigint;
+      totalQueuedRedeemAssets: bigint;
+    } | null = null;
+
+    const getCycleTotals = async () => {
+      if (cycleTotals) {
+        return cycleTotals;
+      }
+
+      try {
+        const currentCycleId = await this.publicClient.readContract({
+          address: this.vaultAddress,
+          abi: VAULT_CURRENT_CYCLE_ID_ABI,
+          functionName: "currentCycleId",
+        });
+        const cycle = await this.publicClient.readContract({
+          address: this.vaultAddress,
+          abi: VAULT_CYCLES_ABI,
+          functionName: "cycles",
+          args: [currentCycleId],
+        });
+        cycleTotals = {
+          totalQueuedDepositAssets: cycle[1],
+          totalQueuedRedeemShares: cycle[2],
+          totalQueuedRedeemAssets: cycle[3],
+        };
+      } catch (error) {
+        logger.debug("NavOracleService: Unable to read cycle totals fallback", {
+          vaultAddress: this.vaultAddress,
+          error: (error as Error).message,
+        });
+        cycleTotals = {
+          totalQueuedDepositAssets: 0n,
+          totalQueuedRedeemShares: 0n,
+          totalQueuedRedeemAssets: 0n,
+        };
+      }
+
+      return cycleTotals;
+    };
+
+    const totalQueuedAssetsRaw =
+      queuedAssetsDirect !== null
+        ? queuedAssetsDirect
+        : (await getCycleTotals()).totalQueuedDepositAssets;
+    const totalPendingRedeemSharesRaw =
+      totalPendingRedeemSharesDirect !== null
+        ? totalPendingRedeemSharesDirect
+        : (await getCycleTotals()).totalQueuedRedeemShares;
+    const reservedRedemptionAssetsRaw =
+      reservedRedemptionDirect !== null
+        ? reservedRedemptionDirect
+        : (await this.publicClient
+            .readContract({
+              address: this.vaultAddress,
+              abi: VAULT_TOTAL_CLAIMABLE_REDEEM_ASSETS_ABI,
+              functionName: "totalClaimableRedeemAssets",
+            })
+            .catch(() => 0n)) + (await getCycleTotals()).totalQueuedRedeemAssets;
+
+    return {
+      totalQueuedAssetsRaw,
+      reservedRedemptionAssetsRaw,
+      totalPendingRedeemSharesRaw,
+    };
   }
 
   /**
@@ -737,14 +877,7 @@ export class NavOracleService {
     const usdcAddress = USDC_E_ADDRESS as Address;
 
     // Read on-chain balances
-    const [
-      vaultUsdcRaw,
-      safeUsdcRaw,
-      totalSupplyRaw,
-      totalQueuedAssetsRaw,
-      reservedRedemptionAssetsRaw,
-      totalPendingRedeemSharesRaw,
-    ] = await Promise.all([
+    const [vaultUsdcRaw, safeUsdcRaw, totalSupplyRaw, liabilityState] = await Promise.all([
       this.publicClient.readContract({
         address: usdcAddress,
         abi: ERC20_BALANCE_ABI,
@@ -762,26 +895,11 @@ export class NavOracleService {
         abi: VAULT_TOTAL_SUPPLY_ABI,
         functionName: "totalSupply",
       }),
-      this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: VAULT_TOTAL_QUEUED_ASSETS_ABI,
-        functionName: "totalQueuedAssets",
-      }),
-      this.publicClient
-        .readContract({
-          address: this.vaultAddress,
-          abi: VAULT_RESERVED_REDEMPTION_ASSETS_ABI,
-          functionName: "reservedRedemptionAssets",
-        })
-        .catch(() => 0n),
-      this.publicClient
-        .readContract({
-          address: this.vaultAddress,
-          abi: VAULT_TOTAL_PENDING_REDEEM_SHARES_ABI,
-          functionName: "totalPendingRedeemShares",
-        })
-        .catch(() => 0n),
+      this.readCustomLiabilityState(),
     ]);
+
+    const { totalQueuedAssetsRaw, reservedRedemptionAssetsRaw, totalPendingRedeemSharesRaw } =
+      liabilityState;
 
     const queuedAssets = Number(formatUnits(totalQueuedAssetsRaw, USDC_DECIMALS));
     const reservedRedemptionAssets = Number(
@@ -805,14 +923,13 @@ export class NavOracleService {
     const navUnits =
       pricingSupplyRaw > 0n ? (totalAssetsUnits * NAV_SCALE) / pricingSupplyRaw : NAV_SCALE;
 
-    // Get current epoch info from provider if available
-    let epochId = 0;
+    let cycleId = 0;
     if (this.provider) {
       try {
-        const epochInfo = await this.provider.getEpochStatus();
-        epochId = epochInfo.epochId;
+        const cycleInfo = await this.provider.getBatchStatus();
+        cycleId = cycleInfo.batchId;
       } catch (error) {
-        logger.warn("NavOracleService: Failed to get epoch info", {
+        logger.warn("NavOracleService: Failed to get cycle info", {
           error: (error as Error).message,
         });
       }
@@ -829,7 +946,7 @@ export class NavOracleService {
           address: this.navSnapshotAddress,
           abi: NAV_SNAPSHOT_ABI,
           functionName: "recordSnapshot",
-          args: [BigInt(epochId), totalAssetsUnits, totalSupplyRaw],
+          args: [BigInt(cycleId), totalAssetsUnits, totalSupplyRaw],
         });
       } else {
         // Use vault's updateNAV function directly
@@ -843,7 +960,7 @@ export class NavOracleService {
       updatedOnChain = true;
 
       logger.info("NavOracleService: Published NAV snapshot (Custom)", {
-        epochId,
+        cycleId,
         totalAssets: totalAssets.toFixed(USDC_DECIMALS),
         totalSupply: totalSupply.toFixed(USDC_DECIMALS),
         sharePrice: sharePrice.toFixed(8),
@@ -854,7 +971,7 @@ export class NavOracleService {
     } catch (error) {
       logger.error("NavOracleService: Failed to publish NAV snapshot", {
         error: (error as Error).message,
-        epochId,
+        cycleId,
       });
       throw new Error(`Failed to publish NAV snapshot: ${getErrorMessage(error)}`);
     }
@@ -869,12 +986,11 @@ export class NavOracleService {
       positionCount: openPositions.length,
     });
 
-    // Also create epoch NAV snapshot if we have an epoch ID
-    if (epochId > 0) {
+    if (cycleId > 0) {
       try {
         await epochRepository.createNavSnapshot({
-          snapshotId: `nav-epoch-${epochId}-${Date.now()}`,
-          epochId: epochId.toString(),
+          snapshotId: `nav-cycle-${cycleId}-${Date.now()}`,
+          epochId: cycleId.toString(),
           vaultAddress: this.vaultAddress,
           totalAssets: totalAssets.toFixed(USDC_DECIMALS),
           totalShares: totalSupply.toFixed(USDC_DECIMALS),
@@ -884,9 +1000,9 @@ export class NavOracleService {
           txHash,
         });
       } catch (error) {
-        logger.warn("NavOracleService: Failed to record epoch NAV snapshot", {
+        logger.warn("NavOracleService: Failed to record cycle NAV snapshot", {
           error: (error as Error).message,
-          epochId,
+          cycleId,
         });
       }
     }
@@ -898,7 +1014,7 @@ export class NavOracleService {
       delta: totalAssets.toFixed(USDC_DECIMALS),
       txHash,
       navPath: "custom",
-      epochId,
+      epochId: cycleId,
       marketValue: {
         totalAssets,
         idleAssets,
@@ -1149,14 +1265,7 @@ export class NavOracleService {
   private async forceNavUpdateCustom(newValue: string | number): Promise<NavUpdateResult> {
     const usdcAddress = USDC_E_ADDRESS as Address;
 
-    const [
-      vaultUsdcRaw,
-      safeUsdcRaw,
-      totalSupplyRaw,
-      totalQueuedAssetsRaw,
-      reservedRedemptionAssetsRaw,
-      totalPendingRedeemSharesRaw,
-    ] = await Promise.all([
+    const [vaultUsdcRaw, safeUsdcRaw, totalSupplyRaw, liabilityState] = await Promise.all([
       this.publicClient.readContract({
         address: usdcAddress,
         abi: ERC20_BALANCE_ABI,
@@ -1174,26 +1283,11 @@ export class NavOracleService {
         abi: VAULT_TOTAL_SUPPLY_ABI,
         functionName: "totalSupply",
       }),
-      this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: VAULT_TOTAL_QUEUED_ASSETS_ABI,
-        functionName: "totalQueuedAssets",
-      }),
-      this.publicClient
-        .readContract({
-          address: this.vaultAddress,
-          abi: VAULT_RESERVED_REDEMPTION_ASSETS_ABI,
-          functionName: "reservedRedemptionAssets",
-        })
-        .catch(() => 0n),
-      this.publicClient
-        .readContract({
-          address: this.vaultAddress,
-          abi: VAULT_TOTAL_PENDING_REDEEM_SHARES_ABI,
-          functionName: "totalPendingRedeemShares",
-        })
-        .catch(() => 0n),
+      this.readCustomLiabilityState(),
     ]);
+
+    const { totalQueuedAssetsRaw, reservedRedemptionAssetsRaw, totalPendingRedeemSharesRaw } =
+      liabilityState;
 
     const forcedValue = decimalToUsdcUnits(newValue);
     const pricingSupplyRaw = totalSupplyRaw + totalPendingRedeemSharesRaw;

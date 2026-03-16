@@ -1,652 +1,8 @@
-/**
- * Custom Vault Contract Client (ERC-7540 Compliant with Closed-Book Batch Lifecycle)
- *
- * viem-based client for interacting with the ClosedBookBatchVault canonical contract.
- * Implements ERC-7540 async redemption with deposit queue, batch lifecycle, and settlement.
- *
- * Canonical Contract: ClosedBookBatchVault
- *
- * BATCH LIFECYCLE (Closed-Book Model):
- * - OPEN: Batch accepting deposits and redemption requests
- * - CUTOFF: First redemption request seals batch; deposits closed
- * - FLATTENING: NAV snapshot taken, clearing price locked
- * - SETTLING: Settlement in progress (chunked processing)
- * - SETTLED: Settlement complete, claims available
- * - CLOSED: Claims window ended
- * - REOPEN: Ready for next batch cycle
- *
- * KEY DIFFERENCES FROM EpochTrancheVault:
- *   - Uses 'batch' terminology instead of 'epoch'
- *   - No carry/partial-realization accounting
- *   - Shares remain economically live until settlement
- *   - Locked clearing price computed at flatten time
- *   - Cancellation disabled after cutoff
- */
-
-import type { Address, Hex, PublicClient, WalletClient } from "viem";
+import type { Address, Hex, WalletClient } from "viem";
 import { createPublicClient, http } from "viem";
 import type { Chain } from "viem/chains";
 import { logger } from "../logger.js";
 
-// ============================================================================
-// Contract ABI for ClosedBookBatchVault (Canonical)
-// ============================================================================
-
-export const CLOSED_BOOK_BATCH_VAULT_ABI = [
-  // View functions - Configuration
-  {
-    type: "function",
-    name: "asset",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "address" }],
-  },
-  {
-    type: "function",
-    name: "DEPLOY_TIME",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "NAV_STALENESS_THRESHOLD",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "currentBatchId",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "currentNAV",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "lastNAVUpdate",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "isNAVFresh",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "fresh", type: "bool" }],
-  },
-  {
-    type: "function",
-    name: "emergencyMode",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "bool" }],
-  },
-  {
-    type: "function",
-    name: "totalSupply",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "totalAssets",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-
-  // View functions - Batch
-  {
-    type: "function",
-    name: "batches",
-    stateMutability: "view",
-    inputs: [{ name: "", type: "uint256" }],
-    outputs: [
-      { name: "batchId", type: "uint256" },
-      { name: "startTime", type: "uint256" },
-      { name: "endTime", type: "uint256" },
-      { name: "cutoffTime", type: "uint256" },
-      { name: "snapshotNAV", type: "uint256" },
-      { name: "lockedClearingPrice", type: "uint256" },
-      { name: "snapshotTimestamp", type: "uint256" },
-      { name: "totalSharesPending", type: "uint256" },
-      { name: "totalAssetsSnapshot", type: "uint256" },
-      { name: "proRataRatio", type: "uint256" },
-      { name: "totalQueuedDeposits", type: "uint256" },
-      { name: "status", type: "uint8" },
-      { name: "isPriceLocked", type: "bool" },
-      { name: "exists", type: "bool" },
-    ],
-  },
-  {
-    type: "function",
-    name: "getCurrentBatch",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "getBatchEnd",
-    stateMutability: "view",
-    inputs: [{ name: "batchId", type: "uint256" }],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "getBatchStatus",
-    stateMutability: "view",
-    inputs: [{ name: "batchId", type: "uint256" }],
-    outputs: [{ name: "", type: "uint8" }],
-  },
-  {
-    type: "function",
-    name: "getSettlementProgress",
-    stateMutability: "view",
-    inputs: [{ name: "batchId", type: "uint256" }],
-    outputs: [
-      { name: "processed", type: "uint256" },
-      { name: "total", type: "uint256" },
-      { name: "lastIndex", type: "uint256" },
-      { name: "reservedAssetsAllocated", type: "uint256" },
-      { name: "isComplete", type: "bool" },
-    ],
-  },
-
-  // View functions - Deposit Queue
-  {
-    type: "function",
-    name: "depositRequests",
-    stateMutability: "view",
-    inputs: [{ name: "", type: "uint256" }],
-    outputs: [
-      { name: "requestId", type: "uint256" },
-      { name: "depositor", type: "address" },
-      { name: "assets", type: "uint256" },
-      { name: "targetBatch", type: "uint256" },
-      { name: "createdAt", type: "uint256" },
-      { name: "status", type: "uint8" },
-      { name: "exists", type: "bool" },
-    ],
-  },
-  {
-    type: "function",
-    name: "depositorBatchRequest",
-    stateMutability: "view",
-    inputs: [
-      { name: "", type: "address" },
-      { name: "", type: "uint256" },
-    ],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "totalQueuedAssets",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "reservedRedemptionAssets",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "nextDepositRequestId",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-
-  // View functions - Redemption
-  {
-    type: "function",
-    name: "redemptionRequests",
-    stateMutability: "view",
-    inputs: [{ name: "", type: "uint256" }],
-    outputs: [
-      { name: "requestId", type: "uint256" },
-      { name: "controller", type: "address" },
-      { name: "owner", type: "address" },
-      { name: "shares", type: "uint256" },
-      { name: "assetsClaimable", type: "uint256" },
-      { name: "batchId", type: "uint256" },
-      { name: "status", type: "uint8" },
-      { name: "createdAt", type: "uint256" },
-      { name: "settledAt", type: "uint256" },
-      { name: "exists", type: "bool" },
-    ],
-  },
-  {
-    type: "function",
-    name: "controllerToRequestId",
-    stateMutability: "view",
-    inputs: [{ name: "", type: "address" }],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "getControllerRequestIds",
-    stateMutability: "view",
-    inputs: [{ name: "controller", type: "address" }],
-    outputs: [{ name: "requestIds", type: "uint256[]" }],
-  },
-  {
-    type: "function",
-    name: "isOperator",
-    stateMutability: "view",
-    inputs: [
-      { name: "", type: "address" },
-      { name: "", type: "address" },
-    ],
-    outputs: [{ name: "", type: "bool" }],
-  },
-  {
-    type: "function",
-    name: "totalPendingRedeemShares",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "nextRedemptionRequestId",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "pendingRedeemRequest",
-    stateMutability: "view",
-    inputs: [
-      { name: "requestId", type: "uint256" },
-      { name: "controller", type: "address" },
-    ],
-    outputs: [{ name: "shares", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "claimableRedeemRequest",
-    stateMutability: "view",
-    inputs: [
-      { name: "requestId", type: "uint256" },
-      { name: "controller", type: "address" },
-    ],
-    outputs: [{ name: "shares", type: "uint256" }],
-  },
-
-  // Write functions - Deposit
-  {
-    type: "function",
-    name: "queueDeposit",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "assets", type: "uint256" }],
-    outputs: [{ name: "requestId", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "cancelDeposit",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "requestId", type: "uint256" }],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "processDepositQueue",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "batchId", type: "uint256" },
-      { name: "startIndex", type: "uint256" },
-      { name: "endIndex", type: "uint256" },
-    ],
-    outputs: [],
-  },
-
-  // Write functions - Redemption (ERC-7540)
-  {
-    type: "function",
-    name: "requestRedeem",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "shares", type: "uint256" },
-      { name: "controller", type: "address" },
-      { name: "owner", type: "address" },
-    ],
-    outputs: [{ name: "requestId", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "cancelRedeemRequest",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "requestId", type: "uint256" }],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "redeem",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "requestId", type: "uint256" },
-      { name: "shares", type: "uint256" },
-      { name: "receiver", type: "address" },
-    ],
-    outputs: [{ name: "assets", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "withdraw",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "requestId", type: "uint256" },
-      { name: "assets", type: "uint256" },
-      { name: "receiver", type: "address" },
-    ],
-    outputs: [{ name: "shares", type: "uint256" }],
-  },
-
-  // Write functions - Batch Lifecycle
-  {
-    type: "function",
-    name: "cutoffBatch",
-    stateMutability: "nonpayable",
-    inputs: [],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "flattenBatch",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "snapshotHash", type: "bytes32" }],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "settleBatch",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "batchId", type: "uint256" }],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "settleBatchChunk",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "batchId", type: "uint256" },
-      { name: "startIndex", type: "uint256" },
-    ],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "resumeSettlement",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "batchId", type: "uint256" }],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "closeBatch",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "batchId", type: "uint256" }],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "reopenBatch",
-    stateMutability: "nonpayable",
-    inputs: [],
-    outputs: [],
-  },
-
-  // Write functions - Admin
-  {
-    type: "function",
-    name: "updateNAV",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "_nav", type: "uint256" }],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "setEmergencyMode",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "_active", type: "bool" }],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "maxRescueableUnderlying",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "tradingWallet",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "address" }],
-  },
-  {
-    type: "function",
-    name: "maxAllocatableAssets",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "allocateToTradingWallet",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "amount", type: "uint256" }],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "rescueERC20",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "token", type: "address" },
-      { name: "receiver", type: "address" },
-      { name: "amount", type: "uint256" },
-    ],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "rescueUnderlyingSurplus",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "receiver", type: "address" },
-      { name: "amount", type: "uint256" },
-    ],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "setOperator",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "operator", type: "address" },
-      { name: "approved", type: "bool" },
-    ],
-    outputs: [{ name: "", type: "bool" }],
-  },
-
-  // Events - Deposit
-  {
-    type: "event",
-    name: "DepositQueued",
-    inputs: [
-      { name: "requestId", type: "uint256", indexed: true },
-      { name: "depositor", type: "address", indexed: true },
-      { name: "assets", type: "uint256", indexed: false },
-      { name: "targetBatch", type: "uint256", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "DepositProcessed",
-    inputs: [
-      { name: "requestId", type: "uint256", indexed: true },
-      { name: "depositor", type: "address", indexed: true },
-      { name: "assets", type: "uint256", indexed: false },
-      { name: "sharesMinted", type: "uint256", indexed: false },
-      { name: "batchId", type: "uint256", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "DepositCancelled",
-    inputs: [
-      { name: "requestId", type: "uint256", indexed: true },
-      { name: "depositor", type: "address", indexed: true },
-      { name: "assets", type: "uint256", indexed: false },
-    ],
-  },
-
-  // Events - Redemption
-  {
-    type: "event",
-    name: "RedeemRequest",
-    inputs: [
-      { name: "controller", type: "address", indexed: true },
-      { name: "owner", type: "address", indexed: true },
-      { name: "requestId", type: "uint256", indexed: true },
-      { name: "sender", type: "address", indexed: false },
-      { name: "shares", type: "uint256", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "SharesEscrowed",
-    inputs: [
-      { name: "requestId", type: "uint256", indexed: true },
-      { name: "controller", type: "address", indexed: true },
-      { name: "shares", type: "uint256", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "RedeemRequestCancelled",
-    inputs: [
-      { name: "requestId", type: "uint256", indexed: true },
-      { name: "controller", type: "address", indexed: true },
-      { name: "shares", type: "uint256", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "Withdraw",
-    inputs: [
-      { name: "sender", type: "address", indexed: true },
-      { name: "receiver", type: "address", indexed: true },
-      { name: "owner", type: "address", indexed: true },
-      { name: "assets", type: "uint256", indexed: false },
-      { name: "shares", type: "uint256", indexed: false },
-    ],
-  },
-
-  // Events - Batch
-  {
-    type: "event",
-    name: "BatchCutoff",
-    inputs: [
-      { name: "batchId", type: "uint256", indexed: true },
-      { name: "cutoffTime", type: "uint256", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "BatchFlattened",
-    inputs: [
-      { name: "batchId", type: "uint256", indexed: true },
-      { name: "snapshotHash", type: "bytes32", indexed: true },
-      { name: "nav", type: "uint256", indexed: false },
-      { name: "timestamp", type: "uint256", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "BatchSettled",
-    inputs: [
-      { name: "batchId", type: "uint256", indexed: true },
-      { name: "totalShares", type: "uint256", indexed: false },
-      { name: "totalAssets", type: "uint256", indexed: false },
-      { name: "proRataRatio", type: "uint256", indexed: false },
-      { name: "processedCount", type: "uint256", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "SettlementChunkProcessed",
-    inputs: [
-      { name: "batchId", type: "uint256", indexed: true },
-      { name: "startIndex", type: "uint256", indexed: false },
-      { name: "endIndex", type: "uint256", indexed: false },
-      { name: "processedInChunk", type: "uint256", indexed: false },
-      { name: "totalProcessed", type: "uint256", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "BatchClosed",
-    inputs: [{ name: "batchId", type: "uint256", indexed: true }],
-  },
-  {
-    type: "event",
-    name: "BatchReopened",
-    inputs: [
-      { name: "newBatchId", type: "uint256", indexed: true },
-      { name: "startTime", type: "uint256", indexed: false },
-      { name: "endTime", type: "uint256", indexed: false },
-    ],
-  },
-
-  // Events - Admin
-  {
-    type: "event",
-    name: "EmergencyModeSet",
-    inputs: [{ name: "active", type: "bool", indexed: false }],
-  },
-  {
-    type: "event",
-    name: "NAVUpdated",
-    inputs: [
-      { name: "nav", type: "uint256", indexed: false },
-      { name: "timestamp", type: "uint256", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "OperatorSet",
-    inputs: [
-      { name: "controller", type: "address", indexed: true },
-      { name: "operator", type: "address", indexed: true },
-      { name: "approved", type: "bool", indexed: false },
-    ],
-  },
-] as const;
-
-// ============================================================================
-// Types (ClosedBookBatchVault Canonical)
-// ============================================================================
-
-/** Batch Status: 0=Open, 1=Cutoff, 2=Flattening, 3=Settling, 4=Settled, 5=Closed, 6=Reopen */
 export type BatchStatus =
   | "open"
   | "cutoff"
@@ -654,38 +10,12 @@ export type BatchStatus =
   | "settling"
   | "settled"
   | "closed"
-  | "reopen";
+  | "reopen"
+  | "processing"
+  | "processed";
 
-/** Redemption Status: 0=Pending, 1=Escrowed, 2=Claimable, 3=Claimed, 4=Cancelled */
 export type RedemptionStatus = "pending" | "escrowed" | "claimable" | "claimed" | "cancelled";
 
-/** Deposit Status: 0=Pending, 1=Processed, 2=Cancelled */
-export type DepositStatus = "pending" | "processed" | "cancelled";
-
-/** Redemption Request Data (ClosedBookBatchVault) - NO carry fields */
-export interface RedemptionRequestData {
-  requestId: bigint;
-  controller: Address;
-  owner: Address;
-  shares: bigint;
-  assetsClaimable: bigint;
-  batchId: bigint;
-  status: RedemptionStatus;
-  createdAt: bigint;
-  settledAt?: bigint;
-}
-
-/** Deposit Request Data */
-export interface DepositRequestData {
-  requestId: bigint;
-  depositor: Address;
-  assets: bigint;
-  targetBatch: bigint;
-  createdAt: bigint;
-  status: DepositStatus;
-}
-
-/** Batch Data (ClosedBookBatchVault) - NO carry/epoch fields */
 export interface BatchData {
   batchId: bigint;
   startTime: bigint;
@@ -700,9 +30,9 @@ export interface BatchData {
   totalQueuedDeposits: bigint;
   status: BatchStatus;
   isPriceLocked: boolean;
+  exists?: boolean;
 }
 
-/** Settlement Progress Data */
 export interface SettlementProgressData {
   processed: bigint;
   total: bigint;
@@ -711,983 +41,831 @@ export interface SettlementProgressData {
   isComplete: boolean;
 }
 
-/** Result of queueDeposit call */
-export interface QueueDepositResult {
-  success: boolean;
-  requestId?: bigint;
-  depositor?: Address;
-  assets?: bigint;
-  targetBatch?: bigint;
-  txHash?: Hex;
-  error?: string;
+export interface RedemptionRequestData {
+  requestId: bigint;
+  controller: Address;
+  owner: Address;
+  shares: bigint;
+  assetsClaimable: bigint;
+  batchId: bigint;
+  status: RedemptionStatus;
+  createdAt: bigint;
+  settledAt: bigint;
 }
 
-/** Result of requestRedeem call */
-export interface RequestRedeemResult {
-  success: boolean;
-  requestId?: bigint;
-  controller?: Address;
-  owner?: Address;
-  shares?: bigint;
-  batchId?: bigint;
-  txHash?: Hex;
-  error?: string;
+export interface EpochData {
+  epochId: bigint;
+  startTime: bigint;
+  endTime: bigint;
+  settlementTime: bigint;
+  totalRequests: number;
+  totalShares: bigint;
+  settled: boolean;
+  proRataRatio?: bigint;
+  availableAssets?: bigint;
 }
 
-/** Result of redeem/withdraw claim call */
-export interface RedeemResult {
-  success: boolean;
-  assets?: bigint;
-  shares?: bigint;
-  controller?: Address;
-  receiver?: Address;
-  txHash?: Hex;
-  error?: string;
-}
-
-/** Result of cancelRedeemRequest call */
-export interface CancelResult {
-  success: boolean;
-  requestId?: bigint;
-  cancelledShares?: bigint;
-  txHash?: Hex;
-  error?: string;
-}
-
-/** Vault Contract Configuration */
 export interface VaultContractConfig {
-  vaultAddress: Address;
-  rpcUrl: string;
-  chainId?: number;
-  chain: Chain;
+  deployTime: bigint;
+  navStalenessThreshold: bigint;
 }
 
-// ============================================================================
-// Error Mapping (ClosedBookBatchVault)
-// ============================================================================
+export interface NAVStatus {
+  currentNAV: bigint;
+  lastNAVUpdate: bigint;
+  isFresh: boolean;
+}
 
-const CONTRACT_ERRORS: Record<string, string> = {
-  // Authorization
-  Unauthorized: "Caller is not authorized",
-  NotController: "Caller is not the controller or approved operator",
-  NotOwner: "Caller is not the owner or approved operator",
-  AccessControlUnauthorizedAccount: "Account does not have the required role",
+interface CycleData {
+  lockedNav: bigint;
+  totalQueuedDepositAssets: bigint;
+  totalQueuedRedeemShares: bigint;
+  totalQueuedRedeemAssets: bigint;
+  depositCursor: bigint;
+  redeemCursor: bigint;
+  processingStartedAt: bigint;
+  depositsComplete: boolean;
+  redeemsComplete: boolean;
+  finalized: boolean;
+}
 
-  // State
-  InvalidRequest: "Invalid request ID",
-  RequestNotPending: "Request is not in pending status",
-  RequestNotEscrowed: "Request is not in escrowed status",
-  RequestNotClaimable: "Request is not in claimable status",
-  InsufficientShares: "Insufficient shares for operation",
-  ZeroAmount: "Amount must be greater than zero",
-  InvalidAddress: "Invalid address (zero address)",
+interface TxResult {
+  success: boolean;
+  txHash?: Hex;
+  error?: string;
+}
 
-  // Batch
-  BatchNotOpen: "Batch is not open",
-  BatchNotCutoff: "Batch is not in cutoff state",
-  BatchNotFlattening: "Batch is not in flattening state",
-  BatchNotSettling: "Batch is not in settling state",
-  BatchNotSettled: "Batch is not settled",
-  BatchAlreadySettled: "Batch has already been settled",
-  BatchNotClosed: "Batch is not closed",
-  NoPendingRequests: "No pending requests in batch",
+export interface DepositRequestData {
+  requestId: bigint;
+  depositor: Address;
+  assets: bigint;
+  targetBatch: bigint;
+  createdAt: bigint;
+  status: "pending" | "processed" | "cancelled";
+}
 
-  // Settlement
-  SettlementIncomplete: "Settlement is incomplete",
-  SettlementAlreadyComplete: "Settlement is already complete",
-  PriceNotLocked: "Price is not locked for batch",
+export const FLAT_BOOK_VAULT_V2_ABI = [
+  {
+    type: "error",
+    name: "ZeroAmount",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "InvalidState",
+    inputs: [
+      { type: "uint8", name: "expected" },
+      { type: "uint8", name: "actual" },
+    ],
+  },
+  {
+    type: "error",
+    name: "NAVStale",
+    inputs: [
+      { type: "uint256", name: "lastUpdate" },
+      { type: "uint256", name: "threshold" },
+    ],
+  },
+  {
+    type: "error",
+    name: "InsufficientLiquidityForProcessing",
+    inputs: [
+      { type: "uint256", name: "requiredAssets" },
+      { type: "uint256", name: "availableAssets" },
+    ],
+  },
+  {
+    type: "error",
+    name: "AllocationExceedsAvailable",
+    inputs: [
+      { type: "uint256", name: "requested" },
+      { type: "uint256", name: "available" },
+    ],
+  },
+  {
+    type: "function",
+    name: "asset",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "address" }],
+  },
+  {
+    type: "function",
+    name: "currentNAV",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "lastNAVUpdate",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "NAV_STALENESS_THRESHOLD",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "isNAVFresh",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "state",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint8" }],
+  },
+  {
+    type: "function",
+    name: "currentCycleId",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "cycles",
+    stateMutability: "view",
+    inputs: [{ type: "uint256" }],
+    outputs: [
+      { type: "uint256", name: "lockedNav" },
+      { type: "uint256", name: "totalQueuedDepositAssets" },
+      { type: "uint256", name: "totalQueuedRedeemShares" },
+      { type: "uint256", name: "totalQueuedRedeemAssets" },
+      { type: "uint256", name: "depositCursor" },
+      { type: "uint256", name: "redeemCursor" },
+      { type: "uint256", name: "processingStartedAt" },
+      { type: "bool", name: "depositsComplete" },
+      { type: "bool", name: "redeemsComplete" },
+      { type: "bool", name: "finalized" },
+    ],
+  },
+  {
+    type: "function",
+    name: "getCycleParticipants",
+    stateMutability: "view",
+    inputs: [{ type: "uint256", name: "cycleId" }],
+    outputs: [
+      { type: "address[]", name: "depositParticipants" },
+      { type: "address[]", name: "redeemParticipants" },
+    ],
+  },
+  {
+    type: "function",
+    name: "queuedDepositAssets",
+    stateMutability: "view",
+    inputs: [{ type: "uint256" }, { type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "queuedRedeemShares",
+    stateMutability: "view",
+    inputs: [{ type: "uint256" }, { type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "claimableRedeemRequest",
+    stateMutability: "view",
+    inputs: [{ type: "uint256" }, { type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "claimableRedeemAssetsByController",
+    stateMutability: "view",
+    inputs: [{ type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "totalClaimableRedeemAssets",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "totalSupply",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "totalAssets",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "maxAllocatableAssets",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "ADMIN_ROLE",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "bytes32" }],
+  },
+  {
+    type: "function",
+    name: "hasRole",
+    stateMutability: "view",
+    inputs: [{ type: "bytes32" }, { type: "address" }],
+    outputs: [{ type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "isOperator",
+    stateMutability: "view",
+    inputs: [{ type: "address" }, { type: "address" }],
+    outputs: [{ type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "setOperator",
+    stateMutability: "nonpayable",
+    inputs: [{ type: "address" }, { type: "bool" }],
+    outputs: [{ type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "requestRedeem",
+    stateMutability: "nonpayable",
+    inputs: [{ type: "uint256" }, { type: "address" }, { type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "redeem",
+    stateMutability: "nonpayable",
+    inputs: [{ type: "uint256" }, { type: "address" }, { type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "withdraw",
+    stateMutability: "nonpayable",
+    inputs: [{ type: "uint256" }, { type: "address" }, { type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "closeBook",
+    stateMutability: "nonpayable",
+    inputs: [],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "beginProcessing",
+    stateMutability: "nonpayable",
+    inputs: [],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "processRedeems",
+    stateMutability: "nonpayable",
+    inputs: [{ type: "uint256" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "processDeposits",
+    stateMutability: "nonpayable",
+    inputs: [{ type: "uint256" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "finalizeProcessing",
+    stateMutability: "nonpayable",
+    inputs: [],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "reopenIdleCycle",
+    stateMutability: "nonpayable",
+    inputs: [],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "allocateToTradingWallet",
+    stateMutability: "nonpayable",
+    inputs: [{ type: "uint256" }],
+    outputs: [],
+  },
+] as const;
 
-  // Cancellation
-  CannotCancelAfterCutoff: "Cannot cancel after batch cutoff",
+export const CLOSED_BOOK_BATCH_VAULT_ABI = FLAT_BOOK_VAULT_V2_ABI;
+export const WEEKLY_EPOCH_VAULT_ABI = FLAT_BOOK_VAULT_V2_ABI;
 
-  // NAV
-  NAVStale: "NAV is stale (older than threshold)",
+function extractErrorText(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
 
-  // Emergency
-  EmergencyModeActive: "Emergency mode is active - requests paused",
+  if (typeof error === "string") {
+    return error;
+  }
 
-  // Math
-  Overflow: "Arithmetic overflow",
-  Underflow: "Arithmetic underflow",
-  SafeERC20FailedOperation: "ERC20 operation failed",
-  ReentrancyGuardReentrantCall: "Reentrant call detected",
-};
+  if (error && typeof error === "object") {
+    const obj = error as Record<string, unknown>;
+    const candidates = [
+      obj.shortMessage,
+      obj.details,
+      obj.message,
+      obj.reason,
+      obj.cause && typeof obj.cause === "object"
+        ? (obj.cause as Record<string, unknown>).message
+        : undefined,
+    ];
 
-function parseContractError(error: unknown): string {
-  if (error instanceof Error) {
-    const message = error.message;
-    for (const [errorName, description] of Object.entries(CONTRACT_ERRORS)) {
-      if (message.includes(errorName)) {
-        return description;
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && candidate.trim().length > 0) {
+        return candidate;
       }
     }
-    return message;
   }
-  return "Unknown error";
+
+  return String(error);
 }
 
-// ============================================================================
-// Canonical Vault Client (ClosedBookBatchVault)
-// ============================================================================
+export function parseContractError(error: unknown): string {
+  const message = extractErrorText(error);
+  if (message.includes("NAVStale")) {
+    return "NAV is stale - settlement requires fresh NAV";
+  }
+  if (message.includes("InvalidState")) {
+    const stateMatch = message.match(/\((\d+),\s*(\d+)\)/);
+    if (stateMatch) {
+      const expected = stateMatch[1] ?? "unknown";
+      const actual = stateMatch[2] ?? "unknown";
+      const label = (value: string): string => {
+        switch (value) {
+          case "0":
+            return "Open";
+          case "1":
+            return "Closed";
+          case "2":
+            return "Processing";
+          default:
+            return value;
+        }
+      };
+      return `Operation not available in current vault state (expected ${label(expected)}, actual ${label(actual)})`;
+    }
+    return "Operation not available in current vault state";
+  }
+  if (message.includes("InsufficientLiquidityForProcessing")) {
+    return "Insufficient liquidity to start processing";
+  }
+  if (message.includes("AllocationExceedsAvailable")) {
+    return "Allocation exceeds currently available vault assets";
+  }
+  if (message.includes("ZeroAmount")) {
+    return "Operation amount must be greater than zero";
+  }
+  if (
+    message.includes("AccessControlUnauthorizedAccount") ||
+    message.includes("is missing role") ||
+    message.includes("not authorized")
+  ) {
+    return "Signer is missing the required on-chain role";
+  }
+  if (message.includes("insufficient funds")) {
+    return "Signer has insufficient native gas balance";
+  }
+  return message;
+}
 
 export class CustomVaultClient {
-  private publicClient: PublicClient;
-  private vaultAddress: Address;
-  private chain: Chain;
+  private readonly vaultAddress: Address;
+  private readonly publicClient: any;
 
-  constructor(config: VaultContractConfig) {
-    this.vaultAddress = config.vaultAddress;
-    this.chain = config.chain;
+  constructor(params: { vaultAddress: Address; rpcUrl: string; chain?: Chain }) {
+    this.vaultAddress = params.vaultAddress;
     this.publicClient = createPublicClient({
-      chain: this.chain,
-      transport: http(config.rpcUrl),
-    }) as PublicClient;
+      transport: http(params.rpcUrl),
+      chain: params.chain,
+    }) as any;
   }
 
-  // Read Operations - Configuration
-  async getAsset(): Promise<Address> {
+  private async read<T>(functionName: string, args: readonly unknown[] = []): Promise<T> {
     return this.publicClient.readContract({
       address: this.vaultAddress,
-      abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-      functionName: "asset",
-    }) as Promise<Address>;
+      abi: FLAT_BOOK_VAULT_V2_ABI,
+      functionName,
+      args,
+    }) as Promise<T>;
   }
 
-  async getVaultConfig(): Promise<{
-    deployTime: bigint;
-    navStalenessThreshold: bigint;
-  }> {
-    const [deployTime, navStalenessThreshold] = await Promise.all([
-      this.publicClient.readContract({
+  private async write(
+    walletClient: any,
+    functionName: string,
+    args: readonly unknown[] = [],
+  ): Promise<TxResult> {
+    try {
+      const txHash = await walletClient.writeContract({
         address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "DEPLOY_TIME",
-      }) as Promise<bigint>,
-      this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "NAV_STALENESS_THRESHOLD",
-      }) as Promise<bigint>,
+        abi: FLAT_BOOK_VAULT_V2_ABI,
+        functionName,
+        args,
+        chain: walletClient.chain,
+        account: walletClient.account ?? null,
+      });
+      return { success: true, txHash };
+    } catch (error) {
+      const parsed = parseContractError(error);
+      logger.error("CustomVaultClient.write failed", {
+        functionName,
+        error: parsed,
+        rawError: extractErrorText(error),
+      });
+      return { success: false, error: parsed };
+    }
+  }
+
+  async waitForTransaction(txHash: Hex): Promise<{ success: boolean; error?: string }> {
+    try {
+      const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+      if (receipt.status !== "success") {
+        return {
+          success: false,
+          error: `Transaction reverted on-chain (status: ${receipt.status})`,
+        };
+      }
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: parseContractError(error) };
+    }
+  }
+
+  async getAsset(): Promise<Address> {
+    return this.read<Address>("asset");
+  }
+
+  async getVaultConfig(): Promise<VaultContractConfig> {
+    const [navStalenessThreshold] = await Promise.all([
+      this.read<bigint>("NAV_STALENESS_THRESHOLD"),
     ]);
     return {
-      deployTime,
+      deployTime: 0n,
       navStalenessThreshold,
     };
   }
 
-  // Read Operations - NAV
-  async getNAVStatus(): Promise<{ currentNAV: bigint; lastNAVUpdate: bigint; isFresh: boolean }> {
+  async getNAVStatus(): Promise<NAVStatus> {
     const [currentNAV, lastNAVUpdate, isFresh] = await Promise.all([
-      this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "currentNAV",
-      }) as Promise<bigint>,
-      this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "lastNAVUpdate",
-      }) as Promise<bigint>,
-      this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "isNAVFresh",
-      }) as Promise<boolean>,
+      this.read<bigint>("currentNAV"),
+      this.read<bigint>("lastNAVUpdate"),
+      this.read<boolean>("isNAVFresh"),
     ]);
     return { currentNAV, lastNAVUpdate, isFresh };
   }
 
-  // Read Operations - Deposit Queue
-  async getDepositRequest(requestId: bigint): Promise<DepositRequestData | null> {
-    try {
-      const result = (await this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "depositRequests",
-        args: [requestId],
-      })) as [bigint, Address, bigint, bigint, bigint, number, boolean];
-      if (!result[6]) return null;
-      const statusMap: DepositStatus[] = ["pending", "processed", "cancelled"];
-      return {
-        requestId: result[0],
-        depositor: result[1],
-        assets: result[2],
-        targetBatch: result[3],
-        createdAt: result[4],
-        status: statusMap[result[5]] ?? "pending",
-      };
-    } catch (error) {
-      logger.error("getDepositRequest failed", {
-        requestId: requestId.toString(),
-        error: parseContractError(error),
-      });
-      return null;
-    }
-  }
-
-  async getDepositorBatchRequest(depositor: Address, batchId: bigint): Promise<bigint> {
-    try {
-      return (await this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "depositorBatchRequest",
-        args: [depositor, batchId],
-      })) as bigint;
-    } catch {
-      return 0n;
-    }
-  }
-
-  async getTotalQueuedAssets(): Promise<bigint> {
-    try {
-      return this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "totalQueuedAssets",
-      }) as Promise<bigint>;
-    } catch {
-      return 0n;
-    }
-  }
-
-  async getReservedRedemptionAssets(): Promise<bigint> {
-    try {
-      return this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "reservedRedemptionAssets",
-      }) as Promise<bigint>;
-    } catch {
-      return 0n;
-    }
-  }
-
-  // Read Operations - Redemption
-  async getRedemptionRequest(requestId: bigint): Promise<RedemptionRequestData | null> {
-    try {
-      const result = (await this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "redemptionRequests",
-        args: [requestId],
-      })) as readonly [
-        bigint,
-        Address,
-        Address,
-        bigint,
-        bigint,
-        bigint,
-        number,
-        bigint,
-        bigint,
-        boolean,
-      ];
-      if (!result[9]) return null;
-      const statusMap: RedemptionStatus[] = [
-        "pending",
-        "escrowed",
-        "claimable",
-        "claimed",
-        "cancelled",
-      ];
-      return {
-        requestId: result[0],
-        controller: result[1],
-        owner: result[2],
-        shares: result[3],
-        assetsClaimable: result[4],
-        batchId: result[5],
-        status: statusMap[result[6]] ?? "pending",
-        createdAt: result[7],
-        settledAt: result[8] || undefined,
-      };
-    } catch (error) {
-      logger.error("getRedemptionRequest failed", {
-        requestId: requestId.toString(),
-        error: parseContractError(error),
-      });
-      return null;
-    }
-  }
-
-  async getControllerRequestId(controller: Address): Promise<bigint> {
-    try {
-      return this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "controllerToRequestId",
-        args: [controller],
-      }) as Promise<bigint>;
-    } catch {
-      return 0n;
-    }
-  }
-
-  async getControllerRequestIds(controller: Address): Promise<bigint[]> {
-    try {
-      return this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "getControllerRequestIds",
-        args: [controller],
-      }) as Promise<bigint[]>;
-    } catch {
-      return [];
-    }
-  }
-
-  async getTotalPendingRedeemShares(): Promise<bigint> {
-    try {
-      return this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "totalPendingRedeemShares",
-      }) as Promise<bigint>;
-    } catch {
-      return 0n;
-    }
-  }
-
-  async getPendingRedeemRequest(requestId: bigint, controller: Address): Promise<bigint> {
-    try {
-      return this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "pendingRedeemRequest",
-        args: [requestId, controller],
-      }) as Promise<bigint>;
-    } catch {
-      return 0n;
-    }
-  }
-
-  async getClaimableRedeemRequest(requestId: bigint, controller: Address): Promise<bigint> {
-    try {
-      return this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "claimableRedeemRequest",
-        args: [requestId, controller],
-      }) as Promise<bigint>;
-    } catch {
-      return 0n;
-    }
-  }
-
-  // Read Operations - Batch
-  async getBatch(batchId: bigint): Promise<BatchData | null> {
-    try {
-      const result = (await this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "batches",
-        args: [batchId],
-      })) as readonly [
-        bigint,
-        bigint,
-        bigint,
-        bigint,
-        bigint,
-        bigint,
-        bigint,
-        bigint,
-        bigint,
-        bigint,
-        bigint,
-        number,
-        boolean,
-        boolean,
-      ];
-      if (!result[13]) return null;
-      const statusMap: BatchStatus[] = [
-        "open",
-        "cutoff",
-        "flattening",
-        "settling",
-        "settled",
-        "closed",
-        "reopen",
-      ];
-      return {
-        batchId: result[0],
-        startTime: result[1],
-        endTime: result[2],
-        cutoffTime: result[3],
-        snapshotNAV: result[4],
-        lockedClearingPrice: result[5],
-        snapshotTimestamp: result[6],
-        totalSharesPending: result[7],
-        totalAssetsSnapshot: result[8],
-        proRataRatio: result[9],
-        totalQueuedDeposits: result[10],
-        status: statusMap[result[11]] ?? "open",
-        isPriceLocked: result[12],
-      };
-    } catch (error) {
-      logger.error("getBatch failed", {
-        batchId: batchId.toString(),
-        error: parseContractError(error),
-      });
-      return null;
-    }
-  }
-
-  async getCurrentBatchId(): Promise<bigint> {
-    return this.publicClient.readContract({
-      address: this.vaultAddress,
-      abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-      functionName: "currentBatchId",
-    }) as Promise<bigint>;
+  async getEmergencyMode(): Promise<boolean> {
+    return false;
   }
 
   async getCurrentBatch(): Promise<bigint> {
-    return this.publicClient.readContract({
-      address: this.vaultAddress,
-      abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-      functionName: "currentBatchId",
-    }) as Promise<bigint>;
+    return this.read<bigint>("currentCycleId");
   }
 
-  async getBatchEnd(batchId: bigint): Promise<bigint> {
-    try {
-      return this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "getBatchEnd",
-        args: [batchId],
-      }) as Promise<bigint>;
-    } catch (error) {
-      logger.error("getBatchEnd failed", {
-        batchId: batchId.toString(),
-        error: parseContractError(error),
-      });
-      return 0n;
+  async getCurrentBatchId(): Promise<bigint> {
+    return this.getCurrentBatch();
+  }
+
+  private mapStateToBatchStatus(state: number, cycle: CycleData, isCurrent: boolean): BatchStatus {
+    if (!isCurrent) {
+      return cycle.finalized ? "settled" : "closed";
     }
+    if (state === 0) return "open";
+    if (state === 1) return "cutoff";
+    if (state === 2) {
+      if (cycle.redeemsComplete && cycle.depositsComplete) {
+        return "settled";
+      }
+      return "flattening";
+    }
+    return "open";
+  }
+
+  private normalizeState(value: bigint | number): number {
+    return typeof value === "bigint" ? Number(value) : value;
+  }
+
+  private async getCycle(cycleId: bigint): Promise<CycleData> {
+    const raw = await this.read<
+      [bigint, bigint, bigint, bigint, bigint, bigint, bigint, boolean, boolean, boolean]
+    >("cycles", [cycleId]);
+    return {
+      lockedNav: raw[0],
+      totalQueuedDepositAssets: raw[1],
+      totalQueuedRedeemShares: raw[2],
+      totalQueuedRedeemAssets: raw[3],
+      depositCursor: raw[4],
+      redeemCursor: raw[5],
+      processingStartedAt: raw[6],
+      depositsComplete: raw[7],
+      redeemsComplete: raw[8],
+      finalized: raw[9],
+    };
+  }
+
+  async getBatch(batchId: bigint): Promise<BatchData | null> {
+    const [currentCycleId, rawState, navStatus] = await Promise.all([
+      this.read<bigint>("currentCycleId"),
+      this.read<bigint>("state"),
+      this.getNAVStatus(),
+    ]);
+    const state = this.normalizeState(rawState);
+
+    if (batchId > currentCycleId) {
+      return null;
+    }
+
+    const cycle = await this.getCycle(batchId);
+    const isCurrent = batchId === currentCycleId;
+    const status = this.mapStateToBatchStatus(state, cycle, isCurrent);
+
+    const nowTs = BigInt(Math.floor(Date.now() / 1000));
+    const start = cycle.processingStartedAt > 0n ? cycle.processingStartedAt : nowTs;
+
+    return {
+      batchId,
+      startTime: start,
+      endTime: 0n,
+      cutoffTime: 0n,
+      snapshotNAV: cycle.lockedNav > 0n ? cycle.lockedNav : navStatus.currentNAV,
+      lockedClearingPrice: cycle.lockedNav,
+      snapshotTimestamp: cycle.processingStartedAt,
+      totalSharesPending: cycle.totalQueuedRedeemShares,
+      totalAssetsSnapshot: cycle.totalQueuedRedeemAssets,
+      proRataRatio: 1000000000000000000n,
+      totalQueuedDeposits: cycle.totalQueuedDepositAssets,
+      status,
+      isPriceLocked: cycle.lockedNav > 0n,
+      exists: true,
+    };
   }
 
   async getBatchStatus(batchId: bigint): Promise<BatchStatus> {
-    try {
-      const result = (await this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "getBatchStatus",
-        args: [batchId],
-      })) as number;
-      const statusMap: BatchStatus[] = [
-        "open",
-        "cutoff",
-        "flattening",
-        "settling",
-        "settled",
-        "closed",
-        "reopen",
-      ];
-      return statusMap[result] ?? "open";
-    } catch {
-      return "open";
-    }
+    const batch = await this.getBatch(batchId);
+    return batch?.status ?? "open";
   }
 
   async getSettlementProgress(batchId: bigint): Promise<SettlementProgressData | null> {
-    try {
-      const result = (await this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "getSettlementProgress",
-        args: [batchId],
-      })) as [bigint, bigint, bigint, bigint, boolean];
-      return {
-        processed: result[0],
-        total: result[1],
-        lastIndex: result[2],
-        reservedAssetsAllocated: result[3],
-        isComplete: result[4],
-      };
-    } catch (error) {
-      logger.error("getSettlementProgress failed", {
-        batchId: batchId.toString(),
-        error: parseContractError(error),
-      });
-      return null;
-    }
+    const [cycle, participants] = await Promise.all([
+      this.getCycle(batchId),
+      this.read<[Address[], Address[]]>("getCycleParticipants", [batchId]),
+    ]);
+
+    const total = BigInt(participants[1].length + participants[0].length);
+    const processed = cycle.redeemCursor + cycle.depositCursor;
+    return {
+      processed,
+      total,
+      lastIndex: processed,
+      reservedAssetsAllocated: cycle.totalQueuedRedeemAssets,
+      isComplete: cycle.redeemsComplete && cycle.depositsComplete,
+    };
   }
 
-  async getTotalAssets(): Promise<bigint> {
-    return this.publicClient.readContract({
-      address: this.vaultAddress,
-      abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-      functionName: "totalAssets",
-    }) as Promise<bigint>;
+  private controllerToRequestId(controller: Address): bigint {
+    return BigInt(controller.toLowerCase());
+  }
+
+  private requestIdToController(requestId: bigint): Address {
+    const hex = requestId.toString(16).padStart(40, "0").slice(-40);
+    return `0x${hex}` as Address;
+  }
+
+  async getControllerRequestIds(controller: Address): Promise<bigint[]> {
+    const [cycleId, pendingShares, claimableShares] = await Promise.all([
+      this.read<bigint>("currentCycleId"),
+      this.read<bigint>("queuedRedeemShares", [
+        await this.read<bigint>("currentCycleId"),
+        controller,
+      ]),
+      this.read<bigint>("claimableRedeemRequest", [0n, controller]),
+    ]);
+    if (pendingShares > 0n || claimableShares > 0n) {
+      return [
+        this.controllerToRequestId(controller) +
+          cycleId * 10000000000000000000000000000000000000000n,
+      ];
+    }
+    return [];
+  }
+
+  async getDepositorBatchRequest(depositor: Address, _batchId: bigint): Promise<bigint> {
+    const cycleId = await this.read<bigint>("currentCycleId");
+    const queuedAssets = await this.read<bigint>("queuedDepositAssets", [cycleId, depositor]);
+    if (queuedAssets > 0n) {
+      return (
+        this.controllerToRequestId(depositor) + cycleId * 10000000000000000000000000000000000000000n
+      );
+    }
+    return 0n;
+  }
+
+  async getDepositRequest(requestId: bigint): Promise<DepositRequestData | null> {
+    if (requestId === 0n) {
+      return null;
+    }
+    const cycleFactor = 10000000000000000000000000000000000000000n;
+    const cycleId = requestId / cycleFactor;
+    const depositor = this.requestIdToController(requestId % cycleFactor);
+    const queuedAssets = await this.read<bigint>("queuedDepositAssets", [cycleId, depositor]);
+    if (queuedAssets === 0n) {
+      return null;
+    }
+    return {
+      requestId,
+      depositor,
+      assets: queuedAssets,
+      targetBatch: cycleId + 1n,
+      createdAt: 0n,
+      status: "pending",
+    };
+  }
+
+  async getRedemptionRequest(requestId: bigint): Promise<RedemptionRequestData | null> {
+    const currentCycle = await this.read<bigint>("currentCycleId");
+    const cycleFactor = 10000000000000000000000000000000000000000n;
+    const cycleId = requestId / cycleFactor;
+    const controllerRaw = requestId % cycleFactor;
+    const controller = this.requestIdToController(controllerRaw);
+
+    const [pendingShares, claimableShares, claimableAssets] = await Promise.all([
+      this.read<bigint>("queuedRedeemShares", [currentCycle, controller]),
+      this.read<bigint>("claimableRedeemRequest", [0n, controller]),
+      this.read<bigint>("claimableRedeemAssetsByController", [controller]),
+    ]);
+
+    if (pendingShares === 0n && claimableShares === 0n && claimableAssets === 0n) {
+      return null;
+    }
+
+    if (claimableShares > 0n || claimableAssets > 0n) {
+      return {
+        requestId,
+        controller,
+        owner: controller,
+        shares: claimableShares,
+        assetsClaimable: claimableAssets,
+        batchId: cycleId,
+        status: "claimable",
+        createdAt: 0n,
+        settledAt: 0n,
+      };
+    }
+
+    return {
+      requestId,
+      controller,
+      owner: controller,
+      shares: pendingShares,
+      assetsClaimable: 0n,
+      batchId: currentCycle,
+      status: "pending",
+      createdAt: 0n,
+      settledAt: 0n,
+    };
   }
 
   async getTotalSupply(): Promise<bigint> {
-    return this.publicClient.readContract({
-      address: this.vaultAddress,
-      abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-      functionName: "totalSupply",
-    }) as Promise<bigint>;
+    return this.read<bigint>("totalSupply");
   }
 
-  async getEmergencyMode(): Promise<boolean> {
-    try {
-      return this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "emergencyMode",
-      }) as Promise<boolean>;
-    } catch {
-      return false;
-    }
+  async getTotalAssets(): Promise<bigint> {
+    return this.read<bigint>("totalAssets");
   }
 
-  async getTradingWallet(): Promise<Address> {
-    return this.publicClient.readContract({
-      address: this.vaultAddress,
-      abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-      functionName: "tradingWallet",
-    }) as Promise<Address>;
+  async getTotalQueuedAssets(): Promise<bigint> {
+    const cycleId = await this.read<bigint>("currentCycleId");
+    const cycle = await this.getCycle(cycleId);
+    return cycle.totalQueuedDepositAssets;
+  }
+
+  async getReservedRedemptionAssets(): Promise<bigint> {
+    return this.read<bigint>("totalClaimableRedeemAssets");
   }
 
   async getMaxAllocatableAssets(): Promise<bigint> {
-    return this.publicClient.readContract({
-      address: this.vaultAddress,
-      abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-      functionName: "maxAllocatableAssets",
-    }) as Promise<bigint>;
+    return this.read<bigint>("maxAllocatableAssets");
   }
 
-  async isOperator(controller: Address, operator: Address): Promise<boolean> {
-    try {
-      return this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "isOperator",
-        args: [controller, operator],
-      }) as Promise<boolean>;
-    } catch {
-      return false;
-    }
+  async getAdminRole(): Promise<Hex> {
+    return this.read<Hex>("ADMIN_ROLE");
+  }
+
+  async hasRole(role: Hex, account: Address): Promise<boolean> {
+    return this.read<boolean>("hasRole", [role, account]);
+  }
+
+  async allocateToTradingWallet(walletClient: WalletClient, amount: bigint): Promise<TxResult> {
+    return this.write(walletClient, "allocateToTradingWallet", [amount]);
+  }
+
+  async closeBook(walletClient: WalletClient): Promise<TxResult> {
+    return this.write(walletClient, "closeBook", []);
   }
 
   async setOperator(
     walletClient: WalletClient,
     operator: Address,
     approved: boolean,
-  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
-    try {
-      const hash = await walletClient.writeContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "setOperator",
-        args: [operator, approved],
-        chain: walletClient.chain,
-        account: walletClient.account!,
-      });
-      return { success: true, txHash: hash };
-    } catch (error) {
-      const errorMsg = parseContractError(error);
-      logger.error("setOperator failed", { operator, approved, error: errorMsg });
-      return { success: false, error: errorMsg };
-    }
+  ): Promise<TxResult> {
+    return this.write(walletClient, "setOperator", [operator, approved]);
   }
 
-  // Write Operations - Deposit Queue Processing
+  async isOperator(controller: Address, operator: Address): Promise<boolean> {
+    return this.read<boolean>("isOperator", [controller, operator]);
+  }
+
+  async flattenBatch(walletClient: WalletClient, _snapshotHash: Hex): Promise<TxResult> {
+    let state: number;
+    try {
+      state = this.normalizeState(await this.read<bigint>("state"));
+    } catch (error) {
+      return {
+        success: false,
+        error: `Failed to read vault state before beginProcessing: ${parseContractError(error)}`,
+      };
+    }
+
+    if (state === 0) {
+      const closeResult = await this.write(walletClient, "closeBook", []);
+      if (!closeResult.success) {
+        return closeResult;
+      }
+
+      const closeConfirm = await this.waitForTransaction(closeResult.txHash!);
+      if (!closeConfirm.success) {
+        return {
+          success: false,
+          txHash: closeResult.txHash,
+          error: closeConfirm.error,
+        };
+      }
+    }
+
+    return this.write(walletClient, "beginProcessing", []);
+  }
+
+  async settleBatch(walletClient: WalletClient, _batchId: bigint): Promise<TxResult> {
+    const step = 1000n;
+    const redeemResult = await this.write(walletClient, "processRedeems", [step]);
+    if (!redeemResult.success) return redeemResult;
+
+    const depositResult = await this.write(walletClient, "processDeposits", [step]);
+    if (!depositResult.success) return depositResult;
+
+    return depositResult;
+  }
+
+  async reopenBatch(walletClient: WalletClient): Promise<TxResult> {
+    return this.write(walletClient, "finalizeProcessing", []);
+  }
+
+  async reopenIdleCycle(walletClient: WalletClient): Promise<TxResult> {
+    return this.write(walletClient, "reopenIdleCycle", []);
+  }
+
   async processDepositQueue(
     walletClient: WalletClient,
-    batchId: bigint,
-    startIndex: bigint,
+    _batchId: bigint,
+    _startIndex: bigint,
     endIndex: bigint,
-  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
-    try {
-      logger.info("CustomVaultClient: Processing deposit queue", {
-        vaultAddress: this.vaultAddress,
-        batchId: batchId.toString(),
-        startIndex: startIndex.toString(),
-        endIndex: endIndex.toString(),
-      });
-
-      const hash = await walletClient.writeContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "processDepositQueue",
-        args: [batchId, startIndex, endIndex],
-        chain: walletClient.chain,
-        account: walletClient.account!,
-      });
-
-      logger.info("CustomVaultClient: Deposit queue processing transaction submitted", {
-        txHash: hash,
-        batchId: batchId.toString(),
-        startIndex: startIndex.toString(),
-        endIndex: endIndex.toString(),
-      });
-
-      return { success: true, txHash: hash };
-    } catch (error) {
-      const errorMsg = parseContractError(error);
-      logger.error("CustomVaultClient: Failed to process deposit queue", {
-        batchId: batchId.toString(),
-        startIndex: startIndex.toString(),
-        endIndex: endIndex.toString(),
-        error: errorMsg,
-      });
-      return { success: false, error: errorMsg };
-    }
-  }
-
-  // Write Operations - Batch Lifecycle
-  async cutoffBatch(
-    walletClient: WalletClient,
-  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
-    try {
-      logger.info("CustomVaultClient: Cutting off batch", {
-        vaultAddress: this.vaultAddress,
-      });
-
-      const hash = await walletClient.writeContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "cutoffBatch",
-        args: [],
-        chain: walletClient.chain,
-        account: walletClient.account!,
-      });
-
-      logger.info("CustomVaultClient: Batch cutoff transaction submitted", { txHash: hash });
-      return { success: true, txHash: hash };
-    } catch (error) {
-      const errorMsg = parseContractError(error);
-      logger.error("CustomVaultClient: Failed to cutoff batch", { error: errorMsg });
-      return { success: false, error: errorMsg };
-    }
-  }
-
-  async flattenBatch(
-    walletClient: WalletClient,
-    snapshotHash: Hex,
-  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
-    try {
-      logger.info("CustomVaultClient: Flattening batch", {
-        vaultAddress: this.vaultAddress,
-        snapshotHash,
-      });
-
-      const hash = await walletClient.writeContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "flattenBatch",
-        args: [snapshotHash],
-        chain: walletClient.chain,
-        account: walletClient.account!,
-      });
-
-      logger.info("CustomVaultClient: Batch flatten transaction submitted", { txHash: hash });
-      return { success: true, txHash: hash };
-    } catch (error) {
-      const errorMsg = parseContractError(error);
-      logger.error("CustomVaultClient: Failed to flatten batch", { snapshotHash, error: errorMsg });
-      return { success: false, error: errorMsg };
-    }
-  }
-
-  async settleBatch(
-    walletClient: WalletClient,
-    batchId: bigint,
-  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
-    try {
-      logger.info("CustomVaultClient: Settling batch", {
-        vaultAddress: this.vaultAddress,
-        batchId: batchId.toString(),
-      });
-
-      const hash = await walletClient.writeContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "settleBatch",
-        args: [batchId],
-        chain: walletClient.chain,
-        account: walletClient.account!,
-      });
-
-      logger.info("CustomVaultClient: Batch settlement transaction submitted", {
-        txHash: hash,
-        batchId: batchId.toString(),
-      });
-      return { success: true, txHash: hash };
-    } catch (error) {
-      const errorMsg = parseContractError(error);
-      logger.error("CustomVaultClient: Failed to settle batch", {
-        batchId: batchId.toString(),
-        error: errorMsg,
-      });
-      return { success: false, error: errorMsg };
-    }
-  }
-
-  async settleBatchChunk(
-    walletClient: WalletClient,
-    batchId: bigint,
-    startIndex: bigint,
-  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
-    try {
-      logger.info("CustomVaultClient: Settling batch chunk", {
-        vaultAddress: this.vaultAddress,
-        batchId: batchId.toString(),
-        startIndex: startIndex.toString(),
-      });
-
-      const hash = await walletClient.writeContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "settleBatchChunk",
-        args: [batchId, startIndex],
-        chain: walletClient.chain,
-        account: walletClient.account!,
-      });
-
-      logger.info("CustomVaultClient: Batch chunk settlement transaction submitted", {
-        txHash: hash,
-        batchId: batchId.toString(),
-        startIndex: startIndex.toString(),
-      });
-      return { success: true, txHash: hash };
-    } catch (error) {
-      const errorMsg = parseContractError(error);
-      logger.error("CustomVaultClient: Failed to settle batch chunk", {
-        batchId: batchId.toString(),
-        startIndex: startIndex.toString(),
-        error: errorMsg,
-      });
-      return { success: false, error: errorMsg };
-    }
-  }
-
-  async resumeSettlement(
-    walletClient: WalletClient,
-    batchId: bigint,
-  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
-    try {
-      logger.info("CustomVaultClient: Resuming settlement", {
-        vaultAddress: this.vaultAddress,
-        batchId: batchId.toString(),
-      });
-
-      const hash = await walletClient.writeContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "resumeSettlement",
-        args: [batchId],
-        chain: walletClient.chain,
-        account: walletClient.account!,
-      });
-
-      logger.info("CustomVaultClient: Resume settlement transaction submitted", {
-        txHash: hash,
-        batchId: batchId.toString(),
-      });
-      return { success: true, txHash: hash };
-    } catch (error) {
-      const errorMsg = parseContractError(error);
-      logger.error("CustomVaultClient: Failed to resume settlement", {
-        batchId: batchId.toString(),
-        error: errorMsg,
-      });
-      return { success: false, error: errorMsg };
-    }
-  }
-
-  async allocateToTradingWallet(
-    walletClient: WalletClient,
-    amount: bigint,
-  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
-    try {
-      logger.info("CustomVaultClient: Allocating capital to trading wallet", {
-        vaultAddress: this.vaultAddress,
-        amount: amount.toString(),
-      });
-
-      const hash = await walletClient.writeContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "allocateToTradingWallet",
-        args: [amount],
-        chain: walletClient.chain,
-        account: walletClient.account!,
-      });
-
-      logger.info("CustomVaultClient: Capital allocation transaction submitted", {
-        txHash: hash,
-        amount: amount.toString(),
-      });
-      return { success: true, txHash: hash };
-    } catch (error) {
-      const errorMsg = parseContractError(error);
-      logger.error("CustomVaultClient: Failed to allocate capital", {
-        amount: amount.toString(),
-        error: errorMsg,
-      });
-      return { success: false, error: errorMsg };
-    }
-  }
-
-  async closeBatch(
-    walletClient: WalletClient,
-    batchId: bigint,
-  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
-    try {
-      logger.info("CustomVaultClient: Closing batch", {
-        vaultAddress: this.vaultAddress,
-        batchId: batchId.toString(),
-      });
-
-      const hash = await walletClient.writeContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "closeBatch",
-        args: [batchId],
-        chain: walletClient.chain,
-        account: walletClient.account!,
-      });
-
-      logger.info("CustomVaultClient: Batch close transaction submitted", {
-        txHash: hash,
-        batchId: batchId.toString(),
-      });
-      return { success: true, txHash: hash };
-    } catch (error) {
-      const errorMsg = parseContractError(error);
-      logger.error("CustomVaultClient: Failed to close batch", {
-        batchId: batchId.toString(),
-        error: errorMsg,
-      });
-      return { success: false, error: errorMsg };
-    }
-  }
-
-  async reopenBatch(
-    walletClient: WalletClient,
-  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
-    try {
-      logger.info("CustomVaultClient: Reopening batch", {
-        vaultAddress: this.vaultAddress,
-      });
-
-      const hash = await walletClient.writeContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "reopenBatch",
-        args: [],
-        chain: walletClient.chain,
-        account: walletClient.account!,
-      });
-
-      logger.info("CustomVaultClient: Batch reopen transaction submitted", { txHash: hash });
-      return { success: true, txHash: hash };
-    } catch (error) {
-      const errorMsg = parseContractError(error);
-      logger.error("CustomVaultClient: Failed to reopen batch", { error: errorMsg });
-      return { success: false, error: errorMsg };
-    }
-  }
-
-  // Write Operations - Admin
-  async updateNAV(
-    walletClient: WalletClient,
-    nav: bigint,
-  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
-    try {
-      const hash = await walletClient.writeContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "updateNAV",
-        args: [nav],
-        chain: walletClient.chain,
-        account: walletClient.account!,
-      });
-      return { success: true, txHash: hash };
-    } catch (error) {
-      const errorMsg = parseContractError(error);
-      logger.error("CustomVaultClient: Failed to update NAV", {
-        nav: nav.toString(),
-        error: errorMsg,
-      });
-      return { success: false, error: errorMsg };
-    }
-  }
-
-  async setEmergencyMode(
-    walletClient: WalletClient,
-    active: boolean,
-  ): Promise<{ success: boolean; txHash?: Hex; error?: string }> {
-    try {
-      const hash = await walletClient.writeContract({
-        address: this.vaultAddress,
-        abi: CLOSED_BOOK_BATCH_VAULT_ABI,
-        functionName: "setEmergencyMode",
-        args: [active],
-        chain: walletClient.chain,
-        account: walletClient.account!,
-      });
-      return { success: true, txHash: hash };
-    } catch (error) {
-      const errorMsg = parseContractError(error);
-      logger.error("CustomVaultClient: Failed to set emergency mode", { active, error: errorMsg });
-      return { success: false, error: errorMsg };
-    }
-  }
-
-  /**
-   * Wait for transaction confirmation with retry logic
-   */
-  async waitForTransaction(
-    txHash: Hex,
-    confirmations: number = 1,
-    timeoutMs: number = 120000,
-  ): Promise<{ success: boolean; receipt?: unknown; error?: string }> {
-    try {
-      const receipt = await this.publicClient.waitForTransactionReceipt({
-        hash: txHash,
-        confirmations,
-        timeout: timeoutMs,
-      });
-
-      logger.info("CustomVaultClient: Transaction confirmed", {
-        txHash,
-        blockNumber: (receipt as { blockNumber: bigint }).blockNumber.toString(),
-        confirmations,
-      });
-
-      return { success: true, receipt };
-    } catch (error) {
-      const errorMsg = parseContractError(error);
-      logger.error("CustomVaultClient: Transaction confirmation failed", {
-        txHash,
-        error: errorMsg,
-      });
-      return { success: false, error: errorMsg };
-    }
-  }
-
-  // Factory Function
-  static create(vaultAddress: Address, rpcUrl: string, chain: Chain): CustomVaultClient {
-    return new CustomVaultClient({ vaultAddress, rpcUrl, chain });
+  ): Promise<TxResult> {
+    return this.write(walletClient, "processDeposits", [endIndex]);
   }
 }
 
 export function createCustomVaultClient(
   vaultAddress: Address,
   rpcUrl: string,
-  chain: Chain,
+  chain?: Chain,
 ): CustomVaultClient {
-  return CustomVaultClient.create(vaultAddress, rpcUrl, chain);
+  return new CustomVaultClient({ vaultAddress, rpcUrl, chain });
 }
-
-export { parseContractError };
-
-// Re-export types for backward compatibility during migration
-// These exports help existing code gradually migrate to batch terminology
-export type {
-  BatchData as EpochData,
-  BatchStatus as EpochStatus,
-  RedemptionStatus as RequestStatus,
-};

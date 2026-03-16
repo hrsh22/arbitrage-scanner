@@ -24,7 +24,7 @@ const config: VaultInstanceConfig = {
     fees: {
       management: 0,
       performance: 0,
-      withdrawal: 50,
+      withdrawal: 0,
     },
   },
 

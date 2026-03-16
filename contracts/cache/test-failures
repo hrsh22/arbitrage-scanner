@@ -1,1 +1,1 @@
-testRescueUnderlyingSurplusRequiresEmergencyModeAndSurplusOnly
+testReopenIdleCycleRevertsWhenQueueNotEmpty

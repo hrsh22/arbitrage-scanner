@@ -13,6 +13,7 @@ import type {
   VaultNavHistoryResponse,
   VaultAllocationsResponse,
   WithdrawalQueueResponse,
+  WithdrawalPreflightResponse,
   WithdrawalRequestCreateResponse,
   WithdrawalRequestCompleteResponse,
   WithdrawalRequestCancelResponse,
@@ -110,11 +111,24 @@ export async function fetchVaultAllocations(limit?: number): Promise<VaultAlloca
 
 export async function postWithdrawalRequest(
   shares: string,
-  assetsEstimated: string,
+  assetsEstimated?: string,
 ): Promise<WithdrawalRequestCreateResponse> {
   return fetchWithAuth(makeUrl(`${VAULT_API_PREFIX}/withdrawal-request`), {
     method: "POST",
-    body: JSON.stringify({ shares, assetsEstimated }),
+    body: JSON.stringify({ shares, ...(assetsEstimated ? { assetsEstimated } : {}) }),
+  });
+}
+
+/**
+ * Postflight for instant withdrawals on custom vaults.
+ * Endpoint: POST /vault/withdrawal-request/:requestId/preflight
+ * Returns a payload describing readiness for immediate redemption.
+ */
+export async function postWithdrawalPreflight(
+  requestId: string,
+): Promise<WithdrawalPreflightResponse> {
+  return fetchWithAuth(makeUrl(`${VAULT_API_PREFIX}/withdrawal-request/${requestId}/preflight`), {
+    method: "POST",
   });
 }
 

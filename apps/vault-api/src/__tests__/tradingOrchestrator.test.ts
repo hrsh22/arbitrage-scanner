@@ -445,8 +445,8 @@ describe("TradingOrchestratorService", () => {
 
       mockGetVaultProvider.mockReturnValue({
         getVaultInfo: vi.fn().mockResolvedValue({
-          epochInfo: {
-            currentEpochEnd: new Date(Date.now() + 30 * 60 * 1000),
+          batchInfo: {
+            currentBatchEnd: new Date(Date.now() + 30 * 60 * 1000),
           },
         }),
       });

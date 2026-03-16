@@ -10,6 +10,7 @@
  */
 
 import {
+  bigint,
   boolean,
   index,
   integer,
@@ -48,21 +49,20 @@ export const tradeStatusEnum = pgEnum("trade_status", [
 
 // Enum: Withdrawal request status
 export const withdrawalStatusEnum = pgEnum("withdrawal_status", [
-  "pending",    // Legacy Morpho: request pending
-  "ready",      // Legacy Morpho: ready for claim
-  "completed",  // Legacy Morpho: claim completed
-  "cancelled",  // Legacy Morpho: request cancelled
-  "expired",    // Legacy Morpho: request expired
+  "pending", // Legacy Morpho: request pending
+  "ready", // Legacy Morpho: ready for claim
+  "completed", // Legacy Morpho: claim completed
+  "cancelled", // Legacy Morpho: request cancelled
+  "expired", // Legacy Morpho: request expired
   // Closed-book batch states (truthful semantics for custom vaults)
-  "open",       // Batch accepting requests (cancellable)
-  "cutoff",     // Batch sealed, no more requests
+  "open", // Batch accepting requests (cancellable)
+  "cutoff", // Batch sealed, no more requests
   "flattening", // Positions being flattened
-  "settling",   // Calculating entitlements
-  "settled",    // Ready for claims
-  "claimed",    // User has claimed assets
-  "closed",     // Batch complete
+  "settling", // Calculating entitlements
+  "settled", // Ready for claims
+  "claimed", // User has claimed assets
+  "closed", // Batch complete
 ]);
-
 
 /**
  * vault_config - Vault deployment configuration
@@ -561,5 +561,150 @@ export const realizedPayoutDistributions = pgTable(
       table.entitlementId,
       table.realizationEventId,
     ),
+  }),
+);
+
+export const flatBookCycleStateEnum = pgEnum("flat_book_cycle_state", [
+  "open",
+  "closed",
+  "processing",
+  "processed",
+]);
+
+export const flatBookParticipantStatusEnum = pgEnum("flat_book_participant_status", [
+  "queued",
+  "processed",
+  "cancelled",
+]);
+
+export const flatBookEventTypeEnum = pgEnum("flat_book_event_type", [
+  "close_book",
+  "begin_processing",
+  "process_redeems_chunk",
+  "process_deposits_chunk",
+  "finalize_processing",
+  "nav_update",
+  "capital_allocation",
+]);
+
+export const flatBookCycles = pgTable(
+  "flat_book_cycles",
+  {
+    id: serial("id").primaryKey(),
+    vaultAddress: text("vault_address").notNull(),
+    cycleId: integer("cycle_id").notNull(),
+    state: flatBookCycleStateEnum("state").notNull().default("open"),
+    lockedNav: numeric("locked_nav", { precision: 38, scale: 18 }),
+    totalQueuedDepositAssets: numeric("total_queued_deposit_assets", {
+      precision: 20,
+      scale: 6,
+    })
+      .notNull()
+      .default("0"),
+    totalQueuedRedeemShares: numeric("total_queued_redeem_shares", {
+      precision: 30,
+      scale: 18,
+    })
+      .notNull()
+      .default("0"),
+    totalQueuedRedeemAssets: numeric("total_queued_redeem_assets", {
+      precision: 20,
+      scale: 6,
+    })
+      .notNull()
+      .default("0"),
+    queuedDepositParticipants: integer("queued_deposit_participants").notNull().default(0),
+    queuedRedeemParticipants: integer("queued_redeem_participants").notNull().default(0),
+    openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    processingStartedAt: timestamp("processing_started_at", { withTimezone: true }),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    vaultIdx: index("flat_book_cycles_vault_idx").on(table.vaultAddress),
+    stateIdx: index("flat_book_cycles_state_idx").on(table.state),
+    processedAtIdx: index("flat_book_cycles_processed_at_idx").on(table.processedAt),
+    uniqueVaultCycle: index("flat_book_cycles_unique_vault_cycle_idx").on(
+      table.vaultAddress,
+      table.cycleId,
+    ),
+  }),
+);
+
+export const flatBookQueueParticipants = pgTable(
+  "flat_book_queue_participants",
+  {
+    id: serial("id").primaryKey(),
+    vaultAddress: text("vault_address").notNull(),
+    cycleId: integer("cycle_id").notNull(),
+    userAddress: text("user_address").notNull(),
+    queuedDepositAssets: numeric("queued_deposit_assets", {
+      precision: 20,
+      scale: 6,
+    })
+      .notNull()
+      .default("0"),
+    queuedRedeemShares: numeric("queued_redeem_shares", {
+      precision: 30,
+      scale: 18,
+    })
+      .notNull()
+      .default("0"),
+    processedDepositShares: numeric("processed_deposit_shares", {
+      precision: 30,
+      scale: 18,
+    })
+      .notNull()
+      .default("0"),
+    processedRedeemAssets: numeric("processed_redeem_assets", {
+      precision: 20,
+      scale: 6,
+    })
+      .notNull()
+      .default("0"),
+    status: flatBookParticipantStatusEnum("status").notNull().default("queued"),
+    firstQueuedAt: timestamp("first_queued_at", { withTimezone: true }).notNull().defaultNow(),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    vaultCycleIdx: index("flat_book_queue_participants_vault_cycle_idx").on(
+      table.vaultAddress,
+      table.cycleId,
+    ),
+    userIdx: index("flat_book_queue_participants_user_idx").on(table.userAddress),
+    statusIdx: index("flat_book_queue_participants_status_idx").on(table.status),
+    uniqueVaultCycleUser: index("flat_book_queue_participants_unique_vcu_idx").on(
+      table.vaultAddress,
+      table.cycleId,
+      table.userAddress,
+    ),
+  }),
+);
+
+export const flatBookProcessingEvents = pgTable(
+  "flat_book_processing_events",
+  {
+    id: serial("id").primaryKey(),
+    vaultAddress: text("vault_address").notNull(),
+    cycleId: integer("cycle_id").notNull(),
+    eventType: flatBookEventTypeEnum("event_type").notNull(),
+    txHash: text("tx_hash"),
+    blockNumber: bigint("block_number", { mode: "number" }),
+    processedCount: integer("processed_count"),
+    metadata: text("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    vaultCycleIdx: index("flat_book_processing_events_vault_cycle_idx").on(
+      table.vaultAddress,
+      table.cycleId,
+    ),
+    eventTypeIdx: index("flat_book_processing_events_event_type_idx").on(table.eventType),
+    createdAtIdx: index("flat_book_processing_events_created_at_idx").on(table.createdAt),
   }),
 );

@@ -60,19 +60,14 @@ const config: VaultInstanceConfig = {
     fees: {
       management: 0,
       performance: 0,
-      withdrawal: 50,
+      withdrawal: 0,
     },
   },
 
   // Contract selection - explicit legacy vs new vault
-  // Options: "epochTrancheVault" (legacy, rollback) | "closedBookBatchVault" (active staging flow)
-  vaultContractType: "closedBookBatchVault" as const,
+  vaultContractType: "flatBookVaultV2" as const,
 
-  // Deployed contract addresses - CURRENTLY USING ClosedBookBatchVault on Amoy staging
-  // See vaultContractType above for selection mechanism
-  //
-  // ClosedBookBatchVault (ACTIVE STAGING):
-  vaultAddress: "0x5B4db660d63FE0fcA4E345Aa0714699C2F274554",
+  vaultAddress: "0x62646C39547c004a922D928DCe247Cae11F7d2d2",
   safeAddress: "0x5991fd6Ecc5634C4de497b47Eb0Aa0065fffb214",
   tradingSafeAddress: "0x5991fd6Ecc5634C4de497b47Eb0Aa0065fffb214",
   //
