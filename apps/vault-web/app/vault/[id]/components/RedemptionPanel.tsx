@@ -32,12 +32,12 @@ export function RedemptionPanel({
   onClaimSuccess,
   userShares,
 }: RedemptionPanelProps) {
-  const [activeTab, setActiveTab] = useState<string>("request");
-  const cyclePresentation = getCyclePresentation(cycleInfo?.batchState);
-
-  // Determine which tab should be highlighted based on user state
   const hasPending = pendingRequests.length > 0;
   const hasClaimable = claimableRequests.length > 0;
+  const [activeTab, setActiveTab] = useState<string>(
+    hasClaimable ? "claim" : hasPending ? "pending" : "request",
+  );
+  const cyclePresentation = getCyclePresentation(cycleInfo?.batchState);
 
   return (
     <Card
@@ -49,7 +49,7 @@ export function RedemptionPanel({
           <div>
             <CardTitle className="text-lg font-semibold text-white">Exit queue</CardTitle>
             <p className="mt-1 text-sm text-slate-400">
-              Start an exit request, track it through the cycle, and claim USDC when settlement is
+              Start an exit request, track it through the cycle, and claim USDC.e when settlement is
               done.
             </p>
           </div>
@@ -83,7 +83,7 @@ export function RedemptionPanel({
           >
             <TabsTrigger
               value="request"
-              className="text-xs data-[state=active]:bg-white data-[state=active]:text-slate-950"
+              className="text-xs text-slate-400 hover:text-white data-[state=active]:bg-white data-[state=active]:text-slate-950"
               aria-label="Create new redemption request"
             >
               <Wallet className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
@@ -91,7 +91,7 @@ export function RedemptionPanel({
             </TabsTrigger>
             <TabsTrigger
               value="pending"
-              className="text-xs data-[state=active]:bg-white data-[state=active]:text-slate-950"
+              className="text-xs text-slate-400 hover:text-white data-[state=active]:bg-white data-[state=active]:text-slate-950"
               aria-label={`View pending requests${hasPending ? ` (${pendingRequests.length})` : ""}`}
             >
               <Clock className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
@@ -104,7 +104,7 @@ export function RedemptionPanel({
             </TabsTrigger>
             <TabsTrigger
               value="claim"
-              className="text-xs data-[state=active]:bg-white data-[state=active]:text-slate-950"
+              className="text-xs text-slate-400 hover:text-white data-[state=active]:bg-white data-[state=active]:text-slate-950"
               aria-label={`View claimable requests${hasClaimable ? ` (${claimableRequests.length})` : ""}`}
             >
               <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />

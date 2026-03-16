@@ -16,7 +16,15 @@ import {
   getNetworkDisplayInfo,
 } from "../src/constants";
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 5_000,
+      gcTime: 5 * 60_000,
+      refetchOnWindowFocus: false,
+    },
+  },
+});
 
 // Select the appropriate network based on VAULT_NETWORK config
 const selectedNetwork = VAULT_NETWORK === "amoy" ? polygonAmoy : polygon;

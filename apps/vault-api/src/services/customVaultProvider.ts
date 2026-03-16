@@ -163,22 +163,25 @@ export class CustomVaultProvider implements IVaultProvider {
     logger.debug("CustomVaultProvider.getVaultInfo", { vaultId: this.config.vaultId });
 
     try {
-      const [asset, navStatus, currentBatchId, totalSupply] = await Promise.all([
+      const [asset, navStatus, currentBatchId, totalSupply, totalAssets] = await Promise.all([
         this.client.getAsset(),
         this.client.getNAVStatus(),
         this.client.getCurrentBatch(),
         this.client.getTotalSupply(),
+        this.client.getTotalAssets(),
       ]);
 
       const navIsStale = !navStatus.isFresh;
       const navLastUpdated = new Date(Number(navStatus.lastNAVUpdate) * 1000);
 
-      const totalAssets = await this.client.getTotalAssets();
-
       const sharePrice = Number(formatUnits(navStatus.currentNAV, 18));
 
       // Get current batch info
-      const currentBatch = await this.client.getBatch(currentBatchId);
+      const nextBatchId = currentBatchId + 1n;
+      const [currentBatch, nextBatch] = await Promise.all([
+        this.client.getBatch(currentBatchId),
+        this.client.getBatch(nextBatchId),
+      ]);
       const batchStart = currentBatch
         ? new Date(Number(currentBatch.startTime) * 1000)
         : new Date();
@@ -186,10 +189,6 @@ export class CustomVaultProvider implements IVaultProvider {
         currentBatch && currentBatch.endTime > 0n
           ? new Date(Number(currentBatch.endTime) * 1000)
           : null;
-
-      // Get next batch info
-      const nextBatchId = currentBatchId + 1n;
-      const nextBatch = await this.client.getBatch(nextBatchId);
 
       return {
         vaultId: this.config.vaultId,

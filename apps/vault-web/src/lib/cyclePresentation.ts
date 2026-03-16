@@ -22,7 +22,7 @@ export interface CyclePresentation {
 const DEFAULT_PRESENTATION: CyclePresentation = {
   label: "Cycle update pending",
   eyebrow: "Waiting for sync",
-  description: "The latest cycle state is still loading from the vault API.",
+  description: "The latest cycle state is still loading.",
   detail: "Refresh in a few seconds to see the latest vault activity.",
   badgeClassName: "border-white/15 bg-white/8 text-slate-200",
   dotClassName: "bg-slate-300",
@@ -140,8 +140,8 @@ export function getCustomCyclePresentationFromFields(fields: {
   const label = isInstant ? "Instant" : "Queued";
   const eyebrow = isInstant ? "Instant mode" : "Queued mode";
   const description = isInstant
-    ? "Custom vault uses explicit API-driven instant actions."
-    : "Custom vault uses a queued workflow driven by API fields.";
+    ? "Custom vault is currently allowing direct actions."
+    : "Custom vault is currently using a queued workflow.";
   const detail = isInstant
     ? "Instant actions execute immediately at current NAV."
     : "Deposits and withdrawals are queued until the vault opens its pricing window.";

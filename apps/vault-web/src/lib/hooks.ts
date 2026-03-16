@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { encodeFunctionData, formatUnits, getAddress } from "viem";
 import type { Address } from "viem";
 import { useReadContract, useWaitForTransactionReceipt } from "wagmi";
@@ -20,7 +21,6 @@ import {
   fetchVaultNavHistory,
   fetchVaultAllocations,
   fetchWithdrawalQueue,
-  postWithdrawalRequest,
   postWithdrawalPreflight,
   // Batch/Cycle API functions
   postRedemptionRequest,
@@ -52,10 +52,6 @@ import type {
   UserRedemptionsResponse,
   Cycle,
   RedemptionRequest,
-  // Closed-book batch lifecycle types
-  DepositQueueResponse,
-  TrancheStatusResponse,
-  CarryEligibilityResponse,
 } from "../types.js";
 
 interface AsyncState<T> {
@@ -64,6 +60,118 @@ interface AsyncState<T> {
   error: string | null;
   lastRefresh: Date | null;
   refetch: () => Promise<T | null>;
+}
+
+const DEFAULT_POLL_INTERVAL_MS = 30_000;
+
+function getErrorMessage(error: unknown): string | null {
+  if (!error) {
+    return null;
+  }
+
+  return error instanceof Error ? error.message : "Unknown error";
+}
+
+function isUnauthorizedError(error: unknown): boolean {
+  const message = getErrorMessage(error);
+  if (!message) {
+    return false;
+  }
+
+  return (
+    message.includes("401") || message.includes("unauthorized") || message.includes("Unauthorized")
+  );
+}
+
+function getLastRefresh(dataUpdatedAt: number, hasData: boolean): Date | null {
+  if (!hasData || dataUpdatedAt <= 0) {
+    return null;
+  }
+
+  return new Date(dataUpdatedAt);
+}
+
+function getVaultScope(vaultId?: number): number | "default" {
+  return vaultId ?? "default";
+}
+
+function getUserScope(isAuthenticated: boolean, address?: string): string {
+  if (!isAuthenticated || !address) {
+    return "anonymous";
+  }
+
+  return address.toLowerCase();
+}
+
+export const vaultQueryKeys = {
+  scope: (vaultId?: number) => ["vault", getVaultScope(vaultId)] as const,
+  status: (vaultId?: number) => [...vaultQueryKeys.scope(vaultId), "status"] as const,
+  cycleStatus: (vaultId?: number, cycleId?: number) =>
+    [...vaultQueryKeys.scope(vaultId), "cycle", cycleId ?? "current"] as const,
+  requests: (vaultId: number | undefined, userScope: string) =>
+    [...vaultQueryKeys.scope(vaultId), "requests", userScope] as const,
+  depositQueue: (vaultId: number | undefined, userScope: string) =>
+    [...vaultQueryKeys.scope(vaultId), "deposit-queue", userScope] as const,
+  trancheStatus: (vaultId?: number, cycleId?: number, userScope = "global") =>
+    [...vaultQueryKeys.scope(vaultId), "tranche-status", cycleId ?? "current", userScope] as const,
+  carryEligibility: (vaultId?: number, requestId?: string, userScope = "global") =>
+    [...vaultQueryKeys.scope(vaultId), "carry-eligibility", requestId ?? "all", userScope] as const,
+};
+
+export async function invalidateVaultQueries(
+  queryClient: QueryClient,
+  vaultId?: number,
+): Promise<void> {
+  if (vaultId === undefined) {
+    return;
+  }
+
+  await queryClient.invalidateQueries({
+    queryKey: vaultQueryKeys.scope(vaultId),
+  });
+}
+
+function normalizeRedemptionRequest(request: RedemptionRequest): RedemptionRequest {
+  let normalizedStatus = request.status;
+  if (String(request.status) === "ready" || String(request.status) === "settled") {
+    normalizedStatus = "claimable";
+  }
+
+  const targetCycle =
+    request.targetCycle ??
+    request.batchId ??
+    (request as RedemptionRequest & { cycleId?: number }).cycleId ??
+    0;
+  const targetCycleEndTime = request.targetCycleEndTime ?? request.createdAt;
+
+  const ownerAddress =
+    request.ownerAddress ?? (request as RedemptionRequest & { owner?: string }).owner ?? "";
+  const controllerAddress =
+    request.controllerAddress ??
+    (request as RedemptionRequest & { controller?: string }).controller ??
+    ownerAddress;
+  const operatorAddress =
+    request.operatorAddress ??
+    (request as RedemptionRequest & { operator?: string | null }).operator ??
+    null;
+
+  return {
+    ...request,
+    id: request.id || request.requestId,
+    status: normalizedStatus,
+    targetCycle,
+    targetCycleEndTime,
+    claimableAssets: request.claimableAssets ?? null,
+    claimableAssetsFormatted: request.claimableAssetsFormatted ?? null,
+    claimedAt: request.claimedAt ?? null,
+    cancelledAt: request.cancelledAt ?? null,
+    proRataApplied: request.proRataApplied ?? false,
+    proRataPercentage: request.proRataPercentage ?? null,
+    ownerAddress,
+    controllerAddress,
+    operatorAddress,
+    lifecycleError: request.lifecycleError ?? null,
+  };
 }
 
 interface Eip1193Provider {
@@ -187,8 +295,25 @@ function usePolledFetch<T>(fetcher: () => Promise<T>, intervalMs = 30_000): Asyn
 }
 
 export function useVaultStatus(vaultId?: number): AsyncState<VaultStatusResponse> {
-  const fetcher = useCallback(() => fetchVaultStatus(vaultId), [vaultId]);
-  return usePolledFetch(fetcher);
+  const query = useQuery({
+    queryKey: vaultQueryKeys.status(vaultId),
+    queryFn: () => fetchVaultStatus(vaultId),
+    enabled: vaultId !== undefined,
+    refetchInterval: DEFAULT_POLL_INTERVAL_MS,
+  });
+
+  const refetch = useCallback(async (): Promise<VaultStatusResponse | null> => {
+    const result = await query.refetch();
+    return result.data ?? null;
+  }, [query]);
+
+  return {
+    data: query.data ?? null,
+    isLoading: vaultId !== undefined ? query.isLoading : false,
+    error: getErrorMessage(query.error),
+    lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
+    refetch,
+  };
 }
 
 export function useVaultInstances(): AsyncState<VaultInstancesResponse> {
@@ -798,6 +923,7 @@ export interface UseRequestRedeemResult {
 }
 
 export function useRequestRedeem(): UseRequestRedeemResult {
+  const queryClient = useQueryClient();
   const [data, setData] = useState<RedemptionRequestCreateResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -810,6 +936,7 @@ export function useRequestRedeem(): UseRequestRedeemResult {
       try {
         const result = await postRedemptionRequest(vaultId, shares, assetsEstimated, operator);
         setData(result);
+        await invalidateVaultQueries(queryClient, vaultId);
       } catch (err) {
         const message = err instanceof Error ? err.message : "Failed to create redemption request";
         setError(message);
@@ -818,7 +945,7 @@ export function useRequestRedeem(): UseRequestRedeemResult {
         setIsLoading(false);
       }
     },
-    [],
+    [queryClient],
   );
 
   const reset = useCallback(() => {
@@ -849,119 +976,43 @@ export interface UseRequestsResult {
   refetch: () => Promise<void>;
 }
 export function useRequests(vaultId?: number, isAuthenticated = false): UseRequestsResult {
-  const [data, setData] = useState<UserRedemptionsResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const { address } = useAppKitAccount();
+  const userScope = getUserScope(isAuthenticated, address);
+  const query = useQuery({
+    queryKey: vaultQueryKeys.requests(vaultId, userScope),
+    queryFn: async () => {
+      const result = await fetchUserRedemptions(vaultId!);
+      const pendingRequests = result.pendingRequests.map(normalizeRedemptionRequest);
+      const claimableRequests = result.claimableRequests.map(normalizeRedemptionRequest);
 
-  const refetch = useCallback(async (): Promise<void> => {
-    if (vaultId === undefined) {
-      setIsLoading(false);
-      return;
-    }
-
-    // Skip fetching if user is not authenticated
-    if (!isAuthenticated) {
-      setIsLoading(false);
-      setError(null);
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const result = await fetchUserRedemptions(vaultId);
-      const normalizeRequest = (request: RedemptionRequest): RedemptionRequest => {
-        // Normalize legacy status values to new lifecycle
-        let normalizedStatus = request.status;
-        if (String(request.status) === "ready" || String(request.status) === "settled") {
-          normalizedStatus = "claimable";
-        }
-
-        const targetCycle =
-          request.targetCycle ??
-          request.batchId ??
-          (request as RedemptionRequest & { cycleId?: number }).cycleId ??
-          0;
-        const targetCycleEndTime = request.targetCycleEndTime ?? request.createdAt;
-
-        const ownerAddress =
-          request.ownerAddress ?? (request as RedemptionRequest & { owner?: string }).owner ?? "";
-        const controllerAddress =
-          request.controllerAddress ??
-          (request as RedemptionRequest & { controller?: string }).controller ??
-          ownerAddress;
-        const operatorAddress =
-          request.operatorAddress ??
-          (request as RedemptionRequest & { operator?: string | null }).operator ??
-          null;
-
-        return {
-          ...request,
-          id: request.id || request.requestId,
-          status: normalizedStatus,
-          targetCycle,
-          targetCycleEndTime,
-          claimableAssets: request.claimableAssets ?? null,
-          claimableAssetsFormatted: request.claimableAssetsFormatted ?? null,
-          claimedAt: request.claimedAt ?? null,
-          cancelledAt: request.cancelledAt ?? null,
-          proRataApplied: request.proRataApplied ?? false,
-          proRataPercentage: request.proRataPercentage ?? null,
-          ownerAddress,
-          controllerAddress,
-          operatorAddress,
-          lifecycleError: request.lifecycleError ?? null,
-        };
-      };
-
-      const pendingRequests = result.pendingRequests.map(normalizeRequest);
-      const claimableRequests = result.claimableRequests.map(normalizeRequest);
-
-      setData({
+      return {
         ...result,
         pendingRequests,
         claimableRequests,
-        requests: result.requests?.map(normalizeRequest) ?? [
+        requests: result.requests?.map(normalizeRedemptionRequest) ?? [
           ...pendingRequests,
           ...claimableRequests,
         ],
-      });
-      setLastRefresh(new Date());
-    } catch (err) {
-      // Silently handle auth errors - don't spam console for unauthenticated users
-      const errMessage = err instanceof Error ? err.message : "Failed to fetch requests";
-      if (
-        errMessage.includes("401") ||
-        errMessage.includes("unauthorized") ||
-        errMessage.includes("Unauthorized")
-      ) {
-        setError(null);
-      } else {
-        setError(errMessage);
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  }, [vaultId, isAuthenticated]);
+      } satisfies UserRedemptionsResponse;
+    },
+    enabled: vaultId !== undefined && isAuthenticated && Boolean(address),
+    refetchInterval: DEFAULT_POLL_INTERVAL_MS,
+  });
 
-  useEffect(() => {
-    refetch();
-    const interval = setInterval(refetch, 30_000);
-    return () => clearInterval(interval);
-  }, [refetch]);
+  const refetch = useCallback(async (): Promise<void> => {
+    await query.refetch();
+  }, [query]);
 
   return {
-    pendingRequests: data?.pendingRequests ?? [],
-    claimableRequests: data?.claimableRequests ?? [],
-    totalPendingShares: data?.totalPendingShares ?? "0",
-    totalClaimableShares: data?.totalClaimableShares ?? "0",
-    estimatedAssetsPendingFormatted: data?.estimatedAssetsPendingFormatted ?? "0.00",
-    estimatedAssetsClaimableFormatted: data?.estimatedAssetsClaimableFormatted ?? "0.00",
-    isLoading,
-    error,
-    lastRefresh,
+    pendingRequests: query.data?.pendingRequests ?? [],
+    claimableRequests: query.data?.claimableRequests ?? [],
+    totalPendingShares: query.data?.totalPendingShares ?? "0",
+    totalClaimableShares: query.data?.totalClaimableShares ?? "0",
+    estimatedAssetsPendingFormatted: query.data?.estimatedAssetsPendingFormatted ?? "0.00",
+    estimatedAssetsClaimableFormatted: query.data?.estimatedAssetsClaimableFormatted ?? "0.00",
+    isLoading: vaultId !== undefined && isAuthenticated ? query.isLoading : false,
+    error: isUnauthorizedError(query.error) ? null : getErrorMessage(query.error),
+    lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
     refetch,
   };
 }
@@ -1004,58 +1055,37 @@ export interface UseCycleHistoryResult {
 }
 
 export function useCycleStatus(vaultId?: number, cycleId?: number): UseCycleStatusResult {
-  const [data, setData] = useState<CycleStatusResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const query = useQuery({
+    queryKey: vaultQueryKeys.cycleStatus(vaultId, cycleId),
+    queryFn: () =>
+      cycleId !== undefined
+        ? fetchCycleStatus(vaultId!, cycleId)
+        : fetchCurrentCycleStatus(vaultId!),
+    enabled: vaultId !== undefined,
+    refetchInterval: DEFAULT_POLL_INTERVAL_MS,
+  });
 
   const refetch = useCallback(async (): Promise<CycleStatusResponse | null> => {
-    if (vaultId === undefined) {
-      setIsLoading(false);
-      return null;
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const result =
-        cycleId !== undefined
-          ? await fetchCycleStatus(vaultId, cycleId)
-          : await fetchCurrentCycleStatus(vaultId);
-      setData(result);
-      setLastRefresh(new Date());
-      return result;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch cycle status");
-      return null;
-    } finally {
-      setIsLoading(false);
-    }
-  }, [vaultId, cycleId]);
-
-  useEffect(() => {
-    refetch();
-    const interval = setInterval(refetch, 30_000);
-    return () => clearInterval(interval);
-  }, [refetch]);
+    const result = await query.refetch();
+    return result.data ?? null;
+  }, [query]);
 
   return {
-    cycle: data?.cycle ?? null,
-    isActive: data?.cycle?.isActive ?? false,
-    timeRemainingFormatted: data?.cycle?.timeRemainingFormatted ?? "0s",
-    canSettle: data?.canSettle,
-    batchState: data?.cycle?.batchState ?? null,
-    isLoading,
-    error,
-    lastRefresh,
+    cycle: query.data?.cycle ?? null,
+    isActive: query.data?.cycle?.isActive ?? false,
+    timeRemainingFormatted: query.data?.cycle?.timeRemainingFormatted ?? "0s",
+    canSettle: query.data?.canSettle,
+    batchState: query.data?.cycle?.batchState ?? null,
+    isLoading: vaultId !== undefined ? query.isLoading : false,
+    error: getErrorMessage(query.error),
+    lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
     refetch,
-    riskState: data?.cycle?.riskState ?? null,
-    executionMode: data?.cycle?.executionMode ?? null,
-    telemetryFresh: data?.cycle?.telemetryFresh ?? null,
-    liquidityMode: data?.cycle?.liquidityMode ?? null,
-    reopenReady: data?.cycle?.reopenReady ?? null,
-    openPositionCount: data?.cycle?.openPositionCount ?? null,
+    riskState: query.data?.cycle?.riskState ?? null,
+    executionMode: query.data?.cycle?.executionMode ?? null,
+    telemetryFresh: query.data?.cycle?.telemetryFresh ?? null,
+    liquidityMode: query.data?.cycle?.liquidityMode ?? null,
+    reopenReady: query.data?.cycle?.reopenReady ?? null,
+    openPositionCount: query.data?.cycle?.openPositionCount ?? null,
   };
 }
 
@@ -1108,25 +1138,30 @@ export interface UseClaimRedemptionResult {
 }
 
 export function useClaimRedemption(): UseClaimRedemptionResult {
+  const queryClient = useQueryClient();
   const [data, setData] = useState<ClaimRedemptionResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const claimRedemption = useCallback(async (vaultId: number, requestId: string) => {
-    setIsLoading(true);
-    setError(null);
+  const claimRedemption = useCallback(
+    async (vaultId: number, requestId: string) => {
+      setIsLoading(true);
+      setError(null);
 
-    try {
-      const result = await postClaimRedemption(vaultId, requestId);
-      setData(result);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to claim redemption";
-      setError(message);
-      throw new Error(message);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+      try {
+        const result = await postClaimRedemption(vaultId, requestId);
+        setData(result);
+        await invalidateVaultQueries(queryClient, vaultId);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Failed to claim redemption";
+        setError(message);
+        throw new Error(message);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [queryClient],
+  );
 
   const reset = useCallback(() => {
     setData(null);
@@ -1196,87 +1231,52 @@ export interface UseDepositQueueResult {
   openPositionCount?: number | null;
 }
 export function useDepositQueue(vaultId?: number, isAuthenticated = false): UseDepositQueueResult {
-  const [data, setData] = useState<DepositQueueResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const { address } = useAppKitAccount();
+  const userScope = getUserScope(isAuthenticated, address);
+  const query = useQuery({
+    queryKey: vaultQueryKeys.depositQueue(vaultId, userScope),
+    queryFn: () => fetchDepositQueue(vaultId!),
+    enabled: vaultId !== undefined && isAuthenticated && Boolean(address),
+    refetchInterval: DEFAULT_POLL_INTERVAL_MS,
+  });
 
   const refetch = useCallback(async () => {
-    if (vaultId === undefined) {
-      setIsLoading(false);
-      return;
-    }
-
-    // Skip fetching if user is not authenticated
-    if (!isAuthenticated) {
-      setIsLoading(false);
-      setError(null);
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const result = await fetchDepositQueue(vaultId);
-      setData(result);
-      setLastRefresh(new Date());
-    } catch (err) {
-      // Silently handle auth errors - don't spam console for unauthenticated users
-      const errMessage = err instanceof Error ? err.message : "Failed to fetch deposit queue";
-      if (
-        errMessage.includes("401") ||
-        errMessage.includes("unauthorized") ||
-        errMessage.includes("Unauthorized")
-      ) {
-        setError(null);
-      } else {
-        setError(errMessage);
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  }, [vaultId, isAuthenticated]);
-
-  useEffect(() => {
-    refetch();
-    const interval = setInterval(refetch, 30_000);
-    return () => clearInterval(interval);
-  }, [refetch]);
+    await query.refetch();
+  }, [query]);
 
   return {
-    queued: data?.queued ?? "0",
-    queuedFormatted: data?.queuedFormatted ?? "0",
-    queuedShares: data?.queuedShares ?? "0",
-    queuedSharesFormatted: data?.queuedSharesFormatted ?? "0",
-    cycleOpenNavEstimate: data?.cycleOpenNavEstimate ?? null,
-    cycleOpenNavFormatted: data?.cycleOpenNavFormatted ?? null,
-    estimateBasis: data?.estimateBasis ?? null,
-    frozen: data?.frozen ?? "0",
-    frozenFormatted: data?.frozenFormatted ?? "0",
-    frozenShares: data?.frozenShares ?? "0",
-    frozenSharesFormatted: data?.frozenSharesFormatted ?? "0",
-    depositRequestId: data?.depositRequestId ?? null,
-    depositCreatedAt: data?.depositCreatedAt ?? null,
-    targetCycleId: data?.targetCycleId ?? null,
-    currentCycleId: data?.currentCycleId ?? null,
-    currentCycleStart: data?.currentCycleStart ?? null,
-    currentCycleEnd: data?.currentCycleEnd ?? null,
-    nextCycleStart: data?.nextCycleStart ?? null,
-    activationTime: data?.activationTime ?? null,
-    queueStatus: data?.queueStatus ?? null,
-    mintRule: data?.mintRule ?? null,
-    batchState: data?.batchState ?? null,
-    isLoading,
-    error,
-    lastRefresh,
+    queued: query.data?.queued ?? "0",
+    queuedFormatted: query.data?.queuedFormatted ?? "0",
+    queuedShares: query.data?.queuedShares ?? "0",
+    queuedSharesFormatted: query.data?.queuedSharesFormatted ?? "0",
+    cycleOpenNavEstimate: query.data?.cycleOpenNavEstimate ?? null,
+    cycleOpenNavFormatted: query.data?.cycleOpenNavFormatted ?? null,
+    estimateBasis: query.data?.estimateBasis ?? null,
+    frozen: query.data?.frozen ?? "0",
+    frozenFormatted: query.data?.frozenFormatted ?? "0",
+    frozenShares: query.data?.frozenShares ?? "0",
+    frozenSharesFormatted: query.data?.frozenSharesFormatted ?? "0",
+    depositRequestId: query.data?.depositRequestId ?? null,
+    depositCreatedAt: query.data?.depositCreatedAt ?? null,
+    targetCycleId: query.data?.targetCycleId ?? null,
+    currentCycleId: query.data?.currentCycleId ?? null,
+    currentCycleStart: query.data?.currentCycleStart ?? null,
+    currentCycleEnd: query.data?.currentCycleEnd ?? null,
+    nextCycleStart: query.data?.nextCycleStart ?? null,
+    activationTime: query.data?.activationTime ?? null,
+    queueStatus: query.data?.queueStatus ?? null,
+    mintRule: query.data?.mintRule ?? null,
+    batchState: query.data?.batchState ?? null,
+    isLoading: vaultId !== undefined && isAuthenticated ? query.isLoading : false,
+    error: isUnauthorizedError(query.error) ? null : getErrorMessage(query.error),
+    lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
     refetch,
-    riskState: data?.riskState ?? null,
-    executionMode: data?.executionMode ?? null,
-    telemetryFresh: data?.telemetryFresh ?? null,
-    liquidityMode: data?.liquidityMode ?? null,
-    reopenReady: data?.reopenReady ?? null,
-    openPositionCount: data?.openPositionCount ?? null,
+    riskState: query.data?.riskState ?? null,
+    executionMode: query.data?.executionMode ?? null,
+    telemetryFresh: query.data?.telemetryFresh ?? null,
+    liquidityMode: query.data?.liquidityMode ?? null,
+    reopenReady: query.data?.reopenReady ?? null,
+    openPositionCount: query.data?.openPositionCount ?? null,
   };
 }
 
@@ -1322,64 +1322,46 @@ export interface UseTrancheStatusResult {
 }
 
 export function useTrancheStatus(vaultId?: number, cycleId?: number): UseTrancheStatusResult {
-  const [data, setData] = useState<TrancheStatusResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const { address, isConnected } = useAppKitAccount();
+  const userScope = getUserScope(isConnected, address);
+  const query = useQuery({
+    queryKey: vaultQueryKeys.trancheStatus(vaultId, cycleId, userScope),
+    queryFn: () => fetchTrancheStatus(vaultId!, cycleId),
+    enabled: vaultId !== undefined,
+    refetchInterval: DEFAULT_POLL_INTERVAL_MS,
+  });
 
   const refetch = useCallback(async () => {
-    if (vaultId === undefined) {
-      setIsLoading(false);
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const result = await fetchTrancheStatus(vaultId, cycleId);
-      setData(result);
-      setLastRefresh(new Date());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch tranche status");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [vaultId, cycleId]);
-
-  useEffect(() => {
-    refetch();
-    const interval = setInterval(refetch, 30_000);
-    return () => clearInterval(interval);
-  }, [refetch]);
+    await query.refetch();
+  }, [query]);
 
   return {
-    cycleId: data?.cycleId ?? null,
+    cycleId: query.data?.cycleId ?? null,
     cycleStatus: {
-      status: data?.cycleStatus?.status ?? null,
-      startTime: data?.cycleStatus?.startTime ?? null,
-      endTime: data?.cycleStatus?.endTime ?? null,
-      settled: data?.cycleStatus?.settled ?? false,
-      totalShares: data?.cycleStatus?.totalShares ?? "0",
-      totalSharesFormatted: data?.cycleStatus?.totalSharesFormatted ?? "0",
-      batchState: data?.cycleStatus?.batchState ?? null,
+      status: query.data?.cycleStatus?.status ?? null,
+      startTime: query.data?.cycleStatus?.startTime ?? null,
+      endTime: query.data?.cycleStatus?.endTime ?? null,
+      settled: query.data?.cycleStatus?.settled ?? false,
+      totalShares: query.data?.cycleStatus?.totalShares ?? "0",
+      totalSharesFormatted: query.data?.cycleStatus?.totalSharesFormatted ?? "0",
+      batchState: query.data?.cycleStatus?.batchState ?? null,
     },
     tranchePosition: {
-      accrued: data?.tranchePosition?.accrued ?? "0",
-      accruedFormatted: data?.tranchePosition?.accruedFormatted ?? "0",
-      claimed: data?.tranchePosition?.claimed ?? "0",
-      claimedFormatted: data?.tranchePosition?.claimedFormatted ?? "0",
-      claimableNow: data?.tranchePosition?.claimableNow ?? "0",
-      claimableNowFormatted: data?.tranchePosition?.claimableNowFormatted ?? "0",
-      minClaimThreshold: data?.tranchePosition?.minClaimThreshold ?? "1000000",
-      minClaimThresholdFormatted: data?.tranchePosition?.minClaimThresholdFormatted ?? "1.0",
-      dustOverrideEligible: data?.tranchePosition?.dustOverrideEligible ?? false,
-      meetsThreshold: data?.tranchePosition?.meetsThreshold ?? false,
+      accrued: query.data?.tranchePosition?.accrued ?? "0",
+      accruedFormatted: query.data?.tranchePosition?.accruedFormatted ?? "0",
+      claimed: query.data?.tranchePosition?.claimed ?? "0",
+      claimedFormatted: query.data?.tranchePosition?.claimedFormatted ?? "0",
+      claimableNow: query.data?.tranchePosition?.claimableNow ?? "0",
+      claimableNowFormatted: query.data?.tranchePosition?.claimableNowFormatted ?? "0",
+      minClaimThreshold: query.data?.tranchePosition?.minClaimThreshold ?? "1000000",
+      minClaimThresholdFormatted: query.data?.tranchePosition?.minClaimThresholdFormatted ?? "1.0",
+      dustOverrideEligible: query.data?.tranchePosition?.dustOverrideEligible ?? false,
+      meetsThreshold: query.data?.tranchePosition?.meetsThreshold ?? false,
     },
-    entitlementCount: data?.entitlementCount ?? 0,
-    isLoading,
-    error,
-    lastRefresh,
+    entitlementCount: query.data?.entitlementCount ?? 0,
+    isLoading: vaultId !== undefined ? query.isLoading : false,
+    error: getErrorMessage(query.error),
+    lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
     refetch,
   };
 }
@@ -1427,58 +1409,40 @@ export function useCarryEligibility(
   vaultId?: number,
   requestId?: string,
 ): UseCarryEligibilityResult {
-  const [data, setData] = useState<CarryEligibilityResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const { address, isConnected } = useAppKitAccount();
+  const userScope = getUserScope(isConnected, address);
+  const query = useQuery({
+    queryKey: vaultQueryKeys.carryEligibility(vaultId, requestId, userScope),
+    queryFn: () => fetchCarryEligibility(vaultId!, requestId),
+    enabled: vaultId !== undefined,
+    refetchInterval: DEFAULT_POLL_INTERVAL_MS,
+  });
 
   const refetch = useCallback(async () => {
-    if (vaultId === undefined) {
-      setIsLoading(false);
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const result = await fetchCarryEligibility(vaultId, requestId);
-      setData(result);
-      setLastRefresh(new Date());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch carry eligibility");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [vaultId, requestId]);
-
-  useEffect(() => {
-    refetch();
-    const interval = setInterval(refetch, 30_000);
-    return () => clearInterval(interval);
-  }, [refetch]);
+    await query.refetch();
+  }, [query]);
 
   return {
-    accrued: data?.accrued ?? "0",
-    accruedFormatted: data?.accruedFormatted ?? "0",
-    claimed: data?.claimed ?? "0",
-    claimedFormatted: data?.claimedFormatted ?? "0",
-    claimableNow: data?.claimableNow ?? "0",
-    claimableNowFormatted: data?.claimableNowFormatted ?? "0",
-    minClaimThreshold: data?.minClaimThreshold ?? "1000000",
-    minClaimThresholdFormatted: data?.minClaimThresholdFormatted ?? "1.0",
-    eligible: data?.eligible ?? false,
-    meetsThreshold: data?.meetsThreshold ?? false,
-    canClaim: data?.canClaim ?? false,
-    dustOverrideEligible: data?.dustOverrideEligible ?? false,
-    eligibilityError: data?.eligibilityError ?? null,
-    entitlementStatus: data?.entitlementStatus ?? null,
-    currentClaimState: data?.currentClaimState ?? null,
-    totalEntitlements: data?.totalEntitlements ?? 0,
-    eligibleCount: data?.eligibleCount ?? 0,
-    hasEligibleClaims: data?.hasEligibleClaims ?? false,
+    accrued: query.data?.accrued ?? "0",
+    accruedFormatted: query.data?.accruedFormatted ?? "0",
+    claimed: query.data?.claimed ?? "0",
+    claimedFormatted: query.data?.claimedFormatted ?? "0",
+    claimableNow: query.data?.claimableNow ?? "0",
+    claimableNowFormatted: query.data?.claimableNowFormatted ?? "0",
+    minClaimThreshold: query.data?.minClaimThreshold ?? "1000000",
+    minClaimThresholdFormatted: query.data?.minClaimThresholdFormatted ?? "1.0",
+    eligible: query.data?.eligible ?? false,
+    meetsThreshold: query.data?.meetsThreshold ?? false,
+    canClaim: query.data?.canClaim ?? false,
+    dustOverrideEligible: query.data?.dustOverrideEligible ?? false,
+    eligibilityError: query.data?.eligibilityError ?? null,
+    entitlementStatus: query.data?.entitlementStatus ?? null,
+    currentClaimState: query.data?.currentClaimState ?? null,
+    totalEntitlements: query.data?.totalEntitlements ?? 0,
+    eligibleCount: query.data?.eligibleCount ?? 0,
+    hasEligibleClaims: query.data?.hasEligibleClaims ?? false,
     entitlements:
-      data?.entitlements?.map((e) => ({
+      query.data?.entitlements?.map((e) => ({
         entitlementId: e.entitlementId,
         requestId: e.requestId,
         cycleId: e.cycleId,
@@ -1488,9 +1452,9 @@ export function useCarryEligibility(
         dustOverrideEligible: e.dustOverrideEligible ?? false,
         status: e.status,
       })) ?? [],
-    isLoading,
-    error,
-    lastRefresh,
+    isLoading: vaultId !== undefined ? query.isLoading : false,
+    error: getErrorMessage(query.error),
+    lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
     refetch,
   };
 }

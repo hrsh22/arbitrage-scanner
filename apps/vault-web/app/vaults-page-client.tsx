@@ -167,7 +167,7 @@ export default function VaultsPageClient() {
   const instances = data?.instances ?? [];
 
   return (
-    <main className="flex-1 px-4 py-8 sm:px-6 sm:py-10 lg:px-10 lg:py-12">
+    <main className="vault-pane-scroll flex-1 min-h-0 overflow-y-auto px-4 py-8 sm:px-6 sm:py-10 lg:px-10 lg:py-12">
       <div className="mx-auto max-w-6xl space-y-10">
         <section className="relative overflow-hidden rounded-[32px] border border-white/10 bg-white/[0.045] px-6 py-8 shadow-[0_40px_100px_-50px_rgba(8,15,36,0.95)] backdrop-blur-xl sm:px-8 lg:px-10">
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.18),_transparent_34%),radial-gradient(circle_at_85%_15%,_rgba(244,114,182,0.14),_transparent_18%)]" />
@@ -209,7 +209,7 @@ export default function VaultsPageClient() {
         ) : instances.length === 0 ? (
           <Card className="border-white/10 bg-white/[0.04] backdrop-blur-xl">
             <CardContent className="py-10 text-center text-sm text-slate-300">
-              No vault instances are available from the backend right now.
+              No vaults are available right now.
             </CardContent>
           </Card>
         ) : (

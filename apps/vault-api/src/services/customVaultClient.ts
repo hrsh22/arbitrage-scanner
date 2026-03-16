@@ -458,8 +458,12 @@ export function parseContractError(error: unknown): string {
 }
 
 export class CustomVaultClient {
+  private static readonly READ_CACHE_TTL_MS = 250;
+
   private readonly vaultAddress: Address;
   private readonly publicClient: any;
+  private readonly readCache = new Map<string, { expiresAt: number; value: unknown }>();
+  private readonly inFlightReads = new Map<string, Promise<unknown>>();
 
   constructor(params: { vaultAddress: Address; rpcUrl: string; chain?: Chain }) {
     this.vaultAddress = params.vaultAddress;
@@ -469,13 +473,58 @@ export class CustomVaultClient {
     }) as any;
   }
 
-  private async read<T>(functionName: string, args: readonly unknown[] = []): Promise<T> {
-    return this.publicClient.readContract({
-      address: this.vaultAddress,
-      abi: FLAT_BOOK_VAULT_V2_ABI,
+  private createReadKey(functionName: string, args: readonly unknown[]): string {
+    return JSON.stringify([
       functionName,
-      args,
-    }) as Promise<T>;
+      ...args.map((arg) =>
+        typeof arg === "bigint"
+          ? `${arg.toString()}n`
+          : Array.isArray(arg)
+            ? arg.map((value) => (typeof value === "bigint" ? `${value.toString()}n` : value))
+            : arg,
+      ),
+    ]);
+  }
+
+  invalidateReadCache(): void {
+    this.readCache.clear();
+    this.inFlightReads.clear();
+  }
+
+  private async read<T>(functionName: string, args: readonly unknown[] = []): Promise<T> {
+    const cacheKey = this.createReadKey(functionName, args);
+    const now = Date.now();
+    const cached = this.readCache.get(cacheKey);
+
+    if (cached && cached.expiresAt > now) {
+      return cached.value as T;
+    }
+
+    const inFlight = this.inFlightReads.get(cacheKey);
+    if (inFlight) {
+      return (await inFlight) as T;
+    }
+
+    const request = this.publicClient
+      .readContract({
+        address: this.vaultAddress,
+        abi: FLAT_BOOK_VAULT_V2_ABI,
+        functionName,
+        args,
+      })
+      .then((value: unknown) => {
+        this.readCache.set(cacheKey, {
+          value,
+          expiresAt: Date.now() + CustomVaultClient.READ_CACHE_TTL_MS,
+        });
+        return value;
+      })
+      .finally(() => {
+        this.inFlightReads.delete(cacheKey);
+      });
+
+    this.inFlightReads.set(cacheKey, request);
+    return (await request) as T;
   }
 
   private async write(
@@ -492,6 +541,7 @@ export class CustomVaultClient {
         chain: walletClient.chain,
         account: walletClient.account ?? null,
       });
+      this.invalidateReadCache();
       return { success: true, txHash };
     } catch (error) {
       const parsed = parseContractError(error);
@@ -513,6 +563,7 @@ export class CustomVaultClient {
           error: `Transaction reverted on-chain (status: ${receipt.status})`,
         };
       }
+      this.invalidateReadCache();
       return { success: true };
     } catch (error) {
       return { success: false, error: parseContractError(error) };
@@ -660,12 +711,9 @@ export class CustomVaultClient {
   }
 
   async getControllerRequestIds(controller: Address): Promise<bigint[]> {
-    const [cycleId, pendingShares, claimableShares] = await Promise.all([
-      this.read<bigint>("currentCycleId"),
-      this.read<bigint>("queuedRedeemShares", [
-        await this.read<bigint>("currentCycleId"),
-        controller,
-      ]),
+    const cycleId = await this.read<bigint>("currentCycleId");
+    const [pendingShares, claimableShares] = await Promise.all([
+      this.read<bigint>("queuedRedeemShares", [cycleId, controller]),
       this.read<bigint>("claimableRedeemRequest", [0n, controller]),
     ]);
     if (pendingShares > 0n || claimableShares > 0n) {
@@ -677,8 +725,8 @@ export class CustomVaultClient {
     return [];
   }
 
-  async getDepositorBatchRequest(depositor: Address, _batchId: bigint): Promise<bigint> {
-    const cycleId = await this.read<bigint>("currentCycleId");
+  async getDepositorBatchRequest(depositor: Address, batchId: bigint): Promise<bigint> {
+    const cycleId = batchId > 0n ? batchId - 1n : await this.read<bigint>("currentCycleId");
     const queuedAssets = await this.read<bigint>("queuedDepositAssets", [cycleId, depositor]);
     if (queuedAssets > 0n) {
       return (

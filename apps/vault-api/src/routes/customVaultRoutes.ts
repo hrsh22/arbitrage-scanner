@@ -55,7 +55,10 @@ import {
 } from "../services/claimStateMachine.js";
 
 const LIFECYCLE_CACHE_TTL_MS = 5_000;
-const lifecycleCache = new Map<number, { expiresAt: number; value: Record<string, unknown> }>();
+const lifecycleCache = new WeakMap<
+  CustomVaultProvider,
+  { expiresAt: number; value: Record<string, unknown> }
+>();
 
 // ============================================================================
 // Validation Helpers
@@ -119,17 +122,16 @@ async function getCustomVaultProvider(vaultId: number): Promise<CustomVaultProvi
 }
 
 async function getCachedLifecycleFields(
-  vaultId: number,
   provider: CustomVaultProvider,
 ): Promise<Record<string, unknown> | undefined> {
-  const cached = lifecycleCache.get(vaultId);
+  const cached = lifecycleCache.get(provider);
   const now = Date.now();
   if (cached && cached.expiresAt > now) {
     return cached.value;
   }
 
   const lifecycle = { ...(await provider.getLifecycle()) };
-  lifecycleCache.set(vaultId, {
+  lifecycleCache.set(provider, {
     value: lifecycle,
     expiresAt: now + LIFECYCLE_CACHE_TTL_MS,
   });
@@ -508,7 +510,6 @@ export function buildCustomVaultRouter(): Router {
         });
       }
 
-      await provider.getVaultInfo();
       const assetsEstimated = 0n;
 
       if (clientAssetsEstimated) {
@@ -1082,7 +1083,7 @@ export function buildCustomVaultRouter(): Router {
       // and exposed through a dedicated route method in the provider.
       let lifecycleFields: Record<string, unknown> | undefined = undefined;
       try {
-        lifecycleFields = await getCachedLifecycleFields(vaultId, provider);
+        lifecycleFields = await getCachedLifecycleFields(provider);
       } catch {
         lifecycleFields = undefined;
       }

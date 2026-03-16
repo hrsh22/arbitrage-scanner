@@ -60,18 +60,21 @@ export function Header({ className }: HeaderProps) {
 
   // Restore auth session on mount
   useEffect(() => {
-    if (isConnected && address && !isAuthenticated) {
+    if (isConnected && address) {
       fetchAuthMe()
         .then((result) => {
-          if (result.authenticated) {
-            setIsAuthenticated(true);
-          }
+          const matchesWallet =
+            !result.address || result.address.toLowerCase() === address.toLowerCase();
+          setIsAuthenticated(result.authenticated && matchesWallet);
         })
         .catch(() => {
-          // Session expired or not found — user will need to sign in again
+          setIsAuthenticated(false);
         });
+      return;
     }
-  }, [isConnected, address, isAuthenticated]);
+
+    setIsAuthenticated(false);
+  }, [isConnected, address]);
 
   // Clear auth state on disconnect
   useEffect(() => {
@@ -152,7 +155,7 @@ export function Header({ className }: HeaderProps) {
 
   return (
     <header
-      className={`sticky top-0 z-50 w-full border-b border-white/10 bg-slate-950/70 backdrop-blur-xl supports-[backdrop-filter]:bg-slate-950/55 ${className ?? ""}`}
+      className={`z-50 w-full shrink-0 border-b border-white/10 bg-slate-950/85 backdrop-blur-xl supports-[backdrop-filter]:bg-slate-950/80 ${className ?? ""}`}
     >
       <div className="mx-auto flex min-h-16 max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
         <div className="flex items-center gap-4">
