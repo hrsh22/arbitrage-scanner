@@ -741,6 +741,10 @@ export class NavOracleService {
         functionName: "updatePositionValues",
         args: [newOnChainValue],
       });
+      const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+      if (receipt.status !== "success") {
+        throw new Error("Legacy NAV update transaction reverted");
+      }
       updatedOnChain = true;
     }
 
@@ -956,6 +960,10 @@ export class NavOracleService {
           functionName: "updateNAV",
           args: [navUnits],
         });
+      }
+      const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+      if (receipt.status !== "success") {
+        throw new Error("Custom NAV update transaction reverted");
       }
       updatedOnChain = true;
 

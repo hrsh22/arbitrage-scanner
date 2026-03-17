@@ -807,9 +807,16 @@ function DepositRail({
     queueDepositPending ||
     queueDepositConfirming ||
     navSyncPending;
+
+  function clearDepositFeedback() {
+    setErrorMessage(null);
+    setMessage(null);
+  }
+
   useEffect(() => {
     if (approveConfirmed) {
       void refetchAllowance();
+      setErrorMessage(null);
       setMessage("Approval confirmed. You can deposit now.");
     }
   }, [approveConfirmed, refetchAllowance]);
@@ -850,7 +857,7 @@ function DepositRail({
 
   async function ensureFreshNav() {
     setNavSyncPending(true);
-    setErrorMessage(null);
+    clearDepositFeedback();
 
     try {
       await postVaultNavUpdate();
@@ -869,6 +876,10 @@ function DepositRail({
     if (!parsedAmount || !address) {
       return;
     }
+
+    clearDepositFeedback();
+    resetDeposit();
+    resetQueueDeposit();
 
     const latestCycleResult = await refetchCycleStatus();
     const latestCycle =
@@ -930,8 +941,7 @@ function DepositRail({
             type="button"
             onClick={() => {
               setAmount(formatted);
-              setErrorMessage(null);
-              setMessage(null);
+              clearDepositFeedback();
             }}
             className="text-[10px] font-medium uppercase tracking-[0.18em] text-cyan-200 transition-colors hover:text-white"
           >
@@ -947,8 +957,7 @@ function DepositRail({
           value={amount}
           onChange={(event) => {
             setAmount(event.target.value);
-            setErrorMessage(null);
-            setMessage(null);
+            clearDepositFeedback();
             resetApprove();
             resetDeposit();
             resetQueueDeposit();
@@ -975,6 +984,8 @@ function DepositRail({
           type="button"
           onClick={() => {
             if (parsedAmount) {
+              clearDepositFeedback();
+              resetApprove();
               approve(vault.config.vaultAddress as `0x${string}`, parsedAmount);
             }
           }}
@@ -1247,6 +1258,8 @@ function WithdrawRail({
       return;
     }
 
+    reset();
+    setClaimingRequestId(null);
     setErrorMessage(null);
     setMessage(null);
 
@@ -1355,6 +1368,11 @@ function WithdrawRail({
     isPending ||
     isConfirming;
 
+  function clearWithdrawalFeedback() {
+    setErrorMessage(null);
+    setMessage(null);
+  }
+
   return (
     <div className="space-y-4">
       <div className="grid gap-3">
@@ -1385,8 +1403,7 @@ function WithdrawRail({
             type="button"
             onClick={() => {
               setAmount(effectiveFormattedShares);
-              setErrorMessage(null);
-              setMessage(null);
+              clearWithdrawalFeedback();
               reset();
             }}
             disabled={queuePending || isPending || isConfirming || !!activeRequest}
@@ -1404,8 +1421,7 @@ function WithdrawRail({
           value={amount}
           onChange={(event) => {
             setAmount(event.target.value);
-            setErrorMessage(null);
-            setMessage(null);
+            clearWithdrawalFeedback();
             reset();
           }}
           disabled={queuePending || isPending || isConfirming || !!activeRequest}
@@ -1454,7 +1470,7 @@ function WithdrawRail({
           </p>
           <p className="text-xs leading-6 text-amber-50/90">
             {readyRequest
-              ? "Settlement is complete. Sign the claim transaction to receive USDC.e, or cancel the request if you no longer want to exit."
+              ? "Settlement is complete. Sign the claim transaction to receive USDC.e."
               : "Your exit request is queued. You can leave it in queue or cancel it before claiming."}
           </p>
           <p className="text-xs leading-6 text-amber-50/90">
@@ -1477,17 +1493,19 @@ function WithdrawRail({
                 Claim withdrawal
               </Button>
             )}
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                void handleCancelWithdrawalRequest();
-              }}
-              disabled={queuePending || isPending || isConfirming}
-              className="h-11 rounded-2xl border-white/10 bg-white/5 text-white hover:bg-white/10"
-            >
-              Cancel request
-            </Button>
+            {!readyRequest && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  void handleCancelWithdrawalRequest();
+                }}
+                disabled={queuePending || isPending || isConfirming}
+                className="h-11 rounded-2xl border-white/10 bg-white/5 text-white hover:bg-white/10"
+              >
+                Cancel request
+              </Button>
+            )}
           </div>
         </div>
       )}

@@ -124,6 +124,7 @@ export function RequestForm({
 
   useEffect(() => {
     if (!isConfirmed) return;
+    setError(null);
     setSuccessMessage("Exit request submitted. It will move forward when the current cycle locks.");
     setAmount("");
     onSuccess();
@@ -131,6 +132,7 @@ export function RequestForm({
 
   useEffect(() => {
     if (approveConfirmed) {
+      setError(null);
       void refetchShareAllowance();
     }
   }, [approveConfirmed, refetchShareAllowance]);

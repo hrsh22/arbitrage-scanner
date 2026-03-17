@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { encodeFunctionData, formatUnits, getAddress } from "viem";
+import { encodeFunctionData, formatUnits, getAddress, toHex } from "viem";
 import type { Address } from "viem";
 import { useReadContract, useWaitForTransactionReceipt } from "wagmi";
 import { useAppKitAccount, useAppKitProvider } from "@reown/appkit/react";
@@ -178,6 +178,13 @@ interface Eip1193Provider {
   request(args: { method: string; params?: readonly unknown[] | object }): Promise<unknown>;
 }
 
+interface Eip155TransactionRequest {
+  from: Address;
+  to: Address;
+  data: `0x${string}`;
+  gas?: `0x${string}`;
+}
+
 interface Eip155WriteState {
   write: (tx: { to: Address; data: `0x${string}` }) => void;
   isPending: boolean;
@@ -223,15 +230,39 @@ function useEip155WriteState(): Eip155WriteState {
 
       void (async () => {
         try {
+          const txRequest: Eip155TransactionRequest = {
+            from: fromAddress,
+            to: tx.to,
+            data: tx.data,
+          };
+
+          try {
+            const estimatedGas = await walletProvider.request({
+              method: "eth_estimateGas",
+              params: [txRequest],
+            });
+
+            if (typeof estimatedGas === "string" && estimatedGas.startsWith("0x")) {
+              txRequest.gas = toHex((BigInt(estimatedGas) * 12n) / 10n);
+            }
+          } catch (estimateError) {
+            const estimateMessage = getErrorMessage(estimateError)?.toLowerCase() ?? "";
+            const walletCanEstimateLater =
+              estimateMessage.includes("method not found") ||
+              estimateMessage.includes("unsupported") ||
+              estimateMessage.includes("not available") ||
+              estimateMessage.includes("does not exist");
+
+            if (!walletCanEstimateLater) {
+              throw estimateError instanceof Error
+                ? estimateError
+                : new Error("Transaction gas estimation failed.");
+            }
+          }
+
           const result = await walletProvider.request({
             method: "eth_sendTransaction",
-            params: [
-              {
-                from: fromAddress,
-                to: tx.to,
-                data: tx.data,
-              },
-            ],
+            params: [txRequest],
           });
 
           if (typeof result !== "string" || !result.startsWith("0x")) {

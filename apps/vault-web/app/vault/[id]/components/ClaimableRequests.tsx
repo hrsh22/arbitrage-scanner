@@ -68,6 +68,7 @@ function ClaimableRequestCard({
   // Handle success
   useEffect(() => {
     if (isConfirmed && hash) {
+      setError(null);
       setSuccessTx(hash);
       setTimeout(() => {
         onClaimSuccess();

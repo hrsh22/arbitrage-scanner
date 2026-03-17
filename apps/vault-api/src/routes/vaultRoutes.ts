@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { desc } from "drizzle-orm";
-import type { Address } from "viem";
-import { createPublicClient, formatUnits, parseUnits } from "viem";
+import { and, desc, eq, ne } from "drizzle-orm";
+import type { Address, Hex } from "viem";
+import { createPublicClient, decodeFunctionData, formatUnits, getAddress, parseUnits } from "viem";
 import { getAllVaultConfigs, getVaultConfig } from "../config/index.js";
 import { resolveVaultIdentity } from "../config/identityResolver.js";
 import type { VaultInstanceConfig } from "../config/types.js";
@@ -13,7 +13,7 @@ import {
   NEGRISK_ADAPTER_ADDRESS,
 } from "../constants.js";
 import { db } from "../db/index.js";
-import { vaultAllocations } from "../db/schema.js";
+import { vaultAllocations, withdrawalRequests } from "../db/schema.js";
 import { env } from "../env.js";
 import { logger } from "../logger.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -238,6 +238,109 @@ const VAULT_SHARE_PRICE_ABI = [
     outputs: [{ name: "", type: "uint256" }],
   },
 ] as const;
+
+const VAULT_REDEEM_ABI = [
+  {
+    type: "function",
+    name: "redeem",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "shares", type: "uint256" },
+      { name: "receiver", type: "address" },
+      { name: "onBehalf", type: "address" },
+    ],
+    outputs: [{ name: "assets", type: "uint256" }],
+  },
+] as const;
+
+async function verifyWithdrawalCompletionTx(params: {
+  txHash: Hex;
+  requestId: string;
+  vaultAddress: string;
+  userAddress: string;
+  shares: string;
+  readyAt: Date | null;
+}): Promise<{ valid: boolean; error?: string }> {
+  try {
+    const reusedTx = await db.query.withdrawalRequests.findFirst({
+      where: and(
+        eq(withdrawalRequests.txHash, params.txHash),
+        ne(withdrawalRequests.requestId, params.requestId),
+      ),
+    });
+
+    if (reusedTx) {
+      return {
+        valid: false,
+        error: "Claim transaction hash was already used for another request.",
+      };
+    }
+
+    const networkConfig = getNetworkConfigFromEnv();
+    const publicClient = createPublicClient({
+      chain: networkConfig.chain,
+      transport: createNetworkTransport(),
+    });
+
+    const receipt = await publicClient.getTransactionReceipt({ hash: params.txHash });
+    if (receipt.status !== "success") {
+      return { valid: false, error: "Claim transaction did not succeed on-chain." };
+    }
+
+    if (params.readyAt) {
+      const block = await publicClient.getBlock({ blockNumber: receipt.blockNumber });
+      const txTimestampMs = Number(block.timestamp) * 1000;
+      if (txTimestampMs < params.readyAt.getTime()) {
+        return {
+          valid: false,
+          error: "Claim transaction was mined before this request became ready.",
+        };
+      }
+    }
+
+    const tx = await publicClient.getTransaction({ hash: params.txHash });
+    if (!tx.to) {
+      return { valid: false, error: "Claim transaction is missing a destination address." };
+    }
+
+    const normalizedVault = getAddress(params.vaultAddress as Address);
+    const normalizedUser = getAddress(params.userAddress as Address);
+
+    if (getAddress(tx.to) !== normalizedVault) {
+      return { valid: false, error: "Claim transaction was sent to the wrong contract." };
+    }
+
+    if (getAddress(tx.from) !== normalizedUser) {
+      return { valid: false, error: "Claim transaction was not sent by the connected wallet." };
+    }
+
+    const decoded = decodeFunctionData({ abi: VAULT_REDEEM_ABI, data: tx.input });
+    if (decoded.functionName !== "redeem") {
+      return { valid: false, error: "Claim transaction did not call redeem." };
+    }
+
+    const [shares, receiver, onBehalf] = decoded.args;
+    const expectedShares = parseUnits(params.shares, VAULT_SHARE_DECIMALS);
+
+    if (shares !== expectedShares) {
+      return { valid: false, error: "Claim transaction redeemed the wrong share amount." };
+    }
+
+    if (getAddress(receiver) !== normalizedUser || getAddress(onBehalf) !== normalizedUser) {
+      return {
+        valid: false,
+        error: "Claim transaction receiver does not match the connected wallet.",
+      };
+    }
+
+    return { valid: true };
+  } catch (error) {
+    return {
+      valid: false,
+      error: error instanceof Error ? error.message : "Unable to verify claim transaction.",
+    };
+  }
+}
 
 const USDC_DECIMALS = 6;
 const VAULT_SHARE_DECIMALS = 6;
@@ -1776,6 +1879,11 @@ export function buildVaultRouter(): Router {
     const { txHash } = req.body as { txHash?: string };
     const userAddress = req.session!.address as string;
 
+    if (!txHash || typeof txHash !== "string" || !txHash.startsWith("0x")) {
+      res.status(400).json({ error: "A successful redeem transaction hash is required." });
+      return;
+    }
+
     // Acquire lock to prevent concurrent state changes
     const lockKey = `withdrawal:${requestId}`;
     const vaultId = 0; // Use 0 as placeholder for withdrawal ops (not vault-specific)
@@ -1811,6 +1919,24 @@ export function buildVaultRouter(): Router {
 
       if (existing.userAddress.toLowerCase() !== userAddress.toLowerCase()) {
         res.status(403).json({ error: "Not authorized to complete this request" });
+        return;
+      }
+
+      const verification = await verifyWithdrawalCompletionTx({
+        txHash: txHash as Hex,
+        requestId,
+        vaultAddress: existing.vaultAddress,
+        userAddress,
+        shares: existing.shares,
+        readyAt: existing.readyAt,
+      });
+
+      if (!verification.valid) {
+        res.status(400).json({
+          error: verification.error ?? "Unable to verify redeem transaction.",
+          requestId,
+          currentStatus: existing.status,
+        });
         return;
       }
 
