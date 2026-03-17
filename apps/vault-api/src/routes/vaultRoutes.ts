@@ -159,67 +159,6 @@ const CUSTOM_VAULT_NAV_ABI = [
   },
 ] as const;
 
-const CUSTOM_VAULT_TOTAL_QUEUED_ASSETS_ABI = [
-  {
-    type: "function",
-    name: "totalQueuedAssets",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-] as const;
-
-const CUSTOM_VAULT_RESERVED_REDEMPTION_ASSETS_ABI = [
-  {
-    type: "function",
-    name: "reservedRedemptionAssets",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-] as const;
-
-const CUSTOM_VAULT_CURRENT_CYCLE_ID_ABI = [
-  {
-    type: "function",
-    name: "currentCycleId",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-] as const;
-
-const CUSTOM_VAULT_CYCLES_ABI = [
-  {
-    type: "function",
-    name: "cycles",
-    stateMutability: "view",
-    inputs: [{ name: "", type: "uint256" }],
-    outputs: [
-      { name: "lockedNav", type: "uint256" },
-      { name: "totalQueuedDepositAssets", type: "uint256" },
-      { name: "totalQueuedRedeemShares", type: "uint256" },
-      { name: "totalQueuedRedeemAssets", type: "uint256" },
-      { name: "depositCursor", type: "uint256" },
-      { name: "redeemCursor", type: "uint256" },
-      { name: "processingStartedAt", type: "uint256" },
-      { name: "depositsComplete", type: "bool" },
-      { name: "redeemsComplete", type: "bool" },
-      { name: "finalized", type: "bool" },
-    ],
-  },
-] as const;
-
-const CUSTOM_VAULT_TOTAL_CLAIMABLE_REDEEM_ASSETS_ABI = [
-  {
-    type: "function",
-    name: "totalClaimableRedeemAssets",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-] as const;
-
 // Legacy vault share price calculation (totalAssets / totalSupply)
 // DEPRECATED: Use boundary NAV from contract for custom vaults
 const VAULT_SHARE_PRICE_ABI = [
@@ -480,20 +419,8 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> 
     // For custom vaults, use boundary NAV from contract (excludes queued/reserved)
     if (config.type === "custom") {
       try {
-        const [
-          currentNAV,
-          lastNavUpdateRaw,
-          totalSupplyRaw,
-          vaultUsdcRaw,
-          safeUsdcRaw,
-          totalQueuedAssetsRaw,
-          reservedRedemptionAssetsRaw,
-        ] = await Promise.all([
-          publicClient.readContract({
-            address: config.vaultAddress as Address,
-            abi: CUSTOM_VAULT_NAV_ABI,
-            functionName: "currentNAV",
-          }),
+        const livePreview = await createNavOracle(config).getLiveNavPreview();
+        const [lastNavUpdateRaw, totalSupplyRaw] = await Promise.all([
           publicClient.readContract({
             address: config.vaultAddress as Address,
             abi: CUSTOM_VAULT_NAV_ABI,
@@ -504,93 +431,20 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> 
             abi: VAULT_TOTAL_SUPPLY_ABI,
             functionName: "totalSupply",
           }),
-          publicClient.readContract({
-            address: USDC_E_ADDRESS as Address,
-            abi: ERC20_BALANCE_ABI,
-            functionName: "balanceOf",
-            args: [config.vaultAddress as Address],
-          }),
-          publicClient.readContract({
-            address: USDC_E_ADDRESS as Address,
-            abi: ERC20_BALANCE_ABI,
-            functionName: "balanceOf",
-            args: [config.safeAddress as Address],
-          }),
-          publicClient
-            .readContract({
-              address: config.vaultAddress as Address,
-              abi: CUSTOM_VAULT_TOTAL_QUEUED_ASSETS_ABI,
-              functionName: "totalQueuedAssets",
-            })
-            .catch(async () => {
-              const currentCycleId = await publicClient.readContract({
-                address: config.vaultAddress as Address,
-                abi: CUSTOM_VAULT_CURRENT_CYCLE_ID_ABI,
-                functionName: "currentCycleId",
-              });
-              const cycle = await publicClient.readContract({
-                address: config.vaultAddress as Address,
-                abi: CUSTOM_VAULT_CYCLES_ABI,
-                functionName: "cycles",
-                args: [currentCycleId],
-              });
-              return cycle[1];
-            }),
-          publicClient
-            .readContract({
-              address: config.vaultAddress as Address,
-              abi: CUSTOM_VAULT_RESERVED_REDEMPTION_ASSETS_ABI,
-              functionName: "reservedRedemptionAssets",
-            })
-            .catch(async () => {
-              const [claimableRedeemAssets, currentCycleId] = await Promise.all([
-                publicClient
-                  .readContract({
-                    address: config.vaultAddress as Address,
-                    abi: CUSTOM_VAULT_TOTAL_CLAIMABLE_REDEEM_ASSETS_ABI,
-                    functionName: "totalClaimableRedeemAssets",
-                  })
-                  .catch(() => 0n),
-                publicClient
-                  .readContract({
-                    address: config.vaultAddress as Address,
-                    abi: CUSTOM_VAULT_CURRENT_CYCLE_ID_ABI,
-                    functionName: "currentCycleId",
-                  })
-                  .catch(() => 0n),
-              ]);
-
-              const cycle = await publicClient
-                .readContract({
-                  address: config.vaultAddress as Address,
-                  abi: CUSTOM_VAULT_CYCLES_ABI,
-                  functionName: "cycles",
-                  args: [currentCycleId],
-                })
-                .catch(() => null);
-
-              return claimableRedeemAssets + (cycle ? cycle[3] : 0n);
-            }),
         ]);
 
-        const totalSupply = Number(formatUnits(totalSupplyRaw, VAULT_SHARE_DECIMALS));
-        vaultUsdc = Number(formatUnits(vaultUsdcRaw, USDC_DECIMALS));
-        safeUsdc = Number(formatUnits(safeUsdcRaw, USDC_DECIMALS));
-        const totalQueuedAssets = Number(formatUnits(totalQueuedAssetsRaw, USDC_DECIMALS));
-        const reservedRedemptionAssets = Number(
-          formatUnits(reservedRedemptionAssetsRaw, USDC_DECIMALS),
-        );
-        const excludedAssets = totalQueuedAssets + reservedRedemptionAssets;
-        idleAssets = Math.max(vaultUsdc + safeUsdc - excludedAssets, 0);
-
-        sharePrice = Number(formatUnits(currentNAV, 18));
-        totalAssets = totalSupply * sharePrice;
+        vaultUsdc = livePreview.vaultUsdc;
+        safeUsdc = livePreview.safeUsdc;
+        idleAssets = livePreview.idleAssets;
+        deployedCostBasis = livePreview.deployedCostBasis;
+        totalAssets = livePreview.totalAssets;
+        sharePrice = livePreview.sharePrice;
         lastUpdated = new Date(Number(lastNavUpdateRaw) * 1000).toISOString();
         customStatusReadSucceeded = true;
 
-        logger.debug("Vault API: Using boundary NAV for custom vault status", {
+        logger.debug("Vault API: Using live NAV preview for custom vault status", {
           vaultId: config.id,
-          currentNAV: currentNAV.toString(),
+          pricingSupply: livePreview.pricingSupply,
           sharePrice,
           totalAssets,
           vaultUsdc,
@@ -1322,6 +1176,7 @@ export function buildVaultRouter(): Router {
    * Falls back to raw totalAssets/totalSupply for legacy vaults only.
    */
   async function estimateRedeemAssets(
+    config: VaultInstanceConfig,
     vaultAddress: string,
     shares: string,
   ): Promise<{
@@ -1329,6 +1184,19 @@ export function buildVaultRouter(): Router {
     error?: string;
   }> {
     try {
+      if (config.type === "custom") {
+        const livePreview = await createNavOracle(config).getLiveNavPreview();
+        const sharesUnits = parseUnits(shares, VAULT_SHARE_DECIMALS);
+        const assets =
+          Number(formatUnits(sharesUnits, VAULT_SHARE_DECIMALS)) * livePreview.sharePrice;
+
+        if (!Number.isFinite(assets) || assets <= 0) {
+          return { assets: 0, error: "Invalid estimate calculation" };
+        }
+
+        return { assets };
+      }
+
       const networkConfig = getNetworkConfigFromEnv();
       const publicClient = createPublicClient({
         chain: networkConfig.chain,
@@ -1439,7 +1307,7 @@ export function buildVaultRouter(): Router {
       const vaultAddress = config.vaultAddress;
 
       // Get live estimate for initial estimate (share price based)
-      const estimate = await estimateRedeemAssets(vaultAddress, shares);
+      const estimate = await estimateRedeemAssets(config, vaultAddress, shares);
 
       if (estimate.error || estimate.assets <= 0) {
         res.status(503).json({

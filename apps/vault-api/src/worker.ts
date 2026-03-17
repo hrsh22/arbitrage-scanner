@@ -31,13 +31,7 @@ function shouldSchedulePeriodicNavRefresh(config: VaultInstanceConfig): boolean 
     return true;
   }
 
-  // Suppress NAV refresh scheduling for flat/open idle scenarios as well as
-  // closed-book batches. This ensures we don't eagerly refresh NAV for
-  // flatBookVaultV2 in idle states and during startup.
-  if (
-    config.vaultContractType === "closedBookBatchVault" ||
-    config.vaultContractType === "flatBookVaultV2"
-  ) {
+  if (config.vaultContractType === "closedBookBatchVault") {
     return false;
   }
 

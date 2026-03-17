@@ -108,6 +108,13 @@ const NAV_SNAPSHOT_ABI = [
 const CUSTOM_VAULT_NAV_ABI = [
   {
     type: "function",
+    name: "currentNAV",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
     name: "updateNAV",
     stateMutability: "nonpayable",
     inputs: [{ name: "_nav", type: "uint256" }],
@@ -316,6 +323,26 @@ export interface NavSnapshotData {
   totalShares: bigint;
   sharePrice: bigint;
   timestamp: bigint;
+}
+
+export interface LiveNavPreview {
+  totalAssets: number;
+  idleAssets: number;
+  deployedMarketValue: number;
+  deployedCostBasis: number;
+  sharePrice: number;
+  positionsWithPrices: number;
+  positionsWithoutPrices: number;
+  vaultUsdc: number;
+  safeUsdc: number;
+  queuedAssets: number;
+  reservedRedemptionAssets: number;
+  totalSupply: number;
+  pricingSupply: number;
+  totalAssetsUnits: bigint;
+  totalSupplyRaw: bigint;
+  pricingSupplyRaw: bigint;
+  navUnits: bigint;
 }
 
 /** Constructor options — accepts either VaultInstanceConfig or individual service overrides */
@@ -596,6 +623,147 @@ export class NavOracleService {
     return this.calculateAndPushNavLegacy();
   }
 
+  async getLiveNavPreview(): Promise<LiveNavPreview> {
+    if (this.vaultType !== "custom") {
+      throw new Error("NavOracleService: live NAV preview is only supported for custom vaults");
+    }
+
+    return this.calculateCustomLiveNavPreview();
+  }
+
+  private async calculateCustomLiveNavPreview(): Promise<LiveNavPreview> {
+    const networkConfig = getNetworkConfigFromEnv();
+
+    let openPositions: OpenPosition[] = [];
+    if (networkConfig.supportsPolymarketTrading) {
+      try {
+        openPositions = await this.fetcher.fetchOpenPositions(this.safeAddress);
+      } catch (error) {
+        throw new Error(
+          `NavOracleService: Failed to fetch open positions for safe ${this.safeAddress}: ${getErrorMessage(error)}`,
+        );
+      }
+    }
+
+    const tokenIds = openPositions.map((p) => p.tokenId);
+
+    let bidPrices = new Map<string, number>();
+    if (tokenIds.length > 0) {
+      try {
+        bidPrices = await this.prices.getBidPrices(tokenIds);
+      } catch (error) {
+        throw new Error(
+          `NavOracleService: Failed to fetch bid prices for ${tokenIds.length} token(s): ${getErrorMessage(error)}`,
+        );
+      }
+    }
+
+    let deployedMarketValue = 0;
+    let deployedCostBasis = 0;
+    let positionsWithPrices = 0;
+    let positionsWithoutPrices = 0;
+
+    for (const position of openPositions) {
+      const quantity = position.size;
+      const costBasis = position.costBasis;
+      const bidPrice = bidPrices.get(position.tokenId) ?? 0;
+
+      deployedCostBasis += costBasis;
+
+      if (bidPrice > 0) {
+        const marketValue = quantity * bidPrice;
+        deployedMarketValue += marketValue;
+        positionsWithPrices++;
+
+        const costBasisPerShare = quantity > 0 ? costBasis / quantity : 0;
+        if (costBasisPerShare > 0) {
+          const deviation = Math.abs(bidPrice - costBasisPerShare) / costBasisPerShare;
+          if (deviation > PRICE_DEVIATION_WARN_THRESHOLD) {
+            logger.warn("NavOracleService: Large price deviation from cost basis", {
+              tokenId: position.tokenId,
+              bidPrice,
+              costBasisPerShare: costBasisPerShare.toFixed(4),
+              deviation: `${(deviation * 100).toFixed(1)}%`,
+              title: position.title,
+            });
+          }
+        }
+      } else {
+        deployedMarketValue += costBasis;
+        positionsWithoutPrices++;
+        logger.warn("NavOracleService: No bid price, falling back to cost basis", {
+          tokenId: position.tokenId,
+          costBasis,
+          title: position.title,
+        });
+      }
+    }
+
+    const usdcAddress = USDC_E_ADDRESS as Address;
+    const [vaultUsdcRaw, safeUsdcRaw, totalSupplyRaw, liabilityState] = await Promise.all([
+      this.publicClient.readContract({
+        address: usdcAddress,
+        abi: ERC20_BALANCE_ABI,
+        functionName: "balanceOf",
+        args: [this.vaultAddress],
+      }),
+      this.publicClient.readContract({
+        address: usdcAddress,
+        abi: ERC20_BALANCE_ABI,
+        functionName: "balanceOf",
+        args: [this.safeAddress],
+      }),
+      this.publicClient.readContract({
+        address: this.vaultAddress,
+        abi: VAULT_TOTAL_SUPPLY_ABI,
+        functionName: "totalSupply",
+      }),
+      this.readCustomLiabilityState(),
+    ]);
+
+    const { totalQueuedAssetsRaw, reservedRedemptionAssetsRaw } = liabilityState;
+
+    const queuedAssets = Number(formatUnits(totalQueuedAssetsRaw, USDC_DECIMALS));
+    const reservedRedemptionAssets = Number(
+      formatUnits(reservedRedemptionAssetsRaw, USDC_DECIMALS),
+    );
+    const vaultUsdc = Number(formatUnits(vaultUsdcRaw, USDC_DECIMALS));
+    const safeUsdc = Number(formatUnits(safeUsdcRaw, USDC_DECIMALS));
+    const grossIdleAssets = vaultUsdc + safeUsdc;
+    const grossTotalAssets = grossIdleAssets + deployedMarketValue;
+    const excludedAssets = queuedAssets + reservedRedemptionAssets;
+    const idleAssets = Math.max(grossIdleAssets - excludedAssets, 0);
+    const totalAssets = Math.max(grossTotalAssets - excludedAssets, 0);
+
+    const totalSupply = Number(formatUnits(totalSupplyRaw, USDC_DECIMALS));
+    const pricingSupplyRaw = totalSupplyRaw;
+    const pricingSupply = Number(formatUnits(pricingSupplyRaw, USDC_DECIMALS));
+    const sharePrice = pricingSupply > 0 ? totalAssets / pricingSupply : 1.0;
+    const totalAssetsUnits = decimalToUsdcUnits(totalAssets);
+    const navUnits =
+      pricingSupplyRaw > 0n ? (totalAssetsUnits * NAV_SCALE) / pricingSupplyRaw : NAV_SCALE;
+
+    return {
+      totalAssets,
+      idleAssets,
+      deployedMarketValue,
+      deployedCostBasis,
+      sharePrice,
+      positionsWithPrices,
+      positionsWithoutPrices,
+      vaultUsdc,
+      safeUsdc,
+      queuedAssets,
+      reservedRedemptionAssets,
+      totalSupply,
+      pricingSupply,
+      totalAssetsUnits,
+      totalSupplyRaw,
+      pricingSupplyRaw,
+      navUnits,
+    };
+  }
+
   /**
    * Legacy (Morpho) NAV calculation and push.
    *
@@ -810,122 +978,7 @@ export class NavOracleService {
    * 8. Store snapshot in DB for settlement reference
    */
   private async calculateAndPushNavCustom(): Promise<NavUpdateResult> {
-    const networkConfig = getNetworkConfigFromEnv();
-
-    let openPositions: OpenPosition[] = [];
-    if (networkConfig.supportsPolymarketTrading) {
-      try {
-        openPositions = await this.fetcher.fetchOpenPositions(this.safeAddress);
-      } catch (error) {
-        throw new Error(
-          `NavOracleService: Failed to fetch open positions for safe ${this.safeAddress}: ${getErrorMessage(error)}`,
-        );
-      }
-    }
-
-    const tokenIds = openPositions.map((p) => p.tokenId);
-
-    let bidPrices = new Map<string, number>();
-    if (tokenIds.length > 0) {
-      try {
-        bidPrices = await this.prices.getBidPrices(tokenIds);
-      } catch (error) {
-        throw new Error(
-          `NavOracleService: Failed to fetch bid prices for ${tokenIds.length} token(s): ${getErrorMessage(error)}`,
-        );
-      }
-    }
-
-    let deployedMarketValue = 0;
-    let deployedCostBasis = 0;
-    let positionsWithPrices = 0;
-    let positionsWithoutPrices = 0;
-
-    for (const position of openPositions) {
-      const quantity = position.size;
-      const costBasis = position.costBasis;
-      const bidPrice = bidPrices.get(position.tokenId) ?? 0;
-
-      deployedCostBasis += costBasis;
-
-      if (bidPrice > 0) {
-        const marketValue = quantity * bidPrice;
-        deployedMarketValue += marketValue;
-        positionsWithPrices++;
-
-        // Warn on large deviations
-        const costBasisPerShare = quantity > 0 ? costBasis / quantity : 0;
-        if (costBasisPerShare > 0) {
-          const deviation = Math.abs(bidPrice - costBasisPerShare) / costBasisPerShare;
-          if (deviation > PRICE_DEVIATION_WARN_THRESHOLD) {
-            logger.warn("NavOracleService: Large price deviation from cost basis", {
-              tokenId: position.tokenId,
-              bidPrice,
-              costBasisPerShare: costBasisPerShare.toFixed(4),
-              deviation: `${(deviation * 100).toFixed(1)}%`,
-              title: position.title,
-            });
-          }
-        }
-      } else {
-        deployedMarketValue += costBasis;
-        positionsWithoutPrices++;
-        logger.warn("NavOracleService: No bid price, falling back to cost basis", {
-          tokenId: position.tokenId,
-          costBasis,
-          title: position.title,
-        });
-      }
-    }
-
-    const usdcAddress = USDC_E_ADDRESS as Address;
-
-    // Read on-chain balances
-    const [vaultUsdcRaw, safeUsdcRaw, totalSupplyRaw, liabilityState] = await Promise.all([
-      this.publicClient.readContract({
-        address: usdcAddress,
-        abi: ERC20_BALANCE_ABI,
-        functionName: "balanceOf",
-        args: [this.vaultAddress],
-      }),
-      this.publicClient.readContract({
-        address: usdcAddress,
-        abi: ERC20_BALANCE_ABI,
-        functionName: "balanceOf",
-        args: [this.safeAddress],
-      }),
-      this.publicClient.readContract({
-        address: this.vaultAddress,
-        abi: VAULT_TOTAL_SUPPLY_ABI,
-        functionName: "totalSupply",
-      }),
-      this.readCustomLiabilityState(),
-    ]);
-
-    const { totalQueuedAssetsRaw, reservedRedemptionAssetsRaw, totalPendingRedeemSharesRaw } =
-      liabilityState;
-
-    const queuedAssets = Number(formatUnits(totalQueuedAssetsRaw, USDC_DECIMALS));
-    const reservedRedemptionAssets = Number(
-      formatUnits(reservedRedemptionAssetsRaw, USDC_DECIMALS),
-    );
-    const vaultUsdc = Number(formatUnits(vaultUsdcRaw, USDC_DECIMALS));
-    const safeUsdc = Number(formatUnits(safeUsdcRaw, USDC_DECIMALS));
-    const grossIdleAssets = vaultUsdc + safeUsdc;
-    const grossTotalAssets = grossIdleAssets + deployedMarketValue;
-    const excludedAssets = queuedAssets + reservedRedemptionAssets;
-    const idleAssets = Math.max(grossIdleAssets - excludedAssets, 0);
-    const totalAssets = Math.max(grossTotalAssets - excludedAssets, 0);
-
-    const totalSupply = Number(formatUnits(totalSupplyRaw, USDC_DECIMALS));
-    const pricingSupplyRaw = totalSupplyRaw + totalPendingRedeemSharesRaw;
-    const pricingSupply = Number(formatUnits(pricingSupplyRaw, USDC_DECIMALS));
-    const sharePrice = pricingSupply > 0 ? totalAssets / pricingSupply : 1.0;
-
-    // Convert to on-chain units
-    const totalAssetsUnits = decimalToUsdcUnits(totalAssets);
-    const navUnits =
-      pricingSupplyRaw > 0n ? (totalAssetsUnits * NAV_SCALE) / pricingSupplyRaw : NAV_SCALE;
+    const livePreview = await this.calculateCustomLiveNavPreview();
 
     let cycleId = 0;
     if (this.provider) {
@@ -944,37 +997,55 @@ export class NavOracleService {
     let updatedOnChain = false;
 
     try {
-      if (this.navSnapshotAddress) {
-        // Use NavSnapshot contract
-        txHash = await this.walletClient.writeContract({
-          address: this.navSnapshotAddress,
-          abi: NAV_SNAPSHOT_ABI,
-          functionName: "recordSnapshot",
-          args: [BigInt(cycleId), totalAssetsUnits, totalSupplyRaw],
-        });
-      } else {
-        // Use vault's updateNAV function directly
-        txHash = await this.walletClient.writeContract({
-          address: this.vaultAddress,
-          abi: CUSTOM_VAULT_NAV_ABI,
-          functionName: "updateNAV",
-          args: [navUnits],
-        });
+      const [currentNavRaw, isFresh] = await Promise.all([
+        this.publicClient
+          .readContract({
+            address: this.vaultAddress,
+            abi: CUSTOM_VAULT_NAV_ABI,
+            functionName: "currentNAV",
+          })
+          .catch(() => 0n),
+        this.publicClient
+          .readContract({
+            address: this.vaultAddress,
+            abi: CUSTOM_VAULT_NAV_ABI,
+            functionName: "isNAVFresh",
+          })
+          .catch(() => false),
+      ]);
+
+      if (livePreview.navUnits !== currentNavRaw || !isFresh) {
+        if (this.navSnapshotAddress) {
+          txHash = await this.walletClient.writeContract({
+            address: this.navSnapshotAddress,
+            abi: NAV_SNAPSHOT_ABI,
+            functionName: "recordSnapshot",
+            args: [BigInt(cycleId), livePreview.totalAssetsUnits, livePreview.totalSupplyRaw],
+          });
+        } else {
+          txHash = await this.walletClient.writeContract({
+            address: this.vaultAddress,
+            abi: CUSTOM_VAULT_NAV_ABI,
+            functionName: "updateNAV",
+            args: [livePreview.navUnits],
+          });
+        }
+        const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+        if (receipt.status !== "success") {
+          throw new Error("Custom NAV update transaction reverted");
+        }
+        updatedOnChain = true;
       }
-      const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
-      if (receipt.status !== "success") {
-        throw new Error("Custom NAV update transaction reverted");
-      }
-      updatedOnChain = true;
 
       logger.info("NavOracleService: Published NAV snapshot (Custom)", {
         cycleId,
-        totalAssets: totalAssets.toFixed(USDC_DECIMALS),
-        totalSupply: totalSupply.toFixed(USDC_DECIMALS),
-        sharePrice: sharePrice.toFixed(8),
-        queuedAssets: queuedAssets.toFixed(USDC_DECIMALS),
-        reservedRedemptionAssets: reservedRedemptionAssets.toFixed(USDC_DECIMALS),
+        totalAssets: livePreview.totalAssets.toFixed(USDC_DECIMALS),
+        totalSupply: livePreview.totalSupply.toFixed(USDC_DECIMALS),
+        sharePrice: livePreview.sharePrice.toFixed(8),
+        queuedAssets: livePreview.queuedAssets.toFixed(USDC_DECIMALS),
+        reservedRedemptionAssets: livePreview.reservedRedemptionAssets.toFixed(USDC_DECIMALS),
         txHash,
+        updatedOnChain,
       });
     } catch (error) {
       logger.error("NavOracleService: Failed to publish NAV snapshot", {
@@ -987,11 +1058,11 @@ export class NavOracleService {
     // Record snapshot in DB for settlement reference
     await this.navSnapshots.recordNavSnapshot({
       navId: `nav-custom-${Date.now()}-${randomUUID()}`,
-      totalAssets: totalAssets.toFixed(USDC_DECIMALS),
-      idleAssets: idleAssets.toFixed(USDC_DECIMALS),
-      deployedCostBasis: deployedCostBasis.toFixed(USDC_DECIMALS),
-      sharePrice: sharePrice.toFixed(8),
-      positionCount: openPositions.length,
+      totalAssets: livePreview.totalAssets.toFixed(USDC_DECIMALS),
+      idleAssets: livePreview.idleAssets.toFixed(USDC_DECIMALS),
+      deployedCostBasis: livePreview.deployedCostBasis.toFixed(USDC_DECIMALS),
+      sharePrice: livePreview.sharePrice.toFixed(8),
+      positionCount: livePreview.positionsWithPrices + livePreview.positionsWithoutPrices,
     });
 
     if (cycleId > 0) {
@@ -1000,9 +1071,9 @@ export class NavOracleService {
           snapshotId: `nav-cycle-${cycleId}-${Date.now()}`,
           epochId: cycleId.toString(),
           vaultAddress: this.vaultAddress,
-          totalAssets: totalAssets.toFixed(USDC_DECIMALS),
-          totalShares: totalSupply.toFixed(USDC_DECIMALS),
-          sharePrice: sharePrice.toFixed(8),
+          totalAssets: livePreview.totalAssets.toFixed(USDC_DECIMALS),
+          totalShares: livePreview.totalSupply.toFixed(USDC_DECIMALS),
+          sharePrice: livePreview.sharePrice.toFixed(8),
           timestamp: new Date(),
           recordedBy: this.account.address,
           txHash,
@@ -1018,19 +1089,19 @@ export class NavOracleService {
     return {
       updatedOnChain,
       oldValue: "0", // Custom vaults don't track delta the same way
-      newValue: totalAssets.toFixed(USDC_DECIMALS),
-      delta: totalAssets.toFixed(USDC_DECIMALS),
+      newValue: livePreview.totalAssets.toFixed(USDC_DECIMALS),
+      delta: livePreview.totalAssets.toFixed(USDC_DECIMALS),
       txHash,
       navPath: "custom",
       epochId: cycleId,
       marketValue: {
-        totalAssets,
-        idleAssets,
-        deployedMarketValue,
-        deployedCostBasis,
-        sharePrice,
-        positionsWithPrices,
-        positionsWithoutPrices,
+        totalAssets: livePreview.totalAssets,
+        idleAssets: livePreview.idleAssets,
+        deployedMarketValue: livePreview.deployedMarketValue,
+        deployedCostBasis: livePreview.deployedCostBasis,
+        sharePrice: livePreview.sharePrice,
+        positionsWithPrices: livePreview.positionsWithPrices,
+        positionsWithoutPrices: livePreview.positionsWithoutPrices,
       },
     };
   }
@@ -1294,11 +1365,10 @@ export class NavOracleService {
       this.readCustomLiabilityState(),
     ]);
 
-    const { totalQueuedAssetsRaw, reservedRedemptionAssetsRaw, totalPendingRedeemSharesRaw } =
-      liabilityState;
+    const { totalQueuedAssetsRaw, reservedRedemptionAssetsRaw } = liabilityState;
 
     const forcedValue = decimalToUsdcUnits(newValue);
-    const pricingSupplyRaw = totalSupplyRaw + totalPendingRedeemSharesRaw;
+    const pricingSupplyRaw = totalSupplyRaw;
     const forcedNavUnits =
       pricingSupplyRaw > 0n ? (forcedValue * NAV_SCALE) / pricingSupplyRaw : NAV_SCALE;
 
