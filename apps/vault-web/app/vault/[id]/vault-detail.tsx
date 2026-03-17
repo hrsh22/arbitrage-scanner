@@ -525,8 +525,13 @@ function NavChart({ stats, isLoading }: { stats: PerformanceStats; isLoading: bo
   const width = 880;
   const height = 220;
   const values = stats.points.map((point) => point.value);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+  if (min === max) {
+    const padding = min === 0 ? 0.01 : min * 0.01;
+    min -= padding;
+    max += padding;
+  }
   const range = Math.max(max - min, 0.000001);
 
   const coordinates = stats.points.map((point, index) => {
@@ -1801,6 +1806,17 @@ export default function VaultDetailPage() {
                       </h1>
                       <p className="max-w-3xl text-base leading-8 text-slate-300 sm:text-lg">
                         {vault.profile.longDescription}
+                      </p>
+                      <p className="text-sm text-slate-400">
+                        by{" "}
+                        <a
+                          href="https://x.com/awenetwork_ai"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-cyan-200 underline decoration-cyan-300/40 underline-offset-4 transition-colors hover:text-white"
+                        >
+                          @AWEnetwork_ai
+                        </a>
                       </p>
                     </div>
 

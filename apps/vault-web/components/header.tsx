@@ -179,6 +179,15 @@ export function Header({ className }: HeaderProps) {
               </span>
             </div>
           </Link>
+          
+          <nav className="ml-8 hidden md:flex items-center gap-6">
+            <Link
+              href="/discover"
+              className="text-sm font-medium text-slate-300 hover:text-white transition-colors cursor-pointer"
+            >
+              Discover Vaults
+            </Link>
+          </nav>
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3">
