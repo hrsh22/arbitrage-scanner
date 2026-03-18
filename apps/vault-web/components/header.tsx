@@ -180,10 +180,12 @@ export function Header({ className }: HeaderProps) {
             </div>
           </Link>
           
-          <nav className="ml-8 hidden md:flex items-center gap-6">
+          <div className="ml-4 mr-2 hidden h-8 w-[1px] bg-white/10 md:block" />
+          
+          <nav className="hidden md:flex items-center">
             <Link
               href="/discover"
-              className="text-sm font-medium text-slate-300 hover:text-white transition-colors cursor-pointer"
+              className="rounded-full border border-white/5 bg-white/5 px-4 py-1.5 text-sm font-medium text-slate-300 transition-colors hover:bg-white/10 hover:text-white"
             >
               Discover Vaults
             </Link>

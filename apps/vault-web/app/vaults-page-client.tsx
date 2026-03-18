@@ -119,7 +119,7 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_28%),radial-gradient(circle_at_88%_18%,_rgba(244,114,182,0.12),_transparent_18%)] opacity-80" />
         <CardHeader className="relative space-y-4 pb-3">
           <div className="flex items-start justify-between gap-3">
-            <div className="space-y-2">
+            <div className="flex flex-col gap-3">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge className="w-fit border border-white/10 bg-white/8 text-[10px] uppercase tracking-[0.22em] text-slate-300">
                   {vault.type === "custom" ? "Cycle Vault" : vault.type}
@@ -132,27 +132,29 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
                 </Badge>
               </div>
 
-              <CardTitle className="text-2xl font-semibold tracking-tight text-white">
-                {vault.name}
-              </CardTitle>
+              <div className="space-y-1">
+                <CardTitle className="text-2xl font-semibold tracking-tight text-white">
+                  {vault.name}
+                </CardTitle>
 
-              {showAweCredit ? (
-                <p className="text-sm text-slate-400">
-                  by{" "}
-                  <a
-                    href="https://x.com/awenetwork_ai"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-cyan-200 underline decoration-cyan-300/40 underline-offset-4 transition-colors hover:text-white"
-                    onClick={(event) => event.stopPropagation()}
-                    onKeyDown={(event) => event.stopPropagation()}
-                  >
-                    @AWEnetwork_ai
-                  </a>
-                </p>
-              ) : null}
+                {showAweCredit ? (
+                  <p className="text-[13px] text-slate-400 mt-0.5">
+                    by{" "}
+                    <a
+                      href="https://x.com/awenetwork_ai"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-cyan-200 underline decoration-cyan-300/40 underline-offset-4 transition-colors hover:text-white"
+                      onClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => event.stopPropagation()}
+                    >
+                      @AWEnetwork_ai
+                    </a>
+                  </p>
+                ) : null}
+              </div>
 
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 pt-1">
                 <Badge
                   variant="secondary"
                   className="border border-cyan-300/15 bg-cyan-300/10 text-cyan-100 hover:bg-cyan-300/15"
