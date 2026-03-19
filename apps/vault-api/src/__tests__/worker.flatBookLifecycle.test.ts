@@ -146,7 +146,7 @@ async function bootWorkerHarness(options: WorkerHarnessOptions): Promise<WorkerH
         name: "flatbook-test",
         enabled: true,
         type: "custom",
-        vaultContractType: options.vaultContractType ?? "closedBookBatchVault",
+        vaultContractType: options.vaultContractType ?? "flatBookVaultV2",
         navRefreshIntervalMin: 1,
         reconciliationIntervalMin: 1,
       },

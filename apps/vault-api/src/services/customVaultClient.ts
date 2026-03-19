@@ -53,6 +53,13 @@ export interface RedemptionRequestData {
   settledAt: bigint;
 }
 
+export interface ControllerRedemptionState {
+  currentCycle: bigint;
+  pendingShares: bigint;
+  claimableShares: bigint;
+  claimableAssets: bigint;
+}
+
 export interface EpochData {
   epochId: bigint;
   startTime: bigint;
@@ -374,9 +381,6 @@ export const FLAT_BOOK_VAULT_V2_ABI = [
     outputs: [],
   },
 ] as const;
-
-export const CLOSED_BOOK_BATCH_VAULT_ABI = FLAT_BOOK_VAULT_V2_ABI;
-export const WEEKLY_EPOCH_VAULT_ABI = FLAT_BOOK_VAULT_V2_ABI;
 
 function extractErrorText(error: unknown): string {
   if (error instanceof Error && error.message) {
@@ -723,6 +727,22 @@ export class CustomVaultClient {
       ];
     }
     return [];
+  }
+
+  async getControllerRedemptionState(controller: Address): Promise<ControllerRedemptionState> {
+    const currentCycle = await this.read<bigint>("currentCycleId");
+    const [pendingShares, claimableShares, claimableAssets] = await Promise.all([
+      this.read<bigint>("queuedRedeemShares", [currentCycle, controller]),
+      this.read<bigint>("claimableRedeemRequest", [0n, controller]),
+      this.read<bigint>("claimableRedeemAssetsByController", [controller]),
+    ]);
+
+    return {
+      currentCycle,
+      pendingShares,
+      claimableShares,
+      claimableAssets,
+    };
   }
 
   async getDepositorBatchRequest(depositor: Address, batchId: bigint): Promise<bigint> {

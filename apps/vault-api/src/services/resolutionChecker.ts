@@ -114,6 +114,21 @@ function toNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function normalizeOutcomeLabel(value: string | null | undefined): "YES" | "NO" | null {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "yes") {
+    return "YES";
+  }
+  if (normalized === "no") {
+    return "NO";
+  }
+  return null;
+}
+
 async function fetchMarketStatus(marketId: string): Promise<MarketResolutionStatus | null> {
   try {
     const controller = new AbortController();
@@ -220,7 +235,7 @@ export class ResolutionCheckerService {
     };
 
     try {
-      const openPositions = await this.positions.getOpenPositions();
+      const openPositions = await this.positions.getOpenPositions(this.config?.vaultAddress);
 
       if (openPositions.length === 0) {
         logger.info("ResolutionChecker: No open positions to check");
@@ -305,46 +320,26 @@ export class ResolutionCheckerService {
 
   async getResolvedStats(): Promise<ResolvedStats> {
     try {
-      const { db } = await import("../db/index.js");
-      const { vaultPositions } = await import("../db/schema.js");
-      const { inArray } = await import("drizzle-orm");
-
-      const resolvedPositions = await db
-        .select({
-          status: vaultPositions.status,
-          resolvedPnl: vaultPositions.resolvedPnl,
-        })
-        .from(vaultPositions)
-        .where(inArray(vaultPositions.status, ["resolved_win", "resolved_loss"]));
-
-      let totalWins = 0;
-      let totalLosses = 0;
-      let totalPnl = 0;
-
-      for (const pos of resolvedPositions) {
-        const pnl = parseFloat(pos.resolvedPnl ?? "0");
-
-        if (pos.status === "resolved_win") {
-          totalWins++;
-          totalPnl += pnl;
-        } else if (pos.status === "resolved_loss") {
-          totalLosses++;
-          totalPnl += pnl;
-        }
+      if (!this.config) {
+        return { totalWins: 0, totalLosses: 0, totalPnl: 0, winRate: 0 };
       }
 
-      const totalResolved = totalWins + totalLosses;
-      const winRate = totalResolved > 0 ? totalWins / totalResolved : 0;
-      totalPnl = Math.round(totalPnl * 1e6) / 1e6;
+      const stats = await this.positions.getResolvedStats(this.config.vaultAddress);
+      const totalPnl = Math.round(stats.totalPnl * 1e6) / 1e6;
 
       logger.debug("ResolutionChecker: Resolved stats", {
-        totalWins,
-        totalLosses,
+        totalWins: stats.winCount,
+        totalLosses: stats.lossCount,
         totalPnl,
-        winRate: (winRate * 100).toFixed(1) + "%",
+        winRate: (stats.winRate * 100).toFixed(1) + "%",
       });
 
-      return { totalWins, totalLosses, totalPnl, winRate };
+      return {
+        totalWins: stats.winCount,
+        totalLosses: stats.lossCount,
+        totalPnl,
+        winRate: stats.winRate,
+      };
     } catch (error) {
       logger.error("ResolutionChecker: Failed to get resolved stats", {
         error: (error as Error).message,
@@ -440,12 +435,14 @@ export class ResolutionCheckerService {
 
     if (!marketStatus.resolved) return;
 
-    const isWin = position.outcome === marketStatus.winningOutcome;
+    const normalizedWinningOutcome = normalizeOutcomeLabel(marketStatus.winningOutcome);
+    const isWin =
+      normalizedWinningOutcome !== null && position.outcome === normalizedWinningOutcome;
     const costBasis = parseFloat(position.costBasis);
     const quantity = parseFloat(position.quantity);
 
     let pnl: number;
-    if (!marketStatus.winningOutcome) {
+    if (!normalizedWinningOutcome) {
       pnl = 0;
     } else if (isWin) {
       pnl = quantity - costBasis;
@@ -521,4 +518,3 @@ export class ResolutionCheckerService {
     });
   }
 }
-

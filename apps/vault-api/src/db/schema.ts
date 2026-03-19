@@ -88,6 +88,7 @@ export const vaultPositions = pgTable(
   {
     id: serial("id").primaryKey(),
     positionId: text("position_id").notNull().unique(),
+    vaultAddress: text("vault_address"),
     marketId: text("market_id").notNull(),
     conditionId: text("condition_id").notNull(),
     tokenId: text("token_id").notNull(),
@@ -102,10 +103,35 @@ export const vaultPositions = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    vaultIdx: index("vault_positions_vault_idx").on(table.vaultAddress),
     statusIdx: index("vault_positions_status_idx").on(table.status),
     marketIdx: index("vault_positions_market_idx").on(table.marketId),
     tokenIdx: index("vault_positions_token_idx").on(table.tokenId),
     openedIdx: index("vault_positions_opened_idx").on(table.openedAt),
+  }),
+);
+
+export const vaultTradingAnalytics = pgTable(
+  "vault_trading_analytics",
+  {
+    id: serial("id").primaryKey(),
+    vaultAddress: text("vault_address").notNull().unique(),
+    positionCount: integer("position_count").notNull().default(0),
+    winCount: integer("win_count").notNull().default(0),
+    lossCount: integer("loss_count").notNull().default(0),
+    winRate: numeric("win_rate", { precision: 10, scale: 6 }).notNull().default("0"),
+    totalPnl: numeric("total_pnl", { precision: 20, scale: 6 }).notNull().default("0"),
+    avgPnlPerPosition: numeric("avg_pnl_per_position", { precision: 20, scale: 6 })
+      .notNull()
+      .default("0"),
+    lastResolvedAt: timestamp("last_resolved_at", { withTimezone: true }),
+    computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    vaultIdx: index("vault_trading_analytics_vault_idx").on(table.vaultAddress),
+    computedIdx: index("vault_trading_analytics_computed_idx").on(table.computedAt),
   }),
 );
 
@@ -706,5 +732,59 @@ export const flatBookProcessingEvents = pgTable(
     ),
     eventTypeIdx: index("flat_book_processing_events_event_type_idx").on(table.eventType),
     createdAtIdx: index("flat_book_processing_events_created_at_idx").on(table.createdAt),
+  }),
+);
+
+export const vaultLifecycleEvents = pgTable(
+  "vault_lifecycle_events",
+  {
+    id: serial("id").primaryKey(),
+    vaultId: integer("vault_id").notNull(),
+    vaultAddress: text("vault_address").notNull(),
+    cycleId: integer("cycle_id"),
+    eventType: text("event_type").notNull(),
+    title: text("title").notNull(),
+    detail: text("detail").notNull(),
+    status: text("status"),
+    requestId: text("request_id"),
+    txHash: text("tx_hash"),
+    assetAmount: text("asset_amount"),
+    shareAmount: text("share_amount"),
+    metadata: text("metadata"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    vaultIdx: index("vault_lifecycle_events_vault_idx").on(table.vaultAddress),
+    occurredIdx: index("vault_lifecycle_events_occurred_idx").on(table.occurredAt),
+    cycleIdx: index("vault_lifecycle_events_cycle_idx").on(table.cycleId),
+  }),
+);
+
+export const userVaultActivityEvents = pgTable(
+  "user_vault_activity_events",
+  {
+    id: serial("id").primaryKey(),
+    vaultId: integer("vault_id").notNull(),
+    vaultAddress: text("vault_address").notNull(),
+    userAddress: text("user_address").notNull(),
+    cycleId: integer("cycle_id"),
+    eventType: text("event_type").notNull(),
+    title: text("title").notNull(),
+    detail: text("detail").notNull(),
+    status: text("status"),
+    requestId: text("request_id"),
+    txHash: text("tx_hash"),
+    assetAmount: text("asset_amount"),
+    shareAmount: text("share_amount"),
+    metadata: text("metadata"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    vaultIdx: index("user_vault_activity_events_vault_idx").on(table.vaultAddress),
+    userIdx: index("user_vault_activity_events_user_idx").on(table.userAddress),
+    occurredIdx: index("user_vault_activity_events_occurred_idx").on(table.occurredAt),
+    requestIdx: index("user_vault_activity_events_request_idx").on(table.requestId),
   }),
 );

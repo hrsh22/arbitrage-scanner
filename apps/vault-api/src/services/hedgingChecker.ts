@@ -101,7 +101,7 @@ export class HedgingChecker {
   }
 
   private async getPositionsToCheck(): Promise<PositionToEvaluate[]> {
-    const dbPositions = await this.repository.getOpenPositions();
+    const dbPositions = await this.repository.getOpenPositions(this.config.vaultAddress);
 
     const positions: PositionToEvaluate[] = [];
     for (const pos of dbPositions) {
@@ -262,6 +262,7 @@ export class HedgingChecker {
       const oppositeOutcome = position.outcome === "YES" ? "NO" : "YES";
       await this.repository.createPosition({
         positionId: `hedge-${Date.now()}-${position.dbId}`,
+        vaultAddress: this.config.vaultAddress,
         marketId: position.marketId,
         conditionId: position.conditionId,
         tokenId: position.oppositeTokenId,

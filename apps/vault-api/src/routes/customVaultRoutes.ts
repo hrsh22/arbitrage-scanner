@@ -39,26 +39,446 @@
 import { Router } from "express";
 import type { Address } from "viem";
 import { parseUnits, formatUnits } from "viem";
+import { and, desc, eq } from "drizzle-orm";
 import { logger } from "../logger.js";
 import { requireAuth } from "../middleware/auth.js";
+import {
+  epochRequests,
+  flatBookCycles,
+  flatBookProcessingEvents,
+  flatBookQueueParticipants,
+  userVaultActivityEvents,
+  vaultLifecycleEvents,
+  withdrawalRequests,
+} from "../db/schema.js";
 import { getVaultProviderFactory } from "../services/vaultProviderFactory.js";
-import type { IVaultProvider } from "../services/vaultProvider.js";
+import type {
+  IVaultProvider,
+  RedemptionRequest as ProviderRedemptionRequest,
+} from "../services/vaultProvider.js";
 import { VaultProviderError } from "../services/vaultProvider.js";
 import { CustomVaultProvider } from "../services/customVaultProvider.js";
 import { entitlementRepository } from "../repositories/entitlementRepository.js";
 import { payoutRepository } from "../repositories/payoutRepository.js";
+import { withdrawalRepository } from "../repositories/withdrawalRepository.js";
 import {
   ClaimState,
   mapRequestStatusToClaimState,
   ClaimOperation,
   validateClaimOperation,
 } from "../services/claimStateMachine.js";
+import { activityEventRepository } from "../repositories/activityEventRepository.js";
 
 const LIFECYCLE_CACHE_TTL_MS = 5_000;
 const lifecycleCache = new WeakMap<
   CustomVaultProvider,
   { expiresAt: number; value: Record<string, unknown> }
 >();
+
+interface ActivityFeedItem {
+  id: string;
+  type: string;
+  scope: "vault" | "user";
+  title: string;
+  detail: string;
+  occurredAt: string;
+  status?: string;
+  cycleId?: number;
+  requestId?: string;
+  txHash?: string | null;
+  amounts?: {
+    assets?: string;
+    shares?: string;
+  };
+  metadata?: Record<string, unknown>;
+}
+
+function buildVaultEventTitle(eventType: string): { title: string; detail: string } {
+  switch (eventType) {
+    case "close_book":
+      return {
+        title: "Book closed",
+        detail: "The vault stopped accepting direct actions and moved into a queued state.",
+      };
+    case "begin_processing":
+      return { title: "Processing started", detail: "Queued requests are now being processed." };
+    case "process_redeems_chunk":
+      return { title: "Withdrawal processing", detail: "A redemption processing batch completed." };
+    case "process_deposits_chunk":
+      return { title: "Deposit processing", detail: "A deposit processing batch completed." };
+    case "finalize_processing":
+      return { title: "Processing finalized", detail: "Queued work has finished for this cycle." };
+    case "nav_update":
+      return { title: "NAV updated", detail: "Vault NAV was refreshed." };
+    case "capital_allocation":
+      return { title: "Capital moved", detail: "Capital allocation between wallets changed." };
+    default:
+      return { title: "Vault event", detail: "A vault lifecycle event occurred." };
+  }
+}
+
+function buildCycleStateItem(
+  cycle: typeof flatBookCycles.$inferSelect,
+  processingSignatures: Set<string>,
+): ActivityFeedItem[] {
+  const items: ActivityFeedItem[] = [
+    {
+      id: `cycle-open-${cycle.cycleId}`,
+      type: "cycle_opened",
+      scope: "vault",
+      title: "Cycle opened",
+      detail: "A new vault cycle started.",
+      occurredAt: cycle.openedAt.toISOString(),
+      cycleId: cycle.cycleId,
+      status: cycle.state,
+    },
+  ];
+
+  if (cycle.closedAt && !processingSignatures.has(`${cycle.cycleId}:close_book`)) {
+    items.push({
+      id: `cycle-closed-${cycle.cycleId}`,
+      type: "book_closed",
+      scope: "vault",
+      title: "Queue activated",
+      detail: "Direct actions paused and new requests moved into queue.",
+      occurredAt: cycle.closedAt.toISOString(),
+      cycleId: cycle.cycleId,
+      status: cycle.state,
+    });
+  }
+
+  if (cycle.processingStartedAt && !processingSignatures.has(`${cycle.cycleId}:begin_processing`)) {
+    items.push({
+      id: `cycle-processing-${cycle.cycleId}`,
+      type: "processing_started",
+      scope: "vault",
+      title: "Processing started",
+      detail: "Queued deposits and withdrawals started processing.",
+      occurredAt: cycle.processingStartedAt.toISOString(),
+      cycleId: cycle.cycleId,
+      status: cycle.state,
+    });
+  }
+
+  if (cycle.processedAt && !processingSignatures.has(`${cycle.cycleId}:finalize_processing`)) {
+    items.push({
+      id: `cycle-processed-${cycle.cycleId}`,
+      type: "processing_completed",
+      scope: "vault",
+      title: "Processing completed",
+      detail: "The current cycle finished processing queued work.",
+      occurredAt: cycle.processedAt.toISOString(),
+      cycleId: cycle.cycleId,
+      status: cycle.state,
+    });
+  }
+
+  return items;
+}
+
+function buildUserQueueActivity(
+  participant: typeof flatBookQueueParticipants.$inferSelect,
+): ActivityFeedItem[] {
+  const items: ActivityFeedItem[] = [];
+
+  if (participant.queuedDepositAssets !== "0") {
+    items.push({
+      id: `deposit-queued-${participant.id}`,
+      type: "deposit_queued",
+      scope: "user",
+      title: "Deposit queued",
+      detail: "Your deposit entered the queue.",
+      occurredAt: participant.firstQueuedAt.toISOString(),
+      cycleId: participant.cycleId,
+      status: participant.status,
+      amounts: { assets: participant.queuedDepositAssets },
+    });
+  }
+
+  if (participant.processedDepositShares !== "0" && participant.processedAt) {
+    items.push({
+      id: `deposit-minted-${participant.id}`,
+      type: "deposit_minted",
+      scope: "user",
+      title: "Deposit minted",
+      detail: "Queued deposit was converted into vault shares.",
+      occurredAt: participant.processedAt.toISOString(),
+      cycleId: participant.cycleId,
+      status: participant.status,
+      amounts: { shares: participant.processedDepositShares },
+    });
+  }
+
+  return items;
+}
+
+function buildWithdrawalHistoryItem(
+  request: typeof withdrawalRequests.$inferSelect,
+): ActivityFeedItem {
+  const map: Record<string, { type: string; title: string; detail: string; occurredAt: Date }> = {
+    pending: {
+      type: "withdraw_requested",
+      title: "Withdrawal requested",
+      detail: "Your withdrawal request was submitted.",
+      occurredAt: request.requestedAt,
+    },
+    ready: {
+      type: "withdraw_ready",
+      title: "Withdrawal ready",
+      detail: "Your withdrawal is ready to claim.",
+      occurredAt: request.readyAt ?? request.requestedAt,
+    },
+    completed: {
+      type: "claim_completed",
+      title: "Withdrawal completed",
+      detail: "Your withdrawal finished successfully.",
+      occurredAt: request.completedAt ?? request.updatedAt,
+    },
+    cancelled: {
+      type: "withdraw_cancelled",
+      title: "Withdrawal cancelled",
+      detail: "Your withdrawal request was cancelled.",
+      occurredAt: request.updatedAt,
+    },
+    expired: {
+      type: "withdraw_cancelled",
+      title: "Withdrawal expired",
+      detail: "Your withdrawal request expired.",
+      occurredAt: request.updatedAt,
+    },
+    open: {
+      type: "withdraw_requested",
+      title: "Withdrawal requested",
+      detail: "Your withdrawal request is open.",
+      occurredAt: request.requestedAt,
+    },
+    cutoff: {
+      type: "withdraw_queued",
+      title: "Withdrawal queued",
+      detail: "Your withdrawal request is queued for processing.",
+      occurredAt: request.updatedAt,
+    },
+    flattening: {
+      type: "withdraw_processing",
+      title: "Withdrawal processing",
+      detail: "Your withdrawal request is being processed.",
+      occurredAt: request.updatedAt,
+    },
+    settling: {
+      type: "withdraw_processing",
+      title: "Withdrawal settling",
+      detail: "Your withdrawal request is settling.",
+      occurredAt: request.updatedAt,
+    },
+    settled: {
+      type: "withdraw_settled",
+      title: "Withdrawal ready",
+      detail: "Your withdrawal request is ready to claim.",
+      occurredAt: request.readyAt ?? request.updatedAt,
+    },
+    claimed: {
+      type: "claim_completed",
+      title: "Claim completed",
+      detail: "Claimed assets from your settled withdrawal.",
+      occurredAt: request.completedAt ?? request.updatedAt,
+    },
+    closed: {
+      type: "withdraw_settled",
+      title: "Withdrawal closed",
+      detail: "Your withdrawal request has been closed.",
+      occurredAt: request.updatedAt,
+    },
+  };
+  const normalized = map[request.status] ?? map.pending!;
+  return {
+    id: `withdrawal-${request.requestId}-${request.status}`,
+    type: normalized.type,
+    scope: "user",
+    title: normalized.title,
+    detail: normalized.detail,
+    occurredAt: normalized.occurredAt.toISOString(),
+    requestId: request.requestId,
+    txHash: request.txHash,
+    status: request.status,
+    amounts: {
+      assets: request.assetsEstimated,
+      shares: request.shares,
+    },
+  };
+}
+
+function buildEpochRequestHistoryItem(
+  request: typeof epochRequests.$inferSelect,
+): ActivityFeedItem {
+  const statusMap: Record<
+    string,
+    { type: string; title: string; detail: string; occurredAt: Date }
+  > = {
+    pending: {
+      type: "withdraw_requested",
+      title: "Withdrawal requested",
+      detail: "Your withdrawal request was submitted.",
+      occurredAt: request.createdAt,
+    },
+    frozen: {
+      type: "withdraw_queued",
+      title: "Withdrawal queued",
+      detail: "Your withdrawal request is queued in the current lifecycle.",
+      occurredAt: request.frozenAt ?? request.updatedAt,
+    },
+    claimable: {
+      type: "withdraw_ready",
+      title: "Withdrawal ready",
+      detail: "Your withdrawal request is ready to claim.",
+      occurredAt: request.claimableAt ?? request.updatedAt,
+    },
+    claimed: {
+      type: "claim_completed",
+      title: "Claim completed",
+      detail: "Claimed assets from your withdrawal request.",
+      occurredAt: request.claimedAt ?? request.updatedAt,
+    },
+    closed: {
+      type: "withdraw_settled",
+      title: "Withdrawal closed",
+      detail: "Your withdrawal request has been closed.",
+      occurredAt: request.closedAt ?? request.updatedAt,
+    },
+    cancelled: {
+      type: "withdraw_cancelled",
+      title: "Withdrawal cancelled",
+      detail: "Your withdrawal request was cancelled.",
+      occurredAt: request.cancelledAt ?? request.updatedAt,
+    },
+  };
+  const normalized = statusMap[request.status] ?? statusMap.pending!;
+  return {
+    id: `epoch-request-${request.requestId}-${request.status}`,
+    type: normalized.type,
+    scope: "user",
+    title: normalized.title,
+    detail: normalized.detail,
+    occurredAt: normalized.occurredAt.toISOString(),
+    requestId: request.requestId,
+    status: request.status,
+    amounts: {
+      shares: request.shares,
+      assets: request.claimableAssets ?? undefined,
+    },
+    metadata: {
+      epochId: request.epochId,
+    },
+  };
+}
+
+function buildProviderRedemptionHistoryItem(request: ProviderRedemptionRequest): ActivityFeedItem {
+  const normalized: Record<
+    ProviderRedemptionRequest["status"],
+    { type: string; title: string; detail: string; occurredAt: Date }
+  > = {
+    pending: {
+      type: "withdraw_requested",
+      title: "Withdrawal requested",
+      detail: "Your withdrawal request was submitted.",
+      occurredAt: request.createdAt,
+    },
+    frozen: {
+      type: "withdraw_queued",
+      title: "Withdrawal queued",
+      detail: "Your withdrawal request is queued for settlement.",
+      occurredAt: request.createdAt,
+    },
+    claimable: {
+      type: "withdraw_ready",
+      title: "Withdrawal ready",
+      detail: "Your withdrawal request is ready to claim.",
+      occurredAt: request.settledAt ?? request.createdAt,
+    },
+    claimed: {
+      type: "claim_completed",
+      title: "Claim completed",
+      detail: "Claimed assets from your withdrawal request.",
+      occurredAt: request.claimedAt ?? request.settledAt ?? request.createdAt,
+    },
+    cancelled: {
+      type: "withdraw_cancelled",
+      title: "Withdrawal cancelled",
+      detail: "Your withdrawal request was cancelled.",
+      occurredAt: request.cancelledAt ?? request.createdAt,
+    },
+  };
+
+  const entry = normalized[request.status];
+
+  return {
+    id: `provider-request-${request.requestId}-${request.status}`,
+    type: entry.type,
+    scope: "user",
+    title: entry.title,
+    detail: entry.detail,
+    occurredAt: entry.occurredAt.toISOString(),
+    requestId: request.requestId,
+    cycleId: request.batchId,
+    status: request.status,
+    amounts: {
+      shares: request.shares.toString(),
+      assets: (request.assetsActual ?? request.assetsEstimated).toString(),
+    },
+  };
+}
+
+function parseMetadata(metadata: string | null): Record<string, unknown> | undefined {
+  if (!metadata) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(metadata) as Record<string, unknown>;
+  } catch {
+    return { raw: metadata };
+  }
+}
+
+function mapCanonicalVaultEvent(event: typeof vaultLifecycleEvents.$inferSelect): ActivityFeedItem {
+  return {
+    id: `canonical-vault-${event.id}`,
+    type: event.eventType,
+    scope: "vault",
+    title: event.title,
+    detail: event.detail,
+    occurredAt: event.occurredAt.toISOString(),
+    status: event.status ?? undefined,
+    cycleId: event.cycleId ?? undefined,
+    requestId: event.requestId ?? undefined,
+    txHash: event.txHash,
+    amounts: {
+      assets: event.assetAmount ?? undefined,
+      shares: event.shareAmount ?? undefined,
+    },
+    metadata: parseMetadata(event.metadata),
+  };
+}
+
+function mapCanonicalUserEvent(
+  event: typeof userVaultActivityEvents.$inferSelect,
+): ActivityFeedItem {
+  return {
+    id: `canonical-user-${event.id}`,
+    type: event.eventType,
+    scope: "user",
+    title: event.title,
+    detail: event.detail,
+    occurredAt: event.occurredAt.toISOString(),
+    status: event.status ?? undefined,
+    cycleId: event.cycleId ?? undefined,
+    requestId: event.requestId ?? undefined,
+    txHash: event.txHash,
+    amounts: {
+      assets: event.assetAmount ?? undefined,
+      shares: event.shareAmount ?? undefined,
+    },
+    metadata: parseMetadata(event.metadata),
+  };
+}
 
 // ============================================================================
 // Validation Helpers
@@ -190,6 +610,11 @@ async function formatRedemptionRequest(
     assetsActualFormatted: request.assetsActual
       ? formatUnits(request.assetsActual, USDC_DECIMALS)
       : undefined,
+    requestKind: request.requestId.startsWith("claimable-")
+      ? "controller_claimable"
+      : request.requestId.startsWith("pending-")
+        ? "controller_pending"
+        : "request",
     status: request.status,
     createdAt: request.createdAt.toISOString(),
     settledAt: request.settledAt?.toISOString(),
@@ -596,6 +1021,144 @@ export function buildCustomVaultRouter(): Router {
     }
   });
 
+  router.post("/:vaultId/activity/deposit", requireAuth, async (req, res) => {
+    try {
+      const vaultIdParam = req.params.vaultId;
+      if (!vaultIdParam) {
+        res.status(400).json({ error: "Vault ID is required" });
+        return;
+      }
+      const vaultId = parseInt(vaultIdParam, 10);
+      if (Number.isNaN(vaultId)) {
+        res.status(400).json({ error: "Invalid vault ID" });
+        return;
+      }
+
+      const provider = await getCustomVaultProvider(vaultId);
+      if (!provider) {
+        res.status(404).json({ error: `Custom vault ${vaultId} not found` });
+        return;
+      }
+
+      const userAddress = req.session!.address as Address;
+      const txHash = typeof req.body?.txHash === "string" ? req.body.txHash : undefined;
+      const assets = typeof req.body?.assets === "string" ? req.body.assets : undefined;
+      const shares = typeof req.body?.shares === "string" ? req.body.shares : undefined;
+      const mode = req.body?.mode === "queued" ? "queued" : "minted";
+
+      if (!assets && !shares) {
+        res.status(400).json({ error: "assets or shares is required" });
+        return;
+      }
+
+      await activityEventRepository.appendUserVaultActivityEvent({
+        vaultId,
+        vaultAddress: provider.config.vaultAddress,
+        userAddress,
+        eventType: mode === "queued" ? "deposit_queued" : "deposit_minted",
+        title: mode === "queued" ? "Deposit queued" : "Deposit completed",
+        detail:
+          mode === "queued"
+            ? "Your deposit entered the queue."
+            : "Your deposit was converted into vault shares.",
+        txHash,
+        status: mode,
+        assetAmount: assets,
+        shareAmount: shares,
+      });
+
+      res.json({ success: true });
+    } catch (error) {
+      logger.error("CustomVault API: Failed to record deposit activity", {
+        error: (error as Error).message,
+        vaultId: req.params.vaultId,
+      });
+      res.status(500).json({ error: "Failed to record deposit activity" });
+    }
+  });
+
+  router.post("/:vaultId/activity/claim", requireAuth, async (req, res) => {
+    try {
+      const vaultIdParam = req.params.vaultId;
+      if (!vaultIdParam) {
+        res.status(400).json({ error: "Vault ID is required" });
+        return;
+      }
+
+      const vaultId = parseInt(vaultIdParam, 10);
+      if (Number.isNaN(vaultId)) {
+        res.status(400).json({ error: "Invalid vault ID" });
+        return;
+      }
+
+      const provider = await getCustomVaultProvider(vaultId);
+      if (!provider) {
+        res.status(404).json({ error: `Custom vault ${vaultId} not found` });
+        return;
+      }
+
+      const userAddress = req.session!.address as Address;
+      const txHash = typeof req.body?.txHash === "string" ? req.body.txHash : undefined;
+      const assets = typeof req.body?.assets === "string" ? req.body.assets : undefined;
+      const shares = typeof req.body?.shares === "string" ? req.body.shares : undefined;
+      const rawRequestId = typeof req.body?.requestId === "string" ? req.body.requestId : undefined;
+
+      if (!txHash || !txHash.startsWith("0x")) {
+        res.status(400).json({ error: "A claim transaction hash is required" });
+        return;
+      }
+
+      const vaultAddress = provider.config.vaultAddress;
+      const existingRequests = await withdrawalRepository.getRequestsByUser(
+        userAddress,
+        vaultAddress,
+      );
+      const matchingRequest =
+        existingRequests.find((request) => request.requestId === rawRequestId) ??
+        existingRequests.find(
+          (request) => request.status === "ready" || request.status === "settled",
+        );
+
+      let recordedRequestId = rawRequestId ?? null;
+      let recordedShares = shares;
+      let recordedAssets = assets;
+
+      if (matchingRequest && matchingRequest.status === "ready") {
+        const completed = await withdrawalRepository.markCompletedIdempotent(
+          matchingRequest.requestId,
+          txHash,
+        );
+        if (completed.success) {
+          recordedRequestId = matchingRequest.requestId;
+          recordedShares = matchingRequest.shares;
+          recordedAssets = matchingRequest.assetsEstimated;
+        }
+      }
+
+      await activityEventRepository.appendUserVaultActivityEvent({
+        vaultId,
+        vaultAddress,
+        userAddress,
+        eventType: "claim_completed",
+        title: "Claim completed",
+        detail: "Claimed assets from your withdrawal request.",
+        requestId: recordedRequestId ?? undefined,
+        txHash,
+        status: "claimed",
+        assetAmount: recordedAssets,
+        shareAmount: recordedShares,
+      });
+
+      res.json({ success: true, requestId: recordedRequestId });
+    } catch (error) {
+      logger.error("CustomVault API: Failed to record claim activity", {
+        error: (error as Error).message,
+        vaultId: req.params.vaultId,
+      });
+      res.status(500).json({ error: "Failed to record claim activity" });
+    }
+  });
+
   router.get("/:vaultId/requests/:requestId", async (req, res) => {
     try {
       const vaultId = parseInt(req.params.vaultId, 10);
@@ -870,6 +1433,20 @@ export function buildCustomVaultRouter(): Router {
         userAddress,
         assetsReceived: result.assetsReceived.toString(),
         entitlementId: entitlement?.id,
+      });
+
+      void activityEventRepository.appendUserVaultActivityEvent({
+        vaultId,
+        vaultAddress: provider.config.vaultAddress,
+        userAddress,
+        eventType: "claim_completed",
+        title: "Claim completed",
+        detail: "Claimed assets from your withdrawal request.",
+        requestId,
+        txHash: result.txHash,
+        status: "claimed",
+        assetAmount: result.assetsReceived.toString(),
+        shareAmount: request.shares.toString(),
       });
 
       res.json({
@@ -1209,6 +1786,209 @@ export function buildCustomVaultRouter(): Router {
       });
       res.status(500).json({
         error: "Failed to get cycle details",
+        message: (error as Error).message,
+      });
+    }
+  });
+
+  router.get("/:vaultId/events", async (req, res) => {
+    try {
+      const vaultId = parseInt(req.params.vaultId, 10);
+      const limitParam = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : 50;
+      const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : 50;
+
+      if (Number.isNaN(vaultId)) {
+        res.status(400).json({ error: "Invalid vault ID" });
+        return;
+      }
+
+      const provider = await getCustomVaultProvider(vaultId);
+      if (!provider) {
+        res.status(404).json({ error: `Custom vault ${vaultId} not found` });
+        return;
+      }
+
+      const { db } = await import("../db/index.js");
+      const vaultAddress = provider.config.vaultAddress;
+      const canonicalEvents = await activityEventRepository.listVaultLifecycleEvents(
+        vaultAddress,
+        limit,
+      );
+
+      const [cycles, processingEvents] = await Promise.all([
+        db
+          .select()
+          .from(flatBookCycles)
+          .where(eq(flatBookCycles.vaultAddress, vaultAddress))
+          .orderBy(desc(flatBookCycles.openedAt))
+          .limit(limit),
+        db
+          .select()
+          .from(flatBookProcessingEvents)
+          .where(eq(flatBookProcessingEvents.vaultAddress, vaultAddress))
+          .orderBy(desc(flatBookProcessingEvents.createdAt))
+          .limit(limit),
+      ]);
+
+      const processingSignatures = new Set(
+        processingEvents.map((event) => `${event.cycleId}:${event.eventType}`),
+      );
+
+      const cycleItems = cycles.flatMap((cycle) =>
+        buildCycleStateItem(cycle, processingSignatures),
+      );
+      const processingItems: ActivityFeedItem[] = processingEvents.map((event) => {
+        const normalized = buildVaultEventTitle(event.eventType);
+        return {
+          id: `processing-${event.id}`,
+          type: event.eventType,
+          scope: "vault",
+          title: normalized.title,
+          detail: normalized.detail,
+          occurredAt: event.createdAt.toISOString(),
+          cycleId: event.cycleId,
+          txHash: event.txHash,
+          metadata: parseMetadata(event.metadata),
+        };
+      });
+
+      const fallbackItems = [...cycleItems, ...processingItems]
+        .sort(
+          (left, right) =>
+            new Date(right.occurredAt).getTime() - new Date(left.occurredAt).getTime(),
+        )
+        .slice(0, limit);
+
+      const items =
+        canonicalEvents.length > 0 ? canonicalEvents.map(mapCanonicalVaultEvent) : fallbackItems;
+
+      res.json({ success: true, vaultId, items });
+    } catch (error) {
+      logger.error("CustomVault API: Failed to get vault events", {
+        error: (error as Error).message,
+        vaultId: req.params.vaultId,
+      });
+      res.status(500).json({
+        error: "Failed to get vault events",
+        message: (error as Error).message,
+      });
+    }
+  });
+
+  router.get("/:vaultId/history", requireAuth, async (req, res) => {
+    try {
+      const vaultIdParam = req.params.vaultId;
+      if (!vaultIdParam) {
+        res.status(400).json({ error: "Vault ID is required" });
+        return;
+      }
+      const vaultId = parseInt(vaultIdParam, 10);
+      const userAddress = req.session!.address as Address;
+      const limitParam = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : 100;
+      const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 200) : 100;
+
+      if (Number.isNaN(vaultId)) {
+        res.status(400).json({ error: "Invalid vault ID" });
+        return;
+      }
+
+      const provider = await getCustomVaultProvider(vaultId);
+      if (!provider) {
+        res.status(404).json({ error: `Custom vault ${vaultId} not found` });
+        return;
+      }
+
+      const { db } = await import("../db/index.js");
+      const vaultAddress = provider.config.vaultAddress;
+      const canonicalHistory = await activityEventRepository.listUserVaultActivityEvents(
+        vaultAddress,
+        userAddress,
+        limit,
+      );
+
+      const [queueParticipants, withdrawHistory, epochHistory, providerState] = await Promise.all([
+        db
+          .select()
+          .from(flatBookQueueParticipants)
+          .where(
+            and(
+              eq(flatBookQueueParticipants.vaultAddress, vaultAddress),
+              eq(flatBookQueueParticipants.userAddress, userAddress),
+            ),
+          )
+          .orderBy(desc(flatBookQueueParticipants.firstQueuedAt))
+          .limit(limit),
+        db
+          .select()
+          .from(withdrawalRequests)
+          .where(
+            and(
+              eq(withdrawalRequests.vaultAddress, vaultAddress),
+              eq(withdrawalRequests.userAddress, userAddress),
+            ),
+          )
+          .orderBy(desc(withdrawalRequests.requestedAt))
+          .limit(limit),
+        db
+          .select()
+          .from(epochRequests)
+          .where(
+            and(
+              eq(epochRequests.vaultAddress, vaultAddress),
+              eq(epochRequests.userAddress, userAddress),
+            ),
+          )
+          .orderBy(desc(epochRequests.createdAt))
+          .limit(limit),
+        provider.getUserRedemptionState(userAddress),
+      ]);
+
+      const fallbackItems = [
+        ...queueParticipants.flatMap(buildUserQueueActivity),
+        ...withdrawHistory.map(buildWithdrawalHistoryItem),
+        ...epochHistory.map(buildEpochRequestHistoryItem),
+        ...providerState.pendingRequests.map(buildProviderRedemptionHistoryItem),
+        ...providerState.claimableRequests.map(buildProviderRedemptionHistoryItem),
+      ]
+        .filter((item, index, array) => {
+          const key = `${item.type}:${item.requestId ?? "-"}:${item.cycleId ?? "-"}:${item.occurredAt}`;
+          return (
+            array.findIndex((candidate) => {
+              const candidateKey = `${candidate.type}:${candidate.requestId ?? "-"}:${candidate.cycleId ?? "-"}:${candidate.occurredAt}`;
+              return candidateKey === key;
+            }) === index
+          );
+        })
+        .sort(
+          (left, right) =>
+            new Date(right.occurredAt).getTime() - new Date(left.occurredAt).getTime(),
+        )
+        .slice(0, limit);
+
+      const items = [...canonicalHistory.map(mapCanonicalUserEvent), ...fallbackItems]
+        .filter((item, index, array) => {
+          const key = `${item.type}:${item.requestId ?? "-"}:${item.cycleId ?? "-"}:${item.occurredAt}`;
+          return (
+            array.findIndex((candidate) => {
+              const candidateKey = `${candidate.type}:${candidate.requestId ?? "-"}:${candidate.cycleId ?? "-"}:${candidate.occurredAt}`;
+              return candidateKey === key;
+            }) === index
+          );
+        })
+        .sort(
+          (left, right) =>
+            new Date(right.occurredAt).getTime() - new Date(left.occurredAt).getTime(),
+        )
+        .slice(0, limit);
+
+      res.json({ success: true, vaultId, userAddress, items });
+    } catch (error) {
+      logger.error("CustomVault API: Failed to get user history", {
+        error: (error as Error).message,
+        vaultId: req.params.vaultId,
+      });
+      res.status(500).json({
+        error: "Failed to get user history",
         message: (error as Error).message,
       });
     }

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, desc, eq, ne } from "drizzle-orm";
+import { and, desc, eq, ne, sql } from "drizzle-orm";
 import type { Address, Hex } from "viem";
 import { createPublicClient, decodeFunctionData, formatUnits, getAddress, parseUnits } from "viem";
 import { getAllVaultConfigs, getVaultConfig } from "../config/index.js";
@@ -13,11 +13,12 @@ import {
   NEGRISK_ADAPTER_ADDRESS,
 } from "../constants.js";
 import { db } from "../db/index.js";
-import { vaultAllocations, withdrawalRequests } from "../db/schema.js";
+import { navSnapshots, vaultAllocations, withdrawalRequests } from "../db/schema.js";
 import { env } from "../env.js";
 import { logger } from "../logger.js";
 import { requireAuth } from "../middleware/auth.js";
 import { positionRepository } from "../repositories/positionRepository.js";
+import { activityEventRepository } from "../repositories/activityEventRepository.js";
 import { withdrawalRepository } from "../repositories/withdrawalRepository.js";
 import { ResolutionCheckerService } from "../services/resolutionChecker.js";
 import { SafeWalletService, type SafeTxResult } from "../services/safeWallet.js";
@@ -26,6 +27,7 @@ import { createVaultTradingClient } from "../services/tradingClient.js";
 import { navCalculator } from "../services/navCalculator.js";
 import { createNavOracle } from "../services/navOracle.js";
 import { positionFetcher } from "../services/positionFetcher.js";
+import { vaultTradingAnalyticsService } from "../services/vaultTradingAnalyticsService.js";
 import { createNetworkTransport } from "../rpcTransport.js";
 import { getNetworkConfigFromEnv } from "../config/network.js";
 import { pendingTxRegistry } from "../services/pendingTxRegistry.js";
@@ -47,6 +49,80 @@ async function getCachedLifecycle(config: VaultInstanceConfig): Promise<unknown>
     expiresAt: now + LIFECYCLE_CACHE_TTL_MS,
   });
   return lifecycle;
+}
+
+function getVaultConfigByAddress(vaultAddress: string): VaultInstanceConfig | undefined {
+  const normalized = vaultAddress.toLowerCase();
+  return getAllVaultConfigs().find((config) => config.vaultAddress.toLowerCase() === normalized);
+}
+
+async function reconcileCustomReadyWithdrawalRequests(
+  userAddress: string,
+  requests: Array<typeof withdrawalRequests.$inferSelect>,
+): Promise<Array<typeof withdrawalRequests.$inferSelect>> {
+  const readyRequests = requests.filter((request) => request.status === "ready");
+  if (readyRequests.length === 0) {
+    return requests;
+  }
+
+  const config = getVaultConfigByAddress(readyRequests[0]!.vaultAddress);
+  if (!config || config.type !== "custom") {
+    return requests;
+  }
+
+  const networkConfig = getNetworkConfigFromEnv();
+  const publicClient = createPublicClient({
+    chain: networkConfig.chain,
+    transport: createNetworkTransport(),
+  });
+
+  const userShareBalanceRaw = await publicClient.readContract({
+    address: config.vaultAddress as Address,
+    abi: ERC20_BALANCE_ABI,
+    functionName: "balanceOf",
+    args: [userAddress as Address],
+  });
+
+  let mutated = false;
+
+  for (const request of readyRequests) {
+    let requestedShares: bigint;
+    try {
+      requestedShares = parseUnits(request.shares, VAULT_SHARE_DECIMALS);
+    } catch {
+      continue;
+    }
+
+    if (userShareBalanceRaw >= requestedShares) {
+      continue;
+    }
+
+    const completed = await withdrawalRepository.markCompletedIdempotent(request.requestId);
+    if (!completed.success || completed.alreadyInTargetState) {
+      continue;
+    }
+
+    mutated = true;
+    void activityEventRepository.appendUserVaultActivityEvent({
+      vaultId: config.id,
+      vaultAddress: request.vaultAddress,
+      userAddress,
+      eventType: "claim_completed",
+      title: "Claim completed",
+      detail: "Detected a completed withdrawal claim from the latest wallet state.",
+      requestId: request.requestId,
+      status: completed.request?.status ?? "completed",
+      assetAmount: request.assetsEstimated,
+      shareAmount: request.shares,
+      occurredAt: completed.request?.completedAt ?? new Date(),
+    });
+  }
+
+  if (!mutated) {
+    return requests;
+  }
+
+  return withdrawalRepository.getRequestsByUser(userAddress, readyRequests[0]!.vaultAddress);
 }
 
 /** Helper to trigger event-driven reconciliation with duplicate protection */
@@ -384,10 +460,26 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> 
     lifecycle = undefined;
   }
 
+  const latestSnapshotsPromise =
+    config.type === "custom"
+      ? db
+          .select({
+            totalAssets: navSnapshots.totalAssets,
+            idleAssets: navSnapshots.totalAssets,
+            deployedCostBasis: navSnapshots.totalAssets,
+            sharePrice: navSnapshots.sharePrice,
+            timestamp: navSnapshots.timestamp,
+          })
+          .from(navSnapshots)
+          .where(eq(navSnapshots.vaultAddress, config.vaultAddress))
+          .orderBy(desc(navSnapshots.timestamp))
+          .limit(1)
+      : navCalculator.getNavHistory(1);
+
   const [openPositions, redeemablePositions, snapshots, capState] = await Promise.all([
     positionFetcher.fetchOpenPositions(config.safeAddress),
     positionFetcher.fetchRedeemablePositions(config.safeAddress),
-    navCalculator.getNavHistory(1),
+    latestSnapshotsPromise,
     getVaultCapState(config),
   ]);
 
@@ -617,6 +709,37 @@ export function buildVaultRouter(): Router {
       });
     } catch (error) {
       logger.error("Vault API: Failed to get status", { error: (error as Error).message });
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  router.get("/:vaultId/trading-analytics", async (req, res) => {
+    try {
+      const vaultId = parseInt(req.params.vaultId ?? "", 10);
+      if (Number.isNaN(vaultId)) {
+        res.status(400).json({ error: "Invalid vault ID" });
+        return;
+      }
+
+      const config = getVaultConfig(vaultId);
+      if (!config) {
+        res.status(404).json({ error: `Vault ${vaultId} not found` });
+        return;
+      }
+
+      const analytics = await vaultTradingAnalyticsService.syncForVault(config.vaultAddress);
+
+      res.json({
+        vaultId: config.id,
+        vaultSlug: getVaultSlug(config),
+        vaultName: config.name,
+        analytics,
+      });
+    } catch (error) {
+      logger.error("Vault API: Failed to get trading analytics", {
+        error: (error as Error).message,
+        vaultId: req.params.vaultId,
+      });
       res.status(500).json({ error: (error as Error).message });
     }
   });
@@ -894,7 +1017,7 @@ export function buildVaultRouter(): Router {
       }
 
       const startTime = Date.now();
-      const navOracle = createNavOracle(config);
+      const navOracle = createNavOracle(config, undefined, config.id);
       const tradingClient = createVaultTradingClient(config);
       const results = await createTradingOrchestrator(
         config,
@@ -1277,9 +1400,10 @@ export function buildVaultRouter(): Router {
   // POST /vault/withdrawal-request — queue a withdrawal when instant redeem not possible
   router.post("/withdrawal-request", requireAuth, async (req, res) => {
     try {
-      const { shares, assetsEstimated } = req.body as {
+      const { shares, assetsEstimated, vaultId } = req.body as {
         shares?: string;
         assetsEstimated?: string;
+        vaultId?: number;
       };
 
       if (!shares) {
@@ -1302,9 +1426,73 @@ export function buildVaultRouter(): Router {
         return;
       }
 
-      const config = getPrimaryVaultConfig();
+      const resolvedVaultId = typeof vaultId === "number" ? vaultId : undefined;
+      const config =
+        resolvedVaultId !== undefined ? getVaultConfig(resolvedVaultId) : getPrimaryVaultConfig();
+
+      if (!config) {
+        res.status(404).json({ error: "Vault not found" });
+        return;
+      }
+
       const userAddress = req.session!.address as string;
       const vaultAddress = config.vaultAddress;
+
+      const existingRequests = await withdrawalRepository.getRequestsByUser(
+        userAddress,
+        vaultAddress,
+      );
+      const activeRequest = existingRequests.find(
+        (request) =>
+          request.status === "pending" ||
+          request.status === "ready" ||
+          request.status === "settled",
+      );
+
+      if (activeRequest) {
+        res.status(409).json({
+          error: "You already have an active withdrawal request for this vault.",
+          requestId: activeRequest.requestId,
+          status: activeRequest.status,
+          retryable: false,
+        });
+        return;
+      }
+
+      if (config.type === "custom") {
+        const lifecycle = (await getCachedLifecycle(config)) as {
+          executionMode?: "instant" | "queued" | "blocked";
+        };
+
+        if (lifecycle.executionMode === "blocked") {
+          res.status(409).json({
+            error: "Withdrawals are temporarily blocked until vault telemetry refreshes.",
+            retryable: true,
+          });
+          return;
+        }
+      }
+
+      const networkConfig = getNetworkConfigFromEnv();
+      const publicClient = createPublicClient({
+        chain: networkConfig.chain,
+        transport: createNetworkTransport(),
+      });
+
+      const userShareBalanceRaw = await publicClient.readContract({
+        address: vaultAddress as Address,
+        abi: ERC20_BALANCE_ABI,
+        functionName: "balanceOf",
+        args: [userAddress as Address],
+      });
+
+      if (sharesUnits > userShareBalanceRaw) {
+        res.status(400).json({
+          error: "Insufficient vault shares for this withdrawal request.",
+          availableShares: formatUnits(userShareBalanceRaw, VAULT_SHARE_DECIMALS),
+        });
+        return;
+      }
 
       // Get live estimate for initial estimate (share price based)
       const estimate = await estimateRedeemAssets(config, vaultAddress, shares);
@@ -1364,6 +1552,20 @@ export function buildVaultRouter(): Router {
         assetsEstimated: normalizedAssetsEstimated,
       });
 
+      void activityEventRepository.appendUserVaultActivityEvent({
+        vaultId: config.id,
+        vaultAddress,
+        userAddress,
+        eventType: "withdraw_requested",
+        title: "Withdrawal requested",
+        detail: "Your withdrawal request was submitted.",
+        requestId,
+        status: request.status,
+        assetAmount: normalizedAssetsEstimated,
+        shareAmount: shares,
+        occurredAt: request.requestedAt,
+      });
+
       res.json({
         success: true,
         requestId: request.requestId,
@@ -1392,6 +1594,8 @@ export function buildVaultRouter(): Router {
         userAddress,
         vaultAddress || undefined,
       );
+
+      requests = await reconcileCustomReadyWithdrawalRequests(userAddress, requests);
 
       // No live repricing - return requests as-is (no previewRedeem dependency)
       res.json({
@@ -1639,6 +1843,19 @@ export function buildVaultRouter(): Router {
       // Trigger event-driven reconciliation after cancellation (only if state changed)
       if (!result.alreadyInTargetState) {
         const config = getPrimaryVaultConfig();
+        void activityEventRepository.appendUserVaultActivityEvent({
+          vaultId: config.id,
+          vaultAddress: existing.vaultAddress,
+          userAddress,
+          eventType: "withdraw_cancelled",
+          title: "Withdrawal cancelled",
+          detail: "Your withdrawal request was cancelled.",
+          requestId,
+          status: result.request?.status ?? "cancelled",
+          assetAmount: existing.assetsEstimated,
+          shareAmount: existing.shares,
+          occurredAt: result.request?.updatedAt ?? new Date(),
+        });
         void triggerEventReconciliation(config, "cancel_request");
       }
     } catch (error) {
@@ -1852,6 +2069,20 @@ export function buildVaultRouter(): Router {
       // Trigger event-driven reconciliation after claim completion (only if state changed)
       if (!result.alreadyInTargetState) {
         const config = getPrimaryVaultConfig();
+        void activityEventRepository.appendUserVaultActivityEvent({
+          vaultId: config.id,
+          vaultAddress: existing.vaultAddress,
+          userAddress,
+          eventType: "claim_completed",
+          title: "Claim completed",
+          detail: "Claimed assets from your withdrawal request.",
+          requestId,
+          txHash,
+          status: result.request?.status ?? "completed",
+          assetAmount: existing.assetsEstimated,
+          shareAmount: existing.shares,
+          occurredAt: result.request?.completedAt ?? new Date(),
+        });
         void triggerEventReconciliation(config, "claim_completed");
       }
     } catch (error) {
@@ -2001,8 +2232,43 @@ export function buildVaultRouter(): Router {
         return;
       }
 
-      const limit = Number(req.query.limit) || 24;
-      const snapshots = await navCalculator.getNavHistory(limit);
+      const rawLimit = Number(req.query.limit);
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined;
+      const snapshots =
+        config.type === "custom"
+          ? limit !== undefined
+            ? await db
+                .select({
+                  id: navSnapshots.id,
+                  navId: navSnapshots.snapshotId,
+                  totalAssets: navSnapshots.totalAssets,
+                  idleAssets: navSnapshots.totalAssets,
+                  deployedCostBasis: navSnapshots.totalAssets,
+                  sharePrice: navSnapshots.sharePrice,
+                  positionCount: sql<number>`0`.as("position_count"),
+                  timestamp: navSnapshots.timestamp,
+                  createdAt: navSnapshots.createdAt,
+                })
+                .from(navSnapshots)
+                .where(eq(navSnapshots.vaultAddress, config.vaultAddress))
+                .orderBy(desc(navSnapshots.timestamp))
+                .limit(limit)
+            : await db
+                .select({
+                  id: navSnapshots.id,
+                  navId: navSnapshots.snapshotId,
+                  totalAssets: navSnapshots.totalAssets,
+                  idleAssets: navSnapshots.totalAssets,
+                  deployedCostBasis: navSnapshots.totalAssets,
+                  sharePrice: navSnapshots.sharePrice,
+                  positionCount: sql<number>`0`.as("position_count"),
+                  timestamp: navSnapshots.timestamp,
+                  createdAt: navSnapshots.createdAt,
+                })
+                .from(navSnapshots)
+                .where(eq(navSnapshots.vaultAddress, config.vaultAddress))
+                .orderBy(desc(navSnapshots.timestamp))
+          : await navCalculator.getNavHistory(limit);
 
       res.json({
         vaultId: config.id,
@@ -2058,7 +2324,7 @@ export function buildVaultRouter(): Router {
         return;
       }
 
-      const navOracle = createNavOracle(config);
+      const navOracle = createNavOracle(config, undefined, config.id);
       const tradingClient = createVaultTradingClient(config);
       const results = await createTradingOrchestrator(
         config,

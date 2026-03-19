@@ -23,6 +23,7 @@ import {
 import { priceService as defaultPriceService, PriceService } from "./priceService.js";
 import { getVaultProvider } from "./vaultProviderFactory.js";
 import type { IVaultProvider } from "./vaultProvider.js";
+import { vaultTradingAnalyticsService } from "./vaultTradingAnalyticsService.js";
 
 // ===== ABIs =====
 
@@ -1065,25 +1066,23 @@ export class NavOracleService {
       positionCount: livePreview.positionsWithPrices + livePreview.positionsWithoutPrices,
     });
 
-    if (cycleId > 0) {
-      try {
-        await epochRepository.createNavSnapshot({
-          snapshotId: `nav-cycle-${cycleId}-${Date.now()}`,
-          epochId: cycleId.toString(),
-          vaultAddress: this.vaultAddress,
-          totalAssets: livePreview.totalAssets.toFixed(USDC_DECIMALS),
-          totalShares: livePreview.totalSupply.toFixed(USDC_DECIMALS),
-          sharePrice: livePreview.sharePrice.toFixed(8),
-          timestamp: new Date(),
-          recordedBy: this.account.address,
-          txHash,
-        });
-      } catch (error) {
-        logger.warn("NavOracleService: Failed to record cycle NAV snapshot", {
-          error: (error as Error).message,
-          cycleId,
-        });
-      }
+    try {
+      await epochRepository.createNavSnapshot({
+        snapshotId: `nav-cycle-${cycleId}-${Date.now()}`,
+        epochId: cycleId.toString(),
+        vaultAddress: this.vaultAddress,
+        totalAssets: livePreview.totalAssets.toFixed(USDC_DECIMALS),
+        totalShares: livePreview.totalSupply.toFixed(USDC_DECIMALS),
+        sharePrice: livePreview.sharePrice.toFixed(8),
+        timestamp: new Date(),
+        recordedBy: this.account.address,
+        txHash,
+      });
+    } catch (error) {
+      logger.warn("NavOracleService: Failed to record cycle NAV snapshot", {
+        error: (error as Error).message,
+        cycleId,
+      });
     }
 
     return {
@@ -1132,6 +1131,15 @@ export class NavOracleService {
       status,
       usdcUnitsToDecimalString(resolvedPnl),
     );
+
+    try {
+      await vaultTradingAnalyticsService.syncForVault(this.vaultAddress);
+    } catch (error) {
+      logger.warn("NavOracleService: Failed to sync trading analytics after resolution", {
+        vaultAddress: this.vaultAddress,
+        error: (error as Error).message,
+      });
+    }
 
     return this.calculateAndPushNav();
   }
@@ -1414,6 +1422,24 @@ export class NavOracleService {
       sharePrice: sharePrice.toFixed(8),
       positionCount: 0,
     });
+
+    try {
+      await epochRepository.createNavSnapshot({
+        snapshotId: `nav-force-cycle-0-${Date.now()}`,
+        epochId: "0",
+        vaultAddress: this.vaultAddress,
+        totalAssets: totalAssets.toFixed(USDC_DECIMALS),
+        totalShares: pricingSupply.toFixed(USDC_DECIMALS),
+        sharePrice: sharePrice.toFixed(8),
+        timestamp: new Date(),
+        recordedBy: this.account.address,
+        txHash,
+      });
+    } catch (error) {
+      logger.warn("NavOracleService: Failed to record forced custom NAV snapshot", {
+        error: (error as Error).message,
+      });
+    }
 
     logger.warn("NavOracleService: Force NAV update executed (Custom)", {
       newValue: usdcUnitsToDecimalString(forcedValue),

@@ -20,6 +20,8 @@ import {
   fetchVaultPositionHistory,
   fetchVaultNavHistory,
   fetchVaultAllocations,
+  fetchVaultEvents,
+  fetchVaultTradingAnalytics,
   fetchWithdrawalQueue,
   postWithdrawalPreflight,
   // Batch/Cycle API functions
@@ -33,6 +35,7 @@ import {
   fetchDepositQueue,
   fetchTrancheStatus,
   fetchCarryEligibility,
+  fetchUserVaultHistory,
 } from "./api";
 import type {
   VaultInstancesResponse,
@@ -41,6 +44,8 @@ import type {
   VaultPositionHistoryResponse,
   VaultNavHistoryResponse,
   VaultAllocationsResponse,
+  VaultEventsResponse,
+  VaultTradingAnalyticsResponse,
   WithdrawalQueueResponse,
   WithdrawalPreflightResponse,
   // Batch/Cycle types
@@ -52,6 +57,7 @@ import type {
   UserRedemptionsResponse,
   Cycle,
   RedemptionRequest,
+  UserVaultHistoryResponse,
 } from "../types.js";
 
 interface AsyncState<T> {
@@ -106,6 +112,11 @@ function getUserScope(isAuthenticated: boolean, address?: string): string {
 export const vaultQueryKeys = {
   scope: (vaultId?: number) => ["vault", getVaultScope(vaultId)] as const,
   status: (vaultId?: number) => [...vaultQueryKeys.scope(vaultId), "status"] as const,
+  tradingAnalytics: (vaultId?: number) =>
+    [...vaultQueryKeys.scope(vaultId), "trading-analytics"] as const,
+  events: (vaultId?: number) => [...vaultQueryKeys.scope(vaultId), "events"] as const,
+  history: (vaultId: number | undefined, userScope: string) =>
+    [...vaultQueryKeys.scope(vaultId), "history", userScope] as const,
   cycleStatus: (vaultId?: number, cycleId?: number) =>
     [...vaultQueryKeys.scope(vaultId), "cycle", cycleId ?? "current"] as const,
   requests: (vaultId: number | undefined, userScope: string) =>
@@ -376,6 +387,86 @@ export function useVaultAllocations(limit?: number): AsyncState<VaultAllocations
   return usePolledFetch(fetcher);
 }
 
+export function useVaultTradingAnalytics(
+  vaultId?: number,
+): AsyncState<VaultTradingAnalyticsResponse> {
+  const query = useQuery({
+    queryKey: vaultQueryKeys.tradingAnalytics(vaultId),
+    queryFn: () => fetchVaultTradingAnalytics(vaultId!),
+    enabled: vaultId !== undefined,
+    refetchInterval: DEFAULT_POLL_INTERVAL_MS,
+  });
+
+  const refetch = useCallback(async (): Promise<VaultTradingAnalyticsResponse | null> => {
+    const result = await query.refetch();
+    return result.data ?? null;
+  }, [query]);
+
+  return {
+    data: query.data ?? null,
+    isLoading: vaultId !== undefined ? query.isLoading : false,
+    error: getErrorMessage(query.error),
+    lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
+    refetch,
+  };
+}
+
+export function useVaultEvents(vaultId?: number, limit = 50): AsyncState<VaultEventsResponse> {
+  const query = useQuery({
+    queryKey: [...vaultQueryKeys.events(vaultId), limit],
+    queryFn: () => fetchVaultEvents(vaultId!, limit),
+    enabled: vaultId !== undefined,
+    refetchInterval: DEFAULT_POLL_INTERVAL_MS,
+  });
+
+  const refetch = useCallback(async (): Promise<VaultEventsResponse | null> => {
+    const result = await query.refetch();
+    return result.data ?? null;
+  }, [query]);
+
+  return {
+    data: query.data ?? null,
+    isLoading: vaultId !== undefined ? query.isLoading : false,
+    error: getErrorMessage(query.error),
+    lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
+    refetch,
+  };
+}
+
+export function useUserVaultHistory(
+  vaultId: number | undefined,
+  isAuthenticated: boolean,
+  address?: string,
+  limit = 100,
+): AsyncState<UserVaultHistoryResponse> {
+  const userScope = getUserScope(isAuthenticated, address);
+  const query = useQuery({
+    queryKey: [...vaultQueryKeys.history(vaultId, userScope), limit],
+    queryFn: () => fetchUserVaultHistory(vaultId!, limit),
+    enabled: vaultId !== undefined && isAuthenticated,
+    refetchInterval: DEFAULT_POLL_INTERVAL_MS,
+    retry: (failureCount, error) => {
+      if (isUnauthorizedError(error)) {
+        return false;
+      }
+      return failureCount < 2;
+    },
+  });
+
+  const refetch = useCallback(async (): Promise<UserVaultHistoryResponse | null> => {
+    const result = await query.refetch();
+    return result.data ?? null;
+  }, [query]);
+
+  return {
+    data: query.data ?? null,
+    isLoading: vaultId !== undefined && isAuthenticated ? query.isLoading : false,
+    error: getErrorMessage(query.error),
+    lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
+    refetch,
+  };
+}
+
 export function useWithdrawalQueue(vaultAddress?: string): AsyncState<WithdrawalQueueResponse> {
   const fetcher = useCallback(() => fetchWithdrawalQueue(vaultAddress), [vaultAddress]);
   return usePolledFetch(fetcher, 15_000);
@@ -556,7 +647,7 @@ export function usePreviewDeposit(
 
 interface PreviewRedeemResult {
   assets: bigint | undefined;
-  refetch: () => Promise<unknown>;
+  refetch: () => Promise<bigint | undefined>;
 }
 
 export function usePreviewRedeem(
@@ -604,11 +695,21 @@ export function usePreviewRedeem(
 
   const refetch = useCallback(async () => {
     if (useCurrentNav) {
-      await refetchNav();
-      return;
+      const result = await refetchNav();
+      const nextNav = result.data;
+      if (!nextNav || !shares) {
+        return undefined;
+      }
+      return (shares * nextNav) / 10n ** 18n;
     }
-    await Promise.all([refetchAssets(), refetchSupply()]);
-  }, [refetchAssets, refetchNav, refetchSupply, useCurrentNav]);
+    const [assetsResult, supplyResult] = await Promise.all([refetchAssets(), refetchSupply()]);
+    const nextAssets = assetsResult.data;
+    const nextSupply = supplyResult.data;
+    if (!nextAssets || !nextSupply || !shares || nextSupply === 0n) {
+      return undefined;
+    }
+    return (shares * nextAssets) / nextSupply;
+  }, [refetchAssets, refetchNav, refetchSupply, shares, useCurrentNav]);
 
   return { assets, refetch };
 }

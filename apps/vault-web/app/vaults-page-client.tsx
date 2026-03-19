@@ -13,6 +13,7 @@ import {
   useVaultPositions,
   useVaultStatus,
 } from "../src/lib/hooks";
+import { deriveVaultPerformanceStats } from "../src/lib/performance";
 import type { VaultInstance, VaultRiskLevel } from "../src/types";
 
 function formatCompactCurrency(value: number): string {
@@ -66,7 +67,7 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
   const router = useRouter();
   const { data, isLoading } = useVaultStatus(vault.id);
   const { executionMode, telemetryFresh } = useCycleStatus(vault.id);
-  const navHistory = useVaultNavHistory(120, vault.id);
+  const navHistory = useVaultNavHistory(undefined, vault.id);
   const positions = useVaultPositions(vault.id);
 
   const tvl = data?.nav?.totalAssets ?? 0;
@@ -75,29 +76,7 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
     0,
   );
 
-  const apy = (() => {
-    const snapshots = navHistory.data?.snapshots ?? [];
-    const points = snapshots
-      .map((snapshot) => ({
-        ts: new Date(snapshot.timestamp).getTime(),
-        price: Number.parseFloat(snapshot.sharePrice),
-      }))
-      .filter((p) => Number.isFinite(p.ts) && Number.isFinite(p.price) && p.price > 0)
-      .sort((a, b) => a.ts - b.ts);
-
-    if (points.length < 2) {
-      return null;
-    }
-
-    const first = points[0]!;
-    const last = points[points.length - 1]!;
-    const days = Math.max((last.ts - first.ts) / (1000 * 60 * 60 * 24), 0);
-    const netReturn = last.price / first.price - 1;
-    if (days >= 30) {
-      return Math.pow(last.price / first.price, 365 / days) - 1;
-    }
-    return netReturn;
-  })();
+  const performance = deriveVaultPerformanceStats(navHistory.data?.snapshots ?? []);
 
   const showAweCredit = /sisyphus/i.test(vault.name);
   const vaultHref = `/vault/${vault.id}`;
@@ -177,9 +156,7 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
           <div className="grid grid-cols-3 gap-3 rounded-2xl border border-white/10 bg-slate-950/30 p-4">
             <div className="flex flex-col gap-1">
               <span className="text-[11px] uppercase tracking-[0.18em] text-slate-400">APY</span>
-              <span className="text-lg font-semibold text-white">
-                {navHistory.isLoading ? "--" : formatPercent(apy)}
-              </span>
+              <span className="text-lg font-semibold text-white">--</span>
             </div>
 
             <div className="flex flex-col gap-1">
@@ -227,8 +204,8 @@ export default function VaultsPageClient() {
               Vault dashboard
             </h1>
             <p className="max-w-2xl text-base leading-7 text-slate-300 sm:text-lg">
-              Follow each vault, check current size and share price, and open the detailed workspace
-              when you want to review cycle status, deposits, or exits.
+              Follow each vault, check current size and capital deployment, and open the detailed
+              workspace when you want to review cycle status, deposits, or exits.
             </p>
             <div className="pt-2 text-sm text-slate-400">
               {instances.length} vault{instances.length === 1 ? "" : "s"} available

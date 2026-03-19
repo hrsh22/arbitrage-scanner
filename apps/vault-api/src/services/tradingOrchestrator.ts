@@ -9,7 +9,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { and, gte, isNotNull, sql } from "drizzle-orm";
+import { and, eq, gte, isNotNull, sql } from "drizzle-orm";
 
 import { SUPPORTS_POLYMARKET_TRADING, USDC_E_ADDRESS } from "../constants.js";
 import type { VaultInstanceConfig } from "../config/types.js";
@@ -222,6 +222,13 @@ export class TradingOrchestratorService {
   private readonly marketFetchConfig: MarketFetchConfig;
   private readonly epochBoundarySafetyBufferMinutes: number;
 
+  private getVaultAddress(): string {
+    if (!this.vaultConfig) {
+      throw new Error("TradingOrchestrator: vault config is required");
+    }
+    return this.vaultConfig.vaultAddress;
+  }
+
   private readonly mode: "simulation" | "live";
   private readonly tradingClient: VaultTradingClient;
   private readonly resolvedIdentity: ResolvedVaultIdentity | null;
@@ -359,7 +366,7 @@ export class TradingOrchestratorService {
       return [];
     }
 
-    const existingPositions = await positionRepository.getOpenPositions();
+    const existingPositions = await positionRepository.getOpenPositions(this.getVaultAddress());
     const existingMarketIds = new Set(existingPositions.map((p) => p.marketId));
 
     for (const market of markets) {
@@ -535,6 +542,7 @@ export class TradingOrchestratorService {
 
       const position = await positionRepository.createPosition({
         positionId: `pos-${Date.now()}-${randomUUID()}`,
+        vaultAddress: this.getVaultAddress(),
         marketId: tradeRequest.marketId,
         conditionId: tradeRequest.conditionId,
         tokenId: tradeRequest.tokenId,
@@ -592,7 +600,7 @@ export class TradingOrchestratorService {
 
   async getVaultStatus(): Promise<VaultStatus> {
     const [openPositions, safeBalance] = await Promise.all([
-      positionRepository.getOpenPositions(),
+      positionRepository.getOpenPositions(this.getVaultAddress()),
       this.getSafeBalanceUsdc(),
     ]);
 
@@ -902,7 +910,7 @@ export class TradingOrchestratorService {
   private async getCircuitBreakerStatus(): Promise<CircuitBreakerStatus> {
     const [todayRealizedPnl, openPositions] = await Promise.all([
       this.getTodayRealizedPnl(),
-      positionRepository.getOpenPositions(),
+      positionRepository.getOpenPositions(this.getVaultAddress()),
     ]);
 
     const maxPositions = this.vaultConfig ? 20 : this.intFromEnv("VAULT_MAX_POSITIONS", 20);
@@ -938,7 +946,13 @@ export class TradingOrchestratorService {
     const rows = await db
       .select({ total: sql<string>`coalesce(sum(${vaultPositions.resolvedPnl}::numeric), 0)` })
       .from(vaultPositions)
-      .where(and(gte(vaultPositions.resolvedAt, start), isNotNull(vaultPositions.resolvedPnl)));
+      .where(
+        and(
+          eq(vaultPositions.vaultAddress, this.getVaultAddress()),
+          gte(vaultPositions.resolvedAt, start),
+          isNotNull(vaultPositions.resolvedPnl),
+        ),
+      );
 
     return this.toNumber(rows[0]?.total);
   }

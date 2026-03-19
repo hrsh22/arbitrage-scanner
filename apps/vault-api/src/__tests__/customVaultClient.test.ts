@@ -178,6 +178,29 @@ describe("CustomVaultClient (FlatBookVaultV2)", () => {
     expect(requestIds[0]).toBe(expected);
   });
 
+  it("reads controller redemption state without inventing request-level amounts", async () => {
+    mockReadContract.mockImplementation(async ({ functionName }) => {
+      switch (functionName) {
+        case "currentCycleId":
+          return 5n;
+        case "queuedRedeemShares":
+          return 200000n;
+        case "claimableRedeemRequest":
+          return 1000000n;
+        case "claimableRedeemAssetsByController":
+          return 1000000n;
+        default:
+          throw new Error(`Unexpected functionName: ${String(functionName)}`);
+      }
+    });
+
+    const state = await client.getControllerRedemptionState(CONTROLLER);
+
+    expect(state.pendingShares).toBe(200000n);
+    expect(state.claimableShares).toBe(1000000n);
+    expect(state.claimableAssets).toBe(1000000n);
+  });
+
   it("writes transactions and surfaces parsed contract errors", async () => {
     const writeContract = vi.fn().mockRejectedValue(new Error("InvalidState"));
     const walletClient = {

@@ -20,6 +20,7 @@ import type { VaultInstanceConfig } from "../config/types.js";
 import { USDC_E_ADDRESS } from "../constants.js";
 import { env } from "../env.js";
 import { logger } from "../logger.js";
+import { activityEventRepository } from "../repositories/activityEventRepository.js";
 import { epochRepository } from "../repositories/epochRepository.js";
 import {
   WithdrawalRepository,
@@ -746,6 +747,22 @@ export class LiquidityManager {
       };
     }
 
+    if (!transitionResult.alreadyInTargetState) {
+      void activityEventRepository.appendUserVaultActivityEvent({
+        vaultId: this.vaultId,
+        vaultAddress: this.vaultAddress,
+        userAddress: head.userAddress,
+        eventType: "withdraw_ready",
+        title: "Withdrawal ready",
+        detail: "Your withdrawal request is ready to claim.",
+        requestId: head.requestId,
+        status: transitionResult.request?.status ?? "ready",
+        assetAmount: head.assetsEstimated,
+        shareAmount: head.shares,
+        occurredAt: transitionResult.request?.readyAt ?? new Date(),
+      });
+    }
+
     const details = [
       params?.rebalanceDetails,
       `Marked withdrawal ${head.requestId} as ready in FIFO order`,
@@ -800,7 +817,26 @@ export class LiquidityManager {
         "claimable",
       );
       for (const request of settledRequests) {
-        await this.withdrawalRepo.markSettled(request.requestId, request.claimableAssets ?? "0");
+        const result = await this.withdrawalRepo.markSettled(
+          request.requestId,
+          request.claimableAssets ?? "0",
+        );
+        if (result) {
+          void activityEventRepository.appendUserVaultActivityEvent({
+            vaultId: this.vaultId,
+            vaultAddress: this.vaultAddress,
+            userAddress: request.userAddress,
+            eventType: "withdraw_settled",
+            title: "Withdrawal settled",
+            detail: "Your queued withdrawal has been processed and is ready to claim.",
+            requestId: request.requestId,
+            cycleId: Number.parseInt(request.epochId, 10),
+            status: result.status,
+            assetAmount: request.claimableAssets ?? undefined,
+            shareAmount: request.shares,
+            occurredAt: result.updatedAt,
+          });
+        }
       }
     } catch (error) {
       logger.error("LiquidityManager: Failed to sync settled requests", {

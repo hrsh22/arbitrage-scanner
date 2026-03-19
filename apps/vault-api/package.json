@@ -12,7 +12,8 @@
     "test": "vitest",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:reset": "tsx scripts/dbReset.ts"
+    "db:reset": "tsx scripts/dbReset.ts",
+    "activity:backfill": "tsx scripts/backfillActivityEvents.ts"
   },
   "dependencies": {
     "@polymarket/builder-signing-sdk": "^0.0.8",

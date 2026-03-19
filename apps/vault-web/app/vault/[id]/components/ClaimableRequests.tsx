@@ -9,7 +9,7 @@ import { CheckCircle2, Wallet, Hash, Info, Clock, Percent } from "lucide-react";
 import { useAppKitAccount } from "@reown/appkit/react";
 import { parseUnits } from "viem";
 import type { RedemptionRequest } from "../../../../src/types";
-import { useCustomVaultClaimRedeem } from "../../../../src/lib/hooks";
+import { useVaultRedeem } from "../../../../src/lib/hooks";
 import { EXPLORER_BASE_URL } from "../../../../src/constants";
 
 interface ClaimableRequestsProps {
@@ -47,23 +47,23 @@ function ClaimableRequestCard({
   const [error, setError] = useState<string | null>(null);
   const [successTx, setSuccessTx] = useState<string | null>(null);
   const {
-    claimRedeemTx,
+    redeem,
     hash,
     isPending,
     isConfirming,
     isConfirmed,
-    error: claimError,
+    error: redeemError,
     reset,
-  } = useCustomVaultClaimRedeem();
+  } = useVaultRedeem();
 
   // Track processing state
   useEffect(() => {
     if (isPending || isConfirming) {
       setProcessing(request.requestId);
-    } else if (isConfirmed || claimError) {
+    } else if (isConfirmed || redeemError) {
       setProcessing(null);
     }
-  }, [isPending, isConfirming, isConfirmed, claimError, request.requestId, setProcessing]);
+  }, [isPending, isConfirming, isConfirmed, redeemError, request.requestId, setProcessing]);
 
   // Handle success
   useEffect(() => {
@@ -78,10 +78,10 @@ function ClaimableRequestCard({
 
   // Handle error
   useEffect(() => {
-    if (claimError) {
-      setError(claimError.message);
+    if (redeemError) {
+      setError(redeemError.message);
     }
-  }, [claimError]);
+  }, [redeemError]);
 
   const handleClaim = async () => {
     if (!isConnected) return;
@@ -97,11 +97,11 @@ function ClaimableRequestCard({
         throw new Error("Missing receiver address for claim");
       }
 
-      claimRedeemTx(
+      redeem(
         vaultAddress as `0x${string}`,
-        BigInt(request.requestId),
         parseUnits(request.sharesFormatted, 6),
         receiverAddress as `0x${string}`,
+        (request.ownerAddress || request.controllerAddress || receiverAddress) as `0x${string}`,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to claim redemption request");
@@ -124,23 +124,33 @@ function ClaimableRequestCard({
         <div className="flex items-center gap-2">
           <Hash className="h-4 w-4 text-emerald-200" aria-hidden="true" />
           <span className="text-sm font-mono font-medium text-emerald-50">
-            {request.requestId.slice(0, 8)}...{request.requestId.slice(-4)}
+            {request.requestKind === "controller_claimable"
+              ? "wallet aggregate"
+              : `${request.requestId.slice(0, 8)}...${request.requestId.slice(-4)}`}
           </span>
           <Badge
             variant="outline"
             className="border-emerald-400/25 bg-emerald-400/15 text-[10px] text-emerald-100"
           >
-            {request.status === "claimed" ? "Claimed" : "Claimable"}
+            {request.status === "claimed"
+              ? "Claimed"
+              : request.requestKind === "controller_claimable"
+                ? "Claimable balance"
+                : "Claimable"}
           </Badge>
         </div>
         <span className="text-xs text-emerald-50/70">
-          Requested {formatDateTime(request.createdAt)}
+          {request.requestKind === "controller_claimable"
+            ? "Across settled cycles"
+            : `Requested ${formatDateTime(request.createdAt)}`}
         </span>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <p className="text-xs text-emerald-50/70">Shares settled</p>
+          <p className="text-xs text-emerald-50/70">
+            {request.requestKind === "controller_claimable" ? "Shares claimable" : "Shares settled"}
+          </p>
           <p className="text-sm font-mono font-medium text-emerald-50">
             {request.sharesFormatted} shares
           </p>
@@ -154,11 +164,22 @@ function ClaimableRequestCard({
             ${request.claimableAssetsFormatted || "0.00"}
           </p>
         </div>
-        <div>
-          <p className="text-xs text-emerald-50/70">Settled cycle</p>
-          <p className="text-sm font-mono font-medium text-emerald-50">#{request.targetCycle}</p>
-        </div>
+        {request.requestKind !== "controller_claimable" && (
+          <div>
+            <p className="text-xs text-emerald-50/70">Settled cycle</p>
+            <p className="text-sm font-mono font-medium text-emerald-50">#{request.targetCycle}</p>
+          </div>
+        )}
       </div>
+
+      {request.requestKind === "controller_claimable" && (
+        <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/10 p-2">
+          <p className="text-xs leading-6 text-cyan-50/90">
+            This vault exposes one aggregated claimable balance per wallet. The dollar amount shown
+            here is not tied to a single request row.
+          </p>
+        </div>
+      )}
 
       {/* Settlement indicator */}
       {request.proRataApplied && (

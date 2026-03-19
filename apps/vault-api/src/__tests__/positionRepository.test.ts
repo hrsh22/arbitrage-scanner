@@ -5,13 +5,20 @@ vi.mock("../db/index.js", () => ({ db: {} }));
 vi.mock("../db/schema.js", () => ({
   vaultPositions: {
     status: "status",
+    vaultAddress: "vault_address",
     marketId: "market_id",
     openedAt: "opened_at",
     id: "id",
     costBasis: "cost_basis",
+    resolvedAt: "resolved_at",
+    resolvedPnl: "resolved_pnl",
   },
   vaultTrades: {},
   vaultAllocations: {},
+  vaultTradingAnalytics: {
+    vaultAddress: "vault_address",
+    computedAt: "computed_at",
+  },
 }));
 
 function createMockDb() {
@@ -46,6 +53,7 @@ describe("PositionRepository", () => {
     it("inserts a new position and returns it", async () => {
       const newPosition = {
         positionId: "pos-123",
+        vaultAddress: "0xvault",
         marketId: "market-abc",
         conditionId: "cond-456",
         tokenId: "token-789",

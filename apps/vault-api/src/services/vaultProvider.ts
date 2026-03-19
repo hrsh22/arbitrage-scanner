@@ -113,7 +113,6 @@ export interface ClaimResult {
   success: boolean;
   requestId: string;
   assetsReceived: bigint;
-  /** CLOSED-BOOK: No carry in closed-book model, always 0 */
   carryDeducted?: bigint;
   txHash?: Hex;
   error?: string;

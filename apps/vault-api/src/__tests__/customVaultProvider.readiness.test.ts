@@ -14,6 +14,7 @@ const mockVaultInstanceConfig = {
   name: "test-vault",
   enabled: true,
   type: "custom",
+  vaultContractType: "flatBookVaultV2",
   network: "amoy",
   vaultAddress: "0x1234567890123456789012345678901234567890",
   safeAddress: "0x0987654321098765432109876543210987654321",
@@ -162,6 +163,40 @@ function makeBatch(overrides: Partial<BatchData>): BatchData {
 }
 
 describe("CustomVaultProvider settlement readiness", () => {
+  it("surfaces pending queue state separately from aggregated claimable balance", async () => {
+    const mockClient = {
+      getControllerRedemptionState: vi.fn().mockResolvedValue({
+        currentCycle: 7n,
+        pendingShares: 200000n,
+        claimableShares: 1000000n,
+        claimableAssets: 1000000n,
+      }),
+    };
+
+    const provider = new CustomVaultProvider(
+      {
+        vaultId: 1,
+        vaultAddress: "0x1234567890123456789012345678901234567890",
+        providerType: "custom",
+      },
+      mockMaintenanceKey,
+    );
+
+    (provider as unknown as { client: CustomVaultClient }).client =
+      mockClient as unknown as CustomVaultClient;
+
+    const state = await provider.getUserRedemptionState(
+      "0x00000000000000000000000000000000000000aa",
+    );
+
+    expect(state.pendingRequests).toHaveLength(1);
+    expect(state.claimableRequests).toHaveLength(1);
+    expect(state.pendingRequests[0]?.requestId).toContain("pending-");
+    expect(state.claimableRequests[0]?.requestId).toContain("claimable-");
+    expect(state.pendingRequests[0]?.shares).toBe(200000n);
+    expect(state.claimableRequests[0]?.assetsActual).toBe(1000000n);
+  });
+
   it("allocates via trading safe when the safe holds ADMIN_ROLE", async () => {
     mockExecuteRawTransaction.mockResolvedValueOnce({ success: true, txHash: "0xsafe" });
 

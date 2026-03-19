@@ -22,9 +22,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@workspace/ui/componen
 import { Tooltip, TooltipContent, TooltipTrigger } from "@workspace/ui/components/tooltip";
 import { cn } from "@workspace/ui/lib/utils";
 import {
+  deriveVaultPerformanceStats,
+  type DerivedVaultPerformanceStats,
+} from "../../../src/lib/performance";
+import {
   preflightWithdrawal,
   useCycleStatus,
-  useDepositQueue,
   usePreviewDeposit,
   usePreviewRedeem,
   useQueueDeposit,
@@ -32,11 +35,14 @@ import {
   useUsdcAllowance,
   useUsdcApprove,
   useVaultDeposit,
+  useVaultEvents,
   useVaultInstances,
   useVaultNavHistory,
   useVaultRedeem,
   useVaultShares,
   useVaultStatus,
+  useVaultTradingAnalytics,
+  useUserVaultHistory,
   useWalletBalance,
   useWithdrawalQueue,
   invalidateVaultQueries,
@@ -44,8 +50,10 @@ import {
 import {
   fetchAuthMe,
   postCancelWithdrawalRequest,
+  postRecordClaimActivity,
   postCompleteWithdrawalRequest,
   postPrepareWithdrawalRequest,
+  postRecordDepositActivity,
   postVaultNavUpdate,
   postWithdrawalRequest,
 } from "../../../src/lib/api";
@@ -54,8 +62,8 @@ import { getNetworkDisplayInfo } from "../../../src/lib/network";
 import type {
   Cycle,
   RedemptionRequest,
+  VaultActivityFeedItem,
   VaultInstance,
-  VaultNavHistoryItem,
   VaultStatusResponse,
 } from "../../../src/types";
 import { RedemptionPanel } from "./components";
@@ -66,23 +74,48 @@ declare global {
   }
 }
 
-interface PerformanceStats {
-  sinceInception: number | null;
-  annualized: number | null;
-  thirtyDay: number | null;
-  maxDrawdown: number | null;
-  winRate: number | null;
-  daysCovered: number;
-  first: number | null;
-  latest: number | null;
-  points: Array<{ timestamp: string; value: number }>;
-}
-
 interface ActivityItem {
+  id: string;
   title: string;
   detail: string;
   timestamp: string | null;
   tone: "neutral" | "good" | "warning";
+}
+
+function formatActivityAmount(value?: string, suffix = "USDC.e"): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+
+  return `${formatCurrency(parsed)} ${suffix}`;
+}
+
+function mapFeedItemsToTimeline(items: VaultActivityFeedItem[]): ActivityItem[] {
+  return items.map((item) => ({
+    id: item.id,
+    title: item.title,
+    detail: [
+      item.detail,
+      formatActivityAmount(item.amounts?.assets),
+      formatActivityAmount(item.amounts?.shares, "shares"),
+    ]
+      .filter(Boolean)
+      .join(" · "),
+    timestamp: item.occurredAt,
+    tone:
+      item.type.includes("claim") ||
+      item.type.includes("completed") ||
+      item.type.includes("processed")
+        ? "good"
+        : item.type.includes("cancel") || item.type.includes("blocked")
+          ? "warning"
+          : "neutral",
+  }));
 }
 
 function formatCurrency(value: number, maximumFractionDigits = 2): string {
@@ -237,163 +270,11 @@ function getCycleNote(
   };
 }
 
-function derivePerformanceStats(snapshots: VaultNavHistoryItem[]): PerformanceStats {
-  const points = [...snapshots]
-    .map((snapshot) => ({
-      timestamp: snapshot.timestamp,
-      value: Number.parseFloat(snapshot.sharePrice),
-    }))
-    .filter((point) => Number.isFinite(point.value) && point.value > 0)
-    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-
-  if (points.length === 0) {
-    return {
-      sinceInception: null,
-      annualized: null,
-      thirtyDay: null,
-      maxDrawdown: null,
-      winRate: null,
-      daysCovered: 0,
-      first: null,
-      latest: null,
-      points,
-    };
-  }
-
-  const firstPoint = points[0];
-  const lastPoint = points[points.length - 1];
-  const first = firstPoint?.value ?? null;
-  const latest = lastPoint?.value ?? null;
-
-  let sinceInception: number | null = null;
-  if (first && latest) {
-    sinceInception = latest / first - 1;
-  }
-
-  const firstTimestamp = new Date(firstPoint?.timestamp ?? Date.now()).getTime();
-  const latestTimestamp = new Date(lastPoint?.timestamp ?? Date.now()).getTime();
-  const days = Math.max((latestTimestamp - firstTimestamp) / (1000 * 60 * 60 * 24), 0);
-  const annualized =
-    sinceInception !== null && days >= 30
-      ? Math.pow((latest ?? 1) / (first ?? 1), 365 / days) - 1
-      : null;
-
-  const cutoff = latestTimestamp - 30 * 24 * 60 * 60 * 1000;
-  const baseThirtyDay = [...points]
-    .reverse()
-    .find((point) => new Date(point.timestamp).getTime() <= cutoff);
-  const thirtyDay =
-    latest !== null && baseThirtyDay && baseThirtyDay.value > 0
-      ? latest / baseThirtyDay.value - 1
-      : null;
-
-  let peak = firstPoint?.value ?? 0;
-  let maxDrawdown = 0;
-  let positiveMoves = 0;
-
-  for (let index = 1; index < points.length; index += 1) {
-    const current = points[index]?.value ?? peak;
-    const previous = points[index - 1]?.value ?? peak;
-
-    if (current > previous) {
-      positiveMoves += 1;
-    }
-
-    if (current > peak) {
-      peak = current;
-    }
-
-    const drawdown = peak > 0 ? current / peak - 1 : 0;
-    if (drawdown < maxDrawdown) {
-      maxDrawdown = drawdown;
-    }
-  }
-
-  return {
-    sinceInception,
-    annualized,
-    thirtyDay,
-    maxDrawdown,
-    winRate: null,
-    daysCovered: days,
-    first,
-    latest,
-    points,
-  };
-}
-
-function buildVaultActivity(
-  vault: VaultInstance,
-  status: VaultStatusResponse | null,
-  cycle: Cycle | null,
-  queueStatus: string | null,
-  activeWithdrawal: RedemptionRequest | null,
-  readyWithdrawal: RedemptionRequest | null,
-  includeUserItems: boolean,
-): ActivityItem[] {
-  const items: ActivityItem[] = [];
-
-  if (status?.nav.lastUpdated) {
-    items.push({
-      title: "NAV updated",
-      detail: `Share price moved to ${formatSharePrice(status.nav.sharePrice)} with ${formatCompactCurrency(status.nav.totalAssets)} in vault NAV.`,
-      timestamp: status.nav.lastUpdated,
-      tone: "good",
-    });
-  }
-
-  if (includeUserItems && queueStatus === "queued") {
-    items.push({
-      title: "Deposit queue status",
-      detail: `New capital is currently queued in ${vault.name}.`,
-      timestamp: status?.nav.lastUpdated ?? null,
-      tone: "neutral",
-    });
-  }
-
-  if (includeUserItems && queueStatus === "processed") {
-    items.push({
-      title: "Deposit queue status",
-      detail: "Queued capital has been minted into vault shares at the locked clearing price.",
-      timestamp: status?.nav.lastUpdated ?? null,
-      tone: "good",
-    });
-  }
-
-  if (includeUserItems && readyWithdrawal) {
-    items.push({
-      title: "Claim readiness",
-      detail: `Withdrawal ${readyWithdrawal.requestId} is ready to claim once you sign the redemption transaction.`,
-      timestamp: readyWithdrawal.createdAt,
-      tone: "good",
-    });
-  } else if (includeUserItems && activeWithdrawal) {
-    items.push({
-      title: "Withdrawal queue status",
-      detail: `Withdrawal ${activeWithdrawal.requestId} is currently ${activeWithdrawal.status}.`,
-      timestamp: activeWithdrawal.createdAt,
-      tone: activeWithdrawal.status === "pending" ? "warning" : "neutral",
-    });
-  }
-
-  items.push({
-    title: "Vault access status",
-    detail:
-      getDepositStatusLabel(vault, cycle) === "Open"
-        ? "Deposits are currently open and the vault can accept fresh capital."
-        : "New capital intake is paused while the current vault state is blocked.",
-    timestamp: cycle?.startTime ?? null,
-    tone: getDepositStatusLabel(vault, cycle) === "Open" ? "neutral" : "warning",
-  });
-
-  return items.slice(0, 5);
-}
-
 function buildStrategyActivity(
   vault: VaultInstance,
   status: VaultStatusResponse | null,
   cycle: Cycle | null,
-  performance: PerformanceStats,
+  performance: DerivedVaultPerformanceStats,
 ): ActivityItem[] {
   void vault;
   void status;
@@ -509,7 +390,13 @@ function PerformanceTile({
   );
 }
 
-function NavChart({ stats, isLoading }: { stats: PerformanceStats; isLoading: boolean }) {
+function NavChart({
+  stats,
+  isLoading,
+}: {
+  stats: DerivedVaultPerformanceStats;
+  isLoading: boolean;
+}) {
   if (isLoading) {
     return <Skeleton className="h-[280px] w-full rounded-[26px] bg-white/10" />;
   }
@@ -596,10 +483,7 @@ function ActivityTimeline({
   return (
     <div className="space-y-3">
       {items.map((item) => (
-        <div
-          key={`${item.title}-${item.timestamp ?? item.detail}`}
-          className="rounded-[22px] border border-white/10 bg-slate-950/30 p-4"
-        >
+        <div key={item.id} className="rounded-[22px] border border-white/10 bg-slate-950/30 p-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="space-y-1.5">
               <div className="flex items-center gap-2">
@@ -750,6 +634,8 @@ function DepositRail({
   onSuccess,
   refetchCycleStatus,
   walletConnected,
+  userAuthorized,
+  vaultId,
 }: {
   vault: VaultInstance;
   cycle: Cycle | null;
@@ -757,6 +643,8 @@ function DepositRail({
   onSuccess: () => void;
   refetchCycleStatus: () => Promise<unknown>;
   walletConnected: boolean;
+  userAuthorized: boolean;
+  vaultId: number;
 }) {
   const isCustomVault = vault.type === "custom";
   const { formatted, isLoading: balanceLoading, address } = useWalletBalance();
@@ -791,6 +679,7 @@ function DepositRail({
     isPending: depositPending,
     isConfirming: depositConfirming,
     isConfirmed: depositConfirmed,
+    hash: depositHash,
     error: depositError,
     reset: resetDeposit,
   } = useVaultDeposit();
@@ -799,6 +688,7 @@ function DepositRail({
     isPending: queueDepositPending,
     isConfirming: queueDepositConfirming,
     isConfirmed: queueDepositConfirmed,
+    hash: queueDepositHash,
     error: queueDepositError,
     reset: resetQueueDeposit,
   } = useQueueDeposit();
@@ -812,6 +702,8 @@ function DepositRail({
     queueDepositPending ||
     queueDepositConfirming ||
     navSyncPending;
+  const [submittedDepositAmount, setSubmittedDepositAmount] = useState<string | null>(null);
+  const [recordedDepositHash, setRecordedDepositHash] = useState<string | null>(null);
 
   function clearDepositFeedback() {
     setErrorMessage(null);
@@ -828,6 +720,16 @@ function DepositRail({
 
   useEffect(() => {
     if (depositConfirmed || queueDepositConfirmed) {
+      const confirmedHash = queueDepositConfirmed ? queueDepositHash : depositHash;
+      if (userAuthorized && confirmedHash && recordedDepositHash !== confirmedHash) {
+        void postRecordDepositActivity(vaultId, {
+          txHash: confirmedHash,
+          assets: submittedDepositAmount ?? undefined,
+          mode: queueDepositConfirmed ? "queued" : "minted",
+        }).catch(() => undefined);
+        setRecordedDepositHash(confirmedHash);
+      }
+
       setAmount("");
       setErrorMessage(null);
       setMessage(
@@ -843,12 +745,18 @@ function DepositRail({
     }
   }, [
     depositConfirmed,
+    depositHash,
     onSuccess,
     queueDepositConfirmed,
+    queueDepositHash,
+    recordedDepositHash,
     refetchAllowance,
     resetApprove,
     resetDeposit,
     resetQueueDeposit,
+    submittedDepositAmount,
+    userAuthorized,
+    vaultId,
   ]);
 
   useEffect(() => {
@@ -894,6 +802,7 @@ function DepositRail({
 
     if (isCustomVault) {
       if (latestCycle?.executionMode === "queued") {
+        setSubmittedDepositAmount(amount);
         queueDeposit(vault.config.vaultAddress as `0x${string}`, parsedAmount);
         return;
       }
@@ -903,6 +812,7 @@ function DepositRail({
         if (!refreshed) {
           return;
         }
+        setSubmittedDepositAmount(amount);
         deposit(vault.config.vaultAddress as `0x${string}`, parsedAmount, address as `0x${string}`);
         return;
       }
@@ -911,6 +821,7 @@ function DepositRail({
         return;
       }
 
+      setSubmittedDepositAmount(amount);
       queueDeposit(vault.config.vaultAddress as `0x${string}`, parsedAmount);
       return;
     }
@@ -920,6 +831,7 @@ function DepositRail({
       return;
     }
 
+    setSubmittedDepositAmount(amount);
     deposit(vault.config.vaultAddress as `0x${string}`, parsedAmount, address as `0x${string}`);
   }
 
@@ -1031,18 +943,24 @@ function DepositRail({
 
 function WithdrawRail({
   vault,
+  vaultId,
   cycle,
   onSuccess,
   walletConnected,
   walletAddress,
   userAuthorized,
+  customPendingRequests,
+  customClaimableRequests,
 }: {
   vault: VaultInstance;
+  vaultId: number;
   cycle: Cycle | null;
   onSuccess: () => void;
   walletConnected: boolean;
   walletAddress: string | undefined;
   userAuthorized: boolean;
+  customPendingRequests: RedemptionRequest[];
+  customClaimableRequests: RedemptionRequest[];
 }) {
   const e2eOverride =
     typeof window !== "undefined" ? window.__E2E_EFFECTIVE_CONNECTED__ : undefined;
@@ -1056,6 +974,12 @@ function WithdrawRail({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [queuePending, setQueuePending] = useState(false);
   const [claimingRequestId, setClaimingRequestId] = useState<string | null>(null);
+  const [claimingCustomRequestId, setClaimingCustomRequestId] = useState<string | null>(null);
+  const [claimingCustomSnapshot, setClaimingCustomSnapshot] = useState<{
+    requestId: string;
+    shares: string;
+    assets?: string;
+  } | null>(null);
   const [navSyncPending, setNavSyncPending] = useState(false);
 
   const parsedShares = getParsedUnits(amount, 6);
@@ -1084,12 +1008,20 @@ function WithdrawRail({
   } = useWithdrawalQueue(vault.config.vaultAddress);
   const { redeem, isPending, isConfirming, isConfirmed, hash, error, reset } = useVaultRedeem();
 
-  const activeRequest =
+  const rawQueueActiveRequest =
     queueData?.requests.find(
       (request) => request.status === "pending" || request.status === "ready",
     ) ?? null;
-  const readyRequest = activeRequest?.status === "ready" ? activeRequest : null;
-  const readyRequestShares = readyRequest ? getParsedUnits(readyRequest.shares, 6) : undefined;
+  const customClaimableRequest = customClaimableRequests[0] ?? null;
+  const customPendingRequest = customPendingRequests[0] ?? null;
+  const queueActiveRequest =
+    isCustomVault && rawQueueActiveRequest?.status === "ready" && customClaimableRequest
+      ? null
+      : rawQueueActiveRequest;
+  const readyQueueRequest = queueActiveRequest?.status === "ready" ? queueActiveRequest : null;
+  const readyRequestShares = readyQueueRequest
+    ? getParsedUnits(readyQueueRequest.shares, 6)
+    : undefined;
   const { assets: readyPreviewAssets, refetch: refetchReadyPreviewAssets } = usePreviewRedeem(
     vault.config.vaultAddress,
     readyRequestShares,
@@ -1097,17 +1029,27 @@ function WithdrawRail({
   );
 
   const readyLiveEstimatedAssets =
-    !isCustomVault && readyRequest && readyPreviewAssets !== undefined
+    readyQueueRequest && readyPreviewAssets !== undefined
       ? Number(formatUnits(readyPreviewAssets, 6))
       : Number.NaN;
   const displayedEstimatedAssets =
-    readyRequest && Number.isFinite(readyLiveEstimatedAssets)
+    readyQueueRequest && Number.isFinite(readyLiveEstimatedAssets)
       ? readyLiveEstimatedAssets
-      : activeRequest
-        ? Number.parseFloat(activeRequest.assetsEstimated)
-        : effectivePreviewAssets !== undefined
-          ? Number(formatUnits(effectivePreviewAssets, 6))
-          : 0;
+      : queueActiveRequest
+        ? Number.parseFloat(
+            (queueActiveRequest as { assetsEstimated?: string; claimableAssets?: string | null })
+              .assetsEstimated ??
+              (queueActiveRequest as { claimableAssets?: string | null }).claimableAssets ??
+              "0",
+          )
+        : customClaimableRequest?.claimableAssetsFormatted
+          ? Number.parseFloat(customClaimableRequest.claimableAssetsFormatted)
+          : effectivePreviewAssets !== undefined
+            ? Number(formatUnits(effectivePreviewAssets, 6))
+            : 0;
+  const hasBlockingRequest = Boolean(
+    queueActiveRequest || customClaimableRequest || customPendingRequest,
+  );
 
   useEffect(() => {
     if (!effectiveConnectedUI) {
@@ -1167,6 +1109,65 @@ function WithdrawRail({
   ]);
 
   useEffect(() => {
+    if (!isConfirmed || !hash || !claimingCustomRequestId || !claimingCustomSnapshot) {
+      return;
+    }
+
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        await postRecordClaimActivity(vaultId, {
+          txHash: hash,
+          requestId: claimingCustomSnapshot.requestId,
+          shares: claimingCustomSnapshot.shares,
+          assets: claimingCustomSnapshot.assets,
+        });
+
+        if (cancelled) {
+          return;
+        }
+
+        setMessage("Withdrawal claim submitted.");
+        setErrorMessage(null);
+      } catch (recordError) {
+        if (cancelled) {
+          return;
+        }
+
+        setMessage("Withdrawal claim submitted.");
+        setErrorMessage(
+          `Claim succeeded (${truncateId(hash, 12)}) but activity sync failed: ${
+            recordError instanceof Error ? recordError.message : "Unknown error"
+          }`,
+        );
+      } finally {
+        if (!cancelled) {
+          setClaimingCustomRequestId(null);
+          setClaimingCustomSnapshot(null);
+          setAmount("");
+          reset();
+          void Promise.all([refetchShares(), refetchQueue(), onSuccess()]);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    claimingCustomRequestId,
+    claimingCustomSnapshot,
+    hash,
+    isConfirmed,
+    onSuccess,
+    refetchQueue,
+    refetchShares,
+    reset,
+    vaultId,
+  ]);
+
+  useEffect(() => {
     if (error && claimingRequestId) {
       const normalized = error.message.toLowerCase();
       if (
@@ -1184,6 +1185,17 @@ function WithdrawRail({
       setClaimingRequestId(null);
     }
   }, [claimingRequestId, error]);
+
+  useEffect(() => {
+    if (!error || !claimingCustomRequestId) {
+      return;
+    }
+
+    setErrorMessage(error.message);
+    setMessage(null);
+    setClaimingCustomRequestId(null);
+    setClaimingCustomSnapshot(null);
+  }, [claimingCustomRequestId, error]);
 
   async function ensureFreshNav() {
     if (usingE2eConnectedSeam) {
@@ -1217,25 +1229,12 @@ function WithdrawRail({
     reset();
 
     try {
-      if (isCustomVault) {
-        const result = await postWithdrawalRequest(
-          formatUnits(parsedShares, 6),
-          previewAssets && previewAssets > 0n ? formatUnits(previewAssets, 6) : undefined,
-        );
-        setMessage(result.message);
-        setAmount("");
-        await Promise.all([refetchQueue(), refetchShares(), refetchReadyPreviewAssets()]);
-        onSuccess();
-        return;
-      }
-
       const refreshed = await ensureFreshNav();
       if (!refreshed) {
         return;
       }
 
-      await refetchPreviewAssets();
-      const latestPreview = previewAssets;
+      const latestPreview = await refetchPreviewAssets();
       if (latestPreview === undefined || latestPreview <= 0n) {
         setErrorMessage("Unable to estimate redeemable assets. Please try again in a few seconds.");
         return;
@@ -1244,6 +1243,7 @@ function WithdrawRail({
       const result = await postWithdrawalRequest(
         formatUnits(parsedShares, 6),
         formatUnits(latestPreview, 6),
+        vaultId,
       );
       setMessage(result.message);
       setAmount("");
@@ -1259,7 +1259,7 @@ function WithdrawRail({
   }
 
   async function handleClaimReadyWithdrawal() {
-    if (!readyRequest || !effectiveAddress || !userAuthorized) {
+    if (!readyQueueRequest || !effectiveAddress || !userAuthorized) {
       return;
     }
 
@@ -1273,21 +1273,21 @@ function WithdrawRail({
       return;
     }
 
-    let requestToClaim = readyRequest;
+    let requestToClaim = readyQueueRequest;
 
     try {
       if (isCustomVault) {
-        const preflight = await preflightWithdrawal(readyRequest.requestId);
+        const preflight = await preflightWithdrawal(readyQueueRequest.requestId);
         if (!preflight.ready) {
           setErrorMessage(
             preflight.error ?? "Withdrawal liquidity is not ready yet. Please retry.",
           );
           return;
         }
-        requestToClaim = preflight.request ?? readyRequest;
+        requestToClaim = preflight.request ?? readyQueueRequest;
       } else {
-        const prepared = await postPrepareWithdrawalRequest(readyRequest.requestId);
-        requestToClaim = prepared.request ?? readyRequest;
+        const prepared = await postPrepareWithdrawalRequest(readyQueueRequest.requestId);
+        requestToClaim = prepared.request ?? readyQueueRequest;
       }
 
       await Promise.all([refetchQueue(), refetchShares(), refetchReadyPreviewAssets()]);
@@ -1325,8 +1325,41 @@ function WithdrawRail({
     );
   }
 
+  function handleClaimCustomRequest() {
+    if (!customClaimableRequest || !effectiveAddress) {
+      return;
+    }
+
+    setClaimingCustomRequestId(customClaimableRequest.requestId);
+    setClaimingCustomSnapshot({
+      requestId: customClaimableRequest.requestId,
+      shares: customClaimableRequest.sharesFormatted,
+      assets: customClaimableRequest.claimableAssetsFormatted ?? undefined,
+    });
+    setErrorMessage(null);
+    setMessage(null);
+    reset();
+
+    try {
+      redeem(
+        vault.config.vaultAddress as `0x${string}`,
+        parseUnits(customClaimableRequest.sharesFormatted, 6),
+        effectiveAddress,
+        (customClaimableRequest.ownerAddress ||
+          customClaimableRequest.controllerAddress ||
+          effectiveAddress) as `0x${string}`,
+      );
+    } catch (claimError) {
+      setClaimingCustomRequestId(null);
+      setClaimingCustomSnapshot(null);
+      setErrorMessage(
+        claimError instanceof Error ? claimError.message : "Failed to claim withdrawal.",
+      );
+    }
+  }
+
   async function handleCancelWithdrawalRequest() {
-    if (!activeRequest) {
+    if (!queueActiveRequest) {
       return;
     }
 
@@ -1335,7 +1368,7 @@ function WithdrawRail({
     setMessage(null);
 
     try {
-      const result = await postCancelWithdrawalRequest(activeRequest.requestId);
+      const result = await postCancelWithdrawalRequest(queueActiveRequest.requestId);
       setMessage(result.message);
       setAmount("");
       setClaimingRequestId(null);
@@ -1352,24 +1385,31 @@ function WithdrawRail({
   }
 
   const requestDisabled =
-    !userAuthorized ||
     !effectiveAddress ||
+    !userAuthorized ||
     !isValidAmount ||
     parsedShares > effectiveShares ||
     queuePending ||
     navSyncPending ||
     isPending ||
     isConfirming ||
-    !!activeRequest ||
+    hasBlockingRequest ||
     effectivePreviewAssets === undefined ||
     effectivePreviewAssets <= 0n;
 
   const claimDisabled =
     !userAuthorized ||
-    !readyRequest ||
+    !readyQueueRequest ||
     !effectiveAddress ||
     queuePending ||
     navSyncPending ||
+    isPending ||
+    isConfirming;
+  const customClaimDisabled =
+    !userAuthorized ||
+    !customClaimableRequest ||
+    !effectiveAddress ||
+    queuePending ||
     isPending ||
     isConfirming;
 
@@ -1393,7 +1433,7 @@ function WithdrawRail({
         />
       </div>
 
-      {effectiveConnectedUI && !userAuthorized && !usingE2eConnectedSeam && (
+      {effectiveConnectedUI && !userAuthorized && !usingE2eConnectedSeam && !isCustomVault && (
         <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-300">
           Sign in to request a withdrawal.
         </div>
@@ -1411,7 +1451,7 @@ function WithdrawRail({
               clearWithdrawalFeedback();
               reset();
             }}
-            disabled={queuePending || isPending || isConfirming || !!activeRequest}
+            disabled={queuePending || isPending || isConfirming || hasBlockingRequest}
             className="text-xs font-medium uppercase tracking-[0.18em] text-cyan-200 transition-colors hover:text-white disabled:opacity-40"
           >
             Max
@@ -1429,7 +1469,7 @@ function WithdrawRail({
             clearWithdrawalFeedback();
             reset();
           }}
-          disabled={queuePending || isPending || isConfirming || !!activeRequest}
+          disabled={queuePending || isPending || isConfirming || hasBlockingRequest}
           className="h-14 rounded-2xl border-white/10 bg-white/5 px-4 font-mono text-lg text-white placeholder:text-slate-500"
         />
       </div>
@@ -1442,7 +1482,7 @@ function WithdrawRail({
         />
       </div>
 
-      {!activeRequest &&
+      {!hasBlockingRequest &&
         effectivePreviewAssets !== undefined &&
         parsedShares &&
         parsedShares > 0n && (
@@ -1461,20 +1501,30 @@ function WithdrawRail({
       >
         {queuePending
           ? "Submitting..."
-          : navSyncPending
-            ? "Refreshing NAV..."
-            : isBlockedMode
-              ? "Withdrawal blocked"
-              : "Request withdrawal"}
+          : !userAuthorized
+            ? "Sign in to request"
+            : navSyncPending
+              ? "Refreshing NAV..."
+              : isBlockedMode
+                ? "Withdrawal blocked"
+                : "Request withdrawal"}
       </Button>
 
-      {activeRequest && (
+      {walletConnected && !userAuthorized && (
+        <p className="text-xs leading-6 text-amber-200/90">
+          Sign in with Ethereum first so the withdrawal request can be recorded and tracked.
+        </p>
+      )}
+
+      {queueActiveRequest && (
         <div className="space-y-3 rounded-[24px] border border-amber-400/20 bg-amber-400/10 p-4 text-amber-50">
           <p className="text-sm font-medium">
-            {readyRequest ? "Claim is ready" : `Withdrawal ${activeRequest.requestId} is queued`}
+            {readyQueueRequest
+              ? "Claim is ready"
+              : `Withdrawal ${queueActiveRequest.requestId} is queued`}
           </p>
           <p className="text-xs leading-6 text-amber-50/90">
-            {readyRequest
+            {readyQueueRequest
               ? "Settlement is complete. Sign the claim transaction to receive USDC.e."
               : "Your exit request is queued. You can leave it in queue or cancel it before claiming."}
           </p>
@@ -1482,11 +1532,11 @@ function WithdrawRail({
             Estimated payout: {formatCurrency(displayedEstimatedAssets || 0)}
           </p>
           <p className="text-xs leading-6 text-amber-50/90">
-            Requested: {formatDate(activeRequest.createdAt)}
+            Requested: {formatDate(queueActiveRequest.requestedAt)}
           </p>
 
           <div className="grid gap-2 sm:grid-cols-2">
-            {readyRequest && (
+            {readyQueueRequest && (
               <Button
                 type="button"
                 onClick={() => {
@@ -1498,7 +1548,7 @@ function WithdrawRail({
                 Claim withdrawal
               </Button>
             )}
-            {!readyRequest && (
+            {!readyQueueRequest && (
               <Button
                 type="button"
                 variant="outline"
@@ -1512,6 +1562,51 @@ function WithdrawRail({
               </Button>
             )}
           </div>
+        </div>
+      )}
+
+      {customClaimableRequest && (
+        <div className="space-y-3 rounded-[24px] border border-emerald-400/20 bg-emerald-400/10 p-4 text-emerald-50">
+          <p className="text-sm font-medium">
+            {customClaimableRequest.requestKind === "controller_claimable"
+              ? "Claimable balance is ready"
+              : "Claim is ready"}
+          </p>
+          <p className="text-xs leading-6 text-emerald-50/90">
+            {customClaimableRequest.requestKind === "controller_claimable"
+              ? "Flat-book vaults keep one aggregated claimable balance per wallet. This amount can include older settled withdrawals, so it is not tied to a single request row."
+              : "This withdrawal was already settled on-chain. Claiming it is a separate action and does not happen automatically."}
+          </p>
+          <p className="text-xs leading-6 text-emerald-50/90">
+            Claimable now:{" "}
+            {formatCurrency(Number(customClaimableRequest.claimableAssetsFormatted ?? "0"))}
+          </p>
+          {customClaimableRequest.requestKind !== "controller_claimable" && (
+            <p className="text-xs leading-6 text-emerald-50/90">
+              Requested: {formatDate(customClaimableRequest.createdAt)}
+            </p>
+          )}
+          <Button
+            type="button"
+            onClick={handleClaimCustomRequest}
+            disabled={customClaimDisabled || !customClaimableRequest.claimableAssetsFormatted}
+            className="h-11 rounded-2xl bg-emerald-300 text-slate-950 hover:bg-emerald-200"
+          >
+            {isPending || isConfirming ? "Claiming..." : "Claim withdrawal"}
+          </Button>
+        </div>
+      )}
+
+      {!queueActiveRequest && !customClaimableRequest && customPendingRequest && (
+        <div className="space-y-3 rounded-[24px] border border-amber-400/20 bg-amber-400/10 p-4 text-amber-50">
+          <p className="text-sm font-medium">Withdrawal is queued</p>
+          <p className="text-xs leading-6 text-amber-50/90">
+            An older on-chain withdrawal request is already pending settlement. It will remain
+            visible here and in activity until it becomes claimable.
+          </p>
+          <p className="text-xs leading-6 text-amber-50/90">
+            Requested: {formatDate(customPendingRequest.createdAt)}
+          </p>
         </div>
       )}
 
@@ -1600,19 +1695,29 @@ export default function VaultDetailPage() {
     data: navHistoryData,
     isLoading: navHistoryLoading,
     refetch: refetchNavHistory,
-  } = useVaultNavHistory(60, vault?.id);
+  } = useVaultNavHistory(undefined, vault?.id);
   const {
     cycle,
     isLoading: cycleLoading,
     error: cycleError,
     refetch: refetchCycleStatus,
   } = useCycleStatus(vault?.id);
-  const { queueStatus } = useDepositQueue(vault?.id, userAuthorized);
   const {
     pendingRequests,
     claimableRequests,
     isLoading: requestsLoading,
   } = useRequests(vault?.id, userAuthorized);
+  const {
+    data: vaultEventsData,
+    isLoading: vaultEventsLoading,
+    error: vaultEventsError,
+  } = useVaultEvents(vault?.id, 50);
+  const { data: tradingAnalyticsData } = useVaultTradingAnalytics(vault?.id);
+  const {
+    data: userHistoryData,
+    isLoading: userHistoryLoading,
+    error: userHistoryError,
+  } = useUserVaultHistory(vault?.id, userAuthorized, address, 100);
   const { shares: redemptionUserShares } = useVaultShares(
     vault?.config.vaultAddress,
     address,
@@ -1624,7 +1729,7 @@ export default function VaultDetailPage() {
   };
 
   const performance = useMemo(
-    () => derivePerformanceStats(navHistoryData?.snapshots ?? []),
+    () => deriveVaultPerformanceStats(navHistoryData?.snapshots ?? []),
     [navHistoryData?.snapshots],
   );
 
@@ -1638,27 +1743,15 @@ export default function VaultDetailPage() {
       ]
     : [];
 
-  const vaultActivity = useMemo(() => {
-    if (!vault) {
-      return [];
-    }
+  const vaultActivity = useMemo(
+    () => mapFeedItemsToTimeline(vaultEventsData?.items ?? []),
+    [vaultEventsData?.items],
+  );
 
-    const activeWithdrawal =
-      pendingRequests.find((request) => request.status === "pending") ??
-      claimableRequests.find((request) => request.status === "claimable") ??
-      null;
-    const readyWithdrawal = claimableRequests[0] ?? null;
-
-    return buildVaultActivity(
-      vault,
-      status,
-      cycle,
-      queueStatus,
-      activeWithdrawal,
-      readyWithdrawal,
-      userAuthorized,
-    );
-  }, [claimableRequests, cycle, pendingRequests, queueStatus, status, userAuthorized, vault]);
+  const userActivity = useMemo(
+    () => mapFeedItemsToTimeline(userHistoryData?.items ?? []),
+    [userHistoryData?.items],
+  );
 
   const strategyActivity = useMemo(() => {
     if (!vault) {
@@ -1694,16 +1787,10 @@ export default function VaultDetailPage() {
 
   const heroMetrics = [
     {
-      label: "APY / Net return",
-      value:
-        performance.annualized !== null
-          ? formatPercent(performance.annualized)
-          : formatPercent(performance.sinceInception),
-      hint:
-        performance.annualized !== null
-          ? `Annualized from ${performance.daysCovered.toFixed(0)} days of NAV history`
-          : `Net return ${formatPercent(performance.sinceInception)} since inception`,
-      tooltip: "Annualized return appears once enough NAV history exists.",
+      label: "APY",
+      value: "--",
+      hint: "Exact APY is not published yet.",
+      tooltip: "APY will appear once a canonical vault APY source is available.",
     },
     {
       label: "NAV",
@@ -1880,12 +1967,16 @@ export default function VaultDetailPage() {
                     <PerformanceTile
                       label="Win rate"
                       value={
-                        performance.winRate !== null
-                          ? `${(performance.winRate * 100).toFixed(1)}%`
+                        tradingAnalyticsData?.analytics
+                          ? `${(tradingAnalyticsData.analytics.winRate * 100).toFixed(1)}%`
                           : "--"
                       }
                       tone="neutral"
-                      tooltip="Win rate will appear when realized outcome reporting is available."
+                      tooltip={
+                        tradingAnalyticsData?.analytics
+                          ? `Resolved-position win rate based on ${tradingAnalyticsData.analytics.positionCount} settled positions. Last refreshed ${formatDate(tradingAnalyticsData.analytics.computedAt)}.`
+                          : "Resolved-position win rate for this vault."
+                      }
                     />
                   </div>
                 </div>
@@ -2043,7 +2134,15 @@ export default function VaultDetailPage() {
                     </TabsTrigger>
                   </TabsList>
                   <TabsContent value="vault">
-                    <ActivityTimeline items={vaultActivity} />
+                    {vaultEventsLoading ? (
+                      <Skeleton className="h-40 w-full rounded-[22px] bg-white/10" />
+                    ) : vaultEventsError ? (
+                      <div className="rounded-[22px] border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-rose-100">
+                        {vaultEventsError}
+                      </div>
+                    ) : (
+                      <ActivityTimeline items={vaultActivity} emptyState="No vault activity yet." />
+                    )}
                   </TabsContent>
                   <TabsContent value="strategy">
                     <ActivityTimeline
@@ -2052,6 +2151,24 @@ export default function VaultDetailPage() {
                     />
                   </TabsContent>
                 </Tabs>
+              </SectionShell>
+
+              <SectionShell title="Your activity">
+                {userAuthorized ? (
+                  userHistoryLoading ? (
+                    <Skeleton className="h-40 w-full rounded-[22px] bg-white/10" />
+                  ) : userHistoryError ? (
+                    <div className="rounded-[22px] border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-rose-100">
+                      {userHistoryError}
+                    </div>
+                  ) : (
+                    <ActivityTimeline items={userActivity} emptyState="No account activity yet." />
+                  )
+                ) : (
+                  <div className="rounded-[22px] border border-white/10 bg-slate-950/30 p-5 text-sm text-slate-400">
+                    Sign in to view your deposit, withdrawal, and claim history.
+                  </div>
+                )}
               </SectionShell>
 
               {vault.type !== "custom" && (
@@ -2117,6 +2234,8 @@ export default function VaultDetailPage() {
                     cycle={cycle}
                     nav={status?.nav ?? null}
                     walletConnected={walletConnected}
+                    userAuthorized={userAuthorized}
+                    vaultId={vault.id}
                     onSuccess={() => {
                       void refreshAll();
                     }}
@@ -2128,10 +2247,13 @@ export default function VaultDetailPage() {
                   {vault.type === "custom" ? (
                     <WithdrawRail
                       vault={vault}
+                      vaultId={vault.id}
                       cycle={cycle}
                       walletConnected={walletConnected}
                       walletAddress={address}
                       userAuthorized={userAuthorized}
+                      customPendingRequests={pendingRequests}
+                      customClaimableRequests={claimableRequests}
                       onSuccess={() => {
                         void refreshAll();
                       }}

@@ -41,12 +41,12 @@ export class NavCalculator {
     return results[0]!;
   }
 
-  async getNavHistory(limit: number = 24) {
-    return this.database
+  async getNavHistory(limit?: number) {
+    const query = this.database
       .select()
       .from(vaultNavHistory)
-      .orderBy(desc(vaultNavHistory.timestamp))
-      .limit(limit);
+      .orderBy(desc(vaultNavHistory.timestamp));
+    return limit !== undefined ? query.limit(limit) : query;
   }
 
   getSharePrice(totalAssets: number, totalShares: number): number {

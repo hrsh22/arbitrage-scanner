@@ -150,6 +150,56 @@ export interface VaultAllocationsResponse {
   total: number;
 }
 
+export interface VaultTradingAnalytics {
+  vaultAddress: string;
+  positionCount: number;
+  winCount: number;
+  lossCount: number;
+  winRate: number;
+  totalPnl: number;
+  avgPnlPerPosition: number;
+  lastResolvedAt: string | null;
+  computedAt: string;
+}
+
+export interface VaultTradingAnalyticsResponse {
+  vaultId: number;
+  vaultSlug: string;
+  vaultName: string;
+  analytics: VaultTradingAnalytics;
+}
+
+export interface VaultActivityFeedItem {
+  id: string;
+  type: string;
+  scope: "vault" | "user";
+  title: string;
+  detail: string;
+  occurredAt: string;
+  status?: string;
+  cycleId?: number;
+  requestId?: string;
+  txHash?: string | null;
+  amounts?: {
+    assets?: string;
+    shares?: string;
+  };
+  metadata?: Record<string, unknown>;
+}
+
+export interface VaultEventsResponse {
+  success: boolean;
+  vaultId: number;
+  items: VaultActivityFeedItem[];
+}
+
+export interface UserVaultHistoryResponse {
+  success: boolean;
+  vaultId: number;
+  userAddress: string;
+  items: VaultActivityFeedItem[];
+}
+
 export type WithdrawalRequestStatus = "pending" | "ready" | "completed" | "cancelled";
 
 export interface WithdrawalRequest {
@@ -272,6 +322,7 @@ export type BatchLifecycleState =
 export interface RedemptionRequest {
   id: string;
   requestId: string;
+  requestKind?: "request" | "controller_pending" | "controller_claimable";
   batchId?: number;
   cycleId?: number;
   shares: string;

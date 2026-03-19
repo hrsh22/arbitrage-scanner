@@ -29,6 +29,8 @@ const TABLES_TO_DROP = [
   "epochs",
   "nav_snapshots",
   "withdrawal_requests",
+  "user_vault_activity_events",
+  "vault_lifecycle_events",
   // Legacy vault tables
   "vault_trades",
   "vault_allocations",

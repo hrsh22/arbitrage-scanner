@@ -44,6 +44,28 @@ vi.mock("../repositories/payoutRepository.js", () => ({
   },
 }));
 
+const { mockAppendUserVaultActivityEvent, mockGetRequestsByUser, mockMarkCompletedIdempotent } =
+  vi.hoisted(() => ({
+    mockAppendUserVaultActivityEvent: vi.fn().mockResolvedValue(undefined),
+    mockGetRequestsByUser: vi.fn().mockResolvedValue([]),
+    mockMarkCompletedIdempotent: vi.fn().mockResolvedValue({ success: true }),
+  }));
+
+vi.mock("../repositories/activityEventRepository.js", () => ({
+  activityEventRepository: {
+    appendUserVaultActivityEvent: mockAppendUserVaultActivityEvent,
+    listUserVaultActivityEvents: vi.fn().mockResolvedValue([]),
+    listVaultLifecycleEvents: vi.fn().mockResolvedValue([]),
+  },
+}));
+
+vi.mock("../repositories/withdrawalRepository.js", () => ({
+  withdrawalRepository: {
+    getRequestsByUser: mockGetRequestsByUser,
+    markCompletedIdempotent: mockMarkCompletedIdempotent,
+  },
+}));
+
 type MockResponse = Response & { statusCode?: number; payload?: unknown };
 
 function createMockResponse(): MockResponse {
@@ -88,6 +110,8 @@ describe("Custom Vault Routes", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetRequestsByUser.mockResolvedValue([]);
+    mockMarkCompletedIdempotent.mockResolvedValue({ success: true });
 
     const mockClient = {
       getCurrentBatch: vi.fn().mockResolvedValue(10n),
@@ -102,6 +126,9 @@ describe("Custom Vault Routes", () => {
 
     mockProvider = {
       providerType: "custom",
+      config: {
+        vaultAddress: userAddress,
+      },
       getVaultInfo: vi.fn().mockResolvedValue({
         vaultId: 1,
         vaultAddress: userAddress,
@@ -359,5 +386,34 @@ describe("Custom Vault Routes", () => {
       batchId: 10,
       cycleId: 10,
     });
+  });
+
+  it("records direct wallet claim activity for custom vault claims", async () => {
+    const handler = getRouteHandler("/:vaultId/activity/claim", "post");
+    const req = {
+      params: { vaultId: "1" },
+      body: {
+        txHash: "0xabc",
+        requestId: "claimable-0x1234567890123456789012345678901234567890",
+        shares: "1.000000",
+        assets: "1.000000",
+      },
+      session: { address: userAddress },
+    } as unknown as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(res.status).not.toHaveBeenCalled();
+    expect(mockAppendUserVaultActivityEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "claim_completed",
+        txHash: "0xabc",
+        requestId: "claimable-0x1234567890123456789012345678901234567890",
+        assetAmount: "1.000000",
+        shareAmount: "1.000000",
+      }),
+    );
+    expect(res.payload).toMatchObject({ success: true });
   });
 });

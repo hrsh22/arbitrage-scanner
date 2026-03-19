@@ -34,6 +34,7 @@ import { FlatnessDetector, type FlatnessCheckResult } from "./flatnessDetector.j
 import { createLiquidityManager } from "./liquidityManager.js";
 import type { FlatBookLifecycleDecision } from "./liquidityManager.js";
 import { SafeWalletService } from "./safeWallet.js";
+import { activityEventRepository } from "../repositories/activityEventRepository.js";
 import { withdrawalRepository } from "../repositories/withdrawalRepository.js";
 
 // Default NAV staleness threshold: 6 hours in seconds
@@ -52,16 +53,6 @@ interface RoleKeyConfig {
   safeOperatorKey?: string;
 }
 
-/**
- * Map contract redemption status to domain request status
- *
- * ClosedBookBatchVault Lifecycle Semantics (requestId-based):
- * - Pending (0): Request submitted, waiting for batch cutoff
- * - Escrowed (1): Shares escrowed, waiting for settlement
- * - Claimable (2): Settlement complete, ready to claim
- * - Claimed (3): Assets claimed
- * - Cancelled (4): Request was cancelled
- */
 function mapContractStatusToDomain(status: number): RedemptionRequest["status"] {
   const statusMap: RedemptionRequest["status"][] = [
     "pending",
@@ -73,11 +64,6 @@ function mapContractStatusToDomain(status: number): RedemptionRequest["status"] 
   return statusMap[status] ?? "pending";
 }
 
-/**
- * Custom Vault Provider
- *
- * Manages interactions with the ClosedBookBatchVault contract.
- */
 export class CustomVaultProvider implements IVaultProvider {
   readonly providerType: VaultProviderType = "custom";
   readonly config: VaultProviderConfig;
@@ -109,6 +95,12 @@ export class CustomVaultProvider implements IVaultProvider {
     const vaultConfig = getVaultConfig(config.vaultId);
     if (!vaultConfig) {
       throw new Error(`CustomVaultProvider: vault config ${config.vaultId} not found`);
+    }
+    const contractType = vaultConfig.vaultContractType ?? "flatBookVaultV2";
+    if (contractType !== "flatBookVaultV2") {
+      throw new Error(
+        `CustomVaultProvider: expected vaultContractType flatBookVaultV2, got ${vaultConfig.vaultContractType ?? "undefined"}`,
+      );
     }
     this.vaultConfig = vaultConfig;
     const resolvedKeys: RoleKeyConfig =
@@ -209,7 +201,6 @@ export class CustomVaultProvider implements IVaultProvider {
           nextBatchExists: !!nextBatch,
           batchDurationSeconds: null,
         },
-        // CLOSED-BOOK: No estimatedSettlementTime (depends on when batch is sealed)
         navLastUpdated,
         navIsStale,
       };
@@ -234,19 +225,6 @@ export class CustomVaultProvider implements IVaultProvider {
     return decision as FlatBookLifecycleDecision;
   }
 
-  /**
-   * Get batch status with closed-book lifecycle fields
-   *
-   * Exposes:
-   * - active batch id, next batch id
-   * - batch state (open/cutoff/flattening/settling/settled/closed/reopen)
-   * - cutoff time
-   * - flattening blockers (if applicable)
-   * - settlement status and progress
-   * - locked clearing price (only after flatten)
-   * - claimable redemptions count
-   * - minted deposits (processed deposits)
-   */
   async getBatchStatus(batchId?: number): Promise<BatchStatus> {
     const contractBatchId = BigInt(batchId ?? (await this.client.getCurrentBatch()));
     logger.debug("CustomVaultProvider.getBatchStatus", {
@@ -289,7 +267,6 @@ export class CustomVaultProvider implements IVaultProvider {
       endTime: new Date(Number(batch.endTime) * 1000),
       cutoffTime: batch.cutoffTime > 0n ? new Date(Number(batch.cutoffTime) * 1000) : undefined,
       isPriceLocked: batch.isPriceLocked,
-      // CLOSED-BOOK: Only expose lockedClearingPrice after flatten (price lock)
       lockedClearingPrice: batch.isPriceLocked ? batch.lockedClearingPrice.toString() : undefined,
       settlementProgress,
       totalSharesPending: batch.totalSharesPending,
@@ -298,7 +275,6 @@ export class CustomVaultProvider implements IVaultProvider {
       proRataRatio: proRataFactor,
       totalQueuedDeposits: batch.totalQueuedDeposits,
       claimableRedemptions,
-      // Approximate: would need to query deposit request count
       mintedDeposits: 0,
     };
   }
@@ -335,8 +311,6 @@ export class CustomVaultProvider implements IVaultProvider {
     const request = this.mapRedemptionDataToRequest(redemptionData);
     const claimable = redemptionData.status === "claimable" && redemptionData.assetsClaimable > 0n;
 
-    // CLOSED-BOOK: No estimated settlement time (depends on batch sealing and settlement)
-    // Return undefined as settlement is not time-based
     const estimatedSettlementTime = undefined;
 
     return {
@@ -352,19 +326,42 @@ export class CustomVaultProvider implements IVaultProvider {
       userAddress,
     });
 
-    const requestIds = await this.client.getControllerRequestIds(userAddress);
-    if (requestIds.length === 0) {
-      return [];
+    const state = await this.client.getControllerRedemptionState(userAddress);
+    const requests: RedemptionRequest[] = [];
+
+    if (state.pendingShares > 0n) {
+      requests.push({
+        requestId: `pending-${state.currentCycle.toString()}-${userAddress.toLowerCase()}`,
+        vaultId: this.config.vaultId,
+        userAddress,
+        controller: userAddress,
+        owner: userAddress,
+        batchId: Number(state.currentCycle),
+        shares: state.pendingShares,
+        assetsEstimated: 0n,
+        status: "pending",
+        createdAt: new Date(0),
+      });
     }
 
-    const requests = await Promise.all(
-      requestIds.map(async (requestId) => this.client.getRedemptionRequest(requestId)),
-    );
+    if (state.claimableShares > 0n || state.claimableAssets > 0n) {
+      requests.push({
+        requestId: `claimable-${userAddress.toLowerCase()}`,
+        vaultId: this.config.vaultId,
+        userAddress,
+        controller: userAddress,
+        owner: userAddress,
+        batchId: Math.max(Number(state.currentCycle) - 1, 0),
+        shares: state.claimableShares,
+        assetsEstimated: state.claimableAssets,
+        assetsActual: state.claimableAssets,
+        status: "claimable",
+        createdAt: new Date(0),
+        settledAt: new Date(0),
+      });
+    }
 
-    return requests
-      .filter((request): request is RedemptionRequestData => request !== null)
-      .map((request) => this.mapRedemptionDataToRequest(request))
-      .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
+    return requests.sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
   }
 
   async getUserRedemptionState(userAddress: Address): Promise<UserRedemptionState> {
@@ -462,8 +459,6 @@ export class CustomVaultProvider implements IVaultProvider {
     const currentBatchId = Number(await this.client.getCurrentBatch());
     const assetsEstimated = 0n;
 
-    // Note: Actual requestRedeem requires a wallet client
-    // The contract will return a unique requestId (not controller-aggregated)
     logger.info("CustomVaultProvider: Redemption request parameters prepared", {
       vaultId: this.config.vaultId,
       userAddress,
@@ -869,6 +864,16 @@ export class CustomVaultProvider implements IVaultProvider {
         previousBatchId: targetBatchId,
       });
 
+      void activityEventRepository.appendVaultLifecycleEvent({
+        vaultId: this.config.vaultId,
+        vaultAddress: this.config.vaultAddress,
+        eventType: "cycle_reopened",
+        title: "Cycle reopened",
+        detail: "A new cycle is ready for vault actions.",
+        cycleId: targetBatchId + 1,
+        txHash: reopenResult.txHash,
+      });
+
       return { success: true, txHash: reopenResult.txHash };
     };
 
@@ -971,6 +976,16 @@ export class CustomVaultProvider implements IVaultProvider {
         batchId: targetBatchId,
       });
 
+      void activityEventRepository.appendVaultLifecycleEvent({
+        vaultId: this.config.vaultId,
+        vaultAddress: this.config.vaultAddress,
+        eventType: "processing_started",
+        title: "Processing started",
+        detail: "The current cycle moved into processing.",
+        cycleId: targetBatchId,
+        txHash: flattenTxHash,
+      });
+
       const nextBatch = await this.client.getBatch(BigInt(targetBatchId + 1));
       if ((nextBatch?.totalQueuedDeposits ?? 0n) > 0n) {
         const processResult = await this.processCurrentDepositQueue(targetBatchId + 1);
@@ -1062,6 +1077,16 @@ export class CustomVaultProvider implements IVaultProvider {
       logger.info("CustomVaultProvider: Batch settled successfully", {
         txHash: settleTxHash,
         batchId: targetBatchId,
+      });
+
+      void activityEventRepository.appendVaultLifecycleEvent({
+        vaultId: this.config.vaultId,
+        vaultAddress: this.config.vaultAddress,
+        eventType: "settlement_completed",
+        title: "Settlement completed",
+        detail: "Queued withdrawals finished settlement for the current cycle.",
+        cycleId: targetBatchId,
+        txHash: settleTxHash,
       });
 
       // Refresh batch data
@@ -1161,6 +1186,16 @@ export class CustomVaultProvider implements IVaultProvider {
         error: `closeBook transaction failed to confirm: ${confirmResult.error}`,
       };
     }
+
+    void activityEventRepository.appendVaultLifecycleEvent({
+      vaultId: this.config.vaultId,
+      vaultAddress: this.config.vaultAddress,
+      eventType: "book_closed",
+      title: "Book closed",
+      detail: "Direct actions paused and the vault moved into queued processing.",
+      cycleId: Number(currentBatchId),
+      txHash: closeResult.txHash,
+    });
 
     return {
       success: true,
@@ -1767,6 +1802,16 @@ export class CustomVaultProvider implements IVaultProvider {
         error: `Deposit queue transaction failed to confirm: ${confirmResult.error}`,
       };
     }
+
+    void activityEventRepository.appendVaultLifecycleEvent({
+      vaultId: this.config.vaultId,
+      vaultAddress: this.config.vaultAddress,
+      eventType: "deposit_queue_processed",
+      title: "Deposit queue processed",
+      detail: "Queued deposits were processed for the next cycle.",
+      cycleId: batchId,
+      txHash: result.txHash,
+    });
 
     return result;
   }

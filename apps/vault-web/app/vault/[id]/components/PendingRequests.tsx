@@ -111,7 +111,9 @@ function PendingRequestCard({
         <div className="flex items-center gap-2">
           <Hash className="h-4 w-4 text-amber-200" aria-hidden="true" />
           <span className="text-sm font-mono font-medium text-amber-50" data-testid="request-id">
-            {request.requestId.slice(0, 8)}...{request.requestId.slice(-4)}
+            {request.requestKind === "controller_pending"
+              ? "current queue"
+              : `${request.requestId.slice(0, 8)}...${request.requestId.slice(-4)}`}
           </span>
           <Badge
             variant="outline"
@@ -120,7 +122,11 @@ function PendingRequestCard({
             In progress
           </Badge>
         </div>
-        <span className="text-xs text-amber-50/70">{formatDateTime(request.createdAt)}</span>
+        <span className="text-xs text-amber-50/70">
+          {request.requestKind === "controller_pending"
+            ? "Current cycle"
+            : formatDateTime(request.createdAt)}
+        </span>
       </div>
 
       <div className="grid grid-cols-2 gap-4">

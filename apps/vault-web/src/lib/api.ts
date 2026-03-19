@@ -12,6 +12,8 @@ import type {
   VaultPositionHistoryResponse,
   VaultNavHistoryResponse,
   VaultAllocationsResponse,
+  VaultEventsResponse,
+  VaultTradingAnalyticsResponse,
   WithdrawalQueueResponse,
   WithdrawalPreflightResponse,
   WithdrawalRequestCreateResponse,
@@ -31,6 +33,7 @@ import type {
   DepositQueueResponse,
   TrancheStatusResponse,
   CarryEligibilityResponse,
+  UserVaultHistoryResponse,
 } from "../types.js";
 
 const makeUrl = (path: string, qs?: string) => `${API_BASE_URL}${path}${qs ? `?${qs}` : ""}`;
@@ -109,13 +112,40 @@ export async function fetchVaultAllocations(limit?: number): Promise<VaultAlloca
   return fetchWithAuth(makeUrl(`${VAULT_API_PREFIX}/allocations`, qs));
 }
 
+export async function fetchVaultTradingAnalytics(
+  vaultId: number,
+): Promise<VaultTradingAnalyticsResponse> {
+  return fetchWithAuth(makeUrl(`${VAULT_API_PREFIX}/${vaultId}/trading-analytics`));
+}
+
+export async function fetchVaultEvents(
+  vaultId: number,
+  limit?: number,
+): Promise<VaultEventsResponse> {
+  const qs = buildQuery({ limit });
+  return fetchWithAuth(makeUrl(`${CUSTOM_VAULT_API_PREFIX}/${vaultId}/events`, qs));
+}
+
+export async function fetchUserVaultHistory(
+  vaultId: number,
+  limit?: number,
+): Promise<UserVaultHistoryResponse> {
+  const qs = buildQuery({ limit });
+  return fetchWithAuth(makeUrl(`${CUSTOM_VAULT_API_PREFIX}/${vaultId}/history`, qs));
+}
+
 export async function postWithdrawalRequest(
   shares: string,
   assetsEstimated?: string,
+  vaultId?: number,
 ): Promise<WithdrawalRequestCreateResponse> {
   return fetchWithAuth(makeUrl(`${VAULT_API_PREFIX}/withdrawal-request`), {
     method: "POST",
-    body: JSON.stringify({ shares, ...(assetsEstimated ? { assetsEstimated } : {}) }),
+    body: JSON.stringify({
+      shares,
+      ...(assetsEstimated ? { assetsEstimated } : {}),
+      ...(vaultId !== undefined ? { vaultId } : {}),
+    }),
   });
 }
 
@@ -280,6 +310,36 @@ export async function postClaimRedemption(
       method: "POST",
     },
   );
+}
+
+export async function postRecordDepositActivity(
+  vaultId: number,
+  input: {
+    txHash?: string;
+    assets?: string;
+    shares?: string;
+    mode: "queued" | "minted";
+  },
+): Promise<{ success: boolean }> {
+  return fetchWithAuth(makeUrl(`${CUSTOM_VAULT_API_PREFIX}/${vaultId}/activity/deposit`), {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function postRecordClaimActivity(
+  vaultId: number,
+  input: {
+    txHash: string;
+    assets?: string;
+    shares?: string;
+    requestId?: string;
+  },
+): Promise<{ success: boolean; requestId?: string | null }> {
+  return fetchWithAuth(makeUrl(`${CUSTOM_VAULT_API_PREFIX}/${vaultId}/activity/claim`), {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 /**
