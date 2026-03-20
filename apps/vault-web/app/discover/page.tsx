@@ -3,9 +3,9 @@ import type { Metadata } from "next";
 import VaultsPageClient from "../vaults-page-client";
 
 export const metadata: Metadata = {
-  title: "Vault Overview | Polymarket Vault",
+  title: "Discover Vaults | Polymarket Vault",
   description:
-    "Track vault size, share price, and cycle status across the Polymarket vault dashboard.",
+    "Compare live vault mandates, current access state, NAV, and tracked capital before opening a vault workspace.",
 };
 
 export default function Page() {

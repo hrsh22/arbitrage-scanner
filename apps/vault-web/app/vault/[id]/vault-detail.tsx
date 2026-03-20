@@ -16,6 +16,14 @@ import {
   CardHeader,
   CardTitle,
 } from "@workspace/ui/components/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@workspace/ui/components/dialog";
 import { Input } from "@workspace/ui/components/input";
 import { Skeleton } from "@workspace/ui/components/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@workspace/ui/components/tabs";
@@ -212,75 +220,124 @@ function getFeeLabel(vault: VaultInstance): string {
   return `${vault.profile.fees.management}% management / ${vault.profile.fees.performance}% performance`;
 }
 
-function getDepositStatusLabel(vault: VaultInstance, cycle: Cycle | null): string {
-  if (!vault.enabled) {
+function getDepositActionLabel(vault: VaultInstance, cycle: Cycle | null): string {
+  if (!vault.enabled || cycle?.executionMode === "blocked") {
     return "Paused";
   }
 
-  if (cycle?.executionMode === "blocked") {
+  if (vault.type === "custom" && cycle?.executionMode === "queued") {
+    return "Join next cycle";
+  }
+
+  return "Open now";
+}
+
+function getHeroStateLabel(vault: VaultInstance, cycle: Cycle | null): string {
+  if (!vault.enabled || cycle?.executionMode === "blocked") {
     return "Paused";
+  }
+
+  if (cycle?.batchState === "flattening" || cycle?.batchState === "settling") {
+    return "Processing";
+  }
+
+  if (vault.type === "custom" && cycle?.executionMode === "queued") {
+    return "Queue only";
   }
 
   return "Open";
 }
 
-function getCycleNote(
-  vault: VaultInstance,
-  cycle: Cycle | null,
-): { label: string; detail: string } | null {
-  if (!cycle) {
-    return null;
-  }
-
-  if (!vault.enabled || cycle.executionMode === "blocked") {
-    return {
-      label: "Blocked",
-      detail: "New actions unavailable.",
-    };
-  }
-
-  if (cycle.batchState === "open" && cycle.executionMode === "instant") {
-    return {
-      label: "Open",
-      detail: "Direct actions enabled.",
-    };
-  }
-
-  if (
-    cycle.batchState === "open" ||
-    cycle.batchState === "closed" ||
-    cycle.batchState === "cutoff"
-  ) {
-    return {
-      label: "Queue only",
-      detail: "Requests enter queue.",
-    };
-  }
-
-  if (cycle.batchState === "flattening" || cycle.batchState === "settling") {
-    return {
-      label: "Processing",
-      detail: "Queued requests processing.",
-    };
-  }
-
-  return {
-    label: "Cycle active",
-    detail: "Lifecycle state available.",
-  };
+function getHeroSentence(vault: VaultInstance): string {
+  const managementLabel = vault.type === "custom" ? "Agent-managed" : "Vault-managed";
+  return `${managementLabel} ${vault.profile.strategyLabel} vault running a ${vault.profile.riskLevel}-risk strategy on Polymarket.`;
 }
 
-function buildStrategyActivity(
-  vault: VaultInstance,
-  status: VaultStatusResponse | null,
-  cycle: Cycle | null,
-  performance: DerivedVaultPerformanceStats,
-): ActivityItem[] {
-  void vault;
-  void status;
-  void cycle;
-  void performance;
-  return [];
+function getManagementLabel(vault: VaultInstance): string {
+  return vault.type === "custom" ? "Agent mandate" : "Vault mandate";
+}
+
+function getInfraLabel(vault: VaultInstance): string {
+  return vault.type === "custom" ? "Custom vault rails" : "Standard vault rails";
+}
+
+function getStyleLabel(vault: VaultInstance): string {
+  return vault.type === "custom" ? "Cycle-based execution" : "Share-based execution";
+}
+
+function getRiskScore(level: VaultInstance["profile"]["riskLevel"]): string {
+  switch (level) {
+    case "low":
+      return "3.4 / 10";
+    case "medium":
+      return "5.9 / 10";
+    case "high":
+      return "8.2 / 10";
+    default:
+      return "--";
+  }
+}
+
+function getRiskSummary(vault: VaultInstance, cycle: Cycle | null): string {
+  return `${toTitleCase(vault.profile.riskLevel)}-risk strategy with ${getLiquidityLabel(vault, cycle).toLowerCase()} and no principal protection.`;
+}
+
+const MEANINGFUL_ACTIVITY_TYPES = new Set([
+  "cycle_opened",
+  "cycle_reopened",
+  "vault_reopened",
+  "vault_paused",
+  "book_closed",
+  "close_book",
+  "processing_started",
+  "begin_processing",
+  "process_deposits_chunk",
+  "deposit_queue_processed",
+  "process_redeems_chunk",
+  "withdraw_ready",
+  "withdraw_settled",
+  "claim_window_opened",
+  "strategy_update_posted",
+  "mandate_changed",
+  "fee_changed",
+  "fee_change",
+  "processing_completed",
+  "finalize_processing",
+]);
+
+function isMeaningfulActivity(item: VaultActivityFeedItem): boolean {
+  const normalizedType = item.type.toLowerCase();
+  if (normalizedType.includes("nav") || normalizedType.includes("capital")) {
+    return false;
+  }
+
+  if (MEANINGFUL_ACTIVITY_TYPES.has(normalizedType)) {
+    return true;
+  }
+
+  return /deposit batch processed|withdrawal processed|claim window opened|strategy update|mandate|fee change|vault paused|vault reopened/i.test(
+    `${item.title} ${item.detail}`,
+  );
+}
+
+function getWithdrawActionLabel(args: {
+  isBlockedMode: boolean;
+  hasQueuedRequest: boolean;
+  hasClaimReady: boolean;
+}): string {
+  if (args.isBlockedMode) {
+    return "Paused";
+  }
+
+  if (args.hasClaimReady) {
+    return "Claim ready";
+  }
+
+  if (args.hasQueuedRequest) {
+    return "Queued";
+  }
+
+  return "Open";
 }
 
 function InfoTooltip({ label, content }: { label: string; content: string }) {
@@ -306,18 +363,23 @@ function InfoTooltip({ label, content }: { label: string; content: string }) {
 }
 
 function SectionShell({
+  id,
   eyebrow,
   title,
   description,
   children,
 }: {
+  id?: string;
   eyebrow?: string;
   title: string;
   description?: string;
   children: React.ReactNode;
 }) {
   return (
-    <Card className="overflow-hidden rounded-[30px] border border-white/10 bg-white/[0.045] shadow-[0_30px_90px_-55px_rgba(8,15,36,0.95)] backdrop-blur-xl">
+    <Card
+      id={id}
+      className="overflow-hidden rounded-[30px] border border-white/10 bg-white/[0.045] shadow-[0_30px_90px_-55px_rgba(8,15,36,0.95)] backdrop-blur-xl"
+    >
       <CardHeader className="border-b border-white/10 pb-5">
         {eyebrow ? (
           <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-cyan-200/80">
@@ -608,6 +670,62 @@ function AddressField({ label, address, hint }: { label: string; address: string
   );
 }
 
+function TechnicalDetailsDialog({
+  vault,
+  status,
+}: {
+  vault: VaultInstance;
+  status: VaultStatusResponse | null;
+}) {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          className="rounded-full border-white/10 bg-white/5 text-white hover:bg-white/10"
+        >
+          Technical details
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-3xl rounded-[28px] border border-white/10 bg-slate-950 text-white shadow-[0_40px_120px_-60px_rgba(8,15,36,0.98)]">
+        <DialogHeader>
+          <DialogTitle className="text-2xl tracking-tight text-white">
+            Technical details
+          </DialogTitle>
+          <DialogDescription className="text-sm leading-6 text-slate-400">
+            Contract addresses and cash-location context for power users monitoring execution and
+            liquidity routing.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <AddressField
+            label="Operator safe"
+            address={vault.config.safeAddress}
+            hint="Primary execution safe that controls trading and batch processing."
+          />
+          <AddressField
+            label="Vault contract"
+            address={vault.config.vaultAddress}
+            hint="On-chain vault contract for deposits, shares, and redemptions."
+          />
+          <KeyInfoItem
+            label="Hot wallet"
+            value={status ? formatCurrency(status.nav.vaultUsdc) : "--"}
+            tooltip="USDC currently sitting in the vault wallet."
+          />
+          <KeyInfoItem
+            label="Safe wallet"
+            value={status ? formatCurrency(status.nav.safeUsdc) : "--"}
+            tooltip="USDC currently sitting in the trading safe."
+          />
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function TxFeedback({ message, error }: { message: string | null; error: string | null }) {
   if (!message && !error) {
     return null;
@@ -652,6 +770,7 @@ function DepositRail({
   const [message, setMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [navSyncPending, setNavSyncPending] = useState(false);
+  const [depositPreflightPending, setDepositPreflightPending] = useState(false);
 
   const parsedAmount = getParsedUnits(amount, 6);
   const meetsMinDeposit = Number.parseFloat(amount || "0") >= vault.profile.minDeposit;
@@ -701,7 +820,8 @@ function DepositRail({
     depositConfirming ||
     queueDepositPending ||
     queueDepositConfirming ||
-    navSyncPending;
+    navSyncPending ||
+    depositPreflightPending;
   const [submittedDepositAmount, setSubmittedDepositAmount] = useState<string | null>(null);
   const [recordedDepositHash, setRecordedDepositHash] = useState<string | null>(null);
 
@@ -786,59 +906,64 @@ function DepositRail({
   }
 
   async function handleDeposit() {
-    if (!parsedAmount || !address) {
+    if (!parsedAmount || !address || actionPending || cycle?.executionMode === "blocked") {
       return;
     }
 
+    setDepositPreflightPending(true);
     clearDepositFeedback();
     resetDeposit();
     resetQueueDeposit();
 
-    const latestCycleResult = await refetchCycleStatus();
-    const latestCycle =
-      typeof latestCycleResult === "object" && latestCycleResult && "cycle" in latestCycleResult
-        ? ((latestCycleResult as { cycle?: Cycle | null }).cycle ?? cycle)
-        : cycle;
+    try {
+      const latestCycleResult = await refetchCycleStatus();
+      const latestCycle =
+        typeof latestCycleResult === "object" && latestCycleResult && "cycle" in latestCycleResult
+          ? ((latestCycleResult as { cycle?: Cycle | null }).cycle ?? cycle)
+          : cycle;
 
-    if (isCustomVault) {
-      if (latestCycle?.executionMode === "queued") {
+      if (isCustomVault) {
+        if (latestCycle?.executionMode === "queued") {
+          setSubmittedDepositAmount(amount);
+          queueDeposit(vault.config.vaultAddress as `0x${string}`, parsedAmount);
+          return;
+        }
+
+        if (latestCycle?.executionMode === "instant" && latestCycle.telemetryFresh === true) {
+          const refreshed = await ensureFreshNav();
+          if (!refreshed) {
+            return;
+          }
+          setSubmittedDepositAmount(amount);
+          deposit(vault.config.vaultAddress as `0x${string}`, parsedAmount, address as `0x${string}`);
+          return;
+        }
+
+        if (latestCycle?.executionMode === "blocked") {
+          return;
+        }
+
         setSubmittedDepositAmount(amount);
         queueDeposit(vault.config.vaultAddress as `0x${string}`, parsedAmount);
         return;
       }
 
-      if (latestCycle?.executionMode === "instant" && latestCycle.telemetryFresh === true) {
-        const refreshed = await ensureFreshNav();
-        if (!refreshed) {
-          return;
-        }
-        setSubmittedDepositAmount(amount);
-        deposit(vault.config.vaultAddress as `0x${string}`, parsedAmount, address as `0x${string}`);
-        return;
-      }
-
-      if (latestCycle?.executionMode === "blocked") {
+      const refreshed = await ensureFreshNav();
+      if (!refreshed) {
         return;
       }
 
       setSubmittedDepositAmount(amount);
-      queueDeposit(vault.config.vaultAddress as `0x${string}`, parsedAmount);
-      return;
+      deposit(vault.config.vaultAddress as `0x${string}`, parsedAmount, address as `0x${string}`);
+    } finally {
+      setDepositPreflightPending(false);
     }
-
-    const refreshed = await ensureFreshNav();
-    if (!refreshed) {
-      return;
-    }
-
-    setSubmittedDepositAmount(amount);
-    deposit(vault.config.vaultAddress as `0x${string}`, parsedAmount, address as `0x${string}`);
   }
 
   return (
     <div className="space-y-2">
       <div className="space-y-2">
-        <RailStat label="Status" value={getDepositStatusLabel(vault, cycle)} />
+        <RailStat label="Deposit state" value={getDepositActionLabel(vault, cycle)} />
         <RailStat label="NAV" value={nav ? formatSharePrice(nav.sharePrice) : "--"} />
         <RailStat label="Min deposit" value={formatCurrency(vault.profile.minDeposit)} />
         <RailStat
@@ -909,7 +1034,7 @@ function DepositRail({
           disabled={!walletConnected || !address || !isValidAmount || actionPending}
           className="h-12 w-full rounded-2xl bg-white text-slate-950 hover:bg-slate-100"
         >
-          Approve USDC.e
+          {approvePending || approveConfirming ? "Approving..." : "Approve USDC.e"}
         </Button>
       ) : (
         <Button
@@ -926,13 +1051,15 @@ function DepositRail({
           }
           className="h-12 w-full rounded-2xl bg-cyan-300 text-slate-950 hover:bg-cyan-200"
         >
-          {navSyncPending
-            ? "Refreshing NAV..."
-            : isCustomVault && cycle?.executionMode === "queued"
-              ? "Join next cycle"
-              : cycle?.executionMode === "blocked"
-                ? "Deposit blocked"
-                : "Deposit"}
+          {navSyncPending || depositPreflightPending
+            ? "Loading..."
+            : depositPending || depositConfirming || queueDepositPending || queueDepositConfirming
+              ? isCustomVault && cycle?.executionMode === "queued" ? "Queuing..." : "Depositing..."
+              : isCustomVault && cycle?.executionMode === "queued"
+                ? "Join next cycle"
+                : cycle?.executionMode === "blocked"
+                  ? "Deposit blocked"
+                  : "Deposit"}
         </Button>
       )}
 
@@ -974,6 +1101,7 @@ function WithdrawRail({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [queuePending, setQueuePending] = useState(false);
   const [claimingRequestId, setClaimingRequestId] = useState<string | null>(null);
+  const [claimSubmissionInFlight, setClaimSubmissionInFlight] = useState(false);
   const [claimingCustomRequestId, setClaimingCustomRequestId] = useState<string | null>(null);
   const [claimingCustomSnapshot, setClaimingCustomSnapshot] = useState<{
     requestId: string;
@@ -981,6 +1109,7 @@ function WithdrawRail({
     assets?: string;
   } | null>(null);
   const [navSyncPending, setNavSyncPending] = useState(false);
+  const [claimPreflightPending, setClaimPreflightPending] = useState(false);
 
   const parsedShares = getParsedUnits(amount, 6);
   const isValidAmount = parsedShares !== undefined && parsedShares > 0n;
@@ -1025,7 +1154,7 @@ function WithdrawRail({
   const { assets: readyPreviewAssets, refetch: refetchReadyPreviewAssets } = usePreviewRedeem(
     vault.config.vaultAddress,
     readyRequestShares,
-    false,
+    isCustomVault,
   );
 
   const readyLiveEstimatedAssets =
@@ -1050,12 +1179,19 @@ function WithdrawRail({
   const hasBlockingRequest = Boolean(
     queueActiveRequest || customClaimableRequest || customPendingRequest,
   );
+  const withdrawActionLabel = getWithdrawActionLabel({
+    isBlockedMode,
+    hasQueuedRequest: Boolean(queueActiveRequest || customPendingRequest),
+    hasClaimReady: Boolean(readyQueueRequest || customClaimableRequest),
+  });
 
   useEffect(() => {
     if (!effectiveConnectedUI) {
       setErrorMessage(null);
       setMessage(null);
       setClaimingRequestId(null);
+      setClaimSubmissionInFlight(false);
+      setClaimPreflightPending(false);
     }
   }, [effectiveConnectedUI]);
 
@@ -1076,6 +1212,7 @@ function WithdrawRail({
         setMessage(result.message);
         setErrorMessage(null);
         setClaimingRequestId(null);
+        setClaimSubmissionInFlight(false);
         setAmount("");
         reset();
         await Promise.all([refetchQueue(), refetchShares(), refetchReadyPreviewAssets()]);
@@ -1091,6 +1228,7 @@ function WithdrawRail({
           }`,
         );
         setClaimingRequestId(null);
+        setClaimSubmissionInFlight(false);
       }
     })();
 
@@ -1143,6 +1281,7 @@ function WithdrawRail({
         );
       } finally {
         if (!cancelled) {
+          setClaimSubmissionInFlight(false);
           setClaimingCustomRequestId(null);
           setClaimingCustomSnapshot(null);
           setAmount("");
@@ -1183,6 +1322,8 @@ function WithdrawRail({
         setErrorMessage(error.message);
       }
       setClaimingRequestId(null);
+      setClaimSubmissionInFlight(false);
+      setClaimPreflightPending(false);
     }
   }, [claimingRequestId, error]);
 
@@ -1219,7 +1360,7 @@ function WithdrawRail({
   }
 
   async function handleRequestWithdrawal() {
-    if (!parsedShares || parsedShares > effectiveShares || isBlockedMode) {
+    if (!parsedShares || parsedShares > effectiveShares || isBlockedMode || queuePending) {
       return;
     }
 
@@ -1259,77 +1400,90 @@ function WithdrawRail({
   }
 
   async function handleClaimReadyWithdrawal() {
-    if (!readyQueueRequest || !effectiveAddress || !userAuthorized) {
+    if (!readyQueueRequest || !effectiveAddress || !userAuthorized || claimSubmissionInFlight || claimPreflightPending || isPending || isConfirming) {
       return;
     }
 
+    setClaimPreflightPending(true);
     reset();
     setClaimingRequestId(null);
     setErrorMessage(null);
     setMessage(null);
 
-    const refreshed = await ensureFreshNav();
-    if (!refreshed) {
-      return;
-    }
-
-    let requestToClaim = readyQueueRequest;
-
     try {
-      if (isCustomVault) {
-        const preflight = await preflightWithdrawal(readyQueueRequest.requestId);
-        if (!preflight.ready) {
-          setErrorMessage(
-            preflight.error ?? "Withdrawal liquidity is not ready yet. Please retry.",
+      const refreshed = await ensureFreshNav();
+      if (!refreshed) {
+        return;
+      }
+
+      let requestToClaim = readyQueueRequest;
+
+      try {
+        if (isCustomVault) {
+          const preflight = await preflightWithdrawal(readyQueueRequest.requestId);
+          if (!preflight.ready) {
+            setErrorMessage(
+              preflight.error ?? "Withdrawal liquidity is not ready yet. Please retry.",
+            );
+            return;
+          }
+          requestToClaim = preflight.request ?? readyQueueRequest;
+        } else {
+          const prepared = await postPrepareWithdrawalRequest(readyQueueRequest.requestId);
+          requestToClaim = prepared.request ?? readyQueueRequest;
+        }
+
+        await Promise.all([refetchQueue(), refetchShares(), refetchReadyPreviewAssets()]);
+
+        if (requestToClaim.status !== "ready") {
+          setMessage(
+            `Withdrawal ${requestToClaim.requestId} is ${requestToClaim.status}. Please wait for it to become ready again.`,
           );
           return;
         }
-        requestToClaim = preflight.request ?? readyQueueRequest;
-      } else {
-        const prepared = await postPrepareWithdrawalRequest(readyQueueRequest.requestId);
-        requestToClaim = prepared.request ?? readyQueueRequest;
-      }
-
-      await Promise.all([refetchQueue(), refetchShares(), refetchReadyPreviewAssets()]);
-
-      if (requestToClaim.status !== "ready") {
-        setMessage(
-          `Withdrawal ${requestToClaim.requestId} is ${requestToClaim.status}. Please wait for it to become ready again.`,
+      } catch (error) {
+        setErrorMessage(
+          error instanceof Error
+            ? error.message
+            : "Failed to prepare withdrawal claim. Please retry.",
         );
         return;
       }
-    } catch (error) {
-      setErrorMessage(
-        error instanceof Error
-          ? error.message
-          : "Failed to prepare withdrawal claim. Please retry.",
+
+      let requestShares: bigint;
+      try {
+        requestShares = parseUnits(requestToClaim.shares, 6);
+      } catch {
+        setErrorMessage("Ready withdrawal request has invalid share amount.");
+        return;
+      }
+
+      setClaimingRequestId(requestToClaim.requestId);
+      setClaimSubmissionInFlight(true);
+
+      redeem(
+        vault.config.vaultAddress as `0x${string}`,
+        requestShares,
+        effectiveAddress,
+        effectiveAddress,
       );
-      return;
+    } finally {
+      setClaimPreflightPending(false);
     }
-
-    let requestShares: bigint;
-    try {
-      requestShares = parseUnits(requestToClaim.shares, 6);
-    } catch {
-      setErrorMessage("Ready withdrawal request has invalid share amount.");
-      return;
-    }
-
-    setClaimingRequestId(requestToClaim.requestId);
-
-    redeem(
-      vault.config.vaultAddress as `0x${string}`,
-      requestShares,
-      effectiveAddress,
-      effectiveAddress,
-    );
   }
 
   function handleClaimCustomRequest() {
-    if (!customClaimableRequest || !effectiveAddress) {
+    if (
+      !customClaimableRequest ||
+      !effectiveAddress ||
+      claimSubmissionInFlight ||
+      isPending ||
+      isConfirming
+    ) {
       return;
     }
 
+    setClaimSubmissionInFlight(true);
     setClaimingCustomRequestId(customClaimableRequest.requestId);
     setClaimingCustomSnapshot({
       requestId: customClaimableRequest.requestId,
@@ -1352,6 +1506,7 @@ function WithdrawRail({
     } catch (claimError) {
       setClaimingCustomRequestId(null);
       setClaimingCustomSnapshot(null);
+      setClaimSubmissionInFlight(false);
       setErrorMessage(
         claimError instanceof Error ? claimError.message : "Failed to claim withdrawal.",
       );
@@ -1359,7 +1514,7 @@ function WithdrawRail({
   }
 
   async function handleCancelWithdrawalRequest() {
-    if (!queueActiveRequest) {
+    if (!queueActiveRequest || queuePending) {
       return;
     }
 
@@ -1403,6 +1558,8 @@ function WithdrawRail({
     !effectiveAddress ||
     queuePending ||
     navSyncPending ||
+    claimSubmissionInFlight ||
+    claimPreflightPending ||
     isPending ||
     isConfirming;
   const customClaimDisabled =
@@ -1410,6 +1567,7 @@ function WithdrawRail({
     !customClaimableRequest ||
     !effectiveAddress ||
     queuePending ||
+    claimSubmissionInFlight ||
     isPending ||
     isConfirming;
 
@@ -1421,6 +1579,7 @@ function WithdrawRail({
   return (
     <div className="space-y-4">
       <div className="grid gap-3">
+        <RailStat label="Exit state" value={withdrawActionLabel} />
         <RailStat
           label="Share balance"
           value={`${Number(effectiveFormattedShares).toFixed(6)} shares`}
@@ -1545,7 +1704,9 @@ function WithdrawRail({
                 disabled={claimDisabled}
                 className="h-11 rounded-2xl bg-emerald-300 text-slate-950 hover:bg-emerald-200"
               >
-                Claim withdrawal
+                {claimSubmissionInFlight || claimPreflightPending || isPending || isConfirming
+                  ? "Claiming..."
+                  : "Claim withdrawal"}
               </Button>
             )}
             {!readyQueueRequest && (
@@ -1626,7 +1787,7 @@ function VaultNotFound() {
           This vault does not exist, or it is not currently available.
         </p>
         <Button asChild className="mt-6 rounded-full bg-white text-slate-950 hover:bg-slate-100">
-          <Link href="/">Back to vaults</Link>
+          <Link href="/discover">Back to vaults</Link>
         </Button>
       </div>
     </main>
@@ -1711,6 +1872,7 @@ export default function VaultDetailPage() {
     data: vaultEventsData,
     isLoading: vaultEventsLoading,
     error: vaultEventsError,
+    lastRefresh: vaultEventsLastRefresh,
   } = useVaultEvents(vault?.id, 50);
   const { data: tradingAnalyticsData } = useVaultTradingAnalytics(vault?.id);
   const {
@@ -1736,15 +1898,14 @@ export default function VaultDetailPage() {
   const networkInfo = getNetworkDisplayInfo(VAULT_NETWORK);
   const tags = vault
     ? [
-        vault.type === "custom" ? "Agent-managed" : "Vault-managed",
         vault.profile.strategyLabel,
-        getDepositStatusLabel(vault, cycle),
+        getHeroStateLabel(vault, cycle),
         `${toTitleCase(vault.profile.riskLevel)} risk`,
       ]
     : [];
 
   const vaultActivity = useMemo(
-    () => mapFeedItemsToTimeline(vaultEventsData?.items ?? []),
+    () => mapFeedItemsToTimeline((vaultEventsData?.items ?? []).filter(isMeaningfulActivity)),
     [vaultEventsData?.items],
   );
 
@@ -1752,22 +1913,6 @@ export default function VaultDetailPage() {
     () => mapFeedItemsToTimeline(userHistoryData?.items ?? []),
     [userHistoryData?.items],
   );
-
-  const strategyActivity = useMemo(() => {
-    if (!vault) {
-      return [];
-    }
-
-    return buildStrategyActivity(vault, status, cycle, performance);
-  }, [cycle, performance, status, vault]);
-
-  const cycleNote = useMemo(() => {
-    if (!vault) {
-      return null;
-    }
-
-    return getCycleNote(vault, cycle);
-  }, [cycle, vault]);
 
   if (!vault && !instancesLoading) {
     return <VaultNotFound />;
@@ -1817,7 +1962,7 @@ export default function VaultDetailPage() {
           <div className="vault-pane-scroll space-y-6 lg:min-h-0 lg:overflow-y-auto lg:pr-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <Link
-                href="/"
+                href="/discover"
                 className="inline-flex items-center gap-2 text-sm text-slate-400 transition-colors hover:text-white"
               >
                 <ArrowLeft className="h-4 w-4" />
@@ -1892,18 +2037,7 @@ export default function VaultDetailPage() {
                         {vault.name}
                       </h1>
                       <p className="max-w-3xl text-base leading-8 text-slate-300 sm:text-lg">
-                        {vault.profile.longDescription}
-                      </p>
-                      <p className="text-sm text-slate-400">
-                        by{" "}
-                        <a
-                          href="https://x.com/awenetwork_ai"
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-cyan-200 underline decoration-cyan-300/40 underline-offset-4 transition-colors hover:text-white"
-                        >
-                          @AWEnetwork_ai
-                        </a>
+                        {getHeroSentence(vault)}
                       </p>
                     </div>
 
@@ -1983,78 +2117,24 @@ export default function VaultDetailPage() {
               </SectionShell>
 
               <SectionShell title="Strategy & Operator">
-                <div className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
-                  <div className="space-y-4">
-                    <p className="text-sm leading-7 text-slate-300">
-                      {vault.name.replace(/\s*\(.*\)$/, "")} is an autonomous agent running via
-                      OpenClaw. The vault gives users exposure to an agent-managed strategy through
-                      vault shares, while execution happens within a defined mandate rather than
-                      through manual trading. PM Vaults are built around mandates, transparent
-                      limits, agent identity, share accounting, and NAV-driven settlement.
-                    </p>
-                    <div className="grid gap-3">
-                      <AddressField
-                        label="Operator address"
-                        address={vault.config.safeAddress}
-                        hint="Primary safe used for vault execution."
-                      />
-                      <AddressField
-                        label="Vault address"
-                        address={vault.config.vaultAddress}
-                        hint="Vault contract address for deposits, shares, and redemptions."
-                      />
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <SummaryMetric
-                        label="Mode"
-                        value={status ? (status.mode === "live" ? "Live" : "Simulation") : "--"}
-                        hint={status ? "Current execution mode." : "Waiting for live status data."}
-                        tooltip="Current execution mode for this vault."
-                      />
-                      <SummaryMetric
-                        label="Focus"
-                        value={vault.profile.strategyLabel}
-                        hint="Primary strategy focus."
-                      />
-                    </div>
+                <div className="space-y-5">
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <KeyInfoItem label="Managed by" value={getManagementLabel(vault)} />
+                    <KeyInfoItem label="Infra" value={getInfraLabel(vault)} />
+                    <KeyInfoItem label="Focus" value={vault.profile.strategyLabel} />
+                    <KeyInfoItem label="Style" value={getStyleLabel(vault)} />
                   </div>
-
-                  <div className="rounded-[26px] border border-white/10 bg-slate-950/30 p-5">
-                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
-                      Key info
-                    </p>
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                      <KeyInfoItem label="Management" value="Agent-managed" />
-                      <KeyInfoItem label="Infra" value="OpenClaw" />
-                      <KeyInfoItem label="Focus" value={vault.profile.strategyLabel} />
-                      <KeyInfoItem label="Style" value="Short-horizon, event-driven" />
-                      <KeyInfoItem
-                        label="Hot wallet"
-                        value={status ? formatCurrency(status.nav.vaultUsdc) : "--"}
-                        tooltip="USDC currently sitting in the vault wallet."
-                      />
-                      <KeyInfoItem
-                        label="Safe wallet"
-                        value={status ? formatCurrency(status.nav.safeUsdc) : "--"}
-                        tooltip="USDC currently sitting in the trading safe."
-                      />
+                  <div className="flex flex-col gap-4 rounded-[24px] border border-white/10 bg-slate-950/30 p-5 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="max-w-2xl">
+                      <p className="text-sm font-medium text-white">
+                        Technical details are available on demand.
+                      </p>
+                      <p className="mt-1 text-sm leading-6 text-slate-400">
+                        Keep the main surface focused on mandate and operator context, then open the
+                        drawer for contract addresses and live wallet balances.
+                      </p>
                     </div>
-
-                    {cycleNote ? (
-                      <div className="mt-4 rounded-[18px] border border-white/10 bg-white/5 p-4">
-                        <div className="flex items-center gap-2">
-                          <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
-                            Current cycle
-                          </p>
-                          <InfoTooltip
-                            label="Current cycle"
-                            content="Current lifecycle state for deposits, queued requests, and claims."
-                          />
-                        </div>
-                        <p className="mt-2 text-sm font-medium text-white">{cycleNote.label}</p>
-                        <p className="mt-1 text-sm leading-6 text-slate-400">{cycleNote.detail}</p>
-                      </div>
-                    ) : null}
+                    <TechnicalDetailsDialog vault={vault} status={status} />
                   </div>
                 </div>
               </SectionShell>
@@ -2063,8 +2143,8 @@ export default function VaultDetailPage() {
                 <div className="grid gap-4 md:grid-cols-3">
                   <SummaryMetric
                     label="Risk score"
-                    value="8.2 / 10"
-                    hint="Current vault risk assessment."
+                    value={getRiskScore(vault.profile.riskLevel)}
+                    hint={`${toTitleCase(vault.profile.riskLevel)} risk mandate.`}
                     tooltip="Overall vault risk assessment."
                   />
                   <SummaryMetric
@@ -2081,76 +2161,32 @@ export default function VaultDetailPage() {
                   />
                 </div>
                 <div className="mt-5 rounded-[24px] border border-white/10 bg-slate-950/30 p-5 text-sm leading-7 text-slate-400">
-                  Depositing into this vault exposes you to strategy, execution, market, and
-                  settlement risk. NAV updates, batch state changes, and vault share accounting
-                  determine when funds enter and exit the strategy, and there is no guarantee of
-                  principal protection.
-                </div>
-                <div className="mt-5 rounded-[24px] border border-white/10 bg-slate-950/30 p-5">
-                  <div className="flex items-center gap-2">
-                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
-                      Lifecycle
-                    </p>
-                    <InfoTooltip
-                      label="Lifecycle"
-                      content="Vault lifecycle is driven by current conditions, not fixed timers. Deposits and withdrawal requests move between direct actions, queue, processing, and claim states depending on whether the vault can act immediately or must batch requests."
-                    />
-                  </div>
-                  <div className="mt-4 grid gap-3 md:grid-cols-2">
-                    <KeyInfoItem
-                      label="Open"
-                      value="Used when the vault can act directly. Deposits complete immediately, and ready withdrawal requests can be claimed."
-                    />
-                    <KeyInfoItem
-                      label="Queue only"
-                      value="Used when direct actions are unavailable, such as while trading is active. New deposits and withdrawal requests enter queue."
-                    />
-                    <KeyInfoItem
-                      label="Processing"
-                      value="Used while queued deposits are minted and queued withdrawals are settled."
-                    />
-                    <KeyInfoItem
-                      label="Claim"
-                      value="Shown after a queued withdrawal has been processed and the request is marked ready for claim."
-                    />
-                  </div>
+                  {getRiskSummary(vault, cycle)}
                 </div>
               </SectionShell>
 
               <SectionShell title="Activity">
-                <Tabs defaultValue="vault" className="space-y-4">
-                  <TabsList className="grid h-auto w-full grid-cols-2 rounded-2xl border border-white/10 bg-white/5 p-1">
-                    <TabsTrigger
-                      value="vault"
-                      className="rounded-xl py-2.5 text-slate-400 hover:text-white data-[state=active]:bg-white data-[state=active]:text-slate-950"
-                    >
-                      Vault
-                    </TabsTrigger>
-                    <TabsTrigger
-                      value="strategy"
-                      className="rounded-xl py-2.5 text-slate-400 hover:text-white data-[state=active]:bg-white data-[state=active]:text-slate-950"
-                    >
-                      Strategy
-                    </TabsTrigger>
-                  </TabsList>
-                  <TabsContent value="vault">
-                    {vaultEventsLoading ? (
-                      <Skeleton className="h-40 w-full rounded-[22px] bg-white/10" />
-                    ) : vaultEventsError ? (
-                      <div className="rounded-[22px] border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-rose-100">
-                        {vaultEventsError}
-                      </div>
-                    ) : (
-                      <ActivityTimeline items={vaultActivity} emptyState="No vault activity yet." />
-                    )}
-                  </TabsContent>
-                  <TabsContent value="strategy">
-                    <ActivityTimeline
-                      items={strategyActivity}
-                      emptyState="No strategy updates yet."
-                    />
-                  </TabsContent>
-                </Tabs>
+                <div className="mb-4 flex items-center justify-between text-xs text-slate-400">
+                  <span>Meaningful vault updates only</span>
+                  <span>
+                    Updated{" "}
+                    {vaultEventsLastRefresh
+                      ? formatDate(vaultEventsLastRefresh.toISOString())
+                      : "--"}
+                  </span>
+                </div>
+                {vaultEventsLoading ? (
+                  <Skeleton className="h-40 w-full rounded-[22px] bg-white/10" />
+                ) : vaultEventsError ? (
+                  <div className="rounded-[22px] border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-rose-100">
+                    {vaultEventsError}
+                  </div>
+                ) : (
+                  <ActivityTimeline
+                    items={vaultActivity}
+                    emptyState="No meaningful vault updates yet."
+                  />
+                )}
               </SectionShell>
 
               <SectionShell title="Your activity">
@@ -2173,6 +2209,7 @@ export default function VaultDetailPage() {
 
               {vault.type !== "custom" && (
                 <SectionShell
+                  id="exit-queue"
                   eyebrow="Redemptions"
                   title="Exit Queue"
                   description="Manage your vault exit requests and claim settled USDC.e."
@@ -2259,9 +2296,17 @@ export default function VaultDetailPage() {
                       }}
                     />
                   ) : (
-                    <div className="rounded-[24px] border border-white/10 bg-slate-950/35 p-4 text-sm leading-7 text-slate-300">
-                      Non-custom vault exits keep their full request, pending, and claim flow in the
-                      Exit Queue section on the left so the claim path stays accurate.
+                    <div className="space-y-4 rounded-[24px] border border-white/10 bg-slate-950/35 p-4 text-sm leading-7 text-slate-300">
+                      <div>
+                        Standard vault exits use the full request, pending, and claim flow in Exit
+                        Queue so you can track readiness and claim from one place.
+                      </div>
+                      <Button
+                        asChild
+                        className="w-full rounded-full bg-white text-slate-950 hover:bg-slate-100"
+                      >
+                        <a href="#exit-queue">Open Exit Queue</a>
+                      </Button>
                     </div>
                   )}
                 </TabsContent>

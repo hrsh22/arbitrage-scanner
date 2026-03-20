@@ -68,6 +68,7 @@ import {
   validateClaimOperation,
 } from "../services/claimStateMachine.js";
 import { activityEventRepository } from "../repositories/activityEventRepository.js";
+import type { BatchStatus } from "../services/vaultProvider.js";
 
 const LIFECYCLE_CACHE_TTL_MS = 5_000;
 const lifecycleCache = new WeakMap<
@@ -439,9 +440,12 @@ function parseMetadata(metadata: string | null): Record<string, unknown> | undef
 }
 
 function mapCanonicalVaultEvent(event: typeof vaultLifecycleEvents.$inferSelect): ActivityFeedItem {
+  const normalizedType =
+    event.eventType === "settlement_completed" ? "processing_completed" : event.eventType;
+
   return {
     id: `canonical-vault-${event.id}`,
-    type: event.eventType,
+    type: normalizedType,
     scope: "vault",
     title: event.title,
     detail: event.detail,
@@ -478,6 +482,412 @@ function mapCanonicalUserEvent(
     },
     metadata: parseMetadata(event.metadata),
   };
+}
+
+export function seedLifecycleEventsFromBatchStatus(args: {
+  batchStatus: BatchStatus;
+  vaultId: number;
+  vaultAddress: string;
+}): Array<{
+  vaultId: number;
+  vaultAddress: string;
+  cycleId: number;
+  eventType: string;
+  title: string;
+  detail: string;
+  occurredAt: Date;
+  status: string;
+}> {
+  const { batchStatus, vaultId, vaultAddress } = args;
+  const rows: Array<{
+    vaultId: number;
+    vaultAddress: string;
+    cycleId: number;
+    eventType: string;
+    title: string;
+    detail: string;
+    occurredAt: Date;
+    status: string;
+  }> = [
+    {
+      vaultId,
+      vaultAddress,
+      cycleId: batchStatus.batchId,
+      eventType: "cycle_opened",
+      title: "Cycle opened",
+      detail: "A new vault cycle started.",
+      occurredAt: batchStatus.startTime,
+      status: batchStatus.status,
+    },
+  ];
+
+  if (batchStatus.status !== "open") {
+    rows.push({
+      vaultId,
+      vaultAddress,
+      cycleId: batchStatus.batchId,
+      eventType: "book_closed",
+      title: "Book closed",
+      detail: "Direct actions paused and the vault moved into queued processing.",
+      occurredAt: batchStatus.cutoffTime ?? batchStatus.endTime,
+      status: batchStatus.status,
+    });
+  }
+
+  if (
+    ["processing", "flattening", "settling", "settled", "processed", "reopen"].includes(
+      batchStatus.status,
+    )
+  ) {
+    rows.push({
+      vaultId,
+      vaultAddress,
+      cycleId: batchStatus.batchId,
+      eventType: "processing_started",
+      title: "Processing started",
+      detail: "The current cycle moved into processing.",
+      occurredAt: batchStatus.cutoffTime ?? batchStatus.endTime,
+      status: batchStatus.status,
+    });
+  }
+
+  if (["settled", "processed", "reopen"].includes(batchStatus.status)) {
+    rows.push({
+      vaultId,
+      vaultAddress,
+      cycleId: batchStatus.batchId,
+      eventType: "processing_completed",
+      title: "Processing completed",
+      detail: "The current cycle finished processing queued work.",
+      occurredAt: batchStatus.endTime,
+      status: batchStatus.status,
+    });
+
+    rows.push({
+      vaultId,
+      vaultAddress,
+      cycleId: batchStatus.batchId,
+      eventType: "claim_window_opened",
+      title: "Claim window opened",
+      detail: "Processed withdrawals are now claimable.",
+      occurredAt: batchStatus.endTime,
+      status: batchStatus.status,
+    });
+  }
+
+  if (batchStatus.totalQueuedDeposits > 0n) {
+    rows.push({
+      vaultId,
+      vaultAddress,
+      cycleId: batchStatus.nextBatchId,
+      eventType: "deposit_queue_processed",
+      title: "Deposit queue processed",
+      detail: "Queued deposits were processed for the next cycle.",
+      occurredAt: batchStatus.endTime,
+      status: batchStatus.status,
+    });
+  }
+
+  if (batchStatus.status === "reopen") {
+    rows.push({
+      vaultId,
+      vaultAddress,
+      cycleId: batchStatus.nextBatchId,
+      eventType: "cycle_reopened",
+      title: "Cycle reopened",
+      detail: "A new cycle is ready for vault actions.",
+      occurredAt: batchStatus.endTime,
+      status: batchStatus.status,
+    });
+  }
+
+  const dedupe = new Map<string, (typeof rows)[number]>();
+  for (const row of rows) {
+    dedupe.set(`${row.cycleId}:${row.eventType}`, row);
+  }
+
+  return [...dedupe.values()]
+    .sort((left, right) => {
+      const timeDiff = left.occurredAt.getTime() - right.occurredAt.getTime();
+      if (timeDiff !== 0) {
+        return timeDiff;
+      }
+
+      return left.eventType.localeCompare(right.eventType);
+    })
+    .map((row, index) => ({
+      ...row,
+      occurredAt: new Date(row.occurredAt.getTime() + index),
+    }));
+}
+
+function deriveLifecycleEventsFromUserActivity(args: {
+  vaultId: number;
+  vaultAddress: string;
+  rows: Array<
+    typeof userVaultActivityEvents.$inferSelect & {
+      eventType: string;
+      occurredAt: Date;
+    }
+  >;
+}): Array<{
+  vaultId: number;
+  vaultAddress: string;
+  cycleId: number;
+  eventType: string;
+  title: string;
+  detail: string;
+  occurredAt: Date;
+  status: string;
+}> {
+  const { vaultId, vaultAddress, rows } = args;
+  if (rows.length === 0) {
+    return [];
+  }
+
+  const ordered = [...rows].sort(
+    (left, right) => left.occurredAt.getTime() - right.occurredAt.getTime(),
+  );
+  const firstOccurredAt = ordered[0]!.occurredAt;
+  const lastOccurredAt = ordered[ordered.length - 1]!.occurredAt;
+
+  const hasWithdrawReadyOrSettled = ordered.some(
+    (row) => row.eventType === "withdraw_ready" || row.eventType === "withdraw_settled",
+  );
+  const hasClaimCompleted = ordered.some((row) => row.eventType === "claim_completed");
+  const hasDepositProcessed = ordered.some((row) => row.eventType === "deposit_minted");
+  const hasAnyWithdrawFlow = ordered.some((row) => row.eventType.startsWith("withdraw_"));
+
+  const syntheticCycleId =
+    ordered
+      .map((row) => row.cycleId)
+      .find((cycleId): cycleId is number => Number.isFinite(cycleId ?? NaN)) ?? 0;
+
+  const events: Array<{
+    vaultId: number;
+    vaultAddress: string;
+    cycleId: number;
+    eventType: string;
+    title: string;
+    detail: string;
+    occurredAt: Date;
+    status: string;
+  }> = [
+    {
+      vaultId,
+      vaultAddress,
+      cycleId: syntheticCycleId,
+      eventType: "cycle_opened",
+      title: "Cycle opened",
+      detail: "A vault cycle was already active before lifecycle tracking started.",
+      occurredAt: firstOccurredAt,
+      status: "open",
+    },
+  ];
+
+  if (hasAnyWithdrawFlow || hasDepositProcessed) {
+    events.push({
+      vaultId,
+      vaultAddress,
+      cycleId: syntheticCycleId,
+      eventType: "book_closed",
+      title: "Book closed",
+      detail: "Direct actions paused and requests moved into queued processing.",
+      occurredAt: firstOccurredAt,
+      status: "processing",
+    });
+  }
+
+  if (hasWithdrawReadyOrSettled || hasClaimCompleted) {
+    events.push({
+      vaultId,
+      vaultAddress,
+      cycleId: syntheticCycleId,
+      eventType: "processing_started",
+      title: "Processing started",
+      detail: "Queued withdrawals entered processing.",
+      occurredAt: firstOccurredAt,
+      status: "processing",
+    });
+
+    events.push({
+      vaultId,
+      vaultAddress,
+      cycleId: syntheticCycleId,
+      eventType: "processing_completed",
+      title: "Processing completed",
+      detail: "Queued withdrawals were processed.",
+      occurredAt: lastOccurredAt,
+      status: "processed",
+    });
+
+    events.push({
+      vaultId,
+      vaultAddress,
+      cycleId: syntheticCycleId,
+      eventType: "claim_window_opened",
+      title: "Claim window opened",
+      detail: "Processed withdrawals became claimable.",
+      occurredAt: lastOccurredAt,
+      status: "processed",
+    });
+  }
+
+  if (hasDepositProcessed) {
+    events.push({
+      vaultId,
+      vaultAddress,
+      cycleId: syntheticCycleId + 1,
+      eventType: "deposit_queue_processed",
+      title: "Deposit queue processed",
+      detail: "Queued deposits were converted into vault shares.",
+      occurredAt: lastOccurredAt,
+      status: "processed",
+    });
+  }
+
+  const deduped = new Map<string, (typeof events)[number]>();
+  for (const event of events) {
+    deduped.set(`${event.cycleId}:${event.eventType}`, event);
+  }
+
+  return [...deduped.values()]
+    .sort((left, right) => {
+      const timeDiff = left.occurredAt.getTime() - right.occurredAt.getTime();
+      if (timeDiff !== 0) {
+        return timeDiff;
+      }
+
+      return left.eventType.localeCompare(right.eventType);
+    })
+    .map((event, index) => ({
+      ...event,
+      occurredAt: new Date(event.occurredAt.getTime() + index),
+    }));
+}
+
+function deriveIncrementalLifecycleEventsFromUserActivity(args: {
+  vaultId: number;
+  vaultAddress: string;
+  rows: Array<
+    typeof userVaultActivityEvents.$inferSelect & {
+      eventType: string;
+      occurredAt: Date;
+    }
+  >;
+  latestLifecycleOccurredAt: Date | null;
+  cycleId: number;
+  batchStatus: string;
+}): Array<{
+  vaultId: number;
+  vaultAddress: string;
+  cycleId: number;
+  eventType: string;
+  title: string;
+  detail: string;
+  occurredAt: Date;
+  status: string;
+  requestId?: string;
+  assetAmount?: string;
+  shareAmount?: string;
+}> {
+  const { vaultId, vaultAddress, rows, latestLifecycleOccurredAt, cycleId, batchStatus } = args;
+
+  const incrementalRows = rows
+    .filter((row) =>
+      latestLifecycleOccurredAt
+        ? row.occurredAt.getTime() > latestLifecycleOccurredAt.getTime()
+        : true,
+    )
+    .sort((left, right) => left.occurredAt.getTime() - right.occurredAt.getTime());
+
+  if (incrementalRows.length === 0) {
+    return [];
+  }
+
+  const events: Array<{
+    vaultId: number;
+    vaultAddress: string;
+    cycleId: number;
+    eventType: string;
+    title: string;
+    detail: string;
+    occurredAt: Date;
+    status: string;
+    requestId?: string;
+    assetAmount?: string;
+    shareAmount?: string;
+  }> = [];
+
+  for (const row of incrementalRows) {
+    if (row.eventType === "deposit_minted") {
+      events.push({
+        vaultId,
+        vaultAddress,
+        cycleId: cycleId + 1,
+        eventType: "deposit_queue_processed",
+        title: "Deposit queue processed",
+        detail: "A queued deposit was processed into vault shares.",
+        occurredAt: row.occurredAt,
+        status: batchStatus,
+        assetAmount: row.assetAmount ?? undefined,
+        shareAmount: row.shareAmount ?? undefined,
+      });
+      continue;
+    }
+
+    if (row.eventType === "withdraw_ready" || row.eventType === "withdraw_settled") {
+      events.push({
+        vaultId,
+        vaultAddress,
+        cycleId,
+        eventType: "withdraw_ready",
+        title: "Withdrawal processed",
+        detail: "A queued withdrawal became ready to claim.",
+        occurredAt: row.occurredAt,
+        status: row.status ?? "ready",
+        requestId: row.requestId ?? undefined,
+        assetAmount: row.assetAmount ?? undefined,
+        shareAmount: row.shareAmount ?? undefined,
+      });
+
+      events.push({
+        vaultId,
+        vaultAddress,
+        cycleId,
+        eventType: "claim_window_opened",
+        title: "Claim window opened",
+        detail: "At least one processed withdrawal is now claimable.",
+        occurredAt: row.occurredAt,
+        status: row.status ?? "ready",
+      });
+      continue;
+    }
+
+    if (row.eventType === "claim_completed") {
+      events.push({
+        vaultId,
+        vaultAddress,
+        cycleId,
+        eventType: "processing_completed",
+        title: "Processing completed",
+        detail: "A queued withdrawal was claimed successfully.",
+        occurredAt: row.occurredAt,
+        status: row.status ?? "completed",
+        requestId: row.requestId ?? undefined,
+        assetAmount: row.assetAmount ?? undefined,
+        shareAmount: row.shareAmount ?? undefined,
+      });
+    }
+  }
+
+  const deduped = new Map<string, (typeof events)[number]>();
+  for (const event of events) {
+    const requestKey = event.requestId ?? "-";
+    deduped.set(`${event.eventType}:${requestKey}:${event.occurredAt.toISOString()}`, event);
+  }
+
+  return [...deduped.values()];
 }
 
 // ============================================================================
@@ -1808,12 +2218,77 @@ export function buildCustomVaultRouter(): Router {
         return;
       }
 
-      const { db } = await import("../db/index.js");
       const vaultAddress = provider.config.vaultAddress;
       const canonicalEvents = await activityEventRepository.listVaultLifecycleEvents(
         vaultAddress,
         limit,
       );
+
+      const latestCanonicalOccurredAt = canonicalEvents[0]?.occurredAt ?? null;
+
+      try {
+        const [currentBatchId, historicalUserEvents] = await Promise.all([
+          provider.getClient().getCurrentBatch(),
+          activityEventRepository.listVaultUserActivityEvents(vaultAddress, 500),
+        ]);
+
+        if (canonicalEvents.length === 0) {
+          let seedRows = deriveLifecycleEventsFromUserActivity({
+            vaultId,
+            vaultAddress,
+            rows: historicalUserEvents,
+          });
+
+          if (seedRows.length === 0) {
+            const batchStatus = await provider.getBatchStatus(Number(currentBatchId));
+            seedRows = seedLifecycleEventsFromBatchStatus({
+              batchStatus,
+              vaultId,
+              vaultAddress,
+            });
+          }
+
+          for (const seedRow of seedRows) {
+            await activityEventRepository.appendVaultLifecycleEvent(seedRow);
+          }
+        } else {
+          const batchStatus = await provider.getBatchStatus(Number(currentBatchId));
+          const incrementalRows = deriveIncrementalLifecycleEventsFromUserActivity({
+            vaultId,
+            vaultAddress,
+            rows: historicalUserEvents,
+            latestLifecycleOccurredAt: latestCanonicalOccurredAt,
+            cycleId: batchStatus.batchId,
+            batchStatus: batchStatus.status,
+          });
+
+          for (const row of incrementalRows) {
+            await activityEventRepository.appendVaultLifecycleEvent(row);
+          }
+        }
+      } catch (seedError) {
+        logger.warn("CustomVault API: Failed to seed canonical lifecycle events", {
+          vaultId,
+          vaultAddress,
+          error: (seedError as Error).message,
+        });
+      }
+
+      const canonicalEventsAfterSeed = await activityEventRepository.listVaultLifecycleEvents(
+        vaultAddress,
+        limit,
+      );
+
+      if (canonicalEventsAfterSeed.length > 0) {
+        res.json({
+          success: true,
+          vaultId,
+          items: canonicalEventsAfterSeed.map(mapCanonicalVaultEvent),
+        });
+        return;
+      }
+
+      const { db } = await import("../db/index.js");
 
       const [cycles, processingEvents] = await Promise.all([
         db
@@ -1859,10 +2334,7 @@ export function buildCustomVaultRouter(): Router {
         )
         .slice(0, limit);
 
-      const items =
-        canonicalEvents.length > 0 ? canonicalEvents.map(mapCanonicalVaultEvent) : fallbackItems;
-
-      res.json({ success: true, vaultId, items });
+      res.json({ success: true, vaultId, items: fallbackItems });
     } catch (error) {
       logger.error("CustomVault API: Failed to get vault events", {
         error: (error as Error).message,

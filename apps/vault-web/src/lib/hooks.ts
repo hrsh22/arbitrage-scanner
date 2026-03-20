@@ -129,6 +129,11 @@ export const vaultQueryKeys = {
     [...vaultQueryKeys.scope(vaultId), "carry-eligibility", requestId ?? "all", userScope] as const,
 };
 
+export interface VaultEventsQueryOptions {
+  refetchIntervalMs?: number;
+  refetchIntervalInBackgroundMs?: number | false;
+}
+
 export async function invalidateVaultQueries(
   queryClient: QueryClient,
   vaultId?: number,
@@ -411,12 +416,28 @@ export function useVaultTradingAnalytics(
   };
 }
 
-export function useVaultEvents(vaultId?: number, limit = 50): AsyncState<VaultEventsResponse> {
+export function useVaultEvents(
+  vaultId?: number,
+  limit = 50,
+  options?: VaultEventsQueryOptions,
+): AsyncState<VaultEventsResponse> {
+  const visibleInterval = options?.refetchIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const hiddenInterval = options?.refetchIntervalInBackgroundMs ?? 60_000;
+
   const query = useQuery({
     queryKey: [...vaultQueryKeys.events(vaultId), limit],
     queryFn: () => fetchVaultEvents(vaultId!, limit),
     enabled: vaultId !== undefined,
-    refetchInterval: DEFAULT_POLL_INTERVAL_MS,
+    refetchInterval: () => {
+      const isHidden = typeof document !== "undefined" && document.visibilityState !== "visible";
+      if (!isHidden) {
+        return visibleInterval;
+      }
+
+      return hiddenInterval;
+    },
+    refetchIntervalInBackground: hiddenInterval !== false,
+    refetchOnWindowFocus: true,
   });
 
   const refetch = useCallback(async (): Promise<VaultEventsResponse | null> => {

@@ -175,13 +175,13 @@ export function Header({ className }: HeaderProps) {
                 Polymarket Vault
               </span>
               <span className="block text-xs text-slate-400">
-                Cycle-based deposits, exits, and settlement tracking
+                Agent-managed vaults for prediction markets
               </span>
             </div>
           </Link>
-          
+
           <div className="ml-4 mr-2 hidden h-8 w-[1px] bg-white/10 md:block" />
-          
+
           <nav className="hidden md:flex items-center">
             <Link
               href="/discover"

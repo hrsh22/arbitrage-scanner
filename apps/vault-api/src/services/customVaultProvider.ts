@@ -1082,8 +1082,8 @@ export class CustomVaultProvider implements IVaultProvider {
       void activityEventRepository.appendVaultLifecycleEvent({
         vaultId: this.config.vaultId,
         vaultAddress: this.config.vaultAddress,
-        eventType: "settlement_completed",
-        title: "Settlement completed",
+        eventType: "processing_completed",
+        title: "Processing completed",
         detail: "Queued withdrawals finished settlement for the current cycle.",
         cycleId: targetBatchId,
         txHash: settleTxHash,
@@ -1354,6 +1354,28 @@ export class CustomVaultProvider implements IVaultProvider {
         };
       }
 
+      const postRecallVaultBalance = await this.client.getErc20Balance(
+        assetAddress,
+        this.config.vaultAddress,
+      );
+
+      if (postRecallVaultBalance < requiredVaultBalance) {
+        return {
+          success: false,
+          action: "none",
+          amount: 0n,
+          requiredVaultBalance,
+          queuedAssets,
+          reservedRedemptionAssets,
+          pendingWithdrawalLiability: withdrawalLiability,
+          txHash: recallResult.txHash as Hex | undefined,
+          error:
+            "Capital recall transaction succeeded but vault balance did not increase to required level.",
+          details:
+            "Recall appears to have moved funds outside the vault asset address. Verify wallet configuration.",
+        };
+      }
+
       return {
         success: true,
         action: "deallocated",
@@ -1507,6 +1529,28 @@ export class CustomVaultProvider implements IVaultProvider {
         txHash: recallResult.txHash as Hex | undefined,
         error: recallResult.error,
         details: "On-demand recall transfer failed.",
+      };
+    }
+
+    const postRecallVaultBalance = await this.client.getErc20Balance(
+      assetAddress,
+      this.config.vaultAddress,
+    );
+
+    if (postRecallVaultBalance < requiredVaultBalance) {
+      return {
+        success: false,
+        action: "none",
+        amount: 0n,
+        requiredVaultBalance,
+        queuedAssets: 0n,
+        reservedRedemptionAssets: 0n,
+        pendingWithdrawalLiability: requiredVaultBalance,
+        txHash: recallResult.txHash as Hex | undefined,
+        error:
+          "On-demand recall transaction succeeded but vault balance did not increase to required level.",
+        details:
+          "Recall appears to have moved funds outside the vault asset address. Verify wallet configuration.",
       };
     }
 

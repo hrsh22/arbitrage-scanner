@@ -406,6 +406,19 @@ export class SafeWalletService {
         account: walletClient.account!,
       });
 
+      const client = createPublicClient({
+        chain: this.chain,
+        transport: createNetworkTransport(this.rpcUrl),
+      });
+      const receipt = await client.waitForTransactionReceipt({ hash: txHash });
+      if (receipt.status !== "success") {
+        return {
+          success: false,
+          txHash,
+          error: `Token transfer reverted on-chain (status: ${receipt.status})`,
+        };
+      }
+
       return { success: true, txHash };
     }
 

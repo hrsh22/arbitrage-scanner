@@ -609,6 +609,23 @@ export class CustomVaultClient {
     return this.getCurrentBatch();
   }
 
+  async getErc20Balance(tokenAddress: Address, ownerAddress: Address): Promise<bigint> {
+    return (await this.publicClient.readContract({
+      address: tokenAddress,
+      abi: [
+        {
+          type: "function",
+          name: "balanceOf",
+          stateMutability: "view",
+          inputs: [{ name: "account", type: "address" }],
+          outputs: [{ name: "", type: "uint256" }],
+        },
+      ] as const,
+      functionName: "balanceOf",
+      args: [ownerAddress],
+    })) as bigint;
+  }
+
   private mapStateToBatchStatus(state: number, cycle: CycleData, isCurrent: boolean): BatchStatus {
     if (!isCurrent) {
       return cycle.finalized ? "settled" : "closed";

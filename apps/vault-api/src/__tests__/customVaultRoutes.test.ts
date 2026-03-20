@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Request, Response } from "express";
 import { buildCustomVaultRouter } from "../routes/customVaultRoutes.js";
+import { seedLifecycleEventsFromBatchStatus } from "../routes/customVaultRoutes.js";
 import { getVaultProviderFactory } from "../services/vaultProviderFactory.js";
 import { VaultProviderError } from "../services/vaultProvider.js";
 
@@ -51,11 +52,25 @@ const { mockAppendUserVaultActivityEvent, mockGetRequestsByUser, mockMarkComplet
     mockMarkCompletedIdempotent: vi.fn().mockResolvedValue({ success: true }),
   }));
 
+const {
+  mockAppendVaultLifecycleEvent,
+  mockListVaultLifecycleEvents,
+  mockListUserVaultActivityEvents,
+  mockListVaultUserActivityEvents,
+} = vi.hoisted(() => ({
+  mockAppendVaultLifecycleEvent: vi.fn().mockResolvedValue(undefined),
+  mockListVaultLifecycleEvents: vi.fn().mockResolvedValue([]),
+  mockListUserVaultActivityEvents: vi.fn().mockResolvedValue([]),
+  mockListVaultUserActivityEvents: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("../repositories/activityEventRepository.js", () => ({
   activityEventRepository: {
     appendUserVaultActivityEvent: mockAppendUserVaultActivityEvent,
-    listUserVaultActivityEvents: vi.fn().mockResolvedValue([]),
-    listVaultLifecycleEvents: vi.fn().mockResolvedValue([]),
+    appendVaultLifecycleEvent: mockAppendVaultLifecycleEvent,
+    listUserVaultActivityEvents: mockListUserVaultActivityEvents,
+    listVaultUserActivityEvents: mockListVaultUserActivityEvents,
+    listVaultLifecycleEvents: mockListVaultLifecycleEvents,
   },
 }));
 
@@ -106,12 +121,16 @@ function getRouteHandler(
 
 describe("Custom Vault Routes", () => {
   const userAddress = "0x1234567890123456789012345678901234567890";
-  let mockProvider: Record<string, ReturnType<typeof vi.fn> | string>;
+  let mockProvider: Record<string, unknown>;
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetRequestsByUser.mockResolvedValue([]);
     mockMarkCompletedIdempotent.mockResolvedValue({ success: true });
+    mockAppendVaultLifecycleEvent.mockResolvedValue(undefined);
+    mockListUserVaultActivityEvents.mockResolvedValue([]);
+    mockListVaultUserActivityEvents.mockResolvedValue([]);
+    mockListVaultLifecycleEvents.mockResolvedValue([]);
 
     const mockClient = {
       getCurrentBatch: vi.fn().mockResolvedValue(10n),
@@ -415,5 +434,270 @@ describe("Custom Vault Routes", () => {
       }),
     );
     expect(res.payload).toMatchObject({ success: true });
+  });
+
+  it("seeds meaningful lifecycle events from settled batch status", () => {
+    const startTime = new Date("2026-01-01T00:00:00.000Z");
+    const endTime = new Date("2026-01-08T00:00:00.000Z");
+
+    const seedRows = seedLifecycleEventsFromBatchStatus({
+      vaultId: 1,
+      vaultAddress: "0x1234567890123456789012345678901234567890",
+      batchStatus: {
+        batchId: 10,
+        nextBatchId: 11,
+        status: "settled",
+        startTime,
+        endTime,
+        cutoffTime: endTime,
+        isPriceLocked: true,
+        totalSharesPending: 5n,
+        totalQueuedDeposits: 7n,
+        claimableRedemptions: 1,
+        mintedDeposits: 0,
+        proRataRatio: 1,
+      },
+    });
+
+    const eventTypes = seedRows.map((row) => row.eventType);
+    expect(eventTypes).toContain("cycle_opened");
+    expect(eventTypes).toContain("book_closed");
+    expect(eventTypes).toContain("processing_started");
+    expect(eventTypes).toContain("processing_completed");
+    expect(eventTypes).toContain("claim_window_opened");
+    expect(eventTypes).toContain("deposit_queue_processed");
+  });
+
+  it("seeds canonical lifecycle events for /events when storage is empty", async () => {
+    mockListVaultLifecycleEvents.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        id: 1,
+        vaultId: 1,
+        vaultAddress: userAddress,
+        cycleId: 10,
+        eventType: "cycle_opened",
+        title: "Cycle opened",
+        detail: "A new vault cycle started.",
+        status: "open",
+        requestId: null,
+        txHash: null,
+        assetAmount: null,
+        shareAmount: null,
+        metadata: null,
+        occurredAt: new Date("2026-01-01T00:00:00.000Z"),
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      },
+    ]);
+
+    const handler = getRouteHandler("/:vaultId/events", "get");
+    const req = {
+      params: { vaultId: "1" },
+      query: { limit: "20" },
+    } as unknown as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(mockAppendVaultLifecycleEvent).toHaveBeenCalled();
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.payload).toMatchObject({
+      success: true,
+      vaultId: 1,
+      items: [
+        expect.objectContaining({
+          type: "cycle_opened",
+          scope: "vault",
+        }),
+      ],
+    });
+  });
+
+  it("derives historical lifecycle seed timestamps from user activity", async () => {
+    const firstUserEvent = new Date("2026-03-19T16:37:31.211Z");
+    const lastUserEvent = new Date("2026-03-19T21:16:38.781Z");
+
+    mockListVaultLifecycleEvents.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        id: 11,
+        vaultId: 1,
+        vaultAddress: userAddress,
+        cycleId: 0,
+        eventType: "cycle_opened",
+        title: "Cycle opened",
+        detail: "A vault cycle was already active before lifecycle tracking started.",
+        status: "open",
+        requestId: null,
+        txHash: null,
+        assetAmount: null,
+        shareAmount: null,
+        metadata: null,
+        occurredAt: firstUserEvent,
+        createdAt: firstUserEvent,
+      },
+      {
+        id: 12,
+        vaultId: 1,
+        vaultAddress: userAddress,
+        cycleId: 0,
+        eventType: "processing_completed",
+        title: "Processing completed",
+        detail: "Queued withdrawals were processed.",
+        status: "processed",
+        requestId: null,
+        txHash: null,
+        assetAmount: null,
+        shareAmount: null,
+        metadata: null,
+        occurredAt: lastUserEvent,
+        createdAt: lastUserEvent,
+      },
+    ]);
+
+    mockListVaultUserActivityEvents.mockResolvedValue([
+      {
+        id: 1,
+        vaultId: 1,
+        vaultAddress: userAddress,
+        userAddress,
+        cycleId: null,
+        eventType: "deposit_minted",
+        title: "Deposit completed",
+        detail: "Your deposit was converted into vault shares.",
+        status: "minted",
+        requestId: null,
+        txHash: null,
+        assetAmount: "1.0",
+        shareAmount: "1.0",
+        metadata: null,
+        occurredAt: firstUserEvent,
+        createdAt: firstUserEvent,
+      },
+      {
+        id: 2,
+        vaultId: 1,
+        vaultAddress: userAddress,
+        userAddress,
+        cycleId: null,
+        eventType: "withdraw_ready",
+        title: "Withdrawal ready",
+        detail: "Your withdrawal request is ready to claim.",
+        status: "ready",
+        requestId: "wr-1",
+        txHash: null,
+        assetAmount: "1.0",
+        shareAmount: "1.0",
+        metadata: null,
+        occurredAt: lastUserEvent,
+        createdAt: lastUserEvent,
+      },
+    ]);
+
+    const handler = getRouteHandler("/:vaultId/events", "get");
+    const req = {
+      params: { vaultId: "1" },
+      query: { limit: "20" },
+    } as unknown as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(mockAppendVaultLifecycleEvent).toHaveBeenCalled();
+    expect(mockAppendVaultLifecycleEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "cycle_opened",
+        occurredAt: expect.any(Date),
+      }),
+    );
+
+    const cycleOpenedCall = mockAppendVaultLifecycleEvent.mock.calls.find(
+      (call) => call[0].eventType === "cycle_opened",
+    );
+    const cycleOpenedOccurredAt = cycleOpenedCall?.[0].occurredAt as Date | undefined;
+    expect(cycleOpenedOccurredAt).toBeDefined();
+    expect(
+      Math.abs(cycleOpenedOccurredAt!.getTime() - firstUserEvent.getTime()),
+    ).toBeLessThanOrEqual(5);
+  });
+
+  it("appends incremental vault lifecycle events from newer user activity", async () => {
+    const previousLifecycleAt = new Date("2026-03-20T10:00:00.000Z");
+    const newerUserAt = new Date("2026-03-20T11:06:42.435Z");
+
+    mockListVaultLifecycleEvents
+      .mockResolvedValueOnce([
+        {
+          id: 1,
+          vaultId: 1,
+          vaultAddress: userAddress,
+          cycleId: 0,
+          eventType: "processing_completed",
+          title: "Processing completed",
+          detail: "queued done",
+          status: "processed",
+          requestId: null,
+          txHash: null,
+          assetAmount: null,
+          shareAmount: null,
+          metadata: null,
+          occurredAt: previousLifecycleAt,
+          createdAt: previousLifecycleAt,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 2,
+          vaultId: 1,
+          vaultAddress: userAddress,
+          cycleId: 0,
+          eventType: "processing_completed",
+          title: "Processing completed",
+          detail: "queued done",
+          status: "processed",
+          requestId: null,
+          txHash: null,
+          assetAmount: null,
+          shareAmount: null,
+          metadata: null,
+          occurredAt: newerUserAt,
+          createdAt: newerUserAt,
+        },
+      ]);
+
+    mockListVaultUserActivityEvents.mockResolvedValue([
+      {
+        id: 9,
+        vaultId: 1,
+        vaultAddress: userAddress,
+        userAddress,
+        cycleId: null,
+        eventType: "withdraw_ready",
+        title: "Withdrawal ready",
+        detail: "ready",
+        status: "ready",
+        requestId: "wr-abc",
+        txHash: null,
+        assetAmount: "1.0",
+        shareAmount: "1.0",
+        metadata: null,
+        occurredAt: newerUserAt,
+        createdAt: newerUserAt,
+      },
+    ]);
+
+    const handler = getRouteHandler("/:vaultId/events", "get");
+    const req = {
+      params: { vaultId: "1" },
+      query: { limit: "20" },
+    } as unknown as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(mockAppendVaultLifecycleEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "withdraw_ready",
+        requestId: "wr-abc",
+      }),
+    );
   });
 });

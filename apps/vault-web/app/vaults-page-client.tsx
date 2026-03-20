@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@workspace/ui/components/card";
 import { Badge } from "@workspace/ui/components/badge";
@@ -9,11 +8,9 @@ import { ArrowUpRight } from "lucide-react";
 import {
   useCycleStatus,
   useVaultInstances,
-  useVaultNavHistory,
   useVaultPositions,
   useVaultStatus,
 } from "../src/lib/hooks";
-import { deriveVaultPerformanceStats } from "../src/lib/performance";
 import type { VaultInstance, VaultRiskLevel } from "../src/types";
 
 function formatCompactCurrency(value: number): string {
@@ -23,13 +20,6 @@ function formatCompactCurrency(value: number): string {
     notation: "compact",
     maximumFractionDigits: 1,
   }).format(value);
-}
-
-function formatPercent(value: number | null): string {
-  if (value === null || Number.isNaN(value)) {
-    return "--";
-  }
-  return `${(value * 100).toFixed(1)}%`;
 }
 
 function getDepositStatusLabel(
@@ -47,6 +37,13 @@ function getDepositStatusLabel(
     return "Deposits Paused";
   }
   return "Deposits Open";
+}
+
+function getVaultCardSummary(vault: VaultInstance): string {
+  const managerLabel = /sisyphus/i.test(vault.name)
+    ? "Managed by @AWEnetwork_ai"
+    : "Managed by vault operator";
+  return `${managerLabel} with a focus on ${vault.profile.strategyLabel.toLowerCase()}.`;
 }
 
 function RiskBadge({ level }: { level: VaultRiskLevel }) {
@@ -67,7 +64,6 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
   const router = useRouter();
   const { data, isLoading } = useVaultStatus(vault.id);
   const { executionMode, telemetryFresh } = useCycleStatus(vault.id);
-  const navHistory = useVaultNavHistory(undefined, vault.id);
   const positions = useVaultPositions(vault.id);
 
   const tvl = data?.nav?.totalAssets ?? 0;
@@ -75,8 +71,6 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
     (sum, position) => sum + position.costBasis,
     0,
   );
-
-  const performance = deriveVaultPerformanceStats(navHistory.data?.snapshots ?? []);
 
   const showAweCredit = /sisyphus/i.test(vault.name);
   const vaultHref = `/vault/${vault.id}`;
@@ -101,36 +95,16 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
             <div className="flex flex-col gap-3">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge className="w-fit border border-white/10 bg-white/8 text-[10px] uppercase tracking-[0.22em] text-slate-300">
-                  {vault.type === "custom" ? "Cycle Vault" : vault.type}
+                  {vault.type === "custom" ? "Vault" : vault.type}
                 </Badge>
-                <Badge
-                  variant="secondary"
-                  className="border border-white/10 bg-white/6 text-slate-300"
-                >
-                  {getDepositStatusLabel(vault.enabled, executionMode, telemetryFresh)}
-                </Badge>
+                <RiskBadge level={vault.profile.riskLevel} />
               </div>
 
               <div className="space-y-1">
                 <CardTitle className="text-2xl font-semibold tracking-tight text-white">
                   {vault.name}
                 </CardTitle>
-
-                {showAweCredit ? (
-                  <p className="text-[13px] text-slate-400 mt-0.5">
-                    by{" "}
-                    <a
-                      href="https://x.com/awenetwork_ai"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-cyan-200 underline decoration-cyan-300/40 underline-offset-4 transition-colors hover:text-white"
-                      onClick={(event) => event.stopPropagation()}
-                      onKeyDown={(event) => event.stopPropagation()}
-                    >
-                      @AWEnetwork_ai
-                    </a>
-                  </p>
-                ) : null}
+                <p className="text-sm leading-6 text-slate-300">{getVaultCardSummary(vault)}</p>
               </div>
 
               <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -144,9 +118,16 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
                   variant="secondary"
                   className="border border-white/10 bg-white/6 text-slate-200"
                 >
-                  Agent-managed
+                  {getDepositStatusLabel(vault.enabled, executionMode, telemetryFresh)}
                 </Badge>
-                <RiskBadge level={vault.profile.riskLevel} />
+                {showAweCredit ? (
+                  <Badge
+                    variant="secondary"
+                    className="border border-white/10 bg-white/6 text-slate-200"
+                  >
+                    @AWEnetwork_ai
+                  </Badge>
+                ) : null}
               </div>
             </div>
           </div>
@@ -155,8 +136,10 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
         <CardContent className="relative space-y-5">
           <div className="grid grid-cols-3 gap-3 rounded-2xl border border-white/10 bg-slate-950/30 p-4">
             <div className="flex flex-col gap-1">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-slate-400">APY</span>
-              <span className="text-lg font-semibold text-white">--</span>
+              <span className="text-[11px] uppercase tracking-[0.18em] text-slate-400">NAV</span>
+              <span className="text-lg font-semibold text-white">
+                {isLoading ? "--" : `$${data?.nav.sharePrice.toFixed(4) ?? "--"}`}
+              </span>
             </div>
 
             <div className="flex flex-col gap-1">
@@ -201,11 +184,11 @@ export default function VaultsPageClient() {
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.18),_transparent_34%),radial-gradient(circle_at_85%_15%,_rgba(244,114,182,0.14),_transparent_18%)]" />
           <div className="relative space-y-3 animate-in fade-in-0 slide-in-from-bottom-4 duration-700">
             <h1 className="max-w-3xl text-4xl font-semibold tracking-tight text-white sm:text-5xl">
-              Vault dashboard
+              Discover vaults
             </h1>
             <p className="max-w-2xl text-base leading-7 text-slate-300 sm:text-lg">
-              Follow each vault, check current size and capital deployment, and open the detailed
-              workspace when you want to review cycle status, deposits, or exits.
+              Compare live vaults by mandate, manager, current state, and proof before opening the
+              full workspace.
             </p>
             <div className="pt-2 text-sm text-slate-400">
               {instances.length} vault{instances.length === 1 ? "" : "s"} available
@@ -217,8 +200,8 @@ export default function VaultsPageClient() {
           <div className="space-y-2">
             <h2 className="text-2xl font-semibold tracking-tight text-white">Available vaults</h2>
             <p className="max-w-2xl text-sm leading-6 text-slate-400">
-              Each vault card shows live size, share price, and how much capital is currently
-              deployed.
+              Each card surfaces mandate, current access state, latest NAV, and tracked capital so
+              you can decide where to drill deeper.
             </p>
           </div>
         </div>

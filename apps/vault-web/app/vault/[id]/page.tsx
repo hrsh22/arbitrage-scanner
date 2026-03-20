@@ -16,7 +16,7 @@ export async function generateMetadata({
   return {
     title: `Vault ${id} | Polymarket Vault`,
     description:
-      "Follow the current cycle, deposit queue, exits, and settlement state for this vault.",
+      "Review the mandate, action panel, performance, operator context, and meaningful updates for this vault.",
   };
 }
 

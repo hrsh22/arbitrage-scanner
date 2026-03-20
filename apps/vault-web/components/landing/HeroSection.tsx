@@ -26,8 +26,8 @@ export function HeroSection() {
         </h1>
 
         <p className="mx-auto mt-8 max-w-2xl animate-in fade-in slide-in-from-bottom-8 duration-1000 delay-150 text-lg leading-8 text-slate-300 sm:text-xl">
-          Deposit into vaults managed by agents and curators. Get strategy exposure through shares,
-          NAV, and defined mandates, without trading every market yourself.
+          Allocate into agent-managed vaults and track mandate, NAV, and claims from one clear
+          workspace instead of trading every market yourself.
         </p>
 
         <div className="mt-12 flex flex-col items-center justify-center gap-4 sm:flex-row animate-in fade-in slide-in-from-bottom-10 duration-1000 delay-300">
@@ -38,15 +38,6 @@ export function HeroSection() {
             >
               Explore Vaults
               <ArrowRight className="ml-2 h-5 w-5 transition-transform group-hover:translate-x-1" />
-            </Button>
-          </Link>
-          <Link href="https://forms.gle/your-form-link" target="_blank" rel="noopener noreferrer">
-            <Button
-              size="lg"
-              variant="outline"
-              className="h-14 min-w-[200px] rounded-full border-white/10 bg-white/5 text-lg font-medium text-white backdrop-blur-md transition-all hover:bg-white/10 hover:text-cyan-200"
-            >
-              Become a curator
             </Button>
           </Link>
         </div>

@@ -698,6 +698,45 @@ export class LiquidityManager {
           : this.getUsdcBalance(this.safeAddress),
       ]);
 
+    if (pendingRequests.length === 0) {
+      return null;
+    }
+
+    const latestPendingUserEvents = await activityEventRepository.listVaultUserActivityEvents(
+      this.vaultAddress,
+      100,
+    );
+    const newestUserEvent = latestPendingUserEvents[0]?.occurredAt;
+
+    if (newestUserEvent) {
+      const existingLifecycle = await activityEventRepository.listVaultLifecycleEvents(
+        this.vaultAddress,
+        100,
+      );
+      const latestLifecycle = existingLifecycle[0]?.occurredAt;
+
+      if (!latestLifecycle || newestUserEvent.getTime() > latestLifecycle.getTime()) {
+        const hasRecentDeposit = latestPendingUserEvents.some(
+          (event) =>
+            event.eventType === "deposit_minted" &&
+            event.occurredAt.getTime() >= newestUserEvent.getTime() - 15 * 60 * 1000,
+        );
+
+        if (hasRecentDeposit) {
+          await activityEventRepository.appendVaultLifecycleEvent({
+            vaultId: this.vaultId,
+            vaultAddress: this.vaultAddress,
+            cycleId: vaultInfo.batchInfo?.currentBatchId,
+            eventType: "deposit_queue_processed",
+            title: "Deposit queue processed",
+            detail: "A recent deposit was minted and reflected in vault balances.",
+            status: vaultInfo.batchInfo?.currentBatchStatus,
+            occurredAt: newestUserEvent,
+          });
+        }
+      }
+    }
+
     const head = pendingRequests[0];
     if (!head) {
       return null;
@@ -748,6 +787,20 @@ export class LiquidityManager {
     }
 
     if (!transitionResult.alreadyInTargetState) {
+      await activityEventRepository.appendVaultLifecycleEvent({
+        vaultId: this.vaultId,
+        vaultAddress: this.vaultAddress,
+        cycleId: vaultInfo.batchInfo?.currentBatchId,
+        eventType: "withdraw_ready",
+        title: "Withdrawal processed",
+        detail: "A queued withdrawal became ready to claim.",
+        status: transitionResult.request?.status ?? "ready",
+        requestId: head.requestId,
+        assetAmount: head.assetsEstimated,
+        shareAmount: head.shares,
+        occurredAt: transitionResult.request?.readyAt ?? new Date(),
+      });
+
       void activityEventRepository.appendUserVaultActivityEvent({
         vaultId: this.vaultId,
         vaultAddress: this.vaultAddress,

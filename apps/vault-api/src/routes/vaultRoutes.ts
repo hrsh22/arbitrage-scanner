@@ -56,6 +56,14 @@ function getVaultConfigByAddress(vaultAddress: string): VaultInstanceConfig | un
   return getAllVaultConfigs().find((config) => config.vaultAddress.toLowerCase() === normalized);
 }
 
+function getRequestLockVaultId(requestId: string): number {
+  let hash = 0;
+  for (let index = 0; index < requestId.length; index += 1) {
+    hash = (hash * 31 + requestId.charCodeAt(index)) >>> 0;
+  }
+  return 1_000_000 + (hash % 1_000_000);
+}
+
 async function reconcileCustomReadyWithdrawalRequests(
   userAddress: string,
   requests: Array<typeof withdrawalRequests.$inferSelect>,
@@ -1634,7 +1642,7 @@ export function buildVaultRouter(): Router {
     const requestId = req.params.requestId!;
     const userAddress = req.session!.address as string;
     const lockKey = `withdrawal-preflight:${requestId}`;
-    const vaultId = 0;
+    const vaultId = getRequestLockVaultId(requestId);
     const lockResult = pendingTxRegistry.acquireLock(vaultId, lockKey, "reconcile", "api", {
       ttlMs: 60000,
     });
@@ -1765,7 +1773,7 @@ export function buildVaultRouter(): Router {
 
     // Acquire lock to prevent concurrent state changes
     const lockKey = `withdrawal:${requestId}`;
-    const vaultId = 0; // Use 0 as placeholder for withdrawal ops (not vault-specific)
+    const vaultId = getRequestLockVaultId(requestId);
     const lockResult = pendingTxRegistry.acquireLock(
       vaultId,
       lockKey,
@@ -1876,7 +1884,7 @@ export function buildVaultRouter(): Router {
 
     // Acquire lock to prevent concurrent state changes
     const lockKey = `withdrawal:${requestId}`;
-    const vaultId = 0; // Use 0 as placeholder for withdrawal ops (not vault-specific)
+    const vaultId = getRequestLockVaultId(requestId);
     const lockResult = pendingTxRegistry.acquireLock(
       vaultId,
       lockKey,
@@ -1971,7 +1979,7 @@ export function buildVaultRouter(): Router {
 
     // Acquire lock to prevent concurrent state changes
     const lockKey = `withdrawal:${requestId}`;
-    const vaultId = 0; // Use 0 as placeholder for withdrawal ops (not vault-specific)
+    const vaultId = getRequestLockVaultId(requestId);
     const lockResult = pendingTxRegistry.acquireLock(
       vaultId,
       lockKey,
@@ -1986,6 +1994,20 @@ export function buildVaultRouter(): Router {
         userAddress,
         existingAction: lockResult.existing?.action,
       });
+
+      const existing = await withdrawalRepository.getRequestById(requestId);
+      if (existing && existing.userAddress.toLowerCase() === userAddress.toLowerCase()) {
+        if (existing.status === "completed") {
+          res.json({
+            success: true,
+            request: existing,
+            idempotent: true,
+            message: "Withdrawal request was already completed",
+          });
+          return;
+        }
+      }
+
       res.status(423).json({
         error: "Concurrent operation in progress. Please retry shortly.",
         requestId,

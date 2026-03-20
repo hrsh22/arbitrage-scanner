@@ -138,6 +138,24 @@ class ActivityEventRepository {
       return [];
     }
   }
+
+  async listVaultUserActivityEvents(vaultAddress: string, limit = 500) {
+    try {
+      const db = await getDb();
+      return await db
+        .select()
+        .from(userVaultActivityEvents)
+        .where(eq(userVaultActivityEvents.vaultAddress, vaultAddress))
+        .orderBy(desc(userVaultActivityEvents.occurredAt))
+        .limit(limit);
+    } catch (error) {
+      logger.warn("ActivityEventRepository: Failed to read vault user activity events", {
+        vaultAddress,
+        error: (error as Error).message,
+      });
+      return [];
+    }
+  }
 }
 
 export const activityEventRepository = new ActivityEventRepository();
