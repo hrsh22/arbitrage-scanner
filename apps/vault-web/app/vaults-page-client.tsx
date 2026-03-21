@@ -88,8 +88,8 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
       }}
       className="group block h-full cursor-pointer focus:outline-none"
     >
-      <Card className="relative h-full overflow-hidden rounded-[28px] border border-white/10 bg-white/[0.04] shadow-[0_30px_90px_-40px_rgba(8,15,36,0.95)] backdrop-blur-xl transition-all duration-300 hover:-translate-y-1 hover:border-cyan-300/25 hover:bg-white/[0.06] focus-within:border-cyan-300/25">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_28%),radial-gradient(circle_at_88%_18%,_rgba(244,114,182,0.12),_transparent_18%)] opacity-80" />
+      <Card className="relative h-full overflow-hidden rounded-[2px] border border-[#212121] bg-[#121212] shadow-none transition-all duration-300 hover:scale-[1.02] hover:border-[#656565] hover:bg-[#1A1A1A]">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(236,102,0,0.10),_transparent_28%),radial-gradient(circle_at_88%_18%,_rgba(137,145,130,0.12),_transparent_18%)] opacity-80" />
         <CardHeader className="relative space-y-4 pb-3">
           <div className="flex items-start justify-between gap-3">
             <div className="flex flex-col gap-3">
@@ -110,7 +110,7 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
               <div className="flex flex-wrap items-center gap-2 pt-1">
                 <Badge
                   variant="secondary"
-                  className="border border-cyan-300/15 bg-cyan-300/10 text-cyan-100 hover:bg-cyan-300/15"
+                  className="rounded-[2px] border border-[#656565]/40 bg-[#212121] text-white"
                 >
                   {vault.profile.strategyLabel}
                 </Badge>
@@ -134,7 +134,7 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
         </CardHeader>
 
         <CardContent className="relative space-y-5">
-          <div className="grid grid-cols-3 gap-3 rounded-2xl border border-white/10 bg-slate-950/30 p-4">
+          <div className="grid grid-cols-3 gap-3 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4">
             <div className="flex flex-col gap-1">
               <span className="text-[11px] uppercase tracking-[0.18em] text-slate-400">NAV</span>
               <span className="text-lg font-semibold text-white">
@@ -161,8 +161,8 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
             </div>
           </div>
 
-          <div className="flex items-center justify-end border-t border-white/10 pt-4">
-            <span className="inline-flex items-center gap-2 text-sm font-medium text-cyan-200 transition-transform duration-300 group-hover:translate-x-1">
+          <div className="flex items-center justify-end border-t border-[#212121] pt-4">
+            <span className="inline-flex items-center gap-2 text-sm font-medium text-white transition-transform duration-300 group-hover:translate-x-1">
               Open vault
               <ArrowUpRight className="h-4 w-4" />
             </span>
@@ -180,8 +180,8 @@ export default function VaultsPageClient() {
   return (
     <main className="vault-pane-scroll flex-1 min-h-0 overflow-y-auto px-4 py-8 sm:px-6 sm:py-10 lg:px-10 lg:py-12">
       <div className="mx-auto max-w-6xl space-y-10">
-        <section className="relative overflow-hidden rounded-[32px] border border-white/10 bg-white/[0.045] px-6 py-8 shadow-[0_40px_100px_-50px_rgba(8,15,36,0.95)] backdrop-blur-xl sm:px-8 lg:px-10">
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.18),_transparent_34%),radial-gradient(circle_at_85%_15%,_rgba(244,114,182,0.14),_transparent_18%)]" />
+        <section className="relative overflow-hidden rounded-[2px] border border-[#212121] bg-[#121212] px-6 py-8 shadow-none sm:px-8 lg:px-10">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(137,145,130,0.16),_transparent_34%),radial-gradient(circle_at_85%_15%,_rgba(236,102,0,0.14),_transparent_18%)]" />
           <div className="relative space-y-3 animate-in fade-in-0 slide-in-from-bottom-4 duration-700">
             <h1 className="max-w-3xl text-4xl font-semibold tracking-tight text-white sm:text-5xl">
               Discover vaults
@@ -218,8 +218,8 @@ export default function VaultsPageClient() {
             <Skeleton className="h-[420px] w-full rounded-[28px] bg-white/10" />
           </div>
         ) : instances.length === 0 ? (
-          <Card className="border-white/10 bg-white/[0.04] backdrop-blur-xl">
-            <CardContent className="py-10 text-center text-sm text-slate-300">
+          <Card className="rounded-[2px] border-[#212121] bg-[#121212]">
+            <CardContent className="py-10 text-center text-sm text-[#828B8D]">
               No vaults are available right now.
             </CardContent>
           </Card>

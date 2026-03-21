@@ -655,6 +655,7 @@ function deriveLifecycleEventsFromUserActivity(args: {
     (row) => row.eventType === "withdraw_ready" || row.eventType === "withdraw_settled",
   );
   const hasClaimCompleted = ordered.some((row) => row.eventType === "claim_completed");
+  const hasDepositQueued = ordered.some((row) => row.eventType === "deposit_queued");
   const hasDepositProcessed = ordered.some((row) => row.eventType === "deposit_minted");
   const hasAnyWithdrawFlow = ordered.some((row) => row.eventType.startsWith("withdraw_"));
 
@@ -685,7 +686,7 @@ function deriveLifecycleEventsFromUserActivity(args: {
     },
   ];
 
-  if (hasAnyWithdrawFlow || hasDepositProcessed) {
+  if (hasAnyWithdrawFlow || hasDepositQueued || hasDepositProcessed) {
     events.push({
       vaultId,
       vaultAddress,
@@ -695,6 +696,21 @@ function deriveLifecycleEventsFromUserActivity(args: {
       detail: "Direct actions paused and requests moved into queued processing.",
       occurredAt: firstOccurredAt,
       status: "processing",
+    });
+  }
+
+  if (hasDepositQueued) {
+    const firstQueuedDeposit = ordered.find((row) => row.eventType === "deposit_queued");
+    const firstQueuedAt = firstQueuedDeposit?.occurredAt ?? firstOccurredAt;
+    events.push({
+      vaultId,
+      vaultAddress,
+      cycleId: firstQueuedDeposit?.cycleId ?? syntheticCycleId + 1,
+      eventType: "deposit_queued",
+      title: "Deposit queued",
+      detail: "A new deposit entered the queue for the next cycle.",
+      occurredAt: firstQueuedAt,
+      status: "queued",
     });
   }
 
@@ -820,6 +836,23 @@ function deriveIncrementalLifecycleEventsFromUserActivity(args: {
   }> = [];
 
   for (const row of incrementalRows) {
+    if (row.eventType === "deposit_queued") {
+      events.push({
+        vaultId,
+        vaultAddress,
+        cycleId: row.cycleId ?? cycleId + 1,
+        eventType: "deposit_queued",
+        title: "Deposit queued",
+        detail: "A new deposit entered the queue for the next cycle.",
+        occurredAt: row.occurredAt,
+        status: row.status ?? "queued",
+        requestId: row.requestId ?? undefined,
+        assetAmount: row.assetAmount ?? undefined,
+        shareAmount: row.shareAmount ?? undefined,
+      });
+      continue;
+    }
+
     if (row.eventType === "deposit_minted") {
       events.push({
         vaultId,
@@ -928,6 +961,24 @@ function validateClaimRequest(body: unknown): { signature?: string } {
   if (typeof body !== "object" || body === null) return {};
   const { signature } = body as Record<string, unknown>;
   return { signature: typeof signature === "string" ? signature : undefined };
+}
+
+function parsePositiveIntQuery(raw: unknown, fallbackValue: number, maxValue: number): number {
+  const parsed = typeof raw === "string" ? parseInt(raw, 10) : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallbackValue;
+  }
+
+  return Math.min(parsed, maxValue);
+}
+
+function parseNonNegativeIntQuery(raw: unknown, fallbackValue: number, maxValue: number): number {
+  const parsed = typeof raw === "string" ? parseInt(raw, 10) : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallbackValue;
+  }
+
+  return Math.min(parsed, maxValue);
 }
 
 // ============================================================================
@@ -1455,6 +1506,22 @@ export function buildCustomVaultRouter(): Router {
       const assets = typeof req.body?.assets === "string" ? req.body.assets : undefined;
       const shares = typeof req.body?.shares === "string" ? req.body.shares : undefined;
       const mode = req.body?.mode === "queued" ? "queued" : "minted";
+      let queuedCycleId: number | undefined;
+
+      if (mode === "queued") {
+        try {
+          const currentBatch = await provider.getClient().getCurrentBatch();
+          const currentBatchId = Number(currentBatch);
+          if (Number.isFinite(currentBatchId)) {
+            queuedCycleId = currentBatchId + 1;
+          }
+        } catch (error) {
+          logger.warn("CustomVault API: Failed to resolve queued deposit cycle", {
+            vaultId,
+            error: (error as Error).message,
+          });
+        }
+      }
 
       if (!assets && !shares) {
         res.status(400).json({ error: "assets or shares is required" });
@@ -1465,6 +1532,7 @@ export function buildCustomVaultRouter(): Router {
         vaultId,
         vaultAddress: provider.config.vaultAddress,
         userAddress,
+        cycleId: queuedCycleId,
         eventType: mode === "queued" ? "deposit_queued" : "deposit_minted",
         title: mode === "queued" ? "Deposit queued" : "Deposit completed",
         detail:
@@ -2204,8 +2272,8 @@ export function buildCustomVaultRouter(): Router {
   router.get("/:vaultId/events", async (req, res) => {
     try {
       const vaultId = parseInt(req.params.vaultId, 10);
-      const limitParam = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : 50;
-      const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : 50;
+      const limit = parsePositiveIntQuery(req.query.limit, 50, 100);
+      const offset = parseNonNegativeIntQuery(req.query.offset, 0, 2000);
 
       if (Number.isNaN(vaultId)) {
         res.status(400).json({ error: "Invalid vault ID" });
@@ -2219,12 +2287,14 @@ export function buildCustomVaultRouter(): Router {
       }
 
       const vaultAddress = provider.config.vaultAddress;
-      const canonicalEvents = await activityEventRepository.listVaultLifecycleEvents(
+      const canonicalHead = await activityEventRepository.listVaultLifecycleEvents(
         vaultAddress,
-        limit,
+        1,
+        0,
       );
+      const hasCanonicalEvents = canonicalHead.length > 0;
 
-      const latestCanonicalOccurredAt = canonicalEvents[0]?.occurredAt ?? null;
+      const latestCanonicalOccurredAt = canonicalHead[0]?.occurredAt ?? null;
 
       try {
         const [currentBatchId, historicalUserEvents] = await Promise.all([
@@ -2232,7 +2302,7 @@ export function buildCustomVaultRouter(): Router {
           activityEventRepository.listVaultUserActivityEvents(vaultAddress, 500),
         ]);
 
-        if (canonicalEvents.length === 0) {
+        if (!hasCanonicalEvents) {
           let seedRows = deriveLifecycleEventsFromUserActivity({
             vaultId,
             vaultAddress,
@@ -2276,19 +2346,29 @@ export function buildCustomVaultRouter(): Router {
 
       const canonicalEventsAfterSeed = await activityEventRepository.listVaultLifecycleEvents(
         vaultAddress,
-        limit,
+        limit + 1,
+        offset,
       );
+      const canonicalMode = hasCanonicalEvents || canonicalEventsAfterSeed.length > 0;
 
-      if (canonicalEventsAfterSeed.length > 0) {
+      if (canonicalMode) {
+        const hasMore = canonicalEventsAfterSeed.length > limit;
+        const pagedItems = canonicalEventsAfterSeed.slice(0, limit).map(mapCanonicalVaultEvent);
         res.json({
           success: true,
           vaultId,
-          items: canonicalEventsAfterSeed.map(mapCanonicalVaultEvent),
+          items: pagedItems,
+          pagination: {
+            limit,
+            offset,
+            hasMore,
+          },
         });
         return;
       }
 
       const { db } = await import("../db/index.js");
+      const fallbackWindow = offset + limit + 1;
 
       const [cycles, processingEvents] = await Promise.all([
         db
@@ -2296,13 +2376,13 @@ export function buildCustomVaultRouter(): Router {
           .from(flatBookCycles)
           .where(eq(flatBookCycles.vaultAddress, vaultAddress))
           .orderBy(desc(flatBookCycles.openedAt))
-          .limit(limit),
+          .limit(fallbackWindow),
         db
           .select()
           .from(flatBookProcessingEvents)
           .where(eq(flatBookProcessingEvents.vaultAddress, vaultAddress))
           .orderBy(desc(flatBookProcessingEvents.createdAt))
-          .limit(limit),
+          .limit(fallbackWindow),
       ]);
 
       const processingSignatures = new Set(
@@ -2332,9 +2412,21 @@ export function buildCustomVaultRouter(): Router {
           (left, right) =>
             new Date(right.occurredAt).getTime() - new Date(left.occurredAt).getTime(),
         )
-        .slice(0, limit);
+        .slice(offset, offset + limit + 1);
 
-      res.json({ success: true, vaultId, items: fallbackItems });
+      const hasMore = fallbackItems.length > limit;
+      const pagedFallbackItems = fallbackItems.slice(0, limit);
+
+      res.json({
+        success: true,
+        vaultId,
+        items: pagedFallbackItems,
+        pagination: {
+          limit,
+          offset,
+          hasMore,
+        },
+      });
     } catch (error) {
       logger.error("CustomVault API: Failed to get vault events", {
         error: (error as Error).message,
@@ -2356,8 +2448,8 @@ export function buildCustomVaultRouter(): Router {
       }
       const vaultId = parseInt(vaultIdParam, 10);
       const userAddress = req.session!.address as Address;
-      const limitParam = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : 100;
-      const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 200) : 100;
+      const limit = parsePositiveIntQuery(req.query.limit, 100, 200);
+      const offset = parseNonNegativeIntQuery(req.query.offset, 0, 2000);
 
       if (Number.isNaN(vaultId)) {
         res.status(400).json({ error: "Invalid vault ID" });
@@ -2372,10 +2464,12 @@ export function buildCustomVaultRouter(): Router {
 
       const { db } = await import("../db/index.js");
       const vaultAddress = provider.config.vaultAddress;
+      const windowSize = offset + limit + 1;
       const canonicalHistory = await activityEventRepository.listUserVaultActivityEvents(
         vaultAddress,
         userAddress,
-        limit,
+        windowSize,
+        0,
       );
 
       const [queueParticipants, withdrawHistory, epochHistory, providerState] = await Promise.all([
@@ -2389,7 +2483,7 @@ export function buildCustomVaultRouter(): Router {
             ),
           )
           .orderBy(desc(flatBookQueueParticipants.firstQueuedAt))
-          .limit(limit),
+          .limit(windowSize),
         db
           .select()
           .from(withdrawalRequests)
@@ -2400,7 +2494,7 @@ export function buildCustomVaultRouter(): Router {
             ),
           )
           .orderBy(desc(withdrawalRequests.requestedAt))
-          .limit(limit),
+          .limit(windowSize),
         db
           .select()
           .from(epochRequests)
@@ -2411,7 +2505,7 @@ export function buildCustomVaultRouter(): Router {
             ),
           )
           .orderBy(desc(epochRequests.createdAt))
-          .limit(limit),
+          .limit(windowSize),
         provider.getUserRedemptionState(userAddress),
       ]);
 
@@ -2434,8 +2528,7 @@ export function buildCustomVaultRouter(): Router {
         .sort(
           (left, right) =>
             new Date(right.occurredAt).getTime() - new Date(left.occurredAt).getTime(),
-        )
-        .slice(0, limit);
+        );
 
       const items = [...canonicalHistory.map(mapCanonicalUserEvent), ...fallbackItems]
         .filter((item, index, array) => {
@@ -2451,9 +2544,22 @@ export function buildCustomVaultRouter(): Router {
           (left, right) =>
             new Date(right.occurredAt).getTime() - new Date(left.occurredAt).getTime(),
         )
-        .slice(0, limit);
+        .slice(offset, offset + limit + 1);
 
-      res.json({ success: true, vaultId, userAddress, items });
+      const hasMore = items.length > limit;
+      const pagedItems = items.slice(0, limit);
+
+      res.json({
+        success: true,
+        vaultId,
+        userAddress,
+        items: pagedItems,
+        pagination: {
+          limit,
+          offset,
+          hasMore,
+        },
+      });
     } catch (error) {
       logger.error("CustomVault API: Failed to get user history", {
         error: (error as Error).message,

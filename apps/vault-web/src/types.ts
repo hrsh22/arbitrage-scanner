@@ -187,10 +187,17 @@ export interface VaultActivityFeedItem {
   metadata?: Record<string, unknown>;
 }
 
+export interface ActivityPagination {
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}
+
 export interface VaultEventsResponse {
   success: boolean;
   vaultId: number;
   items: VaultActivityFeedItem[];
+  pagination?: ActivityPagination;
 }
 
 export interface UserVaultHistoryResponse {
@@ -198,6 +205,7 @@ export interface UserVaultHistoryResponse {
   vaultId: number;
   userAddress: string;
   items: VaultActivityFeedItem[];
+  pagination?: ActivityPagination;
 }
 
 export type WithdrawalRequestStatus = "pending" | "ready" | "completed" | "cancelled";

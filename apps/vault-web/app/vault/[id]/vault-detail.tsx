@@ -292,6 +292,7 @@ const MEANINGFUL_ACTIVITY_TYPES = new Set([
   "processing_started",
   "begin_processing",
   "process_deposits_chunk",
+  "deposit_queued",
   "deposit_queue_processed",
   "process_redeems_chunk",
   "withdraw_ready",
@@ -304,6 +305,8 @@ const MEANINGFUL_ACTIVITY_TYPES = new Set([
   "processing_completed",
   "finalize_processing",
 ]);
+
+const ACTIVITY_PAGE_SIZE = 10;
 
 function isMeaningfulActivity(item: VaultActivityFeedItem): boolean {
   const normalizedType = item.type.toLowerCase();
@@ -378,7 +381,7 @@ function SectionShell({
   return (
     <Card
       id={id}
-      className="overflow-hidden rounded-[30px] border border-white/10 bg-white/[0.045] shadow-[0_30px_90px_-55px_rgba(8,15,36,0.95)] backdrop-blur-xl"
+      className="overflow-hidden rounded-[2px] border border-[#212121] bg-[#121212] shadow-none"
     >
       <CardHeader className="border-b border-white/10 pb-5">
         {eyebrow ? (
@@ -410,7 +413,7 @@ function SummaryMetric({
   tooltip?: string;
 }) {
   return (
-    <div className="rounded-[24px] border border-white/10 bg-slate-950/35 p-4">
+    <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4">
       <div className="flex items-center gap-2">
         <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</p>
         {tooltip ? <InfoTooltip label={label} content={tooltip} /> : null}
@@ -433,7 +436,7 @@ function PerformanceTile({
   tooltip?: string;
 }) {
   return (
-    <div className="rounded-[22px] border border-white/10 bg-slate-950/30 p-4">
+    <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4">
       <div className="flex items-center gap-2">
         <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</p>
         {tooltip ? <InfoTooltip label={label} content={tooltip} /> : null}
@@ -465,7 +468,7 @@ function NavChart({
 
   if (stats.points.length < 2) {
     return (
-      <div className="rounded-[26px] border border-dashed border-white/10 bg-slate-950/30 p-6 text-sm text-slate-400">
+      <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-6 text-sm text-[#828B8D]">
         Not enough NAV history yet to render a performance curve.
       </div>
     );
@@ -493,7 +496,7 @@ function NavChart({
   const area = `0,${height} ${line} ${width},${height}`;
 
   return (
-    <div className="rounded-[28px] border border-white/10 bg-[linear-gradient(180deg,rgba(8,15,36,0.72),rgba(2,6,23,0.95))] p-5">
+    <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-5">
       <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">NAV chart</p>
@@ -530,13 +533,15 @@ function NavChart({
 function ActivityTimeline({
   items,
   emptyState = "No recent updates yet.",
+  pageSize = ACTIVITY_PAGE_SIZE,
 }: {
   items: ActivityItem[];
   emptyState?: string;
+  pageSize?: number;
 }) {
   if (items.length === 0) {
     return (
-      <div className="rounded-[22px] border border-dashed border-white/10 bg-slate-950/30 p-5 text-sm text-slate-400">
+      <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-5 text-sm text-[#828B8D]">
         {emptyState}
       </div>
     );
@@ -545,7 +550,10 @@ function ActivityTimeline({
   return (
     <div className="space-y-3">
       {items.map((item) => (
-        <div key={item.id} className="rounded-[22px] border border-white/10 bg-slate-950/30 p-4">
+        <div
+          key={item.id}
+          className="min-h-[92px] rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4"
+        >
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="space-y-1.5">
               <div className="flex items-center gap-2">
@@ -565,13 +573,70 @@ function ActivityTimeline({
           </div>
         </div>
       ))}
+
+      {Array.from({ length: Math.max(pageSize - items.length, 0) }).map((_, index) => (
+        <div
+          key={`activity-placeholder-${index}`}
+          className="invisible min-h-[92px] rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4"
+          aria-hidden="true"
+        />
+      ))}
+    </div>
+  );
+}
+
+function ActivityPaginationControls({
+  offset,
+  pageSize,
+  currentCount,
+  hasMore,
+  isLoading,
+  onPrevious,
+  onNext,
+}: {
+  offset: number;
+  pageSize: number;
+  currentCount: number;
+  hasMore: boolean;
+  isLoading: boolean;
+  onPrevious: () => void;
+  onNext: () => void;
+}) {
+  const start = currentCount > 0 ? offset + 1 : 0;
+  const end = offset + currentCount;
+
+  return (
+    <div className="flex flex-col gap-3 rounded-[2px] border border-[#212121] bg-[#0A0A0A] px-4 py-3 text-xs text-slate-400 sm:flex-row sm:items-center sm:justify-between">
+      <span>{currentCount > 0 ? `Showing ${start}-${end}` : "No activity on this page"}</span>
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onPrevious}
+          disabled={offset === 0 || isLoading}
+          className="h-8 rounded-[2px] border-[#656565]/40 bg-transparent px-3 text-xs text-white hover:bg-[#212121] disabled:opacity-40"
+        >
+          Previous
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onNext}
+          disabled={!hasMore || isLoading}
+          className="h-8 rounded-[2px] border-[#656565]/40 bg-transparent px-3 text-xs text-white hover:bg-[#212121] disabled:opacity-40"
+        >
+          Next
+        </Button>
+      </div>
     </div>
   );
 }
 
 function RailStat({ label, value, tooltip }: { label: string; value: string; tooltip?: string }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-slate-950/35 px-4 py-3">
+    <div className="flex items-center justify-between gap-3 rounded-[2px] border border-[#212121] bg-[#0A0A0A] px-4 py-3">
       <span className="flex items-center gap-2 text-sm text-slate-400">
         {label}
         {tooltip ? <InfoTooltip label={label} content={tooltip} /> : null}
@@ -591,7 +656,7 @@ function KeyInfoItem({
   tooltip?: string;
 }) {
   return (
-    <div className="rounded-[18px] border border-white/10 bg-slate-950/35 p-3">
+    <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-3">
       <div className="flex items-center gap-2">
         <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{label}</p>
         {tooltip ? <InfoTooltip label={label} content={tooltip} /> : null}
@@ -622,7 +687,7 @@ function AddressField({ label, address, hint }: { label: string; address: string
   }, [copied]);
 
   return (
-    <div className="rounded-[22px] border border-white/10 bg-slate-950/35 p-4">
+    <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4">
       <div className="flex items-center justify-between gap-3">
         <span className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</span>
         <Tooltip>
@@ -683,12 +748,12 @@ function TechnicalDetailsDialog({
         <Button
           type="button"
           variant="outline"
-          className="rounded-full border-white/10 bg-white/5 text-white hover:bg-white/10"
+          className="rounded-[10px] border border-[#656565]/40 bg-[#121212] text-white hover:bg-[#212121]"
         >
           Technical details
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-3xl rounded-[28px] border border-white/10 bg-slate-950 text-white shadow-[0_40px_120px_-60px_rgba(8,15,36,0.98)]">
+      <DialogContent className="max-w-3xl rounded-[2px] border border-[#212121] bg-[#0A0A0A] text-white shadow-none">
         <DialogHeader>
           <DialogTitle className="text-2xl tracking-tight text-white">
             Technical details
@@ -734,7 +799,7 @@ function TxFeedback({ message, error }: { message: string | null; error: string 
   return (
     <div
       className={cn(
-        "rounded-2xl border px-4 py-3 text-sm leading-6",
+        "rounded-[2px] border px-4 py-3 text-sm leading-6",
         error
           ? "border-rose-400/25 bg-rose-400/10 text-rose-100"
           : "border-emerald-400/25 bg-emerald-400/10 text-emerald-100",
@@ -935,7 +1000,11 @@ function DepositRail({
             return;
           }
           setSubmittedDepositAmount(amount);
-          deposit(vault.config.vaultAddress as `0x${string}`, parsedAmount, address as `0x${string}`);
+          deposit(
+            vault.config.vaultAddress as `0x${string}`,
+            parsedAmount,
+            address as `0x${string}`,
+          );
           return;
         }
 
@@ -974,7 +1043,7 @@ function DepositRail({
 
       {!walletConnected && <p className="text-[11px] text-slate-400">Connect wallet to deposit.</p>}
 
-      <div className="rounded-xl border border-white/10 bg-slate-950/40 p-2.5">
+      <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-2.5">
         <div className="mb-2 flex items-center justify-between">
           <label htmlFor="vault-deposit-amount" className="text-xs text-slate-400">
             Amount
@@ -1005,7 +1074,7 @@ function DepositRail({
             resetQueueDeposit();
           }}
           disabled={actionPending}
-          className="h-10 rounded-lg border-white/10 bg-white/5 px-3 font-mono text-sm text-white placeholder:text-slate-500"
+          className="h-10 rounded-[2px] border border-[#212121] bg-transparent px-3 font-mono text-sm text-white placeholder:text-slate-500"
         />
       </div>
 
@@ -1032,7 +1101,7 @@ function DepositRail({
             }
           }}
           disabled={!walletConnected || !address || !isValidAmount || actionPending}
-          className="h-12 w-full rounded-2xl bg-white text-slate-950 hover:bg-slate-100"
+          className="h-12 w-full rounded-[10px] bg-white text-black hover:bg-white/90"
         >
           {approvePending || approveConfirming ? "Approving..." : "Approve USDC.e"}
         </Button>
@@ -1049,12 +1118,14 @@ function DepositRail({
             actionPending ||
             cycle?.executionMode === "blocked"
           }
-          className="h-12 w-full rounded-2xl bg-cyan-300 text-slate-950 hover:bg-cyan-200"
+          className="h-12 w-full rounded-[10px] bg-white text-black hover:bg-white/90"
         >
           {navSyncPending || depositPreflightPending
             ? "Loading..."
             : depositPending || depositConfirming || queueDepositPending || queueDepositConfirming
-              ? isCustomVault && cycle?.executionMode === "queued" ? "Queuing..." : "Depositing..."
+              ? isCustomVault && cycle?.executionMode === "queued"
+                ? "Queuing..."
+                : "Depositing..."
               : isCustomVault && cycle?.executionMode === "queued"
                 ? "Join next cycle"
                 : cycle?.executionMode === "blocked"
@@ -1400,7 +1471,15 @@ function WithdrawRail({
   }
 
   async function handleClaimReadyWithdrawal() {
-    if (!readyQueueRequest || !effectiveAddress || !userAuthorized || claimSubmissionInFlight || claimPreflightPending || isPending || isConfirming) {
+    if (
+      !readyQueueRequest ||
+      !effectiveAddress ||
+      !userAuthorized ||
+      claimSubmissionInFlight ||
+      claimPreflightPending ||
+      isPending ||
+      isConfirming
+    ) {
       return;
     }
 
@@ -1593,12 +1672,12 @@ function WithdrawRail({
       </div>
 
       {effectiveConnectedUI && !userAuthorized && !usingE2eConnectedSeam && !isCustomVault && (
-        <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-300">
+        <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] px-4 py-3 text-sm text-slate-300">
           Sign in to request a withdrawal.
         </div>
       )}
 
-      <div className="rounded-[24px] border border-white/10 bg-slate-950/40 p-4">
+      <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4">
         <div className="mb-3 flex items-center justify-between">
           <label htmlFor="vault-withdraw-amount" className="text-sm text-slate-300">
             Amount
@@ -1629,7 +1708,7 @@ function WithdrawRail({
             reset();
           }}
           disabled={queuePending || isPending || isConfirming || hasBlockingRequest}
-          className="h-14 rounded-2xl border-white/10 bg-white/5 px-4 font-mono text-lg text-white placeholder:text-slate-500"
+          className="h-14 rounded-[2px] border-[#212121] bg-transparent px-4 font-mono text-lg text-white placeholder:text-slate-500"
         />
       </div>
 
@@ -1656,7 +1735,7 @@ function WithdrawRail({
           void handleRequestWithdrawal();
         }}
         disabled={isBlockedMode || requestDisabled}
-        className="h-12 w-full rounded-2xl bg-white text-slate-950 hover:bg-slate-100"
+        className="h-12 w-full rounded-[10px] bg-white text-black hover:bg-white/90"
       >
         {queuePending
           ? "Submitting..."
@@ -1702,7 +1781,7 @@ function WithdrawRail({
                   void handleClaimReadyWithdrawal();
                 }}
                 disabled={claimDisabled}
-                className="h-11 rounded-2xl bg-emerald-300 text-slate-950 hover:bg-emerald-200"
+                className="h-11 rounded-[10px] bg-white text-black hover:bg-white/90"
               >
                 {claimSubmissionInFlight || claimPreflightPending || isPending || isConfirming
                   ? "Claiming..."
@@ -1717,7 +1796,7 @@ function WithdrawRail({
                   void handleCancelWithdrawalRequest();
                 }}
                 disabled={queuePending || isPending || isConfirming}
-                className="h-11 rounded-2xl border-white/10 bg-white/5 text-white hover:bg-white/10"
+                className="h-11 rounded-[10px] border-[#656565]/40 bg-transparent text-white hover:bg-[#212121]"
               >
                 Cancel request
               </Button>
@@ -1751,7 +1830,7 @@ function WithdrawRail({
             type="button"
             onClick={handleClaimCustomRequest}
             disabled={customClaimDisabled || !customClaimableRequest.claimableAssetsFormatted}
-            className="h-11 rounded-2xl bg-emerald-300 text-slate-950 hover:bg-emerald-200"
+            className="h-11 rounded-[10px] bg-white text-black hover:bg-white/90"
           >
             {isPending || isConfirming ? "Claiming..." : "Claim withdrawal"}
           </Button>
@@ -1780,13 +1859,13 @@ function WithdrawRail({
 function VaultNotFound() {
   return (
     <main className="flex-1 px-4 py-10 sm:px-6 lg:px-10 lg:py-12">
-      <div className="mx-auto max-w-4xl rounded-[32px] border border-white/10 bg-white/[0.045] p-10 text-center backdrop-blur-xl">
+      <div className="mx-auto max-w-4xl rounded-[2px] border border-[#212121] bg-[#121212] p-10 text-center shadow-none">
         <p className="text-sm uppercase tracking-[0.24em] text-slate-500">Vault</p>
         <h1 className="mt-4 text-4xl font-semibold tracking-tight text-white">Vault not found</h1>
         <p className="mx-auto mt-4 max-w-xl text-sm leading-7 text-slate-400">
           This vault does not exist, or it is not currently available.
         </p>
-        <Button asChild className="mt-6 rounded-full bg-white text-slate-950 hover:bg-slate-100">
+        <Button asChild className="mt-6 rounded-[10px] bg-white text-black hover:bg-white/90">
           <Link href="/discover">Back to vaults</Link>
         </Button>
       </div>
@@ -1798,6 +1877,8 @@ export default function VaultDetailPage() {
   const queryClient = useQueryClient();
   const [e2eConnectedSeam, setE2eConnectedSeam] = useState(false);
   const [sessionAuthenticated, setSessionAuthenticated] = useState(false);
+  const [vaultActivityOffset, setVaultActivityOffset] = useState(0);
+  const [userActivityOffset, setUserActivityOffset] = useState(0);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -1816,6 +1897,15 @@ export default function VaultDetailPage() {
   const { address, isConnected } = useAppKitAccount();
   const routeVaultId = Number.parseInt(params.id as string, 10);
   const walletConnected = Boolean(isConnected);
+
+  useEffect(() => {
+    setVaultActivityOffset(0);
+    setUserActivityOffset(0);
+  }, [routeVaultId]);
+
+  useEffect(() => {
+    setUserActivityOffset(0);
+  }, [address, walletConnected, sessionAuthenticated]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1873,13 +1963,21 @@ export default function VaultDetailPage() {
     isLoading: vaultEventsLoading,
     error: vaultEventsError,
     lastRefresh: vaultEventsLastRefresh,
-  } = useVaultEvents(vault?.id, 50);
+  } = useVaultEvents(vault?.id, ACTIVITY_PAGE_SIZE, {
+    offset: vaultActivityOffset,
+  });
   const { data: tradingAnalyticsData } = useVaultTradingAnalytics(vault?.id);
   const {
     data: userHistoryData,
     isLoading: userHistoryLoading,
     error: userHistoryError,
-  } = useUserVaultHistory(vault?.id, userAuthorized, address, 100);
+  } = useUserVaultHistory(
+    vault?.id,
+    userAuthorized,
+    address,
+    ACTIVITY_PAGE_SIZE,
+    userActivityOffset,
+  );
   const { shares: redemptionUserShares } = useVaultShares(
     vault?.config.vaultAddress,
     address,
@@ -1914,6 +2012,35 @@ export default function VaultDetailPage() {
     [userHistoryData?.items],
   );
 
+  const vaultActivityHasMore = vaultEventsData?.pagination?.hasMore ?? false;
+  const userActivityHasMore = userHistoryData?.pagination?.hasMore ?? false;
+
+  useEffect(() => {
+    if (vaultEventsLoading || vaultEventsError || vaultActivityOffset === 0) {
+      return;
+    }
+
+    if (vaultActivity.length === 0) {
+      setVaultActivityOffset((previous) => Math.max(previous - ACTIVITY_PAGE_SIZE, 0));
+    }
+  }, [vaultActivity.length, vaultActivityOffset, vaultEventsError, vaultEventsLoading]);
+
+  useEffect(() => {
+    if (!userAuthorized || userHistoryLoading || userHistoryError || userActivityOffset === 0) {
+      return;
+    }
+
+    if (userActivity.length === 0) {
+      setUserActivityOffset((previous) => Math.max(previous - ACTIVITY_PAGE_SIZE, 0));
+    }
+  }, [
+    userActivity.length,
+    userActivityOffset,
+    userAuthorized,
+    userHistoryError,
+    userHistoryLoading,
+  ]);
+
   if (!vault && !instancesLoading) {
     return <VaultNotFound />;
   }
@@ -1923,8 +2050,8 @@ export default function VaultDetailPage() {
       <main className="flex-1 px-4 py-10 sm:px-6 lg:px-10 lg:py-12">
         <div className="mx-auto max-w-6xl space-y-6">
           <Skeleton className="h-10 w-40 bg-white/10" />
-          <Skeleton className="h-[220px] w-full rounded-[32px] bg-white/10" />
-          <Skeleton className="h-[540px] w-full rounded-[32px] bg-white/10" />
+          <Skeleton className="h-[220px] w-full rounded-[2px] bg-[#212121]" />
+          <Skeleton className="h-[540px] w-full rounded-[2px] bg-[#212121]" />
         </div>
       </main>
     );
@@ -2015,15 +2142,15 @@ export default function VaultDetailPage() {
                 </Card>
               )}
 
-              <section className="relative overflow-hidden rounded-[34px] border border-white/10 bg-white/[0.045] px-6 py-7 shadow-[0_40px_110px_-55px_rgba(8,15,36,0.95)] backdrop-blur-xl sm:px-8 lg:px-10 lg:py-9">
-                <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(103,232,249,0.16),_transparent_32%),radial-gradient(circle_at_85%_18%,_rgba(250,204,21,0.1),_transparent_18%)]" />
+              <section className="relative overflow-hidden rounded-[2px] border border-[#212121] bg-[#121212] px-6 py-7 shadow-none sm:px-8 lg:px-10 lg:py-9">
+                <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(137,145,130,0.16),_transparent_32%),radial-gradient(circle_at_85%_18%,_rgba(236,102,0,0.15),_transparent_18%)]" />
                 <div className="relative grid gap-8">
                   <div className="space-y-5">
                     <div className="flex flex-wrap items-center gap-3">
                       <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">
                         Vault
                       </p>
-                      <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-300">
+                      <div className="inline-flex items-center gap-2 rounded-[2px] border border-[#656565]/40 bg-[#0A0A0A] px-3 py-1 text-xs text-slate-300">
                         <span>How vaults work</span>
                         <InfoTooltip
                           label="How vaults work"
@@ -2124,7 +2251,7 @@ export default function VaultDetailPage() {
                     <KeyInfoItem label="Focus" value={vault.profile.strategyLabel} />
                     <KeyInfoItem label="Style" value={getStyleLabel(vault)} />
                   </div>
-                  <div className="flex flex-col gap-4 rounded-[24px] border border-white/10 bg-slate-950/30 p-5 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex flex-col gap-4 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-5 sm:flex-row sm:items-center sm:justify-between">
                     <div className="max-w-2xl">
                       <p className="text-sm font-medium text-white">
                         Technical details are available on demand.
@@ -2160,7 +2287,7 @@ export default function VaultDetailPage() {
                     tooltip="Fees come from the configured vault profile."
                   />
                 </div>
-                <div className="mt-5 rounded-[24px] border border-white/10 bg-slate-950/30 p-5 text-sm leading-7 text-slate-400">
+                <div className="mt-5 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-5 text-sm leading-7 text-slate-400">
                   {getRiskSummary(vault, cycle)}
                 </div>
               </SectionShell>
@@ -2182,10 +2309,30 @@ export default function VaultDetailPage() {
                     {vaultEventsError}
                   </div>
                 ) : (
-                  <ActivityTimeline
-                    items={vaultActivity}
-                    emptyState="No meaningful vault updates yet."
-                  />
+                  <div className="space-y-3">
+                    <ActivityTimeline
+                      items={vaultActivity}
+                      emptyState="No meaningful vault updates yet."
+                      pageSize={ACTIVITY_PAGE_SIZE}
+                    />
+                    <ActivityPaginationControls
+                      offset={vaultActivityOffset}
+                      pageSize={ACTIVITY_PAGE_SIZE}
+                      currentCount={vaultActivity.length}
+                      hasMore={vaultActivityHasMore}
+                      isLoading={vaultEventsLoading}
+                      onPrevious={() => {
+                        setVaultActivityOffset((previous) =>
+                          Math.max(previous - ACTIVITY_PAGE_SIZE, 0),
+                        );
+                      }}
+                      onNext={() => {
+                        if (vaultActivityHasMore) {
+                          setVaultActivityOffset((previous) => previous + ACTIVITY_PAGE_SIZE);
+                        }
+                      }}
+                    />
+                  </div>
                 )}
               </SectionShell>
 
@@ -2198,7 +2345,30 @@ export default function VaultDetailPage() {
                       {userHistoryError}
                     </div>
                   ) : (
-                    <ActivityTimeline items={userActivity} emptyState="No account activity yet." />
+                    <div className="space-y-3">
+                      <ActivityTimeline
+                        items={userActivity}
+                        emptyState="No account activity yet."
+                        pageSize={ACTIVITY_PAGE_SIZE}
+                      />
+                      <ActivityPaginationControls
+                        offset={userActivityOffset}
+                        pageSize={ACTIVITY_PAGE_SIZE}
+                        currentCount={userActivity.length}
+                        hasMore={userActivityHasMore}
+                        isLoading={userHistoryLoading}
+                        onPrevious={() => {
+                          setUserActivityOffset((previous) =>
+                            Math.max(previous - ACTIVITY_PAGE_SIZE, 0),
+                          );
+                        }}
+                        onNext={() => {
+                          if (userActivityHasMore) {
+                            setUserActivityOffset((previous) => previous + ACTIVITY_PAGE_SIZE);
+                          }
+                        }}
+                      />
+                    </div>
                   )
                 ) : (
                   <div className="rounded-[22px] border border-white/10 bg-slate-950/30 p-5 text-sm text-slate-400">
@@ -2250,16 +2420,16 @@ export default function VaultDetailPage() {
               </div>
 
               <Tabs defaultValue="deposit" className="space-y-3">
-                <TabsList className="grid h-auto w-full grid-cols-2 rounded-xl border border-white/10 bg-white/5 p-0.5">
+                <TabsList className="grid h-auto w-full grid-cols-2 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-0.5">
                   <TabsTrigger
                     value="deposit"
-                    className="rounded-lg py-1.5 text-sm text-slate-400 hover:text-white data-[state=active]:bg-white data-[state=active]:text-slate-950"
+                    className="rounded-[2px] py-1.5 text-sm text-slate-400 hover:text-white data-[state=active]:border data-[state=active]:border-[#656565]/40 data-[state=active]:bg-[#212121] data-[state=active]:text-white"
                   >
                     Deposit
                   </TabsTrigger>
                   <TabsTrigger
                     value="withdraw"
-                    className="rounded-lg py-1.5 text-sm text-slate-400 hover:text-white data-[state=active]:bg-white data-[state=active]:text-slate-950"
+                    className="rounded-[2px] py-1.5 text-sm text-slate-400 hover:text-white data-[state=active]:border data-[state=active]:border-[#656565]/40 data-[state=active]:bg-[#212121] data-[state=active]:text-white"
                   >
                     Withdraw
                   </TabsTrigger>

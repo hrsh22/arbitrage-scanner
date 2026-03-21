@@ -132,6 +132,7 @@ export const vaultQueryKeys = {
 export interface VaultEventsQueryOptions {
   refetchIntervalMs?: number;
   refetchIntervalInBackgroundMs?: number | false;
+  offset?: number;
 }
 
 export async function invalidateVaultQueries(
@@ -423,10 +424,11 @@ export function useVaultEvents(
 ): AsyncState<VaultEventsResponse> {
   const visibleInterval = options?.refetchIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const hiddenInterval = options?.refetchIntervalInBackgroundMs ?? 60_000;
+  const offset = options?.offset ?? 0;
 
   const query = useQuery({
-    queryKey: [...vaultQueryKeys.events(vaultId), limit],
-    queryFn: () => fetchVaultEvents(vaultId!, limit),
+    queryKey: [...vaultQueryKeys.events(vaultId), limit, offset],
+    queryFn: () => fetchVaultEvents(vaultId!, limit, offset),
     enabled: vaultId !== undefined,
     refetchInterval: () => {
       const isHidden = typeof document !== "undefined" && document.visibilityState !== "visible";
@@ -459,11 +461,12 @@ export function useUserVaultHistory(
   isAuthenticated: boolean,
   address?: string,
   limit = 100,
+  offset = 0,
 ): AsyncState<UserVaultHistoryResponse> {
   const userScope = getUserScope(isAuthenticated, address);
   const query = useQuery({
-    queryKey: [...vaultQueryKeys.history(vaultId, userScope), limit],
-    queryFn: () => fetchUserVaultHistory(vaultId!, limit),
+    queryKey: [...vaultQueryKeys.history(vaultId, userScope), limit, offset],
+    queryFn: () => fetchUserVaultHistory(vaultId!, limit, offset),
     enabled: vaultId !== undefined && isAuthenticated,
     refetchInterval: DEFAULT_POLL_INTERVAL_MS,
     retry: (failureCount, error) => {

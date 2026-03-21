@@ -97,7 +97,7 @@ class ActivityEventRepository {
     }
   }
 
-  async listVaultLifecycleEvents(vaultAddress: string, limit = 50) {
+  async listVaultLifecycleEvents(vaultAddress: string, limit = 50, offset = 0) {
     try {
       const db = await getDb();
       return await db
@@ -105,7 +105,8 @@ class ActivityEventRepository {
         .from(vaultLifecycleEvents)
         .where(eq(vaultLifecycleEvents.vaultAddress, vaultAddress))
         .orderBy(desc(vaultLifecycleEvents.occurredAt))
-        .limit(limit);
+        .limit(limit)
+        .offset(offset);
     } catch (error) {
       logger.warn("ActivityEventRepository: Failed to read vault lifecycle events", {
         vaultAddress,
@@ -115,7 +116,12 @@ class ActivityEventRepository {
     }
   }
 
-  async listUserVaultActivityEvents(vaultAddress: string, userAddress: string, limit = 100) {
+  async listUserVaultActivityEvents(
+    vaultAddress: string,
+    userAddress: string,
+    limit = 100,
+    offset = 0,
+  ) {
     try {
       const db = await getDb();
       return await db
@@ -128,7 +134,8 @@ class ActivityEventRepository {
           ),
         )
         .orderBy(desc(userVaultActivityEvents.occurredAt))
-        .limit(limit);
+        .limit(limit)
+        .offset(offset);
     } catch (error) {
       logger.warn("ActivityEventRepository: Failed to read user activity events", {
         vaultAddress,

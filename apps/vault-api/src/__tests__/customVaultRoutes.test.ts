@@ -436,6 +436,33 @@ describe("Custom Vault Routes", () => {
     expect(res.payload).toMatchObject({ success: true });
   });
 
+  it("records queued deposit activity with inferred next cycle id", async () => {
+    const handler = getRouteHandler("/:vaultId/activity/deposit", "post");
+    const req = {
+      params: { vaultId: "1" },
+      body: {
+        txHash: "0xabc",
+        assets: "2.500000",
+        mode: "queued",
+      },
+      session: { address: userAddress },
+    } as unknown as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(res.status).not.toHaveBeenCalled();
+    expect(mockAppendUserVaultActivityEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "deposit_queued",
+        cycleId: 11,
+        status: "queued",
+        assetAmount: "2.500000",
+      }),
+    );
+    expect(res.payload).toMatchObject({ success: true });
+  });
+
   it("seeds meaningful lifecycle events from settled batch status", () => {
     const startTime = new Date("2026-01-01T00:00:00.000Z");
     const endTime = new Date("2026-01-08T00:00:00.000Z");
@@ -503,11 +530,123 @@ describe("Custom Vault Routes", () => {
     expect(res.payload).toMatchObject({
       success: true,
       vaultId: 1,
+      pagination: {
+        limit: 20,
+        offset: 0,
+        hasMore: false,
+      },
       items: [
         expect.objectContaining({
           type: "cycle_opened",
           scope: "vault",
         }),
+      ],
+    });
+  });
+
+  it("paginates canonical lifecycle events for /events", async () => {
+    const firstEventAt = new Date("2026-03-21T10:00:00.000Z");
+    const secondEventAt = new Date("2026-03-21T09:30:00.000Z");
+    const thirdEventAt = new Date("2026-03-21T09:00:00.000Z");
+
+    mockListVaultLifecycleEvents
+      .mockResolvedValueOnce([
+        {
+          id: 101,
+          vaultId: 1,
+          vaultAddress: userAddress,
+          cycleId: 14,
+          eventType: "processing_completed",
+          title: "Processing completed",
+          detail: "The current cycle finished processing queued work.",
+          status: "processed",
+          requestId: null,
+          txHash: null,
+          assetAmount: null,
+          shareAmount: null,
+          metadata: null,
+          occurredAt: firstEventAt,
+          createdAt: firstEventAt,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 102,
+          vaultId: 1,
+          vaultAddress: userAddress,
+          cycleId: 13,
+          eventType: "claim_window_opened",
+          title: "Claim window opened",
+          detail: "Processed withdrawals are now claimable.",
+          status: "processed",
+          requestId: null,
+          txHash: null,
+          assetAmount: null,
+          shareAmount: null,
+          metadata: null,
+          occurredAt: secondEventAt,
+          createdAt: secondEventAt,
+        },
+        {
+          id: 103,
+          vaultId: 1,
+          vaultAddress: userAddress,
+          cycleId: 13,
+          eventType: "deposit_queue_processed",
+          title: "Deposit queue processed",
+          detail: "Queued deposits were processed for the next cycle.",
+          status: "processed",
+          requestId: null,
+          txHash: null,
+          assetAmount: null,
+          shareAmount: null,
+          metadata: null,
+          occurredAt: thirdEventAt,
+          createdAt: thirdEventAt,
+        },
+        {
+          id: 104,
+          vaultId: 1,
+          vaultAddress: userAddress,
+          cycleId: 12,
+          eventType: "cycle_reopened",
+          title: "Cycle reopened",
+          detail: "A new cycle is ready for vault actions.",
+          status: "reopen",
+          requestId: null,
+          txHash: null,
+          assetAmount: null,
+          shareAmount: null,
+          metadata: null,
+          occurredAt: new Date("2026-03-21T08:30:00.000Z"),
+          createdAt: new Date("2026-03-21T08:30:00.000Z"),
+        },
+      ]);
+
+    mockListVaultUserActivityEvents.mockResolvedValue([]);
+
+    const handler = getRouteHandler("/:vaultId/events", "get");
+    const req = {
+      params: { vaultId: "1" },
+      query: { limit: "2", offset: "1" },
+    } as unknown as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(mockListVaultLifecycleEvents).toHaveBeenNthCalledWith(1, userAddress, 1, 0);
+    expect(mockListVaultLifecycleEvents).toHaveBeenNthCalledWith(2, userAddress, 3, 1);
+    expect(res.payload).toMatchObject({
+      success: true,
+      vaultId: 1,
+      pagination: {
+        limit: 2,
+        offset: 1,
+        hasMore: true,
+      },
+      items: [
+        expect.objectContaining({ type: "claim_window_opened" }),
+        expect.objectContaining({ type: "deposit_queue_processed" }),
       ],
     });
   });
@@ -621,6 +760,7 @@ describe("Custom Vault Routes", () => {
 
   it("appends incremental vault lifecycle events from newer user activity", async () => {
     const previousLifecycleAt = new Date("2026-03-20T10:00:00.000Z");
+    const queuedDepositAt = new Date("2026-03-20T10:42:11.100Z");
     const newerUserAt = new Date("2026-03-20T11:06:42.435Z");
 
     mockListVaultLifecycleEvents
@@ -665,6 +805,24 @@ describe("Custom Vault Routes", () => {
 
     mockListVaultUserActivityEvents.mockResolvedValue([
       {
+        id: 8,
+        vaultId: 1,
+        vaultAddress: userAddress,
+        userAddress,
+        cycleId: null,
+        eventType: "deposit_queued",
+        title: "Deposit queued",
+        detail: "queued",
+        status: "queued",
+        requestId: null,
+        txHash: null,
+        assetAmount: "2.5",
+        shareAmount: null,
+        metadata: null,
+        occurredAt: queuedDepositAt,
+        createdAt: queuedDepositAt,
+      },
+      {
         id: 9,
         vaultId: 1,
         vaultAddress: userAddress,
@@ -697,6 +855,12 @@ describe("Custom Vault Routes", () => {
       expect.objectContaining({
         eventType: "withdraw_ready",
         requestId: "wr-abc",
+      }),
+    );
+    expect(mockAppendVaultLifecycleEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "deposit_queued",
+        status: "queued",
       }),
     );
   });

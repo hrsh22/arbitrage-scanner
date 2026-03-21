@@ -121,16 +121,18 @@ export async function fetchVaultTradingAnalytics(
 export async function fetchVaultEvents(
   vaultId: number,
   limit?: number,
+  offset?: number,
 ): Promise<VaultEventsResponse> {
-  const qs = buildQuery({ limit });
+  const qs = buildQuery({ limit, offset });
   return fetchWithAuth(makeUrl(`${CUSTOM_VAULT_API_PREFIX}/${vaultId}/events`, qs));
 }
 
 export async function fetchUserVaultHistory(
   vaultId: number,
   limit?: number,
+  offset?: number,
 ): Promise<UserVaultHistoryResponse> {
-  const qs = buildQuery({ limit });
+  const qs = buildQuery({ limit, offset });
   return fetchWithAuth(makeUrl(`${CUSTOM_VAULT_API_PREFIX}/${vaultId}/history`, qs));
 }
 

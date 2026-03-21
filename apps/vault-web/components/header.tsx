@@ -160,18 +160,18 @@ export function Header({ className }: HeaderProps) {
       <div className="mx-auto flex min-h-16 max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
         <div className="flex items-center gap-4">
           <Link href="/" className="group flex items-center gap-3">
-            <div className="relative flex h-11 w-11 items-center justify-center rounded-2xl border border-cyan-400/25 bg-white/5 shadow-[0_0_32px_rgba(34,211,238,0.16)] transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:shadow-[0_0_36px_rgba(34,211,238,0.22)]">
-              <div className="absolute inset-1 rounded-[1rem] bg-gradient-to-br from-cyan-300/18 via-white/6 to-fuchsia-300/16" />
-              <div className="flex flex-col items-center gap-0.5">
+            <div className="relative flex h-11 w-11 items-center justify-center rounded-[2px] border border-[#656565] bg-[#121212] shadow-[0_0_15px_rgba(255,255,255,0.05)] transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:shadow-[0_0_20px_rgba(255,255,255,0.08)]">
+              <div className="absolute inset-1 rounded-[1px] bg-gradient-to-br from-white/10 to-transparent" />
+              <div className="z-10 flex flex-col items-center gap-0.5">
                 <div className="flex gap-1">
-                  <div className="h-1.5 w-1.5 rounded-sm bg-cyan-200" />
-                  <div className="h-1.5 w-1.5 rounded-sm bg-cyan-200" />
+                  <div className="h-1.5 w-1.5 rounded-[1px] bg-white" />
+                  <div className="h-1.5 w-1.5 rounded-[1px] bg-white" />
                 </div>
-                <div className="h-3 w-4 rounded-sm border border-cyan-100/80" />
+                <div className="h-3 w-4 rounded-[1px] border border-white/80" />
               </div>
             </div>
             <div className="space-y-0.5">
-              <span className="block text-sm font-semibold uppercase tracking-[0.24em] text-cyan-200/80">
+              <span className="block text-sm font-semibold uppercase tracking-[0.24em] text-white">
                 Polymarket Vault
               </span>
               <span className="block text-xs text-slate-400">
@@ -185,7 +185,7 @@ export function Header({ className }: HeaderProps) {
           <nav className="hidden md:flex items-center">
             <Link
               href="/discover"
-              className="rounded-full border border-white/5 bg-white/5 px-4 py-1.5 text-sm font-medium text-slate-300 transition-colors hover:bg-white/10 hover:text-white"
+              className="rounded-[2px] border border-[#212121] bg-transparent px-4 py-1.5 text-sm font-medium text-[#828B8D] transition-colors hover:bg-[#121212] hover:text-white"
             >
               Discover Vaults
             </Link>
@@ -212,36 +212,36 @@ export function Header({ className }: HeaderProps) {
 
           {isAuthenticated ? (
             <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2">
+              <div className="flex items-center gap-2 rounded-[2px] border border-[#212121] bg-[#121212] px-3 py-2">
                 <Badge
                   variant="outline"
-                  className="gap-1.5 border-emerald-400/25 bg-emerald-400/12 font-normal text-emerald-200"
+                  className="gap-1.5 border-emerald-400/25 bg-emerald-400/5 font-normal text-emerald-200"
                 >
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  <span className="h-1.5 w-1.5 rounded-[1px] bg-emerald-500" />
                   Signed in
                 </Badge>
                 <Separator orientation="vertical" className="h-5 bg-white/10" />
-                <span className="font-mono text-sm text-slate-300">{truncateAddress(address)}</span>
+                <span className="font-mono text-sm text-[#E4E4E7]">{truncateAddress(address)}</span>
               </div>
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={handleDisconnect}
-                className="text-slate-300 hover:bg-white/8 hover:text-white"
+                className="rounded-[10px] text-slate-300 hover:bg-[#212121] hover:text-white"
               >
                 Disconnect
               </Button>
             </div>
           ) : isConnected ? (
             <div className="flex items-center gap-3">
-              <div className="hidden rounded-full border border-white/10 bg-white/5 px-3 py-2 sm:block">
-                <span className="font-mono text-sm text-slate-300">{truncateAddress(address)}</span>
+              <div className="hidden rounded-[2px] border border-[#212121] bg-[#121212] px-3 py-2 sm:block">
+                <span className="font-mono text-sm text-[#E4E4E7]">{truncateAddress(address)}</span>
               </div>
               <Button
                 onClick={handleSignIn}
                 disabled={isLoading}
                 size="sm"
-                className="min-w-[120px] bg-cyan-300 text-slate-950 shadow-[0_0_30px_rgba(34,211,238,0.2)] hover:bg-cyan-200"
+                className="min-w-[120px] rounded-[10px] bg-white text-black hover:bg-white/90"
               >
                 {isLoading ? (
                   <span className="flex items-center gap-2">
@@ -275,7 +275,7 @@ export function Header({ className }: HeaderProps) {
                 variant="ghost"
                 size="sm"
                 onClick={handleDisconnect}
-                className="text-slate-300 hover:bg-white/8 hover:text-white"
+                className="rounded-[10px] text-slate-300 hover:bg-[#212121] hover:text-white"
               >
                 Disconnect
               </Button>
@@ -284,7 +284,7 @@ export function Header({ className }: HeaderProps) {
             <Button
               onClick={() => open()}
               size="sm"
-              className="bg-cyan-300 text-slate-950 shadow-[0_0_30px_rgba(34,211,238,0.2)] hover:bg-cyan-200"
+              className="rounded-[10px] bg-white text-black hover:bg-white/90"
             >
               Connect Wallet
             </Button>
