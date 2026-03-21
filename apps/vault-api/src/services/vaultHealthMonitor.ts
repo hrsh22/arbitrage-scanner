@@ -16,7 +16,6 @@ import { and, eq, sql, desc } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { epochs, epochRequests, vaultAllocations } from "../db/schema.js";
 import { logger } from "../logger.js";
-import { env } from "../env.js";
 import { createPolygonTransport } from "../rpcTransport.js";
 import type { VaultInstanceConfig } from "../config/types.js";
 import { getAllVaultConfigs, getVaultConfig } from "../config/index.js";
@@ -169,7 +168,7 @@ export class VaultHealthMonitor {
   constructor() {
     this.publicClient = createPublicClient({
       chain: polygon,
-      transport: createPolygonTransport(env.POLYGON_RPC_URL),
+      transport: createPolygonTransport(),
     });
   }
 

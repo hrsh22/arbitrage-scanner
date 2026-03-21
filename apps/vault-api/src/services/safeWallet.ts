@@ -33,8 +33,8 @@ import {
   NEGRISK_ADAPTER_ADDRESS,
 } from "../constants.js";
 import { logger } from "../logger.js";
-import { createNetworkTransport } from "../rpcTransport.js";
-import { getNetworkConfigFromEnv, getRpcUrlForNetwork } from "../config/network.js";
+import { createNetworkTransport, getNextRpcUrl } from "../rpcTransport.js";
+import { getNetworkConfigFromEnv } from "../config/network.js";
 
 // Protocol Kit CJS/ESM interop: default export resolves to the Safe class at runtime
 const Safe = ProtocolKit.default as unknown as {
@@ -128,7 +128,8 @@ export class SafeWalletService {
 
   private readonly safeAddress: string;
   private readonly safeOperatorKey: string;
-  private readonly rpcUrl: string;
+  private readonly rpcUrlOverride: string | null;
+  private readonly protocolKitRpcUrl: string;
   private readonly chain: Chain;
 
   /**
@@ -142,7 +143,8 @@ export class SafeWalletService {
     this.safeOperatorKey = safeOperatorKey;
     const networkConfig = getNetworkConfigFromEnv();
     this.chain = chain ?? networkConfig.chain;
-    this.rpcUrl = rpcUrl ?? getRpcUrlForNetwork(networkConfig.name);
+    this.rpcUrlOverride = rpcUrl ?? null;
+    this.protocolKitRpcUrl = getNextRpcUrl(rpcUrl);
 
     if (!this.safeAddress) {
       throw new Error("SafeWalletService: safeAddress is required");
@@ -152,9 +154,13 @@ export class SafeWalletService {
       throw new Error("SafeWalletService: safeOperatorKey is required");
     }
 
-    if (!this.rpcUrl) {
+    if (!this.protocolKitRpcUrl) {
       throw new Error("SafeWalletService: rpcUrl is required");
     }
+  }
+
+  private createTransport(): ReturnType<typeof createNetworkTransport> {
+    return createNetworkTransport(this.rpcUrlOverride ?? undefined);
   }
 
   /** Must be called before any transaction methods. */
@@ -164,7 +170,7 @@ export class SafeWalletService {
     try {
       const client = createPublicClient({
         chain: this.chain,
-        transport: createNetworkTransport(this.rpcUrl),
+        transport: this.createTransport(),
       });
       const code = await client.getCode({ address: this.safeAddress as Address });
       if (!code || code === "0x") {
@@ -180,7 +186,7 @@ export class SafeWalletService {
         this.eoaWalletClient = createWalletClient({
           account,
           chain: this.chain,
-          transport: createNetworkTransport(this.rpcUrl),
+          transport: this.createTransport(),
         });
         this.initialized = true;
 
@@ -192,7 +198,7 @@ export class SafeWalletService {
       }
 
       this.protocolKit = await Safe.init({
-        provider: this.rpcUrl,
+        provider: this.protocolKitRpcUrl,
         signer: this.safeOperatorKey,
         safeAddress: this.safeAddress,
       });
@@ -238,7 +244,7 @@ export class SafeWalletService {
   async getBalance(tokenAddress: string): Promise<bigint> {
     const client = createPublicClient({
       chain: this.chain,
-      transport: createNetworkTransport(this.rpcUrl),
+      transport: this.createTransport(),
     });
 
     try {
@@ -268,7 +274,7 @@ export class SafeWalletService {
   async getAllowance(tokenAddress: string, spender: string): Promise<bigint> {
     const client = createPublicClient({
       chain: this.chain,
-      transport: createNetworkTransport(this.rpcUrl),
+      transport: this.createTransport(),
     });
 
     try {
@@ -408,7 +414,7 @@ export class SafeWalletService {
 
       const client = createPublicClient({
         chain: this.chain,
-        transport: createNetworkTransport(this.rpcUrl),
+        transport: this.createTransport(),
       });
       const receipt = await client.waitForTransactionReceipt({ hash: txHash });
       if (receipt.status !== "success") {
@@ -619,7 +625,7 @@ export class SafeWalletService {
     if (this.eoaMode) {
       const client = createPublicClient({
         chain: this.chain,
-        transport: createNetworkTransport(this.rpcUrl),
+        transport: this.createTransport(),
       });
       const nonce = await client.getTransactionCount({ address: this.safeAddress as Address });
 

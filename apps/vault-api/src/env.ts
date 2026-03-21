@@ -94,9 +94,8 @@ export const env = {
   SAFE_ADDRESS: stringFromEnv("SAFE_ADDRESS", ""),
 
   // Polygon RPC
-  POLYGON_RPC_URL: stringFromEnv("POLYGON_RPC_URL", "https://polygon-bor-rpc.publicnode.com"),
-  AMOY_RPC_URL: stringFromEnv("AMOY_RPC_URL", "https://rpc-amoy.polygon.technology"),
-  POLYGON_RPC_FALLBACK_URLS: csvFromEnv("POLYGON_RPC_FALLBACK_URLS"),
+  POLYGON_RPC_URLS: csvFromEnv("POLYGON_RPC_URL"),
+  AMOY_RPC_URLS: csvFromEnv("AMOY_RPC_URL"),
   POLYGON_RPC_TIMEOUT_MS: numberFromEnv("POLYGON_RPC_TIMEOUT_MS", 10_000),
   POLYGON_RPC_RETRY_COUNT: numberFromEnv("POLYGON_RPC_RETRY_COUNT", 2),
   POLYGON_RPC_RETRY_DELAY_MS: numberFromEnv("POLYGON_RPC_RETRY_DELAY_MS", 300),

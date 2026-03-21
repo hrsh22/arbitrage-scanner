@@ -264,8 +264,7 @@ async function checkNetworkConfiguration(network: NetworkType): Promise<Readines
   const checks: ReadinessCheck[] = [];
   const config = NETWORK_CONFIGS[network];
   const explicitRpcEnvValue = process.env[config.rpcEnvKey];
-  const hasExplicitRpcEnv = Boolean(explicitRpcEnvValue);
-  const hasLegacyMainnetRpcEnv = network === "mainnet" && Boolean(process.env.POLYGON_RPC_URL);
+  const hasConfiguredRpcEnv = Boolean(explicitRpcEnvValue);
 
   // Validate VAULT_NETWORK value
   checks.push({
@@ -289,13 +288,13 @@ async function checkNetworkConfiguration(network: NetworkType): Promise<Readines
       message: `No RPC URL configured for ${network}. Set ${config.rpcEnvKey}.`,
       details: { rpcEnvKey: config.rpcEnvKey, usingDefault: false },
     });
-  } else if (hasExplicitRpcEnv || hasLegacyMainnetRpcEnv) {
+  } else if (hasConfiguredRpcEnv) {
     checks.push({
       name: "config:RPC_URL",
       status: "pass",
-      message: `Custom RPC URL configured via ${hasExplicitRpcEnv ? config.rpcEnvKey : "POLYGON_RPC_URL"}`,
+      message: `Custom RPC URL configured via ${config.rpcEnvKey}`,
       details: {
-        rpcEnvKey: hasExplicitRpcEnv ? config.rpcEnvKey : "POLYGON_RPC_URL",
+        rpcEnvKey: config.rpcEnvKey,
         usingDefault: false,
       },
     });

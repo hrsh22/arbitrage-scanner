@@ -27,7 +27,7 @@ import {
   type RedemptionRequestData,
 } from "./customVaultClient.js";
 import { createNetworkTransport } from "../rpcTransport.js";
-import { getNetworkConfigFromEnv, getRpcUrlForNetwork } from "../config/network.js";
+import { getNetworkConfigFromEnv } from "../config/network.js";
 import { getVaultConfig } from "../config/index.js";
 import type { VaultInstanceConfig } from "../config/types.js";
 import { FlatnessDetector, type FlatnessCheckResult } from "./flatnessDetector.js";
@@ -71,7 +71,7 @@ export class CustomVaultProvider implements IVaultProvider {
   private readonly vaultConfig: VaultInstanceConfig;
   private readonly customConfig: Required<CustomVaultConfig>;
   private readonly client: CustomVaultClient;
-  private readonly rpcUrl: string;
+  private readonly rpcUrl?: string;
   private readonly chain: Chain;
   private readonly adminKey?: string;
   private readonly settlerKey?: string;
@@ -126,7 +126,7 @@ export class CustomVaultProvider implements IVaultProvider {
     this.safeOperatorKey = resolvedKeys.safeOperatorKey;
     const networkConfig = getNetworkConfigFromEnv();
     this.chain = chain ?? networkConfig.chain;
-    this.rpcUrl = getRpcUrlForNetwork(networkConfig.name);
+    this.rpcUrl = undefined;
     this.customConfig = {
       navStalenessThresholdSeconds: DEFAULT_NAV_STALENESS_SECONDS,
       ...config.customConfig,

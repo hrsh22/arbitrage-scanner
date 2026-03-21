@@ -451,11 +451,7 @@ async function getVaultCapState(config: VaultInstanceConfig): Promise<{
 }
 function createResolutionCheckerForConfig(config: VaultInstanceConfig): ResolutionCheckerService {
   const identity = resolveVaultIdentity(config);
-  const safeWallet = new SafeWalletService(
-    config.safeAddress,
-    identity.safeOperatorKey,
-    env.POLYGON_RPC_URL,
-  );
+  const safeWallet = new SafeWalletService(config.safeAddress, identity.safeOperatorKey);
   const navOracle = createNavOracle(config);
   return new ResolutionCheckerService(positionRepository, navOracle, safeWallet, config);
 }
@@ -865,11 +861,7 @@ export function buildVaultRouter(): Router {
         });
       }
       const createInitializedSafe = async (): Promise<SafeWalletService> => {
-        const safe = new SafeWalletService(
-          config.safeAddress,
-          identity.safeOperatorKey,
-          env.POLYGON_RPC_URL,
-        );
+        const safe = new SafeWalletService(config.safeAddress, identity.safeOperatorKey);
         await safe.initialize();
         return safe;
       };
@@ -952,11 +944,7 @@ export function buildVaultRouter(): Router {
     try {
       const config = getPrimaryVaultConfig();
       const identity = resolveVaultIdentity(config);
-      const safe = new SafeWalletService(
-        config.safeAddress,
-        identity.safeOperatorKey,
-        env.POLYGON_RPC_URL,
-      );
+      const safe = new SafeWalletService(config.safeAddress, identity.safeOperatorKey);
       await safe.initialize();
 
       const [safeInfo, balance] = await Promise.all([

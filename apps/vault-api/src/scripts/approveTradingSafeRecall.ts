@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import "dotenv/config";
 
-import { createPublicClient, createWalletClient, erc20Abi, getAddress, http, type Hex } from "viem";
+import { createPublicClient, createWalletClient, erc20Abi, getAddress, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 import type { VaultInstanceConfig } from "../config/types.js";
 import { VAULT_CONFIGS } from "../config/vaults/index.js";
-import { getNetworkConfigFromEnv, getRpcUrlForNetwork } from "../config/network.js";
+import { getNetworkConfigFromEnv, getRpcUrlsForNetwork } from "../config/network.js";
+import { createNetworkTransport } from "../rpcTransport.js";
 import { SafeWalletService } from "../services/safeWallet.js";
 
 const MAX_UINT256 =
@@ -107,7 +108,7 @@ async function main(): Promise<void> {
   const tradingSafeAddress = getAddress(vaultConfig.tradingSafeAddress ?? vaultConfig.safeAddress);
   const usdcAddress = getAddress(networkConfig.addresses.usdcE);
   const safeOperatorKey = getRequiredEnv(vaultConfig.safeOperatorKeyEnv);
-  const rpcUrl = getRpcUrlForNetwork(networkConfig.name);
+  const rpcUrls = getRpcUrlsForNetwork(networkConfig.name);
 
   console.log("=== Trading Safe Recall Approval ===");
   console.log(`Network:        ${networkConfig.name} (${networkConfig.chainId})`);
@@ -116,12 +117,12 @@ async function main(): Promise<void> {
   console.log(`Trading Safe:   ${tradingSafeAddress}`);
   console.log(`USDC:           ${usdcAddress}`);
   console.log(`Amount:         ${options.amount === MAX_UINT256 ? "unlimited" : options.amount}`);
-  console.log(`RPC:            ${rpcUrl}`);
+  console.log(`RPCs:           ${rpcUrls.join(", ")}`);
   console.log("");
 
   const publicClient = createPublicClient({
     chain: networkConfig.chain,
-    transport: http(rpcUrl, { timeout: 15_000 }),
+    transport: createNetworkTransport(rpcUrls),
   });
 
   const code = await publicClient.getCode({ address: tradingSafeAddress });
@@ -147,7 +148,7 @@ async function main(): Promise<void> {
     const safe = new SafeWalletService(
       tradingSafeAddress,
       safeOperatorKey,
-      rpcUrl,
+      undefined,
       networkConfig.chain,
     );
     await safe.initialize();
@@ -169,7 +170,7 @@ async function main(): Promise<void> {
     const walletClient = createWalletClient({
       account,
       chain: networkConfig.chain,
-      transport: http(rpcUrl, { timeout: 15_000 }),
+      transport: createNetworkTransport(rpcUrls),
     });
 
     txHash = await walletClient.writeContract({

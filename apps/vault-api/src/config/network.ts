@@ -14,6 +14,7 @@
 import { createPublicClient, http } from "viem";
 import { polygon, polygonAmoy } from "viem/chains";
 import type { Chain } from "viem/chains";
+import { env } from "../env.js";
 
 /**
  * Supported network types
@@ -147,21 +148,14 @@ export function isValidChainIdForNetwork(chainId: number, network: NetworkType):
   return NETWORK_CONFIGS[network].chainId === chainId;
 }
 
-/**
- * Get RPC URL for the configured network
- * Checks environment variable first, falls back to default
- */
-export function getRpcUrlForNetwork(network: NetworkType): string {
+export function getRpcUrlsForNetwork(network: NetworkType): string[] {
   const config = NETWORK_CONFIGS[network];
-  const envUrl = process.env[config.rpcEnvKey];
-  if (envUrl) return envUrl;
+  const configuredUrls = network === "mainnet" ? env.POLYGON_RPC_URLS : env.AMOY_RPC_URLS;
+  return configuredUrls.length > 0 ? configuredUrls : [config.defaultRpcUrl];
+}
 
-  // For mainnet, also check legacy POLYGON_RPC_URL
-  if (network === "mainnet" && process.env.POLYGON_RPC_URL) {
-    return process.env.POLYGON_RPC_URL;
-  }
-
-  return config.defaultRpcUrl;
+export function getRpcUrlForNetwork(network: NetworkType): string {
+  return getRpcUrlsForNetwork(network)[0]!;
 }
 
 /**
@@ -205,37 +199,46 @@ export const POLYGON_AMOY_CHAIN_ID = 80002;
  */
 export async function validateRpcChainId(network: NetworkType): Promise<void> {
   const config = NETWORK_CONFIGS[network];
-  const rpcUrl = getRpcUrlForNetwork(network);
+  const rpcUrls = getRpcUrlsForNetwork(network);
+  let successCount = 0;
+  const accessErrors: string[] = [];
 
-  try {
-    // Create a temporary viem client to query chain ID
-    const client = createPublicClient({
-      chain: config.chain,
-      transport: http(rpcUrl, { timeout: 10_000 }),
-    });
+  for (const rpcUrl of rpcUrls) {
+    try {
+      const client = createPublicClient({
+        chain: config.chain,
+        transport: http(rpcUrl, { timeout: 10_000 }),
+      });
 
-    const chainId = await client.getChainId();
+      const chainId = await client.getChainId();
 
-    if (chainId !== config.chainId) {
-      throw new Error(
-        `Chain ID mismatch for VAULT_NETWORK=${network}: ` +
-          `RPC at ${rpcUrl} reports chain ID ${chainId}, ` +
-          `but expected ${config.chainId} (${network}). ` +
-          `Ensure your ${config.rpcEnvKey} environment variable points to the correct network.`,
-      );
+      if (chainId !== config.chainId) {
+        throw new Error(
+          `Chain ID mismatch for VAULT_NETWORK=${network}: ` +
+            `RPC at ${rpcUrl} reports chain ID ${chainId}, ` +
+            `but expected ${config.chainId} (${network}). ` +
+            `Ensure your ${config.rpcEnvKey} environment variable points to the correct network.`,
+        );
+      }
+      successCount += 1;
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Chain ID mismatch")) {
+        throw error;
+      }
+
+      accessErrors.push(`${rpcUrl}: ${(error as Error).message}`);
     }
-  } catch (error) {
-    // Re-throw our own error with context
-    if (error instanceof Error && error.message.startsWith("Chain ID mismatch")) {
-      throw error;
-    }
-
-    throw new Error(
-      `Failed to validate RPC chain ID for VAULT_NETWORK=${network}: ` +
-        `${(error as Error).message}. ` +
-        `Ensure ${config.rpcEnvKey} is set correctly and the RPC endpoint is accessible.`,
-    );
   }
+
+  if (successCount > 0) {
+    return;
+  }
+
+  throw new Error(
+    `Failed to validate RPC chain ID for VAULT_NETWORK=${network}: ` +
+      `${accessErrors.join("; ")}. ` +
+      `Ensure ${config.rpcEnvKey} is set correctly and at least one RPC endpoint is accessible.`,
+  );
 }
 
 /**

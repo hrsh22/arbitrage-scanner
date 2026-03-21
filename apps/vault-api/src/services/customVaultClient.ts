@@ -1,7 +1,8 @@
 import type { Address, Hex, WalletClient } from "viem";
-import { createPublicClient, http } from "viem";
+import { createPublicClient } from "viem";
 import type { Chain } from "viem/chains";
 import { logger } from "../logger.js";
+import { createNetworkTransport } from "../rpcTransport.js";
 
 export type BatchStatus =
   | "open"
@@ -469,10 +470,10 @@ export class CustomVaultClient {
   private readonly readCache = new Map<string, { expiresAt: number; value: unknown }>();
   private readonly inFlightReads = new Map<string, Promise<unknown>>();
 
-  constructor(params: { vaultAddress: Address; rpcUrl: string; chain?: Chain }) {
+  constructor(params: { vaultAddress: Address; rpcUrl?: string; chain?: Chain }) {
     this.vaultAddress = params.vaultAddress;
     this.publicClient = createPublicClient({
-      transport: http(params.rpcUrl),
+      transport: createNetworkTransport(params.rpcUrl),
       chain: params.chain,
     }) as any;
   }
@@ -949,7 +950,7 @@ export class CustomVaultClient {
 
 export function createCustomVaultClient(
   vaultAddress: Address,
-  rpcUrl: string,
+  rpcUrl?: string,
   chain?: Chain,
 ): CustomVaultClient {
   return new CustomVaultClient({ vaultAddress, rpcUrl, chain });

@@ -975,11 +975,7 @@ export class TradingOrchestratorService {
       const privateKey = process.env[this.vaultConfig.safeOperatorKeyEnv] ?? "";
       const tradingSafeAddress =
         this.vaultConfig.tradingSafeAddress ?? this.vaultConfig.safeAddress;
-      this.safeWalletService = new SafeWalletService(
-        tradingSafeAddress,
-        privateKey,
-        env.POLYGON_RPC_URL,
-      );
+      this.safeWalletService = new SafeWalletService(tradingSafeAddress, privateKey);
     }
     return this.safeWalletService;
   }

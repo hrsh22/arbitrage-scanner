@@ -402,7 +402,6 @@ async function initializeVaults(): Promise<{
       const safeWallet = new SafeWalletService(
         config.tradingSafeAddress ?? config.safeAddress,
         identity.safeOperatorKey,
-        env.POLYGON_RPC_URL,
       );
       const resolutionChecker = new ResolutionCheckerService(
         positionRepository,
