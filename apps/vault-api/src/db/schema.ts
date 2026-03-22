@@ -14,12 +14,14 @@ import {
   boolean,
   index,
   integer,
+  jsonb,
   numeric,
   pgEnum,
   pgTable,
   serial,
   text,
   timestamp,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 // Enum: Position status
@@ -134,6 +136,118 @@ export const vaultTradingAnalytics = pgTable(
     computedIdx: index("vault_trading_analytics_computed_idx").on(table.computedAt),
   }),
 );
+
+export const vaultResolvedAnalyticsPositions = pgTable(
+  "vault_resolved_analytics_positions",
+  {
+    id: serial("id").primaryKey(),
+    network: text("network").notNull(),
+    vaultAddress: text("vault_address").notNull(),
+    walletAddress: text("wallet_address").notNull(),
+    tokenId: text("token_id").notNull(),
+    conditionId: text("condition_id").notNull(),
+    eventSlug: text("event_slug"),
+    marketSlug: text("market_slug"),
+    marketQuestion: text("market_question"),
+    outcome: text("outcome"),
+    entryPrice: numeric("entry_price", { precision: 10, scale: 6 }),
+    cost: numeric("cost", { precision: 14, scale: 4 }),
+    size: numeric("size", { precision: 18, scale: 8 }),
+    createdAt: timestamp("created_at", { withTimezone: true }),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    marketEndDate: timestamp("market_end_date", { withTimezone: true }),
+    finalPrice: numeric("final_price", { precision: 10, scale: 6 }),
+    profitLoss: numeric("profit_loss", { precision: 14, scale: 4 }),
+    result: text("result"),
+    maxDrawdownPercent: numeric("max_drawdown_percent", { precision: 10, scale: 4 }),
+    lowestPrice: numeric("lowest_price", { precision: 10, scale: 6 }),
+    highestPrice: numeric("highest_price", { precision: 10, scale: 6 }),
+    priceHistory: jsonb("price_history"),
+    oppositeOutcomePriceHistory: jsonb("opposite_outcome_price_history"),
+    stopLossSimulations: jsonb("stop_loss_simulations"),
+    hedgingSimulations: jsonb("hedging_simulations"),
+    category: text("category"),
+    tags: jsonb("tags"),
+    fidelityMinutes: numeric("fidelity_minutes", { precision: 4, scale: 0 }),
+    capturedAt: timestamp("captured_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    vaultTokenUnique: uniqueIndex("vault_resolved_analytics_positions_unique").on(
+      table.network,
+      table.vaultAddress,
+      table.tokenId,
+    ),
+    vaultIdx: index("vault_resolved_analytics_positions_vault_idx").on(
+      table.network,
+      table.vaultAddress,
+    ),
+    walletIdx: index("vault_resolved_analytics_positions_wallet_idx").on(table.walletAddress),
+    resolvedAtIdx: index("vault_resolved_analytics_positions_resolved_at_idx").on(table.resolvedAt),
+  }),
+);
+
+export type VaultResolvedAnalyticsPosition = typeof vaultResolvedAnalyticsPositions.$inferSelect;
+export type NewVaultResolvedAnalyticsPosition = typeof vaultResolvedAnalyticsPositions.$inferInsert;
+
+export const vaultDetailedAnalytics = pgTable(
+  "vault_detailed_analytics",
+  {
+    id: serial("id").primaryKey(),
+    network: text("network").notNull(),
+    vaultAddress: text("vault_address").notNull(),
+    walletAddress: text("wallet_address").notNull(),
+    totalPnl: numeric("total_pnl", { precision: 14, scale: 4 }),
+    totalCost: numeric("total_cost", { precision: 14, scale: 4 }),
+    winCount: numeric("win_count", { precision: 10, scale: 0 }),
+    lossCount: numeric("loss_count", { precision: 10, scale: 0 }),
+    winRate: numeric("win_rate", { precision: 6, scale: 4 }),
+    avgEntryPrice: numeric("avg_entry_price", { precision: 10, scale: 6 }),
+    avgPnlPerPosition: numeric("avg_pnl_per_position", { precision: 14, scale: 4 }),
+    avgHoldingHours: numeric("avg_holding_hours", { precision: 10, scale: 2 }),
+    stopLossAnalysis: jsonb("stop_loss_analysis"),
+    hedgingAnalysis: jsonb("hedging_analysis"),
+    categoryBreakdown: jsonb("category_breakdown"),
+    dailyPnl: jsonb("daily_pnl"),
+    entryTimingAnalysis: jsonb("entry_timing_analysis"),
+    computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    vaultUnique: uniqueIndex("vault_detailed_analytics_unique").on(
+      table.network,
+      table.vaultAddress,
+    ),
+  }),
+);
+
+export type VaultDetailedAnalytics = typeof vaultDetailedAnalytics.$inferSelect;
+export type NewVaultDetailedAnalytics = typeof vaultDetailedAnalytics.$inferInsert;
+
+export const vaultAnalyticsSyncState = pgTable(
+  "vault_analytics_sync_state",
+  {
+    id: serial("id").primaryKey(),
+    network: text("network").notNull(),
+    vaultAddress: text("vault_address").notNull(),
+    walletAddress: text("wallet_address").notNull(),
+    lastActivityTimestamp: bigint("last_activity_timestamp", { mode: "number" }),
+    lastSuccessfulSyncAt: timestamp("last_successful_sync_at", { withTimezone: true }),
+    lastAttemptedSyncAt: timestamp("last_attempted_sync_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    vaultUnique: uniqueIndex("vault_analytics_sync_state_unique").on(
+      table.network,
+      table.vaultAddress,
+    ),
+    walletIdx: index("vault_analytics_sync_state_wallet_idx").on(table.walletAddress),
+  }),
+);
+
+export type VaultAnalyticsSyncState = typeof vaultAnalyticsSyncState.$inferSelect;
+export type NewVaultAnalyticsSyncState = typeof vaultAnalyticsSyncState.$inferInsert;
 
 /**
  * vault_nav_history - NAV snapshots over time

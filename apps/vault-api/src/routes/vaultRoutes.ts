@@ -19,6 +19,7 @@ import { logger } from "../logger.js";
 import { requireAuth } from "../middleware/auth.js";
 import { positionRepository } from "../repositories/positionRepository.js";
 import { activityEventRepository } from "../repositories/activityEventRepository.js";
+import { vaultAnalyticsRepository } from "../repositories/vaultAnalyticsRepository.js";
 import { withdrawalRepository } from "../repositories/withdrawalRepository.js";
 import { ResolutionCheckerService } from "../services/resolutionChecker.js";
 import { SafeWalletService, type SafeTxResult } from "../services/safeWallet.js";
@@ -715,6 +716,78 @@ export function buildVaultRouter(): Router {
       });
     } catch (error) {
       logger.error("Vault API: Failed to get trading analytics", {
+        error: (error as Error).message,
+        vaultId: req.params.vaultId,
+      });
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  router.get("/:vaultId/detailed-analytics", async (req, res) => {
+    try {
+      const vaultId = parseInt(req.params.vaultId ?? "", 10);
+      if (Number.isNaN(vaultId)) {
+        res.status(400).json({ error: "Invalid vault ID" });
+        return;
+      }
+
+      const config = getVaultConfig(vaultId);
+      if (!config) {
+        res.status(404).json({ error: `Vault ${vaultId} not found` });
+        return;
+      }
+
+      const analytics = await vaultAnalyticsRepository.getDetailedAnalytics(
+        (config.network ?? "mainnet").toLowerCase(),
+        config.vaultAddress,
+      );
+
+      res.json({
+        vaultId: config.id,
+        vaultSlug: getVaultSlug(config),
+        vaultName: config.name,
+        analytics,
+      });
+    } catch (error) {
+      logger.error("Vault API: Failed to get detailed analytics", {
+        error: (error as Error).message,
+        vaultId: req.params.vaultId,
+      });
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  router.get("/:vaultId/resolved-analytics-positions", async (req, res) => {
+    try {
+      const vaultId = parseInt(req.params.vaultId ?? "", 10);
+      if (Number.isNaN(vaultId)) {
+        res.status(400).json({ error: "Invalid vault ID" });
+        return;
+      }
+
+      const config = getVaultConfig(vaultId);
+      if (!config) {
+        res.status(404).json({ error: `Vault ${vaultId} not found` });
+        return;
+      }
+
+      const rawLimit = Number(req.query.limit);
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 100;
+      const positions = await vaultAnalyticsRepository.findResolvedPositions(
+        (config.network ?? "mainnet").toLowerCase(),
+        config.vaultAddress,
+        limit,
+      );
+
+      res.json({
+        vaultId: config.id,
+        vaultSlug: getVaultSlug(config),
+        vaultName: config.name,
+        positions,
+        total: positions.length,
+      });
+    } catch (error) {
+      logger.error("Vault API: Failed to get resolved analytics positions", {
         error: (error as Error).message,
         vaultId: req.params.vaultId,
       });
