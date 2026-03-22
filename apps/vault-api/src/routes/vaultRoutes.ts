@@ -22,8 +22,6 @@ import { activityEventRepository } from "../repositories/activityEventRepository
 import { withdrawalRepository } from "../repositories/withdrawalRepository.js";
 import { ResolutionCheckerService } from "../services/resolutionChecker.js";
 import { SafeWalletService, type SafeTxResult } from "../services/safeWallet.js";
-import { createTradingOrchestrator } from "../services/tradingOrchestrator.js";
-import { createVaultTradingClient } from "../services/tradingClient.js";
 import { navCalculator } from "../services/navCalculator.js";
 import { createNavOracle } from "../services/navOracle.js";
 import { positionFetcher } from "../services/positionFetcher.js";
@@ -138,10 +136,7 @@ async function triggerEventReconciliation(
   config: VaultInstanceConfig,
   eventType: string,
 ): Promise<void> {
-  if (
-    config.vaultContractType === "closedBookBatchVault" ||
-    config.vaultContractType === "flatBookVaultV2"
-  ) {
+  if (config.vaultContractType === "flatBookVaultV2") {
     logger.info("eventReconciliationSkipped", {
       eventType,
       vaultId: config.id,
@@ -464,21 +459,7 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> 
     lifecycle = undefined;
   }
 
-  const latestSnapshotsPromise =
-    config.type === "custom"
-      ? db
-          .select({
-            totalAssets: navSnapshots.totalAssets,
-            idleAssets: navSnapshots.totalAssets,
-            deployedCostBasis: navSnapshots.totalAssets,
-            sharePrice: navSnapshots.sharePrice,
-            timestamp: navSnapshots.timestamp,
-          })
-          .from(navSnapshots)
-          .where(eq(navSnapshots.vaultAddress, config.vaultAddress))
-          .orderBy(desc(navSnapshots.timestamp))
-          .limit(1)
-      : navCalculator.getNavHistory(1);
+  const latestSnapshotsPromise = navCalculator.getNavHistory(config.vaultAddress, 1);
 
   const [openPositions, redeemablePositions, snapshots, capState] = await Promise.all([
     positionFetcher.fetchOpenPositions(config.safeAddress),
@@ -674,17 +655,10 @@ export function buildVaultRouter(): Router {
         config: {
           vaultAddress: config.vaultAddress,
           safeAddress: config.safeAddress,
-          betSize: config.betSize,
-          dailyBudget: config.dailyBudget,
-          minOdds: config.minOdds,
-          maxOdds: config.maxOdds,
-          maxHoursGeneral: config.maxHoursGeneral,
-          hedgingEnabled: config.hedging.enabled,
         },
         intervals: {
           navRefreshMin: config.navRefreshIntervalMin,
           reconciliationMin: config.reconciliationIntervalMin,
-          tradingScanMin: config.tradingScanIntervalMin,
           resolutionCheckMin: config.resolutionCheckIntervalMin,
         },
       }));
@@ -793,7 +767,10 @@ export function buildVaultRouter(): Router {
   router.get("/nav-history", async (req, res) => {
     try {
       const limit = Number(req.query.limit) || 24;
-      const snapshots = await navCalculator.getNavHistory(limit);
+      const snapshots = await navCalculator.getNavHistory(
+        getPrimaryVaultConfig().vaultAddress,
+        limit,
+      );
 
       res.json({
         snapshots,
@@ -963,79 +940,25 @@ export function buildVaultRouter(): Router {
   });
 
   router.get("/trading/status", async (_req, res) => {
-    try {
-      const config = getPrimaryVaultConfig();
-      const tradingClient = createVaultTradingClient(config);
-      const initialized = tradingClient.isInitialized();
-
-      const [safeBalance, activeOrders] = initialized
-        ? await Promise.all([tradingClient.getBalance(), tradingClient.getActiveOrders()])
-        : [0, []];
-
-      res.json({
-        initialized,
-        safeAddress: tradingClient.getSafeAddress(),
-        safeBalance,
-        operatorAddress: tradingClient.getOperatorAddress(),
-        activeOrdersCount: activeOrders.length,
-        vaultId: config.id,
-      });
-    } catch (error) {
-      logger.error("Vault API: Trading status failed", { error: (error as Error).message });
-      res.status(500).json({ error: (error as Error).message });
-    }
+    const config = getPrimaryVaultConfig();
+    res.status(410).json({
+      initialized: false,
+      vaultId: config.id,
+      error: "Internal vault trading is disabled.",
+      message: "Trading status is managed by an external bot and is no longer exposed here.",
+    });
   });
 
   // POST /vault/scan
   router.post("/scan", requireAuth, async (_req, res) => {
-    try {
-      const config = getPrimaryVaultConfig();
-      const mode = getEffectiveMode(config);
-      if (mode !== "live") {
-        logger.info("Vault API: Scan triggered (simulation mode — no execution)");
-        res.json({
-          success: true,
-          message: "Scan triggered (simulation mode — no markets scanned)",
-          mode,
-          vaultId: config.id,
-        });
-        return;
-      }
-      const pendingWithdrawals = await withdrawalRepository.getPendingRequests(config.vaultAddress);
-      if (pendingWithdrawals.length > 0) {
-        res.status(409).json({
-          success: false,
-          error: "Pending withdrawal queue takes priority over new trading",
-          pendingWithdrawals: pendingWithdrawals.length,
-          vaultId: config.id,
-        });
-        return;
-      }
-
-      const startTime = Date.now();
-      const navOracle = createNavOracle(config, undefined, config.id);
-      const tradingClient = createVaultTradingClient(config);
-      const results = await createTradingOrchestrator(
-        config,
-        tradingClient,
-        navOracle,
-      ).runScanCycle();
-      const duration = Date.now() - startTime;
-
-      logger.info("Vault API: Scan triggered (live mode)", { vaultId: config.id });
-
-      res.json({
-        success: true,
-        message: "Scan cycle completed",
-        mode,
-        durationMs: duration,
-        results,
-        vaultId: config.id,
-      });
-    } catch (error) {
-      logger.error("Vault API: Scan failed", { error: (error as Error).message });
-      res.status(500).json({ error: (error as Error).message });
-    }
+    const config = getPrimaryVaultConfig();
+    res.status(410).json({
+      success: false,
+      vaultId: config.id,
+      mode: getEffectiveMode(config),
+      error: "Internal vault trading scans are disabled.",
+      message: "Trading is handled by an external bot; this endpoint is no longer available.",
+    });
   });
 
   router.post("/check-resolutions", requireAuth, async (_req, res) => {
@@ -1584,7 +1507,7 @@ export function buildVaultRouter(): Router {
   router.get("/withdrawal-queue", requireAuth, async (req, res) => {
     try {
       const userAddress = req.session!.address as string;
-      const vaultAddress = (req.query.vault as string) || env.VAULT_ADDRESS || "";
+      const vaultAddress = (req.query.vault as string) || getPrimaryVaultConfig().vaultAddress;
 
       let requests = await withdrawalRepository.getRequestsByUser(
         userAddress,
@@ -2149,10 +2072,6 @@ export function buildVaultRouter(): Router {
         config: {
           vaultAddress: config.vaultAddress,
           safeAddress: config.safeAddress,
-          betSize: config.betSize,
-          dailyBudget: config.dailyBudget,
-          minOdds: config.minOdds,
-          maxOdds: config.maxOdds,
         },
       });
     } catch (error) {
@@ -2244,41 +2163,7 @@ export function buildVaultRouter(): Router {
 
       const rawLimit = Number(req.query.limit);
       const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined;
-      const snapshots =
-        config.type === "custom"
-          ? limit !== undefined
-            ? await db
-                .select({
-                  id: navSnapshots.id,
-                  navId: navSnapshots.snapshotId,
-                  totalAssets: navSnapshots.totalAssets,
-                  idleAssets: navSnapshots.totalAssets,
-                  deployedCostBasis: navSnapshots.totalAssets,
-                  sharePrice: navSnapshots.sharePrice,
-                  positionCount: sql<number>`0`.as("position_count"),
-                  timestamp: navSnapshots.timestamp,
-                  createdAt: navSnapshots.createdAt,
-                })
-                .from(navSnapshots)
-                .where(eq(navSnapshots.vaultAddress, config.vaultAddress))
-                .orderBy(desc(navSnapshots.timestamp))
-                .limit(limit)
-            : await db
-                .select({
-                  id: navSnapshots.id,
-                  navId: navSnapshots.snapshotId,
-                  totalAssets: navSnapshots.totalAssets,
-                  idleAssets: navSnapshots.totalAssets,
-                  deployedCostBasis: navSnapshots.totalAssets,
-                  sharePrice: navSnapshots.sharePrice,
-                  positionCount: sql<number>`0`.as("position_count"),
-                  timestamp: navSnapshots.timestamp,
-                  createdAt: navSnapshots.createdAt,
-                })
-                .from(navSnapshots)
-                .where(eq(navSnapshots.vaultAddress, config.vaultAddress))
-                .orderBy(desc(navSnapshots.timestamp))
-          : await navCalculator.getNavHistory(limit);
+      const snapshots = await navCalculator.getNavHistory(config.vaultAddress, limit);
 
       res.json({
         vaultId: config.id,
@@ -2294,64 +2179,25 @@ export function buildVaultRouter(): Router {
   });
 
   router.post("/:vaultId/scan", requireAuth, async (req, res) => {
-    try {
-      const vaultId = parseInt(req.params.vaultId ?? "", 10);
-      if (isNaN(vaultId)) {
-        res.status(400).json({ error: "Invalid vault ID" });
-        return;
-      }
-
-      const config = getVaultConfig(vaultId);
-      if (!config) {
-        res.status(404).json({ error: `Vault ${vaultId} not found` });
-        return;
-      }
-
-      if (config.type !== "bot") {
-        res.status(400).json({ error: "Vault is not a bot vault" });
-        return;
-      }
-
-      const mode = getEffectiveMode(config);
-      if (mode !== "live") {
-        res.json({
-          success: true,
-          vaultId: config.id,
-          mode,
-          message: "Scan skipped in simulation mode",
-          results: [],
-        });
-        return;
-      }
-      const pendingWithdrawals = await withdrawalRepository.getPendingRequests(config.vaultAddress);
-      if (pendingWithdrawals.length > 0) {
-        res.status(409).json({
-          success: false,
-          error: "Pending withdrawal queue takes priority over new trading",
-          pendingWithdrawals: pendingWithdrawals.length,
-          vaultId: config.id,
-        });
-        return;
-      }
-
-      const navOracle = createNavOracle(config, undefined, config.id);
-      const tradingClient = createVaultTradingClient(config);
-      const results = await createTradingOrchestrator(
-        config,
-        tradingClient,
-        navOracle,
-      ).runScanCycle();
-
-      res.json({
-        success: true,
-        vaultId: config.id,
-        mode,
-        results,
-      });
-    } catch (error) {
-      logger.error("Vault API: Vault scan failed", { error: (error as Error).message });
-      res.status(500).json({ error: (error as Error).message });
+    const vaultId = parseInt(req.params.vaultId ?? "", 10);
+    if (isNaN(vaultId)) {
+      res.status(400).json({ error: "Invalid vault ID" });
+      return;
     }
+
+    const config = getVaultConfig(vaultId);
+    if (!config) {
+      res.status(404).json({ error: `Vault ${vaultId} not found` });
+      return;
+    }
+
+    res.status(410).json({
+      success: false,
+      vaultId: config.id,
+      mode: getEffectiveMode(config),
+      error: "Internal vault trading scans are disabled.",
+      message: "Trading is handled by an external bot; this endpoint is no longer available.",
+    });
   });
 
   router.post("/:vaultId/check-resolutions", requireAuth, async (req, res) => {

@@ -6,21 +6,10 @@ import { env, isTradingEnabled } from "./env.js";
 import { logger } from "./logger.js";
 import { createNavOracle } from "./services/navOracle.js";
 import { ResolutionCheckerService } from "./services/resolutionChecker.js";
-import {
-  createTradingOrchestrator,
-  fetchGammaMarkets,
-  type GammaMarket,
-  type MarketFetchConfig,
-  TradingOrchestratorService,
-} from "./services/tradingOrchestrator.js";
-import { HedgingChecker } from "./services/hedgingChecker.js";
 import { SafeWalletService } from "./services/safeWallet.js";
-import { createVaultTradingClient } from "./services/tradingClient.js";
 import { positionRepository } from "./repositories/positionRepository.js";
 import type { ResolvedVaultIdentity } from "./config/identityResolver.js";
 import { Wallet } from "ethers";
-import { ClobClient } from "@polymarket/clob-client";
-import { POLYGON_CHAIN_ID, SUPPORTS_POLYMARKET_TRADING } from "./constants.js";
 import { createPublicClient, type Address } from "viem";
 import { createNetworkTransport } from "./rpcTransport.js";
 import { getNetworkConfigFromEnv } from "./config/network.js";
@@ -53,16 +42,8 @@ let isShuttingDown = false;
 const intervals: NodeJS.Timeout[] = [];
 
 const vaultResolutionCheckers = new Map<number, ResolutionCheckerService>();
-const vaultOrchestrators = new Map<number, TradingOrchestratorService>();
-const vaultHedgingCheckers = new Map<number, HedgingChecker>();
 
 const resolutionInFlight = new Set<number>();
-const scanInFlight = new Set<number>();
-const hedgingInFlight = new Set<number>();
-
-function isTradingEnabledConfig(config: VaultInstanceConfig): boolean {
-  return config.enabled && config.tradingScanIntervalMin > 0 && config.betSize > 0;
-}
 
 async function runStartupProbes(
   config: VaultInstanceConfig,
@@ -74,7 +55,6 @@ async function runStartupProbes(
   const keyChecks = [
     { key: identity.allocatorNavSignerKey, name: "allocatorNavSignerKey" },
     { key: identity.safeOperatorKey, name: "safeOperatorKey" },
-    { key: identity.tradingSignerKey, name: "tradingSignerKey" },
   ];
 
   for (const { key, name } of keyChecks) {
@@ -86,13 +66,9 @@ async function runStartupProbes(
   }
 
   const addressChecks: Array<{ addr: string; name: string }> = [
-    { addr: identity.tradingFunderAddress, name: "tradingFunderAddress" },
     { addr: identity.safeAddress, name: "safeAddress" },
     { addr: identity.vaultAddress, name: "vaultAddress" },
   ];
-  if (identity.tradingSafeAddress) {
-    addressChecks.push({ addr: identity.tradingSafeAddress, name: "tradingSafeAddress" });
-  }
 
   for (const { addr, name } of addressChecks) {
     if (!isValidAddress(addr)) {
@@ -112,7 +88,7 @@ async function runStartupProbes(
       transport: createNetworkTransport(),
     });
 
-    const safeContractAddress = (config.tradingSafeAddress ?? config.safeAddress) as Address;
+    const safeContractAddress = config.safeAddress as Address;
     const code = await client.getCode({ address: safeContractAddress });
     const operatorWallet = new Wallet(identity.safeOperatorKey);
     const operatorAddress = operatorWallet.address.toLowerCase();
@@ -150,104 +126,11 @@ async function runStartupProbes(
     }
     throw new Error(`${vaultLabel}: Trading wallet probe failed - ${(error as Error).message}`);
   }
-  // 3. CLOB Identity Probe (warning only, skip on Amoy)
-  if (!SUPPORTS_POLYMARKET_TRADING) {
-    logger.info(`${vaultLabel}: CLOB identity probe skipped (Polymarket not available on Amoy)`);
-  } else if (config.type === "bot") {
-    try {
-      const wallet = new Wallet(identity.tradingSignerKey);
-      const builderConfig = undefined; // Skip builder config for probe - not required
-
-      const bootstrapClient = new ClobClient(
-        "https://clob.polymarket.com",
-        POLYGON_CHAIN_ID,
-        wallet,
-        undefined,
-        identity.tradingSignatureType,
-        identity.tradingFunderAddress,
-        undefined,
-        undefined,
-        builderConfig,
-      );
-
-      const apiCreds = await bootstrapClient.createOrDeriveApiKey();
-
-      if (!apiCreds?.key || !apiCreds?.secret || !apiCreds?.passphrase) {
-        logger.warn(
-          `${vaultLabel}: CLOB identity probe warning - could not derive API key (may need funds deposited)`,
-        );
-      } else {
-        logger.debug(`${vaultLabel}: CLOB identity probe passed (API key derived successfully)`);
-      }
-    } catch (error) {
-      logger.warn(
-        `${vaultLabel}: CLOB identity probe warning - could not derive API key: ${(error as Error).message} (may need funds deposited)`,
-      );
-    }
-  }
-
-  // 4. Single-Safe Mode Invariant Probe (critical for live mode)
-  if (config.singleSafeMode === true) {
-    logger.debug(`${vaultLabel}: Running single-safe mode validation`);
-
-    const normalizedSafeAddress = identity.safeAddress.toLowerCase();
-    const normalizedFunderAddress = identity.tradingFunderAddress.toLowerCase();
-
-    // Invariant 1: safeAddress must equal tradingFunderAddress
-    if (normalizedSafeAddress !== normalizedFunderAddress) {
-      const reason = `safeAddress (${identity.safeAddress}) does not match tradingFunderAddress (${identity.tradingFunderAddress})`;
-      if (env.VAULT_MODE === "live") {
-        throw new Error(
-          `${vaultLabel}: Single-safe mode probe FAILED - ${reason}. Single-safe mode requires safeAddress == tradingFunderAddress.`,
-        );
-      } else {
-        logger.warn(
-          `${vaultLabel}: Single-safe mode probe WARNING - ${reason}. Live mode would fail.`,
-        );
-      }
-    }
-
-    // Invariant 2: signatureType must be 2 (Safe signature type)
-    if (identity.tradingSignatureType !== 2) {
-      const reason = `signatureType is ${identity.tradingSignatureType}, expected 2 (Safe)`;
-      if (env.VAULT_MODE === "live") {
-        throw new Error(
-          `${vaultLabel}: Single-safe mode probe FAILED - ${reason}. Single-safe mode requires Safe signature type (2).`,
-        );
-      } else {
-        logger.warn(
-          `${vaultLabel}: Single-safe mode probe WARNING - ${reason}. Live mode would fail.`,
-        );
-      }
-    }
-
-    logger.debug(`${vaultLabel}: Single-safe mode validation passed`);
-  }
-
   logger.info(`${vaultLabel}: All startup probes passed`);
 }
 
 function isVaultLiveExecutionAllowed(config: VaultInstanceConfig): boolean {
   return env.VAULT_MODE === "live" && config.enabled;
-}
-
-async function fetchMarketsOnce(): Promise<GammaMarket[]> {
-  try {
-    const tradingConfigs = getEnabledVaultConfigs().filter(isTradingEnabledConfig);
-    if (tradingConfigs.length === 0) {
-      return [];
-    }
-
-    const sharedMarketFetchConfig: MarketFetchConfig = {
-      maxEvents: Math.max(...tradingConfigs.map((config) => config.marketFetchMaxEvents), 1000),
-    };
-    return await fetchGammaMarkets(sharedMarketFetchConfig);
-  } catch (error) {
-    logger.error("TradingWorker [Markets]: Failed to fetch markets", {
-      error: (error as Error).message,
-    });
-    return [];
-  }
 }
 
 function scheduleInterval(fn: () => Promise<void>, intervalMs: number, name: string): void {
@@ -304,84 +187,6 @@ async function runResolutionCheckForVault(vaultId: number): Promise<void> {
   }
 }
 
-async function runTradingScanForVault(
-  vaultId: number,
-  orchestrator: TradingOrchestratorService,
-  markets: GammaMarket[],
-): Promise<void> {
-  if (isShuttingDown) return;
-  if (scanInFlight.has(vaultId)) {
-    logger.debug("TradingWorker [TradingScan]: Skipping vault (previous scan still running)", {
-      vaultId,
-    });
-    return;
-  }
-
-  scanInFlight.add(vaultId);
-  try {
-    const config = getEnabledVaultConfigs().find((item) => item.id === vaultId);
-    if (!config || !isVaultLiveExecutionAllowed(config)) {
-      return;
-    }
-
-    const results = await orchestrator.runScanCycle(markets);
-    const trades = results.filter((result) => result.success);
-    const failures = results.filter((result) => !result.success);
-
-    if (results.length > 0) {
-      logger.info("TradingWorker [TradingScan]: Scan complete", {
-        vaultId,
-        candidates: results.length,
-        tradesExecuted: trades.length,
-        tradesFailed: failures.length,
-      });
-    }
-  } catch (error) {
-    logger.error("TradingWorker [TradingScan]: Scan failed", {
-      vaultId,
-      error: (error as Error).message,
-    });
-  } finally {
-    scanInFlight.delete(vaultId);
-  }
-}
-
-async function runHedgingCheckForVault(vaultId: number, checker: HedgingChecker): Promise<void> {
-  if (isShuttingDown) return;
-  if (hedgingInFlight.has(vaultId)) {
-    logger.debug("TradingWorker [Hedging]: Skipping vault (previous check still running)", {
-      vaultId,
-    });
-    return;
-  }
-
-  hedgingInFlight.add(vaultId);
-  try {
-    const config = getEnabledVaultConfigs().find((item) => item.id === vaultId);
-    if (!config || !isVaultLiveExecutionAllowed(config)) {
-      return;
-    }
-
-    const result = await checker.checkAndHedgePositions();
-    if (result.checked > 0) {
-      logger.info("TradingWorker [Hedging]: Check complete", {
-        vaultId,
-        checked: result.checked,
-        hedged: result.hedged,
-        skipped: result.skipped,
-        errors: result.errors,
-      });
-    }
-  } catch (error) {
-    logger.error("TradingWorker [Hedging]: Check failed", {
-      vaultId,
-      error: (error as Error).message,
-    });
-  } finally {
-    hedgingInFlight.delete(vaultId);
-  }
-}
-
 async function initializeVaults(): Promise<{
   initialized: number;
   failed: Array<{ id: number; name: string }>;
@@ -399,31 +204,13 @@ async function initializeVaults(): Promise<{
       await runStartupProbes(config, identity);
       const navOracle = createNavOracle(config, identity);
 
-      const safeWallet = new SafeWalletService(
-        config.tradingSafeAddress ?? config.safeAddress,
-        identity.safeOperatorKey,
-      );
+      const safeWallet = new SafeWalletService(config.safeAddress, identity.safeOperatorKey);
       const resolutionChecker = new ResolutionCheckerService(
         positionRepository,
         navOracle,
         safeWallet,
       );
       vaultResolutionCheckers.set(config.id, resolutionChecker);
-
-      if (isTradingEnabledConfig(config) && SUPPORTS_POLYMARKET_TRADING) {
-        const tradingClient = createVaultTradingClient(config);
-        const orchestrator = createTradingOrchestrator(config, tradingClient, navOracle);
-        vaultOrchestrators.set(config.id, orchestrator);
-
-        if (config.hedging.enabled) {
-          const checker = new HedgingChecker(config, tradingClient, positionRepository);
-          vaultHedgingCheckers.set(config.id, checker);
-        }
-      } else if (isTradingEnabledConfig(config) && !SUPPORTS_POLYMARKET_TRADING) {
-        logger.info(
-          `Vault ${config.id} (${config.name}): Trading and hedging disabled (Polymarket not available on Amoy)`,
-        );
-      }
       initialized++;
 
       logger.info("TradingWorker: Initialized vault", {
@@ -431,10 +218,8 @@ async function initializeVaults(): Promise<{
         name: config.name,
         type: config.type,
         mode: env.VAULT_MODE,
-        hedgingEnabled: isTradingEnabledConfig(config) ? config.hedging.enabled : false,
         intervals: {
           resolutionCheckMin: config.resolutionCheckIntervalMin,
-          tradingScanMin: isTradingEnabledConfig(config) ? config.tradingScanIntervalMin : null,
         },
       });
     } catch (error) {
@@ -463,28 +248,6 @@ function scheduleVaultCrons(): void {
         `Resolution [${vaultLabel}]`,
       );
     }
-
-    const orchestrator = vaultOrchestrators.get(config.id);
-    if (orchestrator) {
-      scheduleInterval(
-        async () => {
-          const markets = await fetchMarketsOnce();
-          if (markets.length === 0) return;
-          await runTradingScanForVault(config.id, orchestrator, markets);
-        },
-        config.tradingScanIntervalMin * 60 * 1000,
-        `TradingScan [${vaultLabel}]`,
-      );
-    }
-
-    const hedgingChecker = vaultHedgingCheckers.get(config.id);
-    if (hedgingChecker) {
-      scheduleInterval(
-        () => runHedgingCheckForVault(config.id, hedgingChecker),
-        config.tradingScanIntervalMin * 60 * 1000,
-        `HedgingCheck [${vaultLabel}]`,
-      );
-    }
   }
 }
 
@@ -495,50 +258,19 @@ async function runInitialTasks(): Promise<void> {
     runResolutionCheckForVault(config.id),
   );
   await Promise.allSettled(initialResolutionPromises);
-
-  const tradingConfigs = enabledConfigs.filter(isTradingEnabledConfig);
-  if (tradingConfigs.length === 0) {
-    logger.info("TradingWorker: No enabled trading vaults, skipping initial trading scan");
-    return;
-  }
-
-  logger.info("TradingWorker: Running initial trading scans...", {
-    tradingVaults: tradingConfigs.map((config) => ({ id: config.id, name: config.name })),
-  });
-
-  const markets = await fetchMarketsOnce();
-  if (markets.length === 0) {
-    logger.warn("TradingWorker: No markets fetched, skipping initial scans");
-    return;
-  }
-
-  const scanPromises = tradingConfigs.map(async (config) => {
-    const orchestrator = vaultOrchestrators.get(config.id);
-    if (!orchestrator) return;
-    await runTradingScanForVault(config.id, orchestrator, markets);
-  });
-  await Promise.allSettled(scanPromises);
-
-  const hedgingPromises = tradingConfigs.map(async (config) => {
-    const checker = vaultHedgingCheckers.get(config.id);
-    if (!checker) return;
-    await runHedgingCheckForVault(config.id, checker);
-  });
-  await Promise.allSettled(hedgingPromises);
 }
 
 async function start(): Promise<void> {
-  logger.info("=== Vault Trading Worker Starting ===");
+  logger.info("=== Vault Resolution Worker Starting ===");
   logger.info(
     `TradingWorker: PID ${process.pid}, mode: ${env.VAULT_MODE}, network: ${env.VAULT_NETWORK}`,
   );
 
-  // Amoy enforcement: trading is explicitly disabled on Amoy testnet
   if (!isTradingEnabled()) {
-    logger.info("Amoy vault: trading disabled, live mode enforced - TradingWorker exiting");
+    logger.info("Vault resolution worker disabled on current network - exiting");
     process.exit(0);
   }
-  logger.info("=== Vault Trading Worker Starting ===");
+  logger.info("=== Vault Resolution Worker Starting ===");
   logger.info(`TradingWorker: PID ${process.pid}, mode: ${env.VAULT_MODE}`);
 
   const enabledConfigs = getEnabledVaultConfigs();
@@ -564,7 +296,7 @@ async function start(): Promise<void> {
   await runInitialTasks();
 
   scheduleVaultCrons();
-  logger.info("=== Vault Trading Worker Running ===");
+  logger.info("=== Vault Resolution Worker Running ===");
 }
 
 function shutdown(): void {

@@ -556,7 +556,9 @@ export class VaultHealthMonitor {
 
     try {
       const { navCalculator } = await import("./navCalculator.js");
-      const history = await navCalculator.getNavHistory(1);
+      const primaryVault =
+        getAllVaultConfigs().find((config) => config.enabled) ?? getAllVaultConfigs()[0];
+      const history = await navCalculator.getNavHistory(primaryVault?.vaultAddress, 1);
 
       if (history.length === 0) {
         return {
@@ -912,8 +914,8 @@ export class VaultHealthMonitor {
           if (!capabilities.batchBased) continue;
 
           const flatnessDetector = new FlatnessDetector();
-          const tradingSafeAddress = vault.tradingSafeAddress ?? vault.safeAddress;
-          const result = await flatnessDetector.checkFlatness(vault, tradingSafeAddress);
+          const tradingWalletAddress = vault.safeAddress;
+          const result = await flatnessDetector.checkFlatness(vault, tradingWalletAddress);
 
           if (!result.isFlat) {
             failedChecks.push({

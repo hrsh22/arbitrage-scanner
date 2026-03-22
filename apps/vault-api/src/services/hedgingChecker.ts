@@ -40,6 +40,17 @@ interface PositionToEvaluate {
 
 const GAMMA_MARKET_URL = "https://gamma-api.polymarket.com/markets";
 
+const DEFAULT_HEDGING_CONFIG: HedgingConfig = {
+  enabled: false,
+  dropThresholdPercent: 60,
+  multiplier: 2,
+  spreadTolerance: 0.1,
+  minPositionAgeMinutes: 0,
+  onlyNearResolution: false,
+  nearResolutionMinutes: 60,
+  skipCategories: [],
+};
+
 export class HedgingChecker {
   private config: VaultInstanceConfig;
   private hedgingConfig: HedgingConfig;
@@ -52,7 +63,7 @@ export class HedgingChecker {
     repository: PositionRepository,
   ) {
     this.config = config;
-    this.hedgingConfig = config.hedging;
+    this.hedgingConfig = config.hedging ?? DEFAULT_HEDGING_CONFIG;
     this.tradingClient = tradingClient;
     this.repository = repository;
   }

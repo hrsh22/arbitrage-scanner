@@ -18,7 +18,7 @@ const intervals: NodeJS.Timeout[] = [];
 const vaultNavOracles = new Map<number, NavOracleService>();
 const vaultLiquidityManagers = new Map<number, LiquidityManager>();
 
-const navInFlight = new Set<number>();
+const navInFlight = new Map<number, Promise<boolean>>();
 const reconciliationInFlight = new Set<number>();
 
 function isVaultLiveExecutionAllowed(config: VaultInstanceConfig): boolean {
@@ -26,11 +26,7 @@ function isVaultLiveExecutionAllowed(config: VaultInstanceConfig): boolean {
 }
 
 function shouldSchedulePeriodicNavRefresh(config: VaultInstanceConfig): boolean {
-  if (config.type !== "custom") {
-    return true;
-  }
-
-  return config.vaultContractType === "flatBookVaultV2";
+  return config.type === "custom";
 }
 
 function scheduleInterval(fn: () => Promise<void>, intervalMs: number, name: string): void {
@@ -48,11 +44,12 @@ function scheduleInterval(fn: () => Promise<void>, intervalMs: number, name: str
 
 async function runNavRefreshForVault(vaultId: number): Promise<boolean> {
   if (isShuttingDown) return false;
-  if (navInFlight.has(vaultId)) {
+  const existingRefresh = navInFlight.get(vaultId);
+  if (existingRefresh) {
     logger.debug("CapitalWorker [NAV]: Skipping vault (previous refresh still running)", {
       vaultId,
     });
-    return false;
+    return existingRefresh;
   }
 
   const oracle = vaultNavOracles.get(vaultId);
@@ -63,33 +60,40 @@ async function runNavRefreshForVault(vaultId: number): Promise<boolean> {
     return false;
   }
 
-  navInFlight.add(vaultId);
-  try {
-    const result = await oracle.calculateAndPushNav();
-    logger.info("CapitalWorker [NAV]: Refresh completed", {
-      vaultId,
-      updatedOnChain: result.updatedOnChain,
-      newValue: result.newValue,
-      txHash: result.txHash,
-    });
-    return true;
-  } catch (error) {
-    const err = error as Error & { cause?: unknown };
-    logger.error("CapitalWorker [NAV]: Refresh failed", {
-      vaultId,
-      error: err.message,
-      stack: err.stack,
-      cause:
-        err.cause instanceof Error
-          ? err.cause.message
-          : err.cause !== undefined
-            ? String(err.cause)
-            : undefined,
-    });
-    return false;
-  } finally {
-    navInFlight.delete(vaultId);
-  }
+  let refreshPromise!: Promise<boolean>;
+  refreshPromise = (async () => {
+    try {
+      const result = await oracle.calculateAndPushNav();
+      logger.info("CapitalWorker [NAV]: Refresh completed", {
+        vaultId,
+        updatedOnChain: result.updatedOnChain,
+        newValue: result.newValue,
+        txHash: result.txHash,
+      });
+      return true;
+    } catch (error) {
+      const err = error as Error & { cause?: unknown };
+      logger.error("CapitalWorker [NAV]: Refresh failed", {
+        vaultId,
+        error: err.message,
+        stack: err.stack,
+        cause:
+          err.cause instanceof Error
+            ? err.cause.message
+            : err.cause !== undefined
+              ? String(err.cause)
+              : undefined,
+      });
+      return false;
+    } finally {
+      if (navInFlight.get(vaultId) === refreshPromise) {
+        navInFlight.delete(vaultId);
+      }
+    }
+  })();
+
+  navInFlight.set(vaultId, refreshPromise);
+  return refreshPromise;
 }
 
 async function runReconciliationForVault(vaultId: number): Promise<void> {
@@ -150,7 +154,7 @@ async function runReconciliationForVault(vaultId: number): Promise<void> {
     | Awaited<ReturnType<(typeof manager)["evaluateFlatBookLifecycle"]>>
     | undefined;
 
-  const isFlatBookLifecycleVault = config.vaultContractType === "flatBookVaultV2";
+  const isFlatBookLifecycleVault = true;
 
   if (isFlatBookLifecycleVault) {
     try {
@@ -237,7 +241,6 @@ async function runReconciliationForVault(vaultId: number): Promise<void> {
       let health = await oracle.getNavHealth();
       if (health.stale) {
         if (
-          config.vaultContractType === "flatBookVaultV2" &&
           flatBookLifecycleDecision?.riskState === "flat" &&
           flatBookLifecycleDecision.action === "none"
         ) {
@@ -400,8 +403,7 @@ async function runInitialTasks(): Promise<void> {
   const enabledConfigs = getEnabledVaultConfigs();
 
   const initialPromises = enabledConfigs.map(async (config) => {
-    const shouldRunInitialNavRefresh =
-      shouldSchedulePeriodicNavRefresh(config) && config.vaultContractType !== "flatBookVaultV2";
+    const shouldRunInitialNavRefresh = false;
 
     if (shouldRunInitialNavRefresh) {
       await runNavRefreshForVault(config.id);

@@ -18,14 +18,11 @@ const mockVaultInstanceConfig = {
   network: "amoy",
   vaultAddress: "0x1234567890123456789012345678901234567890",
   safeAddress: "0x0987654321098765432109876543210987654321",
-  tradingSafeAddress: "0x0987654321098765432109876543210987654321",
   allocatorNavSignerKeyEnv: "TEST_ALLOCATOR_KEY",
   safeOperatorKeyEnv: "TEST_SAFE_KEY",
   tradingSignerKeyEnv: "TEST_TRADING_KEY",
   settlerKeyEnv: "TEST_SETTLER_KEY",
   tradingSignatureType: 2,
-  tradingFunderAddress: "0x0987654321098765432109876543210987654321",
-  singleSafeMode: false,
   customVaultConfig: {
     epochDurationSeconds: 3600,
     navStalenessThresholdSeconds: 3600,
@@ -103,6 +100,7 @@ vi.mock("../config/network.js", () => ({
     },
   })),
   getRpcUrlForNetwork: vi.fn(() => "https://rpc.example.test"),
+  getRpcUrlsForNetwork: vi.fn(() => ["https://rpc.example.test"]),
 }));
 
 vi.mock("../services/customVaultClient.js", async () => {

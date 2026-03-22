@@ -110,7 +110,6 @@ function createBaseConfig(): VaultInstanceConfig {
     allocatorNavSignerKeyEnv: "TEST_ALLOCATOR_KEY",
     safeOperatorKeyEnv: "TEST_SAFE_KEY",
     tradingSignerKeyEnv: "TEST_TRADING_KEY",
-    tradingFunderAddressEnv: "TEST_FUNDER_ADDRESS",
     tradingSignatureType: 2,
     betSize: 1.0,
     dailyBudget: Infinity,

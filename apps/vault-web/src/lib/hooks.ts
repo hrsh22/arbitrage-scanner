@@ -345,7 +345,7 @@ function usePolledFetch<T>(fetcher: () => Promise<T>, intervalMs = 30_000): Asyn
 export function useVaultStatus(vaultId?: number): AsyncState<VaultStatusResponse> {
   const query = useQuery({
     queryKey: vaultQueryKeys.status(vaultId),
-    queryFn: () => fetchVaultStatus(vaultId),
+    queryFn: () => fetchVaultStatus(vaultId!),
     enabled: vaultId !== undefined,
     refetchInterval: DEFAULT_POLL_INTERVAL_MS,
   });
@@ -369,14 +369,14 @@ export function useVaultInstances(): AsyncState<VaultInstancesResponse> {
 }
 
 export function useVaultPositions(vaultId?: number): AsyncState<VaultPositionsResponse> {
-  const fetcher = useCallback(() => fetchVaultPositions(vaultId), [vaultId]);
+  const fetcher = useCallback(() => fetchVaultPositions(vaultId!), [vaultId]);
   return usePolledFetch(fetcher);
 }
 
 export function useVaultPositionHistory(
   vaultId?: number,
 ): AsyncState<VaultPositionHistoryResponse> {
-  const fetcher = useCallback(() => fetchVaultPositionHistory(vaultId), [vaultId]);
+  const fetcher = useCallback(() => fetchVaultPositionHistory(vaultId!), [vaultId]);
   return usePolledFetch(fetcher);
 }
 
@@ -384,7 +384,7 @@ export function useVaultNavHistory(
   limit?: number,
   vaultId?: number,
 ): AsyncState<VaultNavHistoryResponse> {
-  const fetcher = useCallback(() => fetchVaultNavHistory(limit, vaultId), [limit, vaultId]);
+  const fetcher = useCallback(() => fetchVaultNavHistory(limit, vaultId!), [limit, vaultId]);
   return usePolledFetch(fetcher);
 }
 

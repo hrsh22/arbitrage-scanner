@@ -273,7 +273,7 @@ export class TradingOrchestratorService {
       this.highOddsThreshold = config.highOddsThreshold ?? 0.99;
       this.maxHoursGeneral = config.maxHoursGeneral ?? 24;
       this.maxHoursForHighOdds = config.maxHoursForHighOdds ?? 6;
-      this.betSize = config.betSize;
+      this.betSize = config.betSize ?? 0;
       this.dailyLossLimitUsd = config.maxDailyLoss ?? Infinity;
       this.maxTradesPerScan = 3; // Could add to config later
       this.categoryTimeLimits = config.categoryTimeLimits ?? {};
@@ -282,7 +282,7 @@ export class TradingOrchestratorService {
       this.highOddsThreshold = config.highOddsThreshold ?? 0.99;
       this.maxHoursGeneral = config.maxHoursGeneral ?? 24;
       this.maxHoursForHighOdds = config.maxHoursForHighOdds ?? 6;
-      this.betSize = config.betSize;
+      this.betSize = config.betSize ?? 0;
       this.dailyLossLimitUsd = config.maxDailyLoss ?? Infinity;
       this.maxTradesPerScan = 3; // Could add to config later
       this.categoryTimeLimits = config.categoryTimeLimits ?? {};
@@ -292,7 +292,7 @@ export class TradingOrchestratorService {
       this.deployedRatioLimit = config.maxDeployedRatio;
       this.epochBoundarySafetyBufferMinutes = config.epochBoundarySafetyBufferMinutes ?? 0;
       this.marketFetchConfig = {
-        maxEvents: config.marketFetchMaxEvents,
+        maxEvents: config.marketFetchMaxEvents ?? DEFAULT_MARKET_MAX_EVENTS,
       };
       this.vaultPolicyConfig = {
         maxFlatteningWindowMs: config.maxFlatteningWindowMs ?? MAX_FLATTENING_WINDOW_MS,
@@ -973,9 +973,8 @@ export class TradingOrchestratorService {
         throw new Error("TradingOrchestrator: vaultConfig is required for SafeWalletService");
       }
       const privateKey = process.env[this.vaultConfig.safeOperatorKeyEnv] ?? "";
-      const tradingSafeAddress =
-        this.vaultConfig.tradingSafeAddress ?? this.vaultConfig.safeAddress;
-      this.safeWalletService = new SafeWalletService(tradingSafeAddress, privateKey);
+      const tradingWalletAddress = this.vaultConfig.safeAddress;
+      this.safeWalletService = new SafeWalletService(tradingWalletAddress, privateKey);
     }
     return this.safeWalletService;
   }
@@ -1044,8 +1043,8 @@ export class TradingOrchestratorService {
     }
 
     const flatnessDetector = new FlatnessDetector({}, this.tradingClient);
-    const tradingSafeAddress = this.vaultConfig.tradingSafeAddress ?? this.vaultConfig.safeAddress;
-    return flatnessDetector.checkFlatness(this.vaultConfig, tradingSafeAddress);
+    const tradingWalletAddress = this.vaultConfig.safeAddress;
+    return flatnessDetector.checkFlatness(this.vaultConfig, tradingWalletAddress);
   }
 
   /**

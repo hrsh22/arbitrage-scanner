@@ -46,17 +46,10 @@ export interface VaultInstance {
   config: {
     vaultAddress: string;
     safeAddress: string;
-    betSize: number;
-    dailyBudget: number;
-    minOdds: number;
-    maxOdds: number;
-    maxHoursGeneral: number;
-    hedgingEnabled: boolean;
   };
   intervals: {
     navRefreshMin: number;
     reconciliationMin: number;
-    tradingScanMin: number;
     resolutionCheckMin: number;
   };
 }
@@ -412,6 +405,16 @@ export interface Cycle {
   liquidityMode?: string;
   reopenReady?: boolean;
   openPositionCount?: number;
+  hasActionableWork?: boolean;
+  reason?: string;
+  flatnessCheck?: {
+    blockingConditions: string[];
+    conditions?: Array<{
+      name: string;
+      passed: boolean;
+      details?: Record<string, unknown>;
+    }>;
+  };
 }
 
 export interface CycleStatusResponse {

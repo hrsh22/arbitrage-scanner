@@ -75,36 +75,27 @@ export async function fetchVaultInstances(): Promise<VaultInstancesResponse> {
   return fetchWithAuth(makeUrl(`${VAULT_API_PREFIX}/instances`));
 }
 
-export async function fetchVaultStatus(vaultId?: number): Promise<VaultStatusResponse> {
+export async function fetchVaultStatus(vaultId: number): Promise<VaultStatusResponse> {
   const qs = buildQuery({ vaultId });
   return fetchWithAuth(makeUrl(`${VAULT_API_PREFIX}/status`, qs));
 }
 
-export async function fetchVaultPositions(vaultId?: number): Promise<VaultPositionsResponse> {
-  if (vaultId !== undefined) {
-    return fetchWithAuth(makeUrl(`${VAULT_API_PREFIX}/${vaultId}/positions`));
-  }
-  return fetchWithAuth(makeUrl(`${VAULT_API_PREFIX}/positions`));
+export async function fetchVaultPositions(vaultId: number): Promise<VaultPositionsResponse> {
+  return fetchWithAuth(makeUrl(`${VAULT_API_PREFIX}/${vaultId}/positions`));
 }
 
 export async function fetchVaultPositionHistory(
-  vaultId?: number,
+  vaultId: number,
 ): Promise<VaultPositionHistoryResponse> {
-  if (vaultId !== undefined) {
-    return fetchWithAuth(makeUrl(`${VAULT_API_PREFIX}/${vaultId}/position-history`));
-  }
-  return fetchWithAuth(makeUrl(`${VAULT_API_PREFIX}/position-history`));
+  return fetchWithAuth(makeUrl(`${VAULT_API_PREFIX}/${vaultId}/position-history`));
 }
 
 export async function fetchVaultNavHistory(
-  limit?: number,
-  vaultId?: number,
+  limit: number | undefined,
+  vaultId: number,
 ): Promise<VaultNavHistoryResponse> {
   const qs = buildQuery({ limit });
-  if (vaultId !== undefined) {
-    return fetchWithAuth(makeUrl(`${VAULT_API_PREFIX}/${vaultId}/nav-history`, qs));
-  }
-  return fetchWithAuth(makeUrl(`${VAULT_API_PREFIX}/nav-history`, qs));
+  return fetchWithAuth(makeUrl(`${VAULT_API_PREFIX}/${vaultId}/nav-history`, qs));
 }
 
 export async function fetchVaultAllocations(limit?: number): Promise<VaultAllocationsResponse> {

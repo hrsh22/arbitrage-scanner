@@ -89,10 +89,6 @@ export const env = {
   // Network
   VAULT_NETWORK: vaultNetwork,
 
-  // Vault & Contracts
-  VAULT_ADDRESS: stringFromEnv("VAULT_ADDRESS", ""),
-  SAFE_ADDRESS: stringFromEnv("SAFE_ADDRESS", ""),
-
   // Polygon RPC
   POLYGON_RPC_URLS: csvFromEnv("POLYGON_RPC_URL"),
   AMOY_RPC_URLS: csvFromEnv("AMOY_RPC_URL"),

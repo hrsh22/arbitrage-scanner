@@ -52,7 +52,6 @@ vi.mock("../config/identityResolver.js", () => ({
     allocatorNavSignerKey: "0x" + "a".repeat(64),
     safeOperatorKey: "0x" + "b".repeat(64),
     tradingSignerKey: "0x" + "c".repeat(64),
-    tradingFunderAddress: "0x" + "1".repeat(40),
     tradingSignatureType: 2,
     safeAddress: "0x" + "2".repeat(40),
     vaultAddress: "0x" + "3".repeat(40),

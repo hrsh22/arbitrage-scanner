@@ -46,14 +46,13 @@ export interface VaultInstanceConfig {
   type: VaultType;
   profile?: VaultProfile;
 
-  vaultContractType?: "epochTrancheVault" | "closedBookBatchVault" | "flatBookVaultV2";
+  vaultContractType: "flatBookVaultV2";
 
   /**
    * Contracts (network-specific based on VAULT_NETWORK env var)
    */
   vaultAddress: string;
   safeAddress: string;
-  tradingSafeAddress?: string; // Dual-safe architecture: separate trading safe
   network?: VaultNetwork; // Defaults to mainnet if not specified
 
   /**
@@ -77,21 +76,18 @@ export interface VaultInstanceConfig {
    */
   allocatorNavSignerKeyEnv: string;
   safeOperatorKeyEnv: string;
-  tradingSignerKeyEnv: string;
+  tradingSignerKeyEnv?: string;
   settlerKeyEnv?: string;
-  tradingFunderAddressEnv?: string;
-  tradingFunderAddress?: string;
-  tradingSignatureType: 0 | 1 | 2;
-  singleSafeMode?: boolean;
+  tradingSignatureType?: 0 | 1 | 2;
 
   /**
    * Trading
    */
-  betSize: number;
+  betSize?: number;
   vaultReserveUsdc: number;
   minAllocationAmountUsdc: number;
   maxDeployedRatio: number; // 0.0 to 1.0 (100%)
-  marketFetchMaxEvents: number;
+  marketFetchMaxEvents?: number;
   autoLiquidityManagement?: boolean;
   enforceEpochBoundarySafety?: boolean;
   epochBoundarySafetyBufferMinutes?: number;
@@ -99,14 +95,14 @@ export interface VaultInstanceConfig {
   /**
    * Hedging
    */
-  hedging: HedgingConfig;
+  hedging?: HedgingConfig;
 
   /**
    * Crons
    */
   navRefreshIntervalMin: number;
   reconciliationIntervalMin: number;
-  tradingScanIntervalMin: number;
+  tradingScanIntervalMin?: number;
 
   resolutionCheckIntervalMin: number;
 
@@ -130,7 +126,7 @@ export interface VaultInstanceConfig {
   /**
    * Mode
    */
-  defaultMode: VaultMode;
+  defaultMode?: VaultMode;
 
   /**
    * Starvation policy & emergency pause configuration (T5)

@@ -166,12 +166,6 @@ function validateConfigs(configs: VaultInstanceConfig[]): void {
       );
     }
 
-    if (!Number.isInteger(config.marketFetchMaxEvents) || config.marketFetchMaxEvents < 1) {
-      throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): marketFetchMaxEvents must be an integer >= 1`,
-      );
-    }
-
     if (!config.enabled) continue;
 
     // Validate allocatorNavSignerKeyEnv
@@ -215,84 +209,33 @@ function validateConfigs(configs: VaultInstanceConfig[]): void {
       );
     }
 
-    // Validate tradingSignerKeyEnv
-    if (typeof config.tradingSignerKeyEnv !== "string" || config.tradingSignerKeyEnv === "") {
+    if (
+      config.tradingSignerKeyEnv !== undefined &&
+      (typeof config.tradingSignerKeyEnv !== "string" || config.tradingSignerKeyEnv === "")
+    ) {
       throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): tradingSignerKeyEnv must be a non-empty string`,
+        `Vault "${config.name}" (ID: ${config.id}): tradingSignerKeyEnv must be a non-empty string when provided`,
       );
     }
 
-    const tradingSignerKey = process.env[config.tradingSignerKeyEnv];
-    if (typeof tradingSignerKey !== "string" || tradingSignerKey === "") {
-      throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): Missing required env var ${config.tradingSignerKeyEnv}`,
-      );
-    }
-    if (!/^0x[0-9a-fA-F]{64}$/.test(tradingSignerKey)) {
-      throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): ${config.tradingSignerKeyEnv} must be a 32-byte hex value`,
-      );
-    }
-
-    // Validate trading funder address (either hardcoded or from env)
-    let tradingFunderAddress: string;
-    if (config.singleSafeMode) {
-      // Single-Safe mode: address must be hardcoded and match safeAddress
-      if (!config.tradingFunderAddress) {
+    if (config.tradingSignerKeyEnv) {
+      const tradingSignerKey = process.env[config.tradingSignerKeyEnv];
+      if (typeof tradingSignerKey !== "string" || tradingSignerKey === "") {
         throw new Error(
-          `Vault "${config.name}" (ID: ${config.id}): singleSafeMode enabled but tradingFunderAddress is missing`,
+          `Vault "${config.name}" (ID: ${config.id}): Missing required env var ${config.tradingSignerKeyEnv}`,
         );
       }
-      if (!isAddress(config.tradingFunderAddress)) {
+      if (!/^0x[0-9a-fA-F]{64}$/.test(tradingSignerKey)) {
         throw new Error(
-          `Vault "${config.name}" (ID: ${config.id}): tradingFunderAddress must be a valid address`,
+          `Vault "${config.name}" (ID: ${config.id}): ${config.tradingSignerKeyEnv} must be a 32-byte hex value`,
         );
-      }
-      if (config.tradingFunderAddress.toLowerCase() !== config.safeAddress.toLowerCase()) {
-        throw new Error(
-          `Vault "${config.name}" (ID: ${config.id}): singleSafeMode requires tradingFunderAddress to match safeAddress`,
-        );
-      }
-      if (config.tradingSignatureType !== 2) {
-        throw new Error(
-          `Vault "${config.name}" (ID: ${config.id}): singleSafeMode requires tradingSignatureType to be 2 (Safe)`,
-        );
-      }
-      tradingFunderAddress = config.tradingFunderAddress;
-    } else {
-      if (config.tradingFunderAddress) {
-        if (!isAddress(config.tradingFunderAddress)) {
-          throw new Error(
-            `Vault "${config.name}" (ID: ${config.id}): tradingFunderAddress must be a valid address`,
-          );
-        }
-        tradingFunderAddress = config.tradingFunderAddress;
-      } else {
-        if (
-          typeof config.tradingFunderAddressEnv !== "string" ||
-          config.tradingFunderAddressEnv === ""
-        ) {
-          throw new Error(
-            `Vault "${config.name}" (ID: ${config.id}): tradingFunderAddressEnv must be a non-empty string`,
-          );
-        }
-        const addressFromEnv = process.env[config.tradingFunderAddressEnv];
-        if (typeof addressFromEnv !== "string" || addressFromEnv === "") {
-          throw new Error(
-            `Vault "${config.name}" (ID: ${config.id}): Missing required env var ${config.tradingFunderAddressEnv}`,
-          );
-        }
-        if (!isAddress(addressFromEnv)) {
-          throw new Error(
-            `Vault "${config.name}" (ID: ${config.id}): ${config.tradingFunderAddressEnv} must be a valid address`,
-          );
-        }
-        tradingFunderAddress = addressFromEnv;
       }
     }
 
-    // Validate tradingSignatureType
-    if (![0, 1, 2].includes(config.tradingSignatureType)) {
+    if (
+      config.tradingSignatureType !== undefined &&
+      ![0, 1, 2].includes(config.tradingSignatureType)
+    ) {
       throw new Error(
         `Vault "${config.name}" (ID: ${config.id}): tradingSignatureType must be 0, 1, or 2, got ${config.tradingSignatureType}`,
       );

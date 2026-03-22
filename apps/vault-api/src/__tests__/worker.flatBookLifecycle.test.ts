@@ -22,7 +22,7 @@ interface WorkerHarnessOptions {
   needsNavRefreshForActionableWork?: boolean;
   reconciliationResult?: ReconciliationResultMock;
   navRefreshError?: Error;
-  vaultContractType?: "closedBookBatchVault" | "flatBookVaultV2";
+  vaultContractType?: "flatBookVaultV2";
   lifecycleDecision?: {
     riskState: "flat" | "risk_on" | "unknown";
     action: "none" | "close_book" | "process_queue" | "reopen_idle_cycle";
@@ -157,7 +157,6 @@ async function bootWorkerHarness(options: WorkerHarnessOptions): Promise<WorkerH
       allocatorNavSignerKey: `0x${"1".repeat(64)}`,
       safeOperatorKey: `0x${"2".repeat(64)}`,
       tradingSignerKey: `0x${"3".repeat(64)}`,
-      tradingFunderAddress: "0x1111111111111111111111111111111111111111",
       tradingSignatureType: 2,
       vaultId: 1,
       vaultName: "flatbook-test",
@@ -715,7 +714,6 @@ it("flatBookVaultV2 startup NAV refresh is suppressed during flat/open idle", as
       allocatorNavSignerKey: `0x${"1".repeat(64)}`,
       safeOperatorKey: `0x${"2".repeat(64)}`,
       tradingSignerKey: `0x${"3".repeat(64)}`,
-      tradingFunderAddress: "0x1111111111111111111111111111111111111111",
       tradingSignatureType: 2,
       vaultId: 1,
       vaultName: "flatbook-v2-startup-test",

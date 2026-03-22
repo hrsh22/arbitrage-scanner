@@ -17,32 +17,32 @@ import { env } from "../env.js";
 import { POLYGON_CHAIN_ID, SUPPORTS_POLYMARKET_TRADING, USDC_E_ADDRESS } from "../constants.js";
 import type { TradeResult } from "../types.js";
 import type { VaultInstanceConfig } from "../config/types.js";
-import { resolveVaultIdentity } from "../config/identityResolver.js";
+import { getAllVaultConfigs, resolveVaultIdentity } from "../config/index.js";
 
 const CLOB_HOST = "https://clob.polymarket.com";
-
-// signatureType 2 = Gnosis Safe / Contract wallet
-const SIGNATURE_TYPE = 2;
 
 export class VaultTradingClient {
   private client: ClobClient | null = null;
   private wallet: Wallet | null = null;
   private safeAddress: string;
+  private signatureType: 0 | 1 | 2;
   private initialized = false;
 
   constructor(
     private readonly options: {
       safeAddress?: string;
       privateKey?: string | null;
+      signatureType?: 0 | 1 | 2;
     } = {},
   ) {
-    this.safeAddress = this.options.safeAddress ?? env.SAFE_ADDRESS;
+    this.safeAddress = this.options.safeAddress ?? "";
+    this.signatureType = this.options.signatureType ?? 2;
   }
 
   /**
    * Initialize the CLOB client.
    * Creates operator wallet, derives API creds, configures builder attribution,
-   * then sets up ClobClient with Safe as funder (signatureType 2).
+   * then sets up ClobClient with the configured funder/signature type.
    */
   async initialize(): Promise<void> {
     // Block initialization on unsupported networks
@@ -68,7 +68,7 @@ export class VaultTradingClient {
     }
 
     if (!this.safeAddress) {
-      throw new Error("Missing env var: SAFE_ADDRESS (required as funder for vault trading)");
+      throw new Error("Missing trading funder address in VaultTradingClient options");
     }
 
     try {
@@ -77,7 +77,7 @@ export class VaultTradingClient {
       logger.info("VaultTradingClient: Initializing", {
         operatorAddress: this.wallet.address,
         safeAddress: this.safeAddress,
-        signatureType: SIGNATURE_TYPE,
+        signatureType: this.signatureType,
         usdcAddress: USDC_E_ADDRESS,
       });
 
@@ -88,7 +88,7 @@ export class VaultTradingClient {
         POLYGON_CHAIN_ID,
         this.wallet,
         undefined,
-        SIGNATURE_TYPE,
+        this.signatureType,
         this.safeAddress,
         undefined,
         undefined,
@@ -112,7 +112,7 @@ export class VaultTradingClient {
         POLYGON_CHAIN_ID,
         this.wallet,
         apiCreds,
-        SIGNATURE_TYPE,
+        this.signatureType,
         this.safeAddress,
         undefined,
         undefined,
@@ -410,7 +410,12 @@ let vaultTradingClient: VaultTradingClient | null = null;
 
 export function getVaultTradingClient(): VaultTradingClient {
   if (!vaultTradingClient) {
-    vaultTradingClient = new VaultTradingClient();
+    const defaultConfig =
+      getAllVaultConfigs().find((config) => config.enabled) ?? getAllVaultConfigs()[0];
+    if (!defaultConfig) {
+      throw new Error("No vault configuration available for VaultTradingClient");
+    }
+    vaultTradingClient = createVaultTradingClient(defaultConfig);
   }
   return vaultTradingClient;
 }
@@ -418,7 +423,8 @@ export function getVaultTradingClient(): VaultTradingClient {
 export function createVaultTradingClient(config: VaultInstanceConfig): VaultTradingClient {
   const identity = resolveVaultIdentity(config);
   return new VaultTradingClient({
-    safeAddress: config.safeAddress,
+    safeAddress: identity.safeAddress,
     privateKey: identity.tradingSignerKey,
+    signatureType: identity.tradingSignatureType,
   });
 }

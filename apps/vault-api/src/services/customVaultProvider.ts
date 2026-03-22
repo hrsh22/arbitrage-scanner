@@ -96,8 +96,7 @@ export class CustomVaultProvider implements IVaultProvider {
     if (!vaultConfig) {
       throw new Error(`CustomVaultProvider: vault config ${config.vaultId} not found`);
     }
-    const contractType = vaultConfig.vaultContractType ?? "flatBookVaultV2";
-    if (contractType !== "flatBookVaultV2") {
+    if (vaultConfig.vaultContractType && vaultConfig.vaultContractType !== "flatBookVaultV2") {
       throw new Error(
         `CustomVaultProvider: expected vaultContractType flatBookVaultV2, got ${vaultConfig.vaultContractType ?? "undefined"}`,
       );
@@ -745,7 +744,7 @@ export class CustomVaultProvider implements IVaultProvider {
     }
     const flatnessCheck = await flatnessDetector.checkFlatness(
       this.vaultConfig,
-      this.vaultConfig.tradingSafeAddress ?? this.vaultConfig.safeAddress,
+      this.vaultConfig.safeAddress,
     );
 
     if (!flatnessCheck.isFlat) {
@@ -1757,7 +1756,7 @@ export class CustomVaultProvider implements IVaultProvider {
     }
 
     if (!this.safeWalletService) {
-      const safeAddress = this.vaultConfig.tradingSafeAddress ?? this.vaultConfig.safeAddress;
+      const safeAddress = this.vaultConfig.safeAddress;
       this.safeWalletService = new SafeWalletService(
         safeAddress,
         this.safeOperatorKey,
@@ -1786,8 +1785,7 @@ export class CustomVaultProvider implements IVaultProvider {
       }
     }
 
-    const safeAddress = (this.vaultConfig.tradingSafeAddress ??
-      this.vaultConfig.safeAddress) as Address;
+    const safeAddress = this.vaultConfig.safeAddress as Address;
     if (this.safeOperatorKey && (await this.client.hasRole(adminRole, safeAddress))) {
       const safeWallet = await this.getSafeWalletService();
       const data = encodeFunctionData({

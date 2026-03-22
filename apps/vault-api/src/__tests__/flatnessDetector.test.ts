@@ -72,7 +72,6 @@ describe("FlatnessDetector", () => {
     name: "test-vault",
     vaultAddress: "0x1234567890123456789012345678901234567890",
     safeAddress: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-    tradingSafeAddress: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
     chainId: 137,
     type: "custom",
     minOdds: 0.95,

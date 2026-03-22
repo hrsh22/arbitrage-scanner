@@ -107,7 +107,6 @@ vi.mock("../config/index.js", () => ({
     providerType: "custom",
     vaultAddress: "0x62646C39547c004a922D928DCe247Cae11F7d2d2",
     safeAddress: "0x5991fd6Ecc5634C4de497b47Eb0Aa0065fffb214",
-    tradingSafeAddress: "0x5991fd6Ecc5634C4de497b47Eb0Aa0065fffb214",
     vaultContractType: "flatBookVaultV2",
     allocatorNavSignerKeyEnv: "ALLOCATOR_NAV_SIGNER_KEY",
     settlerKeyEnv: "SETTLER_KEY",

@@ -3,9 +3,13 @@ import { createPublicClient, createWalletClient, formatUnits, type Address, type
 import { privateKeyToAccount } from "viem/accounts";
 
 import type { VaultInstanceConfig } from "../config/types.js";
-import { resolveVaultIdentity, type ResolvedVaultIdentity } from "../config/identityResolver.js";
+import {
+  getAllVaultConfigs,
+  getVaultConfig,
+  resolveVaultIdentity,
+  type ResolvedVaultIdentity,
+} from "../config/index.js";
 import { NAV_STALENESS_THRESHOLD, USDC_E_ADDRESS } from "../constants.js";
-import { env } from "../env.js";
 import { logger } from "../logger.js";
 import { createNetworkTransport } from "../rpcTransport.js";
 import { getNetworkConfigFromEnv } from "../config/network.js";
@@ -400,8 +404,13 @@ export class NavOracleService {
   private navSnapshotAddress: Address | null = null;
 
   constructor(options: NavOracleOptions = {}) {
-    const config = options.vaultConfig;
+    const config =
+      options.vaultConfig ??
+      (options.vaultId !== undefined ? getVaultConfig(options.vaultId) : undefined) ??
+      getAllVaultConfigs().find((candidate) => candidate.enabled) ??
+      getAllVaultConfigs()[0];
     const resolvedIdentity = options.resolvedIdentity;
+    const identity = config ? (resolvedIdentity ?? resolveVaultIdentity(config)) : undefined;
 
     // Resolve addresses and signer key from config + env vars
     let adapterAddress: string | undefined;
@@ -409,25 +418,18 @@ export class NavOracleService {
     let safeAddress: string | undefined;
     let privateKey: string | undefined;
 
-    if (config) {
-      // Use identity resolver to get actual key values from env vars
-      const identity = resolvedIdentity ?? resolveVaultIdentity(config);
+    if (identity) {
       vaultAddress = identity.vaultAddress;
       safeAddress = identity.safeAddress;
       privateKey = identity.allocatorNavSignerKey;
-    } else {
-      adapterAddress = undefined;
-      vaultAddress = env.VAULT_ADDRESS;
-      safeAddress = env.SAFE_ADDRESS;
-      // No fallback for private key - must be provided via config
     }
 
     if (!vaultAddress) {
-      throw new Error("NavOracleService: vaultAddress is required (config or VAULT_ADDRESS env)");
+      throw new Error("NavOracleService: vaultAddress is required from vault config");
     }
 
     if (!safeAddress) {
-      throw new Error("NavOracleService: safeAddress is required (config or SAFE_ADDRESS env)");
+      throw new Error("NavOracleService: safeAddress is required from vault config");
     }
 
     if (!privateKey?.startsWith("0x")) {
@@ -921,6 +923,7 @@ export class NavOracleService {
 
     await this.navSnapshots.recordNavSnapshot({
       navId: `nav-${Date.now()}-${randomUUID()}`,
+      vaultAddress: this.vaultAddress,
       totalAssets: totalAssets.toFixed(USDC_DECIMALS),
       idleAssets: idleAssets.toFixed(USDC_DECIMALS),
       deployedCostBasis: deployedCostBasis.toFixed(USDC_DECIMALS),
@@ -1059,6 +1062,7 @@ export class NavOracleService {
     // Record snapshot in DB for settlement reference
     await this.navSnapshots.recordNavSnapshot({
       navId: `nav-custom-${Date.now()}-${randomUUID()}`,
+      vaultAddress: this.vaultAddress,
       totalAssets: livePreview.totalAssets.toFixed(USDC_DECIMALS),
       idleAssets: livePreview.idleAssets.toFixed(USDC_DECIMALS),
       deployedCostBasis: livePreview.deployedCostBasis.toFixed(USDC_DECIMALS),
@@ -1317,6 +1321,7 @@ export class NavOracleService {
 
     await this.navSnapshots.recordNavSnapshot({
       navId: `nav-force-${Date.now()}-${randomUUID()}`,
+      vaultAddress: this.vaultAddress,
       totalAssets: totalAssets.toFixed(USDC_DECIMALS),
       idleAssets: idleAssets.toFixed(USDC_DECIMALS),
       deployedCostBasis: usdcUnitsToDecimalString(forcedValue),
@@ -1416,6 +1421,7 @@ export class NavOracleService {
 
     await this.navSnapshots.recordNavSnapshot({
       navId: `nav-force-custom-${Date.now()}-${randomUUID()}`,
+      vaultAddress: this.vaultAddress,
       totalAssets: totalAssets.toFixed(USDC_DECIMALS),
       idleAssets: idleAssets.toFixed(USDC_DECIMALS),
       deployedCostBasis: usdcUnitsToDecimalString(forcedValue),

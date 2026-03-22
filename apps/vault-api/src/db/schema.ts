@@ -144,6 +144,7 @@ export const vaultNavHistory = pgTable(
   {
     id: serial("id").primaryKey(),
     navId: text("nav_id").notNull().unique(),
+    vaultAddress: text("vault_address").notNull(),
     totalAssets: numeric("total_assets", { precision: 20, scale: 6 }).notNull(),
     idleAssets: numeric("idle_assets", { precision: 20, scale: 6 }).notNull(),
     deployedCostBasis: numeric("deployed_cost_basis", {
@@ -158,6 +159,7 @@ export const vaultNavHistory = pgTable(
   (table) => ({
     timestampIdx: index("vault_nav_history_timestamp_idx").on(table.timestamp),
     navIdIdx: index("vault_nav_history_nav_id_idx").on(table.navId),
+    vaultIdx: index("vault_nav_history_vault_idx").on(table.vaultAddress),
   }),
 );
 

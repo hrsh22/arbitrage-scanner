@@ -313,7 +313,7 @@ export class StrategyEngine {
     if (likelyOutcome.tokenId) {
       const priceCheckResult = await this.checkOrderBookPrice(
         likelyOutcome.tokenId,
-        this.config.betSize,
+        this.config.betSize ?? 0,
         this.config.maxOdds ?? 0.995,
       );
 

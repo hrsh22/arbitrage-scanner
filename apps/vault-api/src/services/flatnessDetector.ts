@@ -20,7 +20,11 @@ import { createPublicClient, erc20Abi, formatUnits } from "viem";
 import { logger } from "../logger.js";
 import type { VaultInstanceConfig } from "../config/types.js";
 import { positionFetcher, type OpenPosition } from "./positionFetcher.js";
-import { getVaultTradingClient, VaultTradingClient } from "./tradingClient.js";
+import {
+  createVaultTradingClient,
+  getVaultTradingClient,
+  VaultTradingClient,
+} from "./tradingClient.js";
 import { createNetworkTransport } from "../rpcTransport.js";
 import { getNetworkConfigFromEnv, getRpcUrlForNetwork } from "../config/network.js";
 import { USDC_E_ADDRESS, SUPPORTS_POLYMARKET_TRADING } from "../constants.js";
@@ -73,12 +77,9 @@ const USDC_DECIMALS = 6;
 
 export class FlatnessDetector {
   private readonly config: FlatnessDetectorConfig;
-  private readonly tradingClient: VaultTradingClient;
+  private readonly tradingClient?: VaultTradingClient;
 
-  constructor(
-    config: Partial<FlatnessDetectorConfig> = {},
-    tradingClient: VaultTradingClient = getVaultTradingClient(),
-  ) {
+  constructor(config: Partial<FlatnessDetectorConfig> = {}, tradingClient?: VaultTradingClient) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.tradingClient = tradingClient;
   }
@@ -97,8 +98,7 @@ export class FlatnessDetector {
     vaultConfig: VaultInstanceConfig,
     tradingWalletAddress?: string,
   ): Promise<FlatnessCheckResult> {
-    const resolvedAddress =
-      tradingWalletAddress ?? vaultConfig.tradingSafeAddress ?? vaultConfig.safeAddress;
+    const resolvedAddress = tradingWalletAddress ?? vaultConfig.safeAddress;
     const timestamp = new Date();
 
     logger.info("FlatnessDetector: Starting flatness check", {
@@ -115,7 +115,7 @@ export class FlatnessDetector {
       reconciliationCheck,
     ] = await Promise.all([
       this.checkZeroOpenPositions(resolvedAddress),
-      this.checkZeroRestingOrders(),
+      this.checkZeroRestingOrders(vaultConfig),
       this.checkZeroDeployedCapital(vaultConfig),
       this.checkZeroNonDustTokenBalances(resolvedAddress),
       this.checkSuccessfulReconciliation(vaultConfig),
@@ -236,7 +236,9 @@ export class FlatnessDetector {
    * Uses the VaultTradingClient to check for any open/active orders
    * on the Polymarket CLOB.
    */
-  private async checkZeroRestingOrders(): Promise<FlatnessCondition> {
+  private async checkZeroRestingOrders(
+    vaultConfig: VaultInstanceConfig,
+  ): Promise<FlatnessCondition> {
     const conditionName = "zero_resting_orders";
 
     // Skip if Polymarket trading is not supported on this network
@@ -254,12 +256,14 @@ export class FlatnessDetector {
     }
 
     try {
+      const tradingClient = this.tradingClient ?? createVaultTradingClient(vaultConfig);
+
       // Ensure client is initialized before checking orders
-      if (!this.tradingClient.isInitialized()) {
-        await this.tradingClient.initialize();
+      if (!tradingClient.isInitialized()) {
+        await tradingClient.initialize();
       }
 
-      const activeOrders = await this.tradingClient.getActiveOrders();
+      const activeOrders = await tradingClient.getActiveOrders();
       const passed = activeOrders.length === 0;
 
       return {

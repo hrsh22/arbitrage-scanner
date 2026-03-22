@@ -21,8 +21,6 @@ vi.mock("../logger.js", () => ({
 vi.mock("../env.js", () => ({
   env: {
     VAULT_MODE: "simulation",
-    VAULT_ADDRESS: "0x066A4678935b78FA4E89e914dBE8F077764F0c74",
-    SAFE_ADDRESS: "0x5Eb9f355cCa830Bc1bB928D24509e278A0804b6b",
     POLYGON_RPC_URL: "https://polygon-rpc.com",
   },
 }));
@@ -44,7 +42,6 @@ describe("Config Validation and Identity Wiring", () => {
   // Valid test values
   const VALID_PRIVATE_KEY = "0x" + "a".repeat(64);
   const VALID_ADDRESS = "0x" + "1".repeat(40);
-  const VALID_ADDRESS_2 = "0x" + "2".repeat(40);
   const VALID_ADDRESS_3 = "0x" + "3".repeat(40);
 
   beforeEach(() => {
@@ -73,7 +70,6 @@ describe("Config Validation and Identity Wiring", () => {
       allocatorNavSignerKeyEnv: "TEST_ALLOCATOR_KEY",
       safeOperatorKeyEnv: "TEST_SAFE_KEY",
       tradingSignerKeyEnv: "TEST_TRADING_KEY",
-      tradingFunderAddressEnv: "TEST_FUNDER_ADDRESS",
       tradingSignatureType: 2,
       betSize: 1.0,
       dailyBudget: Infinity,
@@ -119,7 +115,6 @@ describe("Config Validation and Identity Wiring", () => {
         // Set up all other required env vars
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
 
         expect(() => validateSingleConfig(config)).toThrow(
           /allocatorNavSignerKeyEnv must be a non-empty string/,
@@ -132,7 +127,6 @@ describe("Config Validation and Identity Wiring", () => {
         // Only set the other required env vars
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
         // Deliberately NOT setting TEST_ALLOCATOR_KEY
 
         expect(() => validateSingleConfig(config)).toThrow(
@@ -146,7 +140,6 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = "invalid-key";
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
 
         expect(() => validateSingleConfig(config)).toThrow(
           /TEST_ALLOCATOR_KEY must be a 32-byte hex value/,
@@ -162,7 +155,6 @@ describe("Config Validation and Identity Wiring", () => {
 
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
 
         expect(() => validateSingleConfig(config)).toThrow(
           /safeOperatorKeyEnv must be a non-empty string/,
@@ -175,7 +167,6 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         // Deliberately NOT setting TEST_SAFE_KEY
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
 
         expect(() => validateSingleConfig(config)).toThrow(
           /Missing required env var TEST_SAFE_KEY/,
@@ -188,7 +179,6 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_SAFE_KEY = "0xtooshort";
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
 
         expect(() => validateSingleConfig(config)).toThrow(
           /TEST_SAFE_KEY must be a 32-byte hex value/,
@@ -204,7 +194,6 @@ describe("Config Validation and Identity Wiring", () => {
 
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
 
         expect(() => validateSingleConfig(config)).toThrow(
           /tradingSignerKeyEnv must be a non-empty string/,
@@ -217,7 +206,6 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         // Deliberately NOT setting TEST_TRADING_KEY
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
 
         expect(() => validateSingleConfig(config)).toThrow(
           /Missing required env var TEST_TRADING_KEY/,
@@ -230,7 +218,6 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = "not-hex-" + "g".repeat(56);
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
 
         expect(() => validateSingleConfig(config)).toThrow(
           /TEST_TRADING_KEY must be a 32-byte hex value/,
@@ -238,45 +225,16 @@ describe("Config Validation and Identity Wiring", () => {
       });
     });
 
-    describe("tradingFunderAddressEnv validation", () => {
-      it("rejects config missing tradingFunderAddressEnv", () => {
+    describe("safeAddress validation", () => {
+      it("rejects config with malformed safeAddress", () => {
         const config = createBaseConfig();
-        // Testing invalid config - assigning empty string to required field
-        config.tradingFunderAddressEnv = "";
+        config.safeAddress = "0xinvalid";
 
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
 
-        expect(() => validateSingleConfig(config)).toThrow(
-          /tradingFunderAddressEnv must be a non-empty string/,
-        );
-      });
-
-      it("rejects when tradingFunderAddressEnv env var is missing", () => {
-        const config = createBaseConfig();
-
-        process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        // Deliberately NOT setting TEST_FUNDER_ADDRESS
-
-        expect(() => validateSingleConfig(config)).toThrow(
-          /Missing required env var TEST_FUNDER_ADDRESS/,
-        );
-      });
-
-      it("rejects malformed trading funder address", () => {
-        const config = createBaseConfig();
-
-        process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = "0xinvalid";
-
-        expect(() => validateSingleConfig(config)).toThrow(
-          /TEST_FUNDER_ADDRESS must be a valid address/,
-        );
+        expect(() => validateSingleConfig(config)).toThrow(/safeAddress is invalid/);
       });
     });
 
@@ -289,7 +247,6 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
 
         expect(() => validateSingleConfig(config)).toThrow(
           /tradingSignatureType must be 0, 1, or 2, got 3/,
@@ -304,7 +261,6 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
 
         expect(() => validateSingleConfig(config)).toThrow(
           /tradingSignatureType must be 0, 1, or 2, got -1/,
@@ -317,7 +273,6 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
 
         for (const sigType of [0, 1, 2] as const) {
           const config = { ...baseConfig, tradingSignatureType: sigType };
@@ -333,7 +288,6 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
 
         expect(() => validateSingleConfig(config)).not.toThrow();
       });
@@ -359,7 +313,6 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
 
         expect(() => validateSingleConfig(config)).not.toThrow();
       });
@@ -373,7 +326,6 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
 
         expect(() => validateSingleConfig(config)).not.toThrow();
       });
@@ -396,7 +348,6 @@ describe("Config Validation and Identity Wiring", () => {
       allocatorNavSignerKeyEnv: "TEST_ALLOCATOR_KEY",
       safeOperatorKeyEnv: "TEST_SAFE_KEY",
       tradingSignerKeyEnv: "TEST_TRADING_KEY",
-      tradingFunderAddressEnv: "TEST_FUNDER_ADDRESS",
       tradingSignatureType: 2,
       betSize: 1.0,
       dailyBudget: Infinity,
@@ -441,12 +392,9 @@ describe("Config Validation and Identity Wiring", () => {
         const allocatorKey = "0x" + "b".repeat(64);
         const safeKey = "0x" + "c".repeat(64);
         const tradingKey = "0x" + "d".repeat(64);
-        const funderAddress = "0x" + "e".repeat(40);
-
         process.env.TEST_ALLOCATOR_KEY = allocatorKey;
         process.env.TEST_SAFE_KEY = safeKey;
         process.env.TEST_TRADING_KEY = tradingKey;
-        process.env.TEST_FUNDER_ADDRESS = funderAddress;
 
         const identity = resolveVaultIdentity(config);
 
@@ -455,7 +403,6 @@ describe("Config Validation and Identity Wiring", () => {
         expect(identity.allocatorNavSignerKey).toBe(allocatorKey);
         expect(identity.safeOperatorKey).toBe(safeKey);
         expect(identity.tradingSignerKey).toBe(tradingKey);
-        expect(identity.tradingFunderAddress).toBe(funderAddress.toLowerCase());
         expect(identity.tradingSignatureType).toBe(2);
         expect(identity.safeAddress).toBe(VALID_ADDRESS_3.toLowerCase());
         expect(identity.vaultAddress).toBe(VALID_ADDRESS.toLowerCase());
@@ -470,11 +417,11 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = mixedCaseAddr;
+        config.safeAddress = mixedCaseAddr;
 
         const identity = resolveVaultIdentity(config);
 
-        expect(identity.tradingFunderAddress).toBe(mixedCaseAddr.toLowerCase());
+        expect(identity.safeAddress).toBe(mixedCaseAddr.toLowerCase());
       });
     });
 
@@ -485,7 +432,6 @@ describe("Config Validation and Identity Wiring", () => {
 
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
         // TEST_ALLOCATOR_KEY is NOT set
 
         expect(() => resolveVaultIdentity(config)).toThrow(
@@ -499,7 +445,6 @@ describe("Config Validation and Identity Wiring", () => {
 
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
         // TEST_SAFE_KEY is NOT set
 
         expect(() => resolveVaultIdentity(config)).toThrow(
@@ -513,7 +458,6 @@ describe("Config Validation and Identity Wiring", () => {
 
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
         // TEST_TRADING_KEY is NOT set
 
         expect(() => resolveVaultIdentity(config)).toThrow(
@@ -530,7 +474,6 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = "a".repeat(64); // Missing 0x
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
 
         expect(() => resolveVaultIdentity(config)).toThrow(
           /Private key "TEST_ALLOCATOR_KEY" must start with "0x"/,
@@ -544,7 +487,6 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = "0x" + "a".repeat(60); // Too short
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
 
         expect(() => resolveVaultIdentity(config)).toThrow(
           /Private key "TEST_ALLOCATOR_KEY" must be 66 characters/,
@@ -558,7 +500,6 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = "0x" + "a".repeat(66); // Too long
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
 
         expect(() => resolveVaultIdentity(config)).toThrow(
           /Private key "TEST_ALLOCATOR_KEY" must be 66 characters/,
@@ -572,7 +513,6 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = "0x" + "g".repeat(64); // Invalid hex
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
 
         expect(() => resolveVaultIdentity(config)).toThrow(
           /Private key "TEST_ALLOCATOR_KEY" contains invalid characters/,
@@ -586,7 +526,6 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = "0x" + "a".repeat(32) + " " + "a".repeat(31);
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = VALID_ADDRESS;
 
         expect(() => resolveVaultIdentity(config)).toThrow(
           /Private key "TEST_ALLOCATOR_KEY" contains invalid characters/,
@@ -594,18 +533,18 @@ describe("Config Validation and Identity Wiring", () => {
       });
     });
 
-    describe("throws on missing address env var", () => {
-      it("throws when tradingFunderAddress env var is missing", async () => {
+    describe("throws on missing safeAddress in config", () => {
+      it("throws when safeAddress is missing", async () => {
         const { resolveVaultIdentity } = await import("../config/identityResolver.js");
         const config = createValidConfig();
 
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        // TEST_FUNDER_ADDRESS is NOT set
+        config.safeAddress = "";
 
         expect(() => resolveVaultIdentity(config)).toThrow(
-          /Missing required address "TEST_FUNDER_ADDRESS"/,
+          /Missing required address "safeAddress"/,
         );
       });
     });
@@ -618,10 +557,10 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = "1".repeat(40); // Missing 0x
+        config.safeAddress = "1".repeat(40);
 
         expect(() => resolveVaultIdentity(config)).toThrow(
-          /Address "TEST_FUNDER_ADDRESS" must start with "0x"/,
+          /Address "safeAddress" must start with "0x"/,
         );
       });
 
@@ -632,10 +571,10 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = "0x" + "1".repeat(38); // Too short
+        config.safeAddress = "0x" + "1".repeat(38);
 
         expect(() => resolveVaultIdentity(config)).toThrow(
-          /Address "TEST_FUNDER_ADDRESS" must be 42 characters/,
+          /Address "safeAddress" must be 42 characters/,
         );
       });
 
@@ -646,10 +585,10 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = "0x" + "1".repeat(42); // Too long
+        config.safeAddress = "0x" + "1".repeat(42);
 
         expect(() => resolveVaultIdentity(config)).toThrow(
-          /Address "TEST_FUNDER_ADDRESS" must be 42 characters/,
+          /Address "safeAddress" must be 42 characters/,
         );
       });
 
@@ -660,10 +599,10 @@ describe("Config Validation and Identity Wiring", () => {
         process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
         process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_FUNDER_ADDRESS = "0x" + "g".repeat(40); // Invalid hex
+        config.safeAddress = "0x" + "g".repeat(40);
 
         expect(() => resolveVaultIdentity(config)).toThrow(
-          /Address "TEST_FUNDER_ADDRESS" contains invalid characters/,
+          /Address "safeAddress" contains invalid characters/,
         );
       });
     });
@@ -784,11 +723,10 @@ describe("Config Validation and Identity Wiring", () => {
    * PART 4: Single-Safe Mode Validation Tests
    * ============================================================================
    */
-  describe("Single-Safe Mode Validation", () => {
+  describe("Safe-backed wallet configuration", () => {
     const SAFE_ADDRESS = "0x5Eb9f355cCa830Bc1bB928D24509e278A0804b6b";
-    const DIFFERENT_ADDRESS = "0x" + "a".repeat(40);
 
-    const createSingleSafeBaseConfig = (): VaultInstanceConfig => ({
+    const createSafeBackedConfig = (): VaultInstanceConfig => ({
       id: 1,
       name: "TestVault",
       enabled: true,
@@ -798,10 +736,7 @@ describe("Config Validation and Identity Wiring", () => {
       allocatorNavSignerKeyEnv: "TEST_ALLOCATOR_KEY",
       safeOperatorKeyEnv: "TEST_SAFE_KEY",
       tradingSignerKeyEnv: "TEST_TRADING_KEY",
-      // No tradingFunderAddressEnv in single-safe mode - address is hardcoded
-      tradingFunderAddress: SAFE_ADDRESS, // Must match safeAddress
-      tradingSignatureType: 2, // Must be 2 (Safe) in single-safe mode
-      singleSafeMode: true,
+      tradingSignatureType: 2,
       betSize: 1.0,
       dailyBudget: Infinity,
       minOdds: 0.9,
@@ -837,164 +772,23 @@ describe("Config Validation and Identity Wiring", () => {
       defaultMode: "simulation",
     });
 
-    beforeEach(() => {
-      vi.clearAllMocks();
-      delete process.env.TEST_ALLOCATOR_KEY;
-      delete process.env.TEST_SAFE_KEY;
-      delete process.env.TEST_TRADING_KEY;
+    it("keeps signatureType 2 for Safe-backed auth", () => {
+      const config = createSafeBackedConfig();
+      expect(config.tradingSignatureType).toBe(2);
     });
 
-    describe("singleSafeMode=true fails when safe != funder", () => {
-      it("rejects config when tradingFunderAddress does not match safeAddress", () => {
-        const config = createSingleSafeBaseConfig();
-        // Mismatch: funder is different from safe
-        config.tradingFunderAddress = DIFFERENT_ADDRESS;
+    it("resolves identity using safeAddress as the canonical wallet address", async () => {
+      const { resolveVaultIdentity } = await import("../config/identityResolver.js");
+      const config = createSafeBackedConfig();
 
-        process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
+      process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
+      process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
+      process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
 
-        expect(() => validateSingleConfigWithSingleSafe(config)).toThrow(
-          /singleSafeMode requires tradingFunderAddress to match safeAddress/,
-        );
-      });
+      const identity = resolveVaultIdentity(config);
 
-      it("rejects config when tradingFunderAddress is empty", () => {
-        const config = createSingleSafeBaseConfig();
-        // Empty funder address - treated as missing (falsy)
-        config.tradingFunderAddress = "";
-
-        process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-
-        expect(() => validateSingleConfigWithSingleSafe(config)).toThrow(
-          /singleSafeMode enabled but tradingFunderAddress is missing/,
-        );
-      });
-
-      it("rejects config when tradingFunderAddress is missing", () => {
-        const config = createSingleSafeBaseConfig();
-        // Missing funder address
-        delete (config as any).tradingFunderAddress;
-
-        process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-
-        expect(() => validateSingleConfigWithSingleSafe(config)).toThrow(
-          /singleSafeMode enabled but tradingFunderAddress is missing/,
-        );
-      });
-
-      it("rejects config when tradingFunderAddress is invalid address", () => {
-        const config = createSingleSafeBaseConfig();
-        // Invalid address format
-        config.tradingFunderAddress = "0xinvalid";
-
-        process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-
-        expect(() => validateSingleConfigWithSingleSafe(config)).toThrow(
-          /tradingFunderAddress must be a valid address/,
-        );
-      });
-    });
-
-    describe("singleSafeMode=true fails when signatureType != 2", () => {
-      it("rejects config when tradingSignatureType is 0 (EOA)", () => {
-        const config = createSingleSafeBaseConfig();
-        config.tradingSignatureType = 0; // EOA, not Safe
-
-        process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-
-        expect(() => validateSingleConfigWithSingleSafe(config)).toThrow(
-          /singleSafeMode requires tradingSignatureType to be 2 \(Safe\)/,
-        );
-      });
-
-      it("rejects config when tradingSignatureType is 1 (Proxy)", () => {
-        const config = createSingleSafeBaseConfig();
-        config.tradingSignatureType = 1; // Proxy, not Safe
-
-        process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-
-        expect(() => validateSingleConfigWithSingleSafe(config)).toThrow(
-          /singleSafeMode requires tradingSignatureType to be 2 \(Safe\)/,
-        );
-      });
-
-      it("rejects config when tradingSignatureType is 3 (invalid)", () => {
-        const config = createSingleSafeBaseConfig();
-        (config as any).tradingSignatureType = 3; // Invalid
-
-        process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
-        process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-
-        // In single-safe mode, the signatureType check comes before general validation
-        expect(() => validateSingleConfigWithSingleSafe(config)).toThrow(
-          /singleSafeMode requires tradingSignatureType to be 2 \(Safe\)/,
-        );
-      });
-
-      describe("singleSafeMode=true passes when all invariants match", () => {
-        it("accepts valid single-safe config with matching addresses and signatureType=2", () => {
-          const config = createSingleSafeBaseConfig();
-
-          process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
-          process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
-          process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-
-          // Should not throw
-          expect(() => validateSingleConfigWithSingleSafe(config)).not.toThrow();
-        });
-
-        it("accepts config with case-insensitive address matching", () => {
-          const config = createSingleSafeBaseConfig();
-          // Different case but same address (mixed case is still valid hex)
-          config.safeAddress = "0x5eb9f355cca830bc1bb928d24509e278a0804b6b";
-          config.tradingFunderAddress = "0x5EB9F355CCA830BC1BB928D24509E278A0804B6B";
-
-          process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
-          process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
-          process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-
-          // Should not throw (comparison is case-insensitive)
-          expect(() => validateSingleConfigWithSingleSafe(config)).not.toThrow();
-        });
-
-        it("skips single-safe validation when vault is disabled", () => {
-          const config = createSingleSafeBaseConfig();
-          config.enabled = false;
-          // Even with mismatched addresses, disabled vaults should pass
-          config.tradingFunderAddress = DIFFERENT_ADDRESS;
-          config.tradingSignatureType = 0;
-
-          // Should not throw because enabled=false
-          expect(() => validateSingleConfigWithSingleSafe(config)).not.toThrow();
-        });
-
-        it("resolves identity correctly in single-safe mode", async () => {
-          const { resolveVaultIdentity } = await import("../config/identityResolver.js");
-          const config = createSingleSafeBaseConfig();
-
-          process.env.TEST_ALLOCATOR_KEY = VALID_PRIVATE_KEY;
-          process.env.TEST_SAFE_KEY = VALID_PRIVATE_KEY;
-          process.env.TEST_TRADING_KEY = VALID_PRIVATE_KEY;
-
-          const identity = resolveVaultIdentity(config);
-
-          expect(identity.tradingFunderAddress).toBe(SAFE_ADDRESS.toLowerCase());
-          expect(identity.tradingSignatureType).toBe(2);
-          expect(identity.singleSafeMode).toBe(true);
-        });
-      });
+      expect(identity.safeAddress).toBe(SAFE_ADDRESS.toLowerCase());
+      expect(identity.tradingSignatureType).toBe(2);
     });
 
     /**
@@ -1152,7 +946,6 @@ describe("Config Validation and Identity Wiring", () => {
       allocatorNavSignerKeyEnv: "TEST_ALLOCATOR_KEY",
       safeOperatorKeyEnv: "TEST_SAFE_KEY",
       tradingSignerKeyEnv: "TEST_TRADING_KEY",
-      tradingFunderAddressEnv: "TEST_FUNDER_ADDRESS",
       tradingSignatureType: 2,
       betSize: 1.0,
       dailyBudget: Infinity,
@@ -1269,28 +1062,6 @@ describe("Config Validation and Identity Wiring", () => {
       );
     }
 
-    // Validate tradingFunderAddressEnv
-    if (
-      typeof config.tradingFunderAddressEnv !== "string" ||
-      config.tradingFunderAddressEnv === ""
-    ) {
-      throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): tradingFunderAddressEnv must be a non-empty string`,
-      );
-    }
-
-    const tradingFunderAddress = process.env[config.tradingFunderAddressEnv];
-    if (typeof tradingFunderAddress !== "string" || tradingFunderAddress === "") {
-      throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): Missing required env var ${config.tradingFunderAddressEnv}`,
-      );
-    }
-    if (!isAddress(tradingFunderAddress)) {
-      throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): ${config.tradingFunderAddressEnv} must be a valid address`,
-      );
-    }
-
     // Validate tradingSignatureType
     if (![0, 1, 2].includes(config.tradingSignatureType)) {
       throw new Error(
@@ -1303,134 +1074,4 @@ describe("Config Validation and Identity Wiring", () => {
   // Single-Safe Mode Validation Helper
   // Replicates the single-safe validation logic from vaults/index.ts
   // ============================================================================
-  function validateSingleConfigWithSingleSafe(config: VaultInstanceConfig): void {
-    // Basic address validations (same as validateSingleConfig)
-    if (!config.vaultAddress || !isAddress(config.vaultAddress)) {
-      throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): vaultAddress is invalid: ${config.vaultAddress}`,
-      );
-    }
-
-    if (!config.safeAddress || !isAddress(config.safeAddress)) {
-      throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): safeAddress is invalid: ${config.safeAddress}`,
-      );
-    }
-
-    // Skip identity validation for disabled vaults
-    if (!config.enabled) return;
-
-    // Validate allocatorNavSignerKeyEnv
-    if (
-      typeof config.allocatorNavSignerKeyEnv !== "string" ||
-      config.allocatorNavSignerKeyEnv === ""
-    ) {
-      throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): allocatorNavSignerKeyEnv must be a non-empty string`,
-      );
-    }
-
-    const allocatorNavKey = process.env[config.allocatorNavSignerKeyEnv];
-    if (typeof allocatorNavKey !== "string" || allocatorNavKey === "") {
-      throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): Missing required env var ${config.allocatorNavSignerKeyEnv}`,
-      );
-    }
-    if (!/^0x[0-9a-fA-F]{64}$/.test(allocatorNavKey)) {
-      throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): ${config.allocatorNavSignerKeyEnv} must be a 32-byte hex value`,
-      );
-    }
-
-    // Validate safeOperatorKeyEnv
-    if (typeof config.safeOperatorKeyEnv !== "string" || config.safeOperatorKeyEnv === "") {
-      throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): safeOperatorKeyEnv must be a non-empty string`,
-      );
-    }
-
-    const safeOperatorKey = process.env[config.safeOperatorKeyEnv];
-    if (typeof safeOperatorKey !== "string" || safeOperatorKey === "") {
-      throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): Missing required env var ${config.safeOperatorKeyEnv}`,
-      );
-    }
-    if (!/^0x[0-9a-fA-F]{64}$/.test(safeOperatorKey)) {
-      throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): ${config.safeOperatorKeyEnv} must be a 32-byte hex value`,
-      );
-    }
-
-    // Validate tradingSignerKeyEnv
-    if (typeof config.tradingSignerKeyEnv !== "string" || config.tradingSignerKeyEnv === "") {
-      throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): tradingSignerKeyEnv must be a non-empty string`,
-      );
-    }
-
-    const tradingSignerKey = process.env[config.tradingSignerKeyEnv];
-    if (typeof tradingSignerKey !== "string" || tradingSignerKey === "") {
-      throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): Missing required env var ${config.tradingSignerKeyEnv}`,
-      );
-    }
-    if (!/^0x[0-9a-fA-F]{64}$/.test(tradingSignerKey)) {
-      throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): ${config.tradingSignerKeyEnv} must be a 32-byte hex value`,
-      );
-    }
-
-    // Validate trading funder address (single-safe mode specific)
-    if (config.singleSafeMode) {
-      // Single-Safe mode: address must be hardcoded and match safeAddress
-      if (!config.tradingFunderAddress) {
-        throw new Error(
-          `Vault "${config.name}" (ID: ${config.id}): singleSafeMode enabled but tradingFunderAddress is missing`,
-        );
-      }
-      if (!isAddress(config.tradingFunderAddress)) {
-        throw new Error(
-          `Vault "${config.name}" (ID: ${config.id}): tradingFunderAddress must be a valid address`,
-        );
-      }
-      if (config.tradingFunderAddress.toLowerCase() !== config.safeAddress.toLowerCase()) {
-        throw new Error(
-          `Vault "${config.name}" (ID: ${config.id}): singleSafeMode requires tradingFunderAddress to match safeAddress`,
-        );
-      }
-      if (config.tradingSignatureType !== 2) {
-        throw new Error(
-          `Vault "${config.name}" (ID: ${config.id}): singleSafeMode requires tradingSignatureType to be 2 (Safe)`,
-        );
-      }
-    } else {
-      // Standard mode: address from env var
-      if (
-        typeof config.tradingFunderAddressEnv !== "string" ||
-        config.tradingFunderAddressEnv === ""
-      ) {
-        throw new Error(
-          `Vault "${config.name}" (ID: ${config.id}): tradingFunderAddressEnv must be a non-empty string`,
-        );
-      }
-      const addressFromEnv = process.env[config.tradingFunderAddressEnv];
-      if (typeof addressFromEnv !== "string" || addressFromEnv === "") {
-        throw new Error(
-          `Vault "${config.name}" (ID: ${config.id}): Missing required env var ${config.tradingFunderAddressEnv}`,
-        );
-      }
-      if (!isAddress(addressFromEnv)) {
-        throw new Error(
-          `Vault "${config.name}" (ID: ${config.id}): ${config.tradingFunderAddressEnv} must be a valid address`,
-        );
-      }
-    }
-
-    // Validate tradingSignatureType
-    if (![0, 1, 2].includes(config.tradingSignatureType)) {
-      throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): tradingSignatureType must be 0, 1, or 2, got ${config.tradingSignatureType}`,
-      );
-    }
-  }
 });

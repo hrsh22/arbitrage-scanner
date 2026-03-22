@@ -237,12 +237,16 @@ function getHeroStateLabel(vault: VaultInstance, cycle: Cycle | null): string {
     return "Paused";
   }
 
-  if (cycle?.batchState === "flattening" || cycle?.batchState === "settling") {
+  if (
+    cycle?.batchState === "processing" ||
+    cycle?.batchState === "flattening" ||
+    cycle?.batchState === "settling"
+  ) {
     return "Processing";
   }
 
   if (vault.type === "custom" && cycle?.executionMode === "queued") {
-    return "Queue only";
+    return "Queued";
   }
 
   return "Open";
@@ -2060,9 +2064,13 @@ export default function VaultDetailPage() {
   const heroMetrics = [
     {
       label: "APY",
-      value: "--",
-      hint: "Exact APY is not published yet.",
-      tooltip: "APY will appear once a canonical vault APY source is available.",
+      value: formatPercent(performance.apy),
+      hint:
+        performance.apy !== null
+          ? `Annualized from ${performance.daysCovered.toFixed(1)} days of NAV history.`
+          : "Waiting for enough NAV history to annualize returns.",
+      tooltip:
+        "Annualized return derived from vault NAV history. This is an estimate based on available performance data.",
     },
     {
       label: "NAV",
@@ -2293,8 +2301,16 @@ export default function VaultDetailPage() {
               </SectionShell>
 
               <SectionShell title="Activity">
-                <div className="mb-4 flex items-center justify-between text-xs text-slate-400">
-                  <span>Meaningful vault updates only</span>
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span>Meaningful vault updates only</span>
+                    <Badge
+                      variant="outline"
+                      className="rounded-full border-white/10 bg-white/6 px-3 py-1 text-[11px] text-slate-200"
+                    >
+                      {cycle?.openPositionCount ?? "--"} open positions
+                    </Badge>
+                  </div>
                   <span>
                     Updated{" "}
                     {vaultEventsLastRefresh

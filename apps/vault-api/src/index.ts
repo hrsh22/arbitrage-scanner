@@ -62,9 +62,7 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 const server = app.listen(PORT, () => {
   logger.info(`Vault service listening on port ${PORT}`);
   logger.info("Capital crons (NAV + reconciliation) run in worker process (pnpm worker)");
-  logger.info(
-    "Trading crons (trading + resolution + hedging) run in worker process (pnpm worker:trading)",
-  );
+  logger.info("Resolution crons run in worker process (pnpm worker:trading)");
 });
 
 function shutdown(signal: string, httpServer: Server): void {

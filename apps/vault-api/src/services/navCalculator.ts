@@ -1,4 +1,4 @@
-import { desc } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { db as defaultDb } from "../db/index.js";
 import { vaultNavHistory } from "../db/schema.js";
 import type { VaultNAV } from "../types.js";
@@ -6,6 +6,7 @@ import type { VaultNAV } from "../types.js";
 type DbClient = typeof defaultDb;
 interface NavSnapshotInput {
   navId: string;
+  vaultAddress: string;
   totalAssets: string;
   idleAssets: string;
   deployedCostBasis: string;
@@ -41,11 +42,13 @@ export class NavCalculator {
     return results[0]!;
   }
 
-  async getNavHistory(limit?: number) {
-    const query = this.database
-      .select()
-      .from(vaultNavHistory)
-      .orderBy(desc(vaultNavHistory.timestamp));
+  async getNavHistory(vaultAddress?: string, limit?: number) {
+    const baseQuery = this.database.select().from(vaultNavHistory);
+    const query = vaultAddress
+      ? baseQuery
+          .where(eq(vaultNavHistory.vaultAddress, vaultAddress.toLowerCase()))
+          .orderBy(desc(vaultNavHistory.timestamp))
+      : baseQuery.orderBy(desc(vaultNavHistory.timestamp));
     return limit !== undefined ? query.limit(limit) : query;
   }
 

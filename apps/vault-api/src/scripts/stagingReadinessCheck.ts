@@ -57,6 +57,7 @@
 
 import "dotenv/config";
 import { createPublicClient, http, type Address } from "viem";
+import { getAllVaultConfigs } from "../config/index.js";
 import { getRpcUrlForNetwork, type NetworkType, NETWORK_CONFIGS } from "../config/network.js";
 import { env } from "../env.js";
 
@@ -114,42 +115,43 @@ const USDC_ABI = [
   },
 ] as const;
 
-// Extended vault ABI for dual-safe functionality
-const VAULT_DUAL_SAFE_ABI = [
+const TRADING_WALLET_ABI = [
   {
     type: "function",
-    name: "tradingSafe",
+    name: "tradingWallet",
     inputs: [],
     outputs: [{ name: "", type: "address", internalType: "address" }],
     stateMutability: "view",
   },
+] as const;
+
+const CAPITAL_STATUS_ABI = [
   {
     type: "function",
-    name: "deployedCapital",
+    name: "maxAllocatableAssets",
     inputs: [],
     outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
     stateMutability: "view",
   },
   {
     type: "function",
-    name: "getDeployedCapital",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
+    name: "allocateToTradingWallet",
+    inputs: [{ name: "amount", type: "uint256", internalType: "uint256" }],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+] as const;
+
+const ERC1155_ABI = [
+  {
+    type: "function",
+    name: "isApprovedForAll",
+    inputs: [
+      { name: "account", type: "address", internalType: "address" },
+      { name: "operator", type: "address", internalType: "address" },
+    ],
+    outputs: [{ name: "", type: "bool", internalType: "bool" }],
     stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "deployCapital",
-    inputs: [{ name: "amount", type: "uint256", internalType: "uint256" }],
-    outputs: [],
-    stateMutability: "nonpayable",
-  },
-  {
-    type: "function",
-    name: "recallCapital",
-    inputs: [{ name: "amount", type: "uint256", internalType: "uint256" }],
-    outputs: [],
-    stateMutability: "nonpayable",
   },
 ] as const;
 
@@ -159,8 +161,6 @@ const NETWORK_REQUIRED_ENV_VARS: Record<NetworkType, string[]> = {
   mainnet: ["POLYGON_RPC_URL"],
   amoy: ["AMOY_RPC_URL"],
 };
-
-const OPTIONAL_BUT_RECOMMENDED_ENV_VARS = ["VAULT_ADDRESS", "SAFE_ADDRESS"] as const;
 
 // Minimal ERC7540 vault ABI for checking contract shape
 const VAULT_ABI = [
@@ -187,36 +187,27 @@ const VAULT_ABI = [
   },
   {
     type: "function",
-    name: "sharePrice",
+    name: "tradingWallet",
     inputs: [],
-    outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
+    outputs: [{ name: "", type: "address", internalType: "address" }],
     stateMutability: "view",
   },
   {
     type: "function",
-    name: "deposit",
-    inputs: [
-      { name: "assets", type: "uint256", internalType: "uint256" },
-      { name: "receiver", type: "address", internalType: "address" },
-    ],
+    name: "currentNAV",
+    inputs: [],
     outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
-    stateMutability: "nonpayable",
-  },
-  {
-    type: "function",
-    name: "requestRedeem",
-    inputs: [
-      { name: "shares", type: "uint256", internalType: "uint256" },
-      { name: "owner", type: "address", internalType: "address" },
-    ],
-    outputs: [],
-    stateMutability: "nonpayable",
+    stateMutability: "view",
   },
 ] as const;
 
 // ============================================================================
 // CHECK FUNCTIONS
 // ============================================================================
+
+function getPrimaryVaultConfigForChecks() {
+  return getAllVaultConfigs().find((config) => config.enabled) ?? getAllVaultConfigs()[0] ?? null;
+}
 
 async function checkEnvironmentVariables(network: NetworkType): Promise<ReadinessCheck[]> {
   const checks: ReadinessCheck[] = [];
@@ -242,17 +233,6 @@ async function checkEnvironmentVariables(network: NetworkType): Promise<Readines
       message: value
         ? `${varName} is set for ${network}`
         : `${varName} is required for ${network} but not set`,
-      details: value ? { length: value.length } : undefined,
-    });
-  }
-
-  // Check optional but recommended env vars
-  for (const varName of OPTIONAL_BUT_RECOMMENDED_ENV_VARS) {
-    const value = process.env[varName];
-    checks.push({
-      name: `env:${varName}`,
-      status: value ? "pass" : "warn",
-      message: value ? `${varName} is set` : `${varName} is recommended but not set`,
       details: value ? { length: value.length } : undefined,
     });
   }
@@ -406,13 +386,14 @@ async function checkContractAddresses(network: NetworkType): Promise<ReadinessCh
 
 async function checkVaultContractShape(): Promise<ReadinessCheck[]> {
   const checks: ReadinessCheck[] = [];
-  const vaultAddress = env.VAULT_ADDRESS;
+  const vaultConfig = getPrimaryVaultConfigForChecks();
+  const vaultAddress = vaultConfig?.vaultAddress;
 
   if (!vaultAddress) {
     checks.push({
       name: "vault:ContractShape",
       status: "warn",
-      message: "VAULT_ADDRESS not set, skipping contract shape validation",
+      message: "No vault config available, skipping contract shape validation",
     });
     return checks;
   }
@@ -434,7 +415,7 @@ async function checkVaultContractShape(): Promise<ReadinessCheck[]> {
       checks.push({
         name: "vault:ContractShape",
         status: "fail",
-        message: `No contract found at VAULT_ADDRESS ${vaultAddress} on ${network}`,
+        message: `No contract found at configured vault address ${vaultAddress} on ${network}`,
         details: { address: vaultAddress, network },
       });
       return checks;
@@ -442,23 +423,40 @@ async function checkVaultContractShape(): Promise<ReadinessCheck[]> {
 
     // Try to call totalAssets to verify it's a vault
     try {
-      const totalAssets = await client.readContract({
-        address: vaultAddress as Address,
-        abi: VAULT_ABI,
-        functionName: "totalAssets",
-      });
+      const [asset, tradingWallet, currentNav] = await Promise.all([
+        client.readContract({
+          address: vaultAddress as Address,
+          abi: VAULT_ABI,
+          functionName: "asset",
+        }),
+        client.readContract({
+          address: vaultAddress as Address,
+          abi: VAULT_ABI,
+          functionName: "tradingWallet",
+        }),
+        client.readContract({
+          address: vaultAddress as Address,
+          abi: VAULT_ABI,
+          functionName: "currentNAV",
+        }),
+      ]);
 
       checks.push({
         name: "vault:ContractShape",
         status: "pass",
-        message: `Vault contract at ${vaultAddress} responds to totalAssets()`,
-        details: { address: vaultAddress, totalAssets: totalAssets.toString() },
+        message: `Vault contract at ${vaultAddress} exposes asset(), tradingWallet(), and currentNAV()`,
+        details: {
+          address: vaultAddress,
+          asset,
+          tradingWallet,
+          currentNav: currentNav.toString(),
+        },
       });
     } catch {
       checks.push({
         name: "vault:ContractShape",
         status: "fail",
-        message: `Contract at ${vaultAddress} does not appear to be a valid ERC7540 vault (totalAssets call failed)`,
+        message: `Contract at ${vaultAddress} does not appear to expose the expected FlatBookVaultV2 surface`,
         details: { address: vaultAddress },
       });
     }
@@ -523,13 +521,14 @@ async function checkPolymarketConfiguration(network: NetworkType): Promise<Readi
 
 async function checkTradingSafe(network: NetworkType): Promise<ReadinessCheck[]> {
   const checks: ReadinessCheck[] = [];
-  const vaultAddress = env.VAULT_ADDRESS;
+  const vaultConfig = getPrimaryVaultConfigForChecks();
+  const vaultAddress = vaultConfig?.vaultAddress;
 
   if (!vaultAddress) {
     checks.push({
       name: "dualsafe:TradingSafe",
       status: "warn",
-      message: "VAULT_ADDRESS not set, skipping tradingSafe validation",
+      message: "No vault config available, skipping tradingSafe validation",
     });
     return checks;
   }
@@ -545,44 +544,43 @@ async function checkTradingSafe(network: NetworkType): Promise<ReadinessCheck[]>
 
     // Try to read tradingSafe address from vault contract
     try {
-      const tradingSafeAddress = await client.readContract({
+      const tradingWalletAddress = await client.readContract({
         address: vaultAddress as Address,
-        abi: VAULT_DUAL_SAFE_ABI,
-        functionName: "tradingSafe",
+        abi: TRADING_WALLET_ABI,
+        functionName: "tradingWallet",
       });
 
       // Validate tradingSafe address
-      const isValidAddress = /^0x[a-fA-F0-9]{40}$/.test(tradingSafeAddress);
-      const isZeroAddress = tradingSafeAddress.toLowerCase() === ZERO_ADDRESS.toLowerCase();
+      const isValidAddress = /^0x[a-fA-F0-9]{40}$/.test(tradingWalletAddress);
+      const isZeroAddress = tradingWalletAddress.toLowerCase() === ZERO_ADDRESS.toLowerCase();
 
       if (!isValidAddress) {
         checks.push({
           name: "dualsafe:TradingSafe",
           status: "fail",
-          message: `TradingSafe address is malformed: ${tradingSafeAddress}`,
-          details: { vaultAddress, tradingSafeAddress },
+          message: `Trading wallet address is malformed: ${tradingWalletAddress}`,
+          details: { vaultAddress, tradingWalletAddress },
         });
       } else if (isZeroAddress) {
         checks.push({
           name: "dualsafe:TradingSafe",
           status: "fail",
-          message: `TradingSafe address is zero address. Contract not properly configured.`,
-          details: { vaultAddress, tradingSafeAddress },
+          message: `Trading wallet address is zero address. Contract not properly configured.`,
+          details: { vaultAddress, tradingWalletAddress },
         });
       } else {
         checks.push({
           name: "dualsafe:TradingSafe",
           status: "pass",
-          message: `TradingSafe address is valid: ${tradingSafeAddress}`,
-          details: { vaultAddress, tradingSafeAddress },
+          message: `Trading wallet address is valid: ${tradingWalletAddress}`,
+          details: { vaultAddress, tradingWalletAddress },
         });
       }
     } catch (error) {
-      // tradingSafe function may not exist on older contracts
       checks.push({
         name: "dualsafe:TradingSafe",
         status: "warn",
-        message: `Vault contract does not have tradingSafe function (may be pre-dual-safe version)`,
+        message: `Vault contract does not expose tradingWallet()`,
         details: { vaultAddress, error: (error as Error).message },
       });
     }
@@ -590,7 +588,7 @@ async function checkTradingSafe(network: NetworkType): Promise<ReadinessCheck[]>
     checks.push({
       name: "dualsafe:TradingSafe",
       status: "fail",
-      message: `Failed to validate tradingSafe: ${(error as Error).message}`,
+      message: `Failed to validate trading wallet: ${(error as Error).message}`,
       details: { vaultAddress, error: (error as Error).message },
     });
   }
@@ -600,13 +598,14 @@ async function checkTradingSafe(network: NetworkType): Promise<ReadinessCheck[]>
 
 async function checkCapitalFunctions(network: NetworkType): Promise<ReadinessCheck[]> {
   const checks: ReadinessCheck[] = [];
-  const vaultAddress = env.VAULT_ADDRESS;
+  const vaultConfig = getPrimaryVaultConfigForChecks();
+  const vaultAddress = vaultConfig?.vaultAddress;
 
   if (!vaultAddress) {
     checks.push({
       name: "dualsafe:CapitalFunctions",
       status: "warn",
-      message: "VAULT_ADDRESS not set, skipping capital functions validation",
+      message: "No vault config available, skipping capital functions validation",
     });
     return checks;
   }
@@ -620,25 +619,24 @@ async function checkCapitalFunctions(network: NetworkType): Promise<ReadinessChe
       transport: http(rpcUrl, { timeout: 15_000 }),
     });
 
-    // Check if deployedCapital function exists by calling getDeployedCapital
     try {
-      const deployedCapital = await client.readContract({
+      const maxAllocatableAssets = await client.readContract({
         address: vaultAddress as Address,
-        abi: VAULT_DUAL_SAFE_ABI,
-        functionName: "getDeployedCapital",
+        abi: CAPITAL_STATUS_ABI,
+        functionName: "maxAllocatableAssets",
       });
 
       checks.push({
         name: "dualsafe:CapitalFunctions",
         status: "pass",
-        message: `Capital deploy/recall functions are accessible. Deployed capital: ${deployedCapital.toString()}`,
-        details: { vaultAddress, deployedCapital: deployedCapital.toString() },
+        message: `Capital allocation surface is accessible. maxAllocatableAssets=${maxAllocatableAssets.toString()}`,
+        details: { vaultAddress, maxAllocatableAssets: maxAllocatableAssets.toString() },
       });
     } catch (error) {
       checks.push({
         name: "dualsafe:CapitalFunctions",
         status: "warn",
-        message: `Capital functions not accessible (may be pre-dual-safe version)`,
+        message: `Capital allocation surface not accessible on vault`,
         details: { vaultAddress, error: (error as Error).message },
       });
     }
@@ -656,13 +654,14 @@ async function checkCapitalFunctions(network: NetworkType): Promise<ReadinessChe
 
 async function checkVaultUSDCBalance(network: NetworkType): Promise<ReadinessCheck[]> {
   const checks: ReadinessCheck[] = [];
-  const vaultAddress = env.VAULT_ADDRESS;
+  const vaultConfig = getPrimaryVaultConfigForChecks();
+  const vaultAddress = vaultConfig?.vaultAddress;
 
   if (!vaultAddress) {
     checks.push({
       name: "dualsafe:VaultUSDCBalance",
       status: "warn",
-      message: "VAULT_ADDRESS not set, skipping USDC balance check",
+      message: "No vault config available, skipping USDC balance check",
     });
     return checks;
   }
@@ -727,13 +726,14 @@ async function checkVaultUSDCBalance(network: NetworkType): Promise<ReadinessChe
 
 async function checkTradingSafeApproval(network: NetworkType): Promise<ReadinessCheck[]> {
   const checks: ReadinessCheck[] = [];
-  const vaultAddress = env.VAULT_ADDRESS;
+  const vaultConfig = getPrimaryVaultConfigForChecks();
+  const vaultAddress = vaultConfig?.vaultAddress;
 
   if (!vaultAddress) {
     checks.push({
       name: "dualsafe:TradingSafeApproval",
       status: "warn",
-      message: "VAULT_ADDRESS not set, skipping tradingSafe approval check",
+      message: "No vault config available, skipping tradingSafe approval check",
     });
     return checks;
   }
@@ -759,59 +759,84 @@ async function checkTradingSafeApproval(network: NetworkType): Promise<Readiness
       transport: http(rpcUrl, { timeout: 15_000 }),
     });
 
-    // First get tradingSafe address from vault
-    let tradingSafeAddress: Address;
+    let tradingWalletAddress: Address;
     try {
-      tradingSafeAddress = await client.readContract({
+      tradingWalletAddress = await client.readContract({
         address: vaultAddress as Address,
-        abi: VAULT_DUAL_SAFE_ABI,
-        functionName: "tradingSafe",
+        abi: TRADING_WALLET_ABI,
+        functionName: "tradingWallet",
       });
     } catch {
       checks.push({
         name: "dualsafe:TradingSafeApproval",
         status: "warn",
-        message: `Cannot check approval - tradingSafe not configured on vault`,
+        message: `Cannot check exchange approvals - tradingWallet not readable on vault`,
         details: { vaultAddress },
       });
       return checks;
     }
 
-    // Check tradingSafe's USDC allowance for vault
-    const allowance = await client.readContract({
-      address: usdcAddress as Address,
-      abi: USDC_ABI,
-      functionName: "allowance",
-      args: [tradingSafeAddress, vaultAddress as Address],
-    });
+    const exchanges = [
+      { name: "CTF Exchange", address: config.addresses.ctfExchange },
+      { name: "NegRisk CTF Exchange", address: config.addresses.negRiskCtfExchange },
+      { name: "NegRisk Adapter", address: config.addresses.negRiskAdapter },
+    ].filter((exchange) => exchange.address.toLowerCase() !== ZERO_ADDRESS.toLowerCase());
 
-    const allowanceFormatted = Number(allowance) / 1e6;
-
-    if (allowance === 0n) {
+    if (exchanges.length === 0) {
       checks.push({
         name: "dualsafe:TradingSafeApproval",
         status: "warn",
-        message: `TradingSafe has not approved vault for USDC. recallCapital() will fail.`,
-        details: { vaultAddress, tradingSafeAddress, allowance: allowance.toString() },
+        message: `No Polymarket exchange addresses configured for ${network}, skipping approval check`,
+        details: { network },
       });
-    } else {
+      return checks;
+    }
+
+    for (const exchange of exchanges) {
+      const [allowance, isApprovedForAll] = await Promise.all([
+        client.readContract({
+          address: usdcAddress as Address,
+          abi: USDC_ABI,
+          functionName: "allowance",
+          args: [tradingWalletAddress, exchange.address as Address],
+        }),
+        client.readContract({
+          address: config.addresses.ctf as Address,
+          abi: ERC1155_ABI,
+          functionName: "isApprovedForAll",
+          args: [tradingWalletAddress, exchange.address as Address],
+        }),
+      ]);
+
       checks.push({
-        name: "dualsafe:TradingSafeApproval",
-        status: "pass",
-        message: `TradingSafe has approved vault for ${allowanceFormatted.toFixed(2)} USDC`,
+        name: `dualsafe:TradingSafeApproval:${exchange.name}:USDC`,
+        status: allowance > 0n ? "pass" : "warn",
+        message:
+          allowance > 0n
+            ? `Trading wallet has USDC approval for ${exchange.name}`
+            : `Trading wallet is missing USDC approval for ${exchange.name}`,
         details: {
           vaultAddress,
-          tradingSafeAddress,
+          tradingWalletAddress,
+          exchange: exchange.address,
           allowance: allowance.toString(),
-          allowanceFormatted,
         },
+      });
+
+      checks.push({
+        name: `dualsafe:TradingSafeApproval:${exchange.name}:CTF`,
+        status: isApprovedForAll ? "pass" : "warn",
+        message: isApprovedForAll
+          ? `Trading wallet has CTF approval for ${exchange.name}`
+          : `Trading wallet is missing CTF approval for ${exchange.name}`,
+        details: { vaultAddress, tradingWalletAddress, exchange: exchange.address, isApprovedForAll },
       });
     }
   } catch (error) {
     checks.push({
       name: "dualsafe:TradingSafeApproval",
       status: "fail",
-      message: `Failed to check tradingSafe approval: ${(error as Error).message}`,
+      message: `Failed to check trading wallet approvals: ${(error as Error).message}`,
       details: { vaultAddress, error: (error as Error).message },
     });
   }
@@ -950,8 +975,8 @@ async function runPostDeployValidation(
       try {
         const actualTradingSafe = await client.readContract({
           address: vaultAddress,
-          abi: VAULT_DUAL_SAFE_ABI,
-          functionName: "tradingSafe",
+          abi: TRADING_WALLET_ABI,
+          functionName: "tradingWallet",
         });
 
         const matches =

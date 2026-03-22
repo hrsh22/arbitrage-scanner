@@ -105,16 +105,16 @@ async function main(): Promise<void> {
   const vaultConfig = getTargetVaultConfig(options.vaultId);
 
   const vaultAddress = getAddress(vaultConfig.vaultAddress);
-  const tradingSafeAddress = getAddress(vaultConfig.tradingSafeAddress ?? vaultConfig.safeAddress);
+  const tradingWalletAddress = getAddress(vaultConfig.safeAddress);
   const usdcAddress = getAddress(networkConfig.addresses.usdcE);
   const safeOperatorKey = getRequiredEnv(vaultConfig.safeOperatorKeyEnv);
   const rpcUrls = getRpcUrlsForNetwork(networkConfig.name);
 
-  console.log("=== Trading Safe Recall Approval ===");
+  console.log("=== Trading Wallet Recall Approval ===");
   console.log(`Network:        ${networkConfig.name} (${networkConfig.chainId})`);
   console.log(`Vault ID:       ${vaultConfig.id}`);
   console.log(`Vault:          ${vaultAddress}`);
-  console.log(`Trading Safe:   ${tradingSafeAddress}`);
+  console.log(`Trading Wallet: ${tradingWalletAddress}`);
   console.log(`USDC:           ${usdcAddress}`);
   console.log(`Amount:         ${options.amount === MAX_UINT256 ? "unlimited" : options.amount}`);
   console.log(`RPCs:           ${rpcUrls.join(", ")}`);
@@ -125,14 +125,14 @@ async function main(): Promise<void> {
     transport: createNetworkTransport(rpcUrls),
   });
 
-  const code = await publicClient.getCode({ address: tradingSafeAddress });
-  const isContractTradingSafe = Boolean(code && code !== "0x");
+  const code = await publicClient.getCode({ address: tradingWalletAddress });
+  const isContractTradingWallet = Boolean(code && code !== "0x");
 
   const allowanceBefore = await publicClient.readContract({
     address: usdcAddress,
     abi: erc20Abi,
     functionName: "allowance",
-    args: [tradingSafeAddress, vaultAddress],
+    args: [tradingWalletAddress, vaultAddress],
   });
   console.log(`Allowance before: ${allowanceBefore.toString()}`);
 
@@ -143,10 +143,10 @@ async function main(): Promise<void> {
 
   let txHash: string;
 
-  if (isContractTradingSafe) {
-    console.log("Detected deployed Safe/contract tradingSafe; using Safe transaction flow.");
+  if (isContractTradingWallet) {
+    console.log("Detected deployed Safe/contract trading wallet; using Safe transaction flow.");
     const safe = new SafeWalletService(
-      tradingSafeAddress,
+      tradingWalletAddress,
       safeOperatorKey,
       undefined,
       networkConfig.chain,
@@ -159,11 +159,11 @@ async function main(): Promise<void> {
     }
     txHash = result.txHash ?? "unknown";
   } else {
-    console.log("Detected EOA tradingSafe; using direct wallet approval flow.");
+    console.log("Detected EOA trading wallet; using direct wallet approval flow.");
     const account = privateKeyToAccount(safeOperatorKey as Hex);
-    if (account.address.toLowerCase() !== tradingSafeAddress.toLowerCase()) {
+    if (account.address.toLowerCase() !== tradingWalletAddress.toLowerCase()) {
       throw new Error(
-        `AMOY_VAULT_1_SAFE_OPERATOR_KEY resolves to ${account.address}, but tradingSafe is ${tradingSafeAddress}. Set the env key to the private key for the tradingSafe EOA.`,
+        `AMOY_VAULT_1_SAFE_OPERATOR_KEY resolves to ${account.address}, but trading wallet is ${tradingWalletAddress}. Set the env key to the private key for the trading wallet EOA.`,
       );
     }
 
@@ -192,7 +192,7 @@ async function main(): Promise<void> {
     address: usdcAddress,
     abi: erc20Abi,
     functionName: "allowance",
-    args: [tradingSafeAddress, vaultAddress],
+    args: [tradingWalletAddress, vaultAddress],
   });
 
   console.log(`Approval tx hash:${txHash}`);

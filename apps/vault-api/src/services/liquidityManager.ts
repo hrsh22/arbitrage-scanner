@@ -18,7 +18,6 @@ import { createPublicClient, formatUnits, parseUnits, type Address } from "viem"
 
 import type { VaultInstanceConfig } from "../config/types.js";
 import { USDC_E_ADDRESS } from "../constants.js";
-import { env } from "../env.js";
 import { logger } from "../logger.js";
 import { activityEventRepository } from "../repositories/activityEventRepository.js";
 import { epochRepository } from "../repositories/epochRepository.js";
@@ -33,7 +32,7 @@ import type { ReconciliationResult } from "../types.js";
 import type { CapitalRebalanceResult, IVaultProvider } from "./vaultProvider.js";
 import { getVaultProvider } from "./vaultProviderFactory.js";
 import { FlatnessDetector, type FlatnessCheckResult } from "./flatnessDetector.js";
-import { getVaultConfig } from "../config/index.js";
+import { getAllVaultConfigs, getVaultConfig } from "../config/index.js";
 
 const USDC_DECIMALS = 6;
 
@@ -101,9 +100,13 @@ export class LiquidityManager {
   private readonly flatnessDetector: FlatnessDetector;
 
   constructor(options: LiquidityManagerOptions = {}) {
-    const config = options.config;
-    const vaultAddress = config?.vaultAddress || env.VAULT_ADDRESS;
-    const safeAddress = config?.tradingSafeAddress || config?.safeAddress || env.SAFE_ADDRESS;
+    const config =
+      options.config ??
+      (options.vaultId !== undefined ? getVaultConfig(options.vaultId) : undefined) ??
+      getAllVaultConfigs().find((candidate) => candidate.enabled) ??
+      getAllVaultConfigs()[0];
+    const vaultAddress = config?.vaultAddress;
+    const safeAddress = config?.safeAddress;
     const vaultId = options.vaultId ?? config?.id;
 
     if (!vaultAddress || !safeAddress || vaultId === undefined) {
@@ -226,7 +229,7 @@ export class LiquidityManager {
     }
 
     const tradingWalletAddress =
-      this.vaultConfig.tradingSafeAddress ?? this.vaultConfig.safeAddress;
+      this.vaultConfig.safeAddress;
     const flatnessCheck = await this.flatnessDetector.checkFlatness(
       this.vaultConfig,
       tradingWalletAddress,

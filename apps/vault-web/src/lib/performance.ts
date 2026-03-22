@@ -1,6 +1,7 @@
 import type { VaultNavHistoryItem } from "../types";
 
 export interface DerivedVaultPerformanceStats {
+  apy: number | null;
   sinceInception: number | null;
   thirtyDay: number | null;
   maxDrawdown: number | null;
@@ -38,6 +39,7 @@ export function deriveVaultPerformanceStats(
 
   if (points.length === 0) {
     return {
+      apy: null,
       sinceInception: null,
       thirtyDay: null,
       maxDrawdown: null,
@@ -71,6 +73,11 @@ export function deriveVaultPerformanceStats(
       ? latest / baseThirtyDay.value - 1
       : null;
 
+  const apy =
+    first !== null && latest !== null && first > 0 && latest > 0 && days > 0
+      ? Math.pow(latest / first, 365 / days) - 1
+      : null;
+
   let peak = firstPoint?.value ?? 0;
   let maxDrawdown = 0;
   let positiveMoves = 0;
@@ -94,6 +101,7 @@ export function deriveVaultPerformanceStats(
   }
 
   return {
+    apy,
     sinceInception,
     thirtyDay,
     maxDrawdown,
