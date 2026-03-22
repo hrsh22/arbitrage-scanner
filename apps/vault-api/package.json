@@ -10,6 +10,7 @@
     "cron:sync-vault-analytics": "tsx src/cron/syncVaultAnalytics.ts",
     "verify:mainnet": "tsx src/scripts/verifyMainnetSetup.ts",
     "diagnose:clob-auth": "tsx src/scripts/diagnoseClobAuth.ts",
+    "db:backfill-nav-history": "tsx src/scripts/backfillVaultNavHistory.ts",
     "build": "tsc -p tsconfig.json",
     "test": "vitest",
     "db:generate": "drizzle-kit generate",
