@@ -11,6 +11,7 @@
     "verify:mainnet": "tsx src/scripts/verifyMainnetSetup.ts",
     "diagnose:clob-auth": "tsx src/scripts/diagnoseClobAuth.ts",
     "db:backfill-nav-history": "tsx src/scripts/backfillVaultNavHistory.ts",
+    "db:repair-nav-history-migration": "tsx src/scripts/repairVaultNavHistoryMigration.ts",
     "build": "tsc -p tsconfig.json",
     "test": "vitest",
     "db:generate": "drizzle-kit generate",
