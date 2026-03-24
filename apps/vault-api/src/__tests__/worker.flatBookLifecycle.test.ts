@@ -1,5 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../repositories/flatBookStateRepository.js", () => ({
+  flatBookStateRepository: {
+    listDepositParticipantAddresses: vi.fn().mockResolvedValue([]),
+    upsertCycle: vi.fn().mockResolvedValue(undefined),
+    recordProcessingEvent: vi.fn().mockResolvedValue(undefined),
+    getQueueParticipant: vi.fn().mockResolvedValue(null),
+    markDepositProcessed: vi.fn().mockResolvedValue(undefined),
+    recordQueuedDeposit: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
 interface NavHealthMock {
   stale: boolean;
   lastUpdateTime: Date;
@@ -23,6 +34,13 @@ interface WorkerHarnessOptions {
   reconciliationResult?: ReconciliationResultMock;
   navRefreshError?: Error;
   vaultContractType?: "flatBookVaultV2";
+  lifecycleDecisionResponses?: Array<{
+    riskState: "flat" | "risk_on" | "unknown";
+    action: "none" | "close_book" | "process_queue" | "reopen_idle_cycle";
+    batchStatus: string;
+    hasActionableWork: boolean;
+    reason: string;
+  }>;
   lifecycleDecision?: {
     riskState: "flat" | "risk_on" | "unknown";
     action: "none" | "close_book" | "process_queue" | "reopen_idle_cycle";
@@ -54,6 +72,7 @@ interface ReadyQueueHarness {
   liquidityManager: any;
   markReadyIdempotent: ReturnType<typeof vi.fn>;
   updateAssetsEstimated: ReturnType<typeof vi.fn>;
+  recallWithdrawalLiquidityOnDemand: ReturnType<typeof vi.fn>;
 }
 
 function navHealth(stale: boolean): NavHealthMock {
@@ -102,14 +121,22 @@ async function bootWorkerHarness(options: WorkerHarnessOptions): Promise<WorkerH
   const runReconciliation = vi
     .fn()
     .mockResolvedValue(options.reconciliationResult ?? defaultResult());
-  const evaluateFlatBookLifecycle = vi.fn().mockResolvedValue(
-    options.lifecycleDecision ?? {
-      riskState: "flat",
-      action: "none",
-      batchStatus: "open",
-      hasActionableWork: false,
-      reason: "flat_open",
-    },
+  const lifecycleDecisions = [
+    ...(options.lifecycleDecisionResponses ?? []),
+    ...(options.lifecycleDecision
+      ? [options.lifecycleDecision]
+      : [
+          {
+            riskState: "flat" as const,
+            action: "none" as const,
+            batchStatus: "open",
+            hasActionableWork: false,
+            reason: "flat_open",
+          },
+        ]),
+  ];
+  const evaluateFlatBookLifecycle = vi.fn(
+    async () => lifecycleDecisions.shift() ?? lifecycleDecisions[0],
   );
   const needsNavRefreshForActionableWork = vi
     .fn()
@@ -370,6 +397,11 @@ async function bootReadyQueueHarness(): Promise<ReadyQueueHarness> {
   const readContract = vi.fn().mockResolvedValue(5_000_000n);
   const markReadyIdempotent = vi.fn().mockResolvedValue({ success: true });
   const updateAssetsEstimated = vi.fn().mockResolvedValue({});
+  const recallWithdrawalLiquidityOnDemand = vi.fn().mockResolvedValue({
+    success: true,
+    action: "deallocated",
+    amount: 500_000n,
+  });
 
   vi.doMock("viem", async () => {
     const actual = await vi.importActual<typeof import("viem")>("viem");
@@ -413,6 +445,7 @@ async function bootReadyQueueHarness(): Promise<ReadyQueueHarness> {
       hasActionableBatchWork: vi.fn().mockResolvedValue(false),
       estimatePendingWithdrawalLiability: vi.fn().mockResolvedValue(1_000_000n),
       getCurrentNav: vi.fn().mockResolvedValue(1_000_000_000_000_000_000n),
+      recallWithdrawalLiquidityOnDemand,
     })),
   }));
 
@@ -494,6 +527,7 @@ async function bootReadyQueueHarness(): Promise<ReadyQueueHarness> {
     liquidityManager,
     markReadyIdempotent,
     updateAssetsEstimated,
+    recallWithdrawalLiquidityOnDemand,
   };
 }
 
@@ -548,17 +582,29 @@ describe("worker flat-book lifecycle decision table", () => {
     const h = await bootWorkerHarness({
       navHealthResponses: [navHealth(false)],
       needsNavRefreshForActionableWork: false,
-      lifecycleDecision: {
-        riskState: "flat",
-        action: "process_queue",
-        batchStatus: "closed",
-        hasActionableWork: true,
-        reason: "flat_with_queue",
-      },
+      lifecycleDecisionResponses: [
+        {
+          riskState: "flat",
+          action: "process_queue",
+          batchStatus: "closed",
+          hasActionableWork: true,
+          reason: "flat_with_queue",
+        },
+        {
+          riskState: "flat",
+          action: "none",
+          batchStatus: "open",
+          hasActionableWork: false,
+          reason: "flat_open",
+        },
+      ],
     });
 
-    expect(h.calculateAndPushNav).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(h.calculateAndPushNav).toHaveBeenCalledTimes(2);
     expect(h.processQueue).toHaveBeenCalledTimes(1);
+    expect(h.runReconciliation).toHaveBeenCalledTimes(1);
     expect(h.reopenIdleCycle).not.toHaveBeenCalled();
   });
 
@@ -899,6 +945,36 @@ describe("worker-owned withdrawal readiness", () => {
       "1",
       expect.objectContaining({ reason: "worker_ready_refresh", source: "worker_queue" }),
     );
+    expect(h.markReadyIdempotent).toHaveBeenCalledWith("wr-1");
+    expect(result).toMatchObject({ action: "marked_ready", amount: 1 });
+  });
+
+  it("recalls the refreshed delta and marks ready in the same run", async () => {
+    const h = await bootReadyQueueHarness();
+
+    const result = await h.liquidityManager.markPendingWithdrawalsReady({
+      vaultInfo: {
+        navIsStale: false,
+        batchInfo: {
+          currentBatchId: 1,
+          currentBatchStatus: "open",
+        },
+      },
+      vaultBalance: 500_000n,
+      safeBalance: 5_000_000n,
+      pendingWithdrawalsCount: 1,
+    });
+
+    expect(h.updateAssetsEstimated).toHaveBeenCalledWith(
+      "wr-1",
+      "1",
+      expect.objectContaining({ reason: "worker_ready_refresh", source: "worker_queue" }),
+    );
+    expect(h.recallWithdrawalLiquidityOnDemand).toHaveBeenCalledWith({
+      vaultUsdcBalance: 500_000n,
+      safeUsdcBalance: 5_000_000n,
+      requiredAssets: 1_000_000n,
+    });
     expect(h.markReadyIdempotent).toHaveBeenCalledWith("wr-1");
     expect(result).toMatchObject({ action: "marked_ready", amount: 1 });
   });

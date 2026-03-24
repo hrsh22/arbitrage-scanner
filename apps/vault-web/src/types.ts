@@ -233,7 +233,7 @@ export interface WithdrawalRequestCreateResponse {
 
 export interface WithdrawalPreflightResponse {
   success?: boolean;
-  requestId: string;
+  requestId?: string;
   status?: WithdrawalRequestStatus;
   request?: WithdrawalRequest;
   ready: boolean;
@@ -443,6 +443,7 @@ export interface DepositQueueResponse {
   queuedFormatted: string;
   queuedShares: string;
   queuedSharesFormatted: string;
+  hasQueuedDeposit: boolean;
   cycleOpenNavEstimate: string | null;
   cycleOpenNavFormatted: string | null;
   estimateBasis: string;
@@ -450,6 +451,11 @@ export interface DepositQueueResponse {
   frozenFormatted: string;
   frozenShares: string;
   frozenSharesFormatted: string;
+  claimableAssets: string;
+  claimableAssetsFormatted: string;
+  claimableShares: string;
+  claimableSharesFormatted: string;
+  hasProcessedDeposit: boolean;
   depositRequestId: string | null;
   depositCreatedAt: string | null;
   targetCycleId: number;

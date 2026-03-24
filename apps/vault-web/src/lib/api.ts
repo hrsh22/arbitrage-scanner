@@ -48,6 +48,8 @@ const buildQuery = (params: Record<string, string | number | undefined>) => {
   return searchParams.toString();
 };
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 // Helper for fetch with credentials
 const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
   const response = await fetch(url, {
@@ -155,6 +157,16 @@ export async function postWithdrawalPreflight(
   });
 }
 
+export async function postInstantWithdrawPreflight(
+  vaultId: number,
+  shares: string,
+): Promise<WithdrawalPreflightResponse> {
+  return fetchWithAuth(makeUrl(`${VAULT_API_PREFIX}/${vaultId}/instant-withdraw-preflight`), {
+    method: "POST",
+    body: JSON.stringify({ shares }),
+  });
+}
+
 export async function fetchWithdrawalQueue(
   vaultAddress?: string,
 ): Promise<WithdrawalQueueResponse> {
@@ -166,10 +178,32 @@ export async function postCompleteWithdrawalRequest(
   requestId: string,
   txHash?: string,
 ): Promise<WithdrawalRequestCompleteResponse> {
-  return fetchWithAuth(makeUrl(`${VAULT_API_PREFIX}/withdrawal-request/${requestId}/complete`), {
-    method: "POST",
-    body: JSON.stringify({ txHash }),
-  });
+  const maxAttempts = 5;
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await fetchWithAuth(
+        makeUrl(`${VAULT_API_PREFIX}/withdrawal-request/${requestId}/complete`),
+        {
+          method: "POST",
+          body: JSON.stringify({ txHash }),
+        },
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      const retryableConcurrentError = message.includes("Concurrent operation in progress");
+
+      if (!retryableConcurrentError || attempt === maxAttempts) {
+        throw error;
+      }
+
+      lastError = error instanceof Error ? error : new Error(message);
+      await sleep(800 * attempt);
+    }
+  }
+
+  throw lastError ?? new Error("Withdrawal completion failed");
 }
 
 export async function postPrepareWithdrawalRequest(

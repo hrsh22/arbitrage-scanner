@@ -63,6 +63,15 @@ function getRequestLockVaultId(requestId: string): number {
   return 1_000_000 + (hash % 1_000_000);
 }
 
+function parseStoredVaultShareAmount(value: string): bigint {
+  const [whole, fraction = ""] = value.trim().split(".");
+  const normalizedWhole = whole === "" ? "0" : whole;
+  const normalizedFraction = fraction
+    .slice(0, VAULT_SHARE_DECIMALS)
+    .padEnd(VAULT_SHARE_DECIMALS, "0");
+  return parseUnits(`${normalizedWhole}.${normalizedFraction}`, VAULT_SHARE_DECIMALS);
+}
+
 async function reconcileCustomReadyWithdrawalRequests(
   userAddress: string,
   requests: Array<typeof withdrawalRequests.$inferSelect>,
@@ -237,6 +246,13 @@ const CUSTOM_VAULT_NAV_ABI = [
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],
   },
+  {
+    type: "function",
+    name: "isNAVFresh",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "bool" }],
+  },
 ] as const;
 
 // Legacy vault share price calculation (totalAssets / totalSupply)
@@ -269,6 +285,37 @@ const VAULT_REDEEM_ABI = [
       { name: "onBehalf", type: "address" },
     ],
     outputs: [{ name: "assets", type: "uint256" }],
+  },
+] as const;
+
+const CUSTOM_VAULT_CLAIM_STATE_ABI = [
+  {
+    type: "function",
+    name: "claimableRedeemSharesByController",
+    stateMutability: "view",
+    inputs: [{ name: "controller", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "claimableRedeemAssetsByController",
+    stateMutability: "view",
+    inputs: [{ name: "controller", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "state",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint8" }],
+  },
+  {
+    type: "function",
+    name: "currentNAV",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
   },
 ] as const;
 
@@ -1260,6 +1307,131 @@ export function buildVaultRouter(): Router {
     }
   });
 
+  router.post("/:vaultId/instant-withdraw-preflight", requireAuth, async (req, res) => {
+    const rawVaultId = req.params.vaultId;
+    const userAddress = req.session!.address as string;
+    if (!rawVaultId) {
+      res.status(400).json({ error: "Invalid vault ID" });
+      return;
+    }
+
+    const vaultId = parseInt(rawVaultId, 10);
+    if (isNaN(vaultId)) {
+      res.status(400).json({ error: "Invalid vault ID" });
+      return;
+    }
+
+    const shares = typeof req.body?.shares === "string" ? req.body.shares.trim() : "";
+    let requestedShares: bigint;
+    try {
+      requestedShares = parseUnits(shares, VAULT_SHARE_DECIMALS);
+    } catch {
+      res.status(400).json({ error: "Invalid share amount" });
+      return;
+    }
+
+    if (requestedShares <= 0n) {
+      res.status(400).json({ error: "Share amount must be greater than zero" });
+      return;
+    }
+
+    const config = getVaultConfig(vaultId);
+    if (!config) {
+      res.status(404).json({ error: `Vault ${vaultId} not found` });
+      return;
+    }
+
+    if (config.type !== "custom") {
+      res
+        .status(400)
+        .json({ error: "Instant withdraw preflight is only supported for custom vaults" });
+      return;
+    }
+
+    const lockKey = `instant-withdraw:${vaultId}:${userAddress}`;
+    const lockResult = pendingTxRegistry.acquireLock(vaultId, lockKey, "reconcile", "api", {
+      ttlMs: 60000,
+    });
+
+    if (!lockResult.acquired) {
+      res.status(423).json({
+        ready: false,
+        mode: "queued",
+        executionMode: "queued",
+        telemetryFresh: false,
+        liquidityMode: "queued_only",
+        triggeredRecall: false,
+        requestedAssets: 0,
+        vaultBalance: 0,
+        safeBalance: 0,
+        shortfall: 0,
+        reason: "Concurrent operation in progress. Please retry shortly.",
+        error: "Concurrent operation in progress. Please retry shortly.",
+        retryable: true,
+      });
+      return;
+    }
+
+    try {
+      await createNavOracle(config).calculateAndPushNav();
+      const networkConfig = getNetworkConfigFromEnv();
+      const publicClient = createPublicClient({
+        chain: networkConfig.chain,
+        transport: createNetworkTransport(),
+      });
+      const [currentNav, isFresh] = await Promise.all([
+        publicClient.readContract({
+          address: config.vaultAddress as Address,
+          abi: CUSTOM_VAULT_NAV_ABI,
+          functionName: "currentNAV",
+        }),
+        publicClient
+          .readContract({
+            address: config.vaultAddress as Address,
+            abi: CUSTOM_VAULT_NAV_ABI,
+            functionName: "isNAVFresh",
+          })
+          .catch(() => false),
+      ]);
+
+      if (!isFresh) {
+        res.status(503).json({
+          ready: false,
+          mode: "queued",
+          executionMode: "blocked",
+          telemetryFresh: false,
+          liquidityMode: "queued_only",
+          triggeredRecall: false,
+          requestedAssets: 0,
+          vaultBalance: 0,
+          safeBalance: 0,
+          shortfall: 0,
+          reason: "NAV is still stale on-chain after refresh. Retry once it confirms.",
+          error: "NAV is still stale on-chain after refresh. Retry once it confirms.",
+          retryable: true,
+        });
+        return;
+      }
+
+      const requestedAssets = (requestedShares * currentNav) / 10n ** 18n;
+
+      const preflight = await new LiquidityManager({ config }).preflightInstantWithdrawal(
+        requestedAssets,
+      );
+
+      res.status(preflight.ready ? 200 : preflight.error ? 503 : 200).json(preflight);
+    } catch (error) {
+      logger.error("Vault API: Instant withdraw preflight failed", {
+        vaultId,
+        userAddress,
+        error: (error as Error).message,
+      });
+      res.status(500).json({ error: (error as Error).message });
+    } finally {
+      pendingTxRegistry.releaseLock(vaultId, "reconcile");
+    }
+  });
+
   router.post("/mode", requireAuth, async (_req, res) => {
     try {
       const config = getPrimaryVaultConfig();
@@ -1452,17 +1624,12 @@ export function buildVaultRouter(): Router {
       }
 
       if (config.type === "custom") {
-        const lifecycle = (await getCachedLifecycle(config)) as {
-          executionMode?: "instant" | "queued" | "blocked";
-        };
-
-        if (lifecycle.executionMode === "blocked") {
-          res.status(409).json({
-            error: "Withdrawals are temporarily blocked until vault telemetry refreshes.",
-            retryable: true,
-          });
-          return;
-        }
+        res.status(409).json({
+          error:
+            "Custom vault withdrawals must use the on-chain requestRedeem flow. Legacy withdrawal-request creation is disabled.",
+          retryable: false,
+        });
+        return;
       }
 
       const networkConfig = getNetworkConfigFromEnv();
@@ -1679,59 +1846,103 @@ export function buildVaultRouter(): Router {
         return;
       }
 
-      let requestedAssets: bigint;
-      try {
-        requestedAssets = parseUnits(request.assetsEstimated, USDC_DECIMALS);
-      } catch {
+      const cachedEstimate = Number.parseFloat(request.assetsEstimated);
+      if (!Number.isFinite(cachedEstimate) || cachedEstimate <= 0) {
         res.status(503).json({
           ready: false,
           mode: "queued",
           requestId,
-          error: "Unable to parse withdrawal estimate for preflight",
+          error: "Unable to verify locked withdrawal amount. Please try again.",
           retryable: true,
         });
         return;
       }
 
-      const config = getPrimaryVaultConfig();
-      if (request.vaultAddress.toLowerCase() !== config.vaultAddress.toLowerCase()) {
-        res.status(400).json({
-          ready: false,
-          mode: "queued",
-          requestId,
-          error: "Withdrawal request vault does not match configured vault",
+      const config = getVaultConfigByAddress(request.vaultAddress);
+      if (config?.type === "custom") {
+        const networkConfig = getNetworkConfigFromEnv();
+        const publicClient = createPublicClient({
+          chain: networkConfig.chain,
+          transport: createNetworkTransport(),
         });
-        return;
+
+        const requestedShares = parseStoredVaultShareAmount(request.shares);
+        const cachedEstimateUnits = parseUnits(request.assetsEstimated, USDC_DECIMALS);
+
+        const [claimableShares, claimableAssets, vaultState, currentNav] = await Promise.all([
+          publicClient.readContract({
+            address: config.vaultAddress as Address,
+            abi: CUSTOM_VAULT_CLAIM_STATE_ABI,
+            functionName: "claimableRedeemSharesByController",
+            args: [userAddress as Address],
+          }),
+          publicClient.readContract({
+            address: config.vaultAddress as Address,
+            abi: CUSTOM_VAULT_CLAIM_STATE_ABI,
+            functionName: "claimableRedeemAssetsByController",
+            args: [userAddress as Address],
+          }),
+          publicClient.readContract({
+            address: config.vaultAddress as Address,
+            abi: CUSTOM_VAULT_CLAIM_STATE_ABI,
+            functionName: "state",
+          }),
+          publicClient.readContract({
+            address: config.vaultAddress as Address,
+            abi: CUSTOM_VAULT_CLAIM_STATE_ABI,
+            functionName: "currentNAV",
+          }),
+        ]);
+
+        const hasOnChainClaimableBalance =
+          claimableShares >= requestedShares && claimableAssets > 0n;
+        const liveRedeemAssets =
+          vaultState === 0 ? (requestedShares * currentNav) / 10n ** 18n : 0n;
+        const matchesLockedOpenRedeem =
+          vaultState === 0 && liveRedeemAssets === cachedEstimateUnits;
+
+        if (!hasOnChainClaimableBalance && !matchesLockedOpenRedeem) {
+          res.status(200).json({
+            success: false,
+            ready: false,
+            mode: "queued",
+            executionMode: vaultState === 0 ? "instant" : "queued",
+            telemetryFresh: true,
+            liquidityMode: "queued_only",
+            triggeredRecall: false,
+            requestId,
+            status: request.status,
+            request,
+            requestedAssets: cachedEstimate.toFixed(6),
+            vaultBalance: null,
+            safeBalance: null,
+            shortfall: "0.000000",
+            error:
+              "Withdrawal amount is locked in the request, but it is not currently claimable on-chain. Claim becomes executable only while the vault is open at the locked value or after the request is converted into an on-chain claimable redemption.",
+            retryable: true,
+          });
+          return;
+        }
       }
 
-      const preflight = await new LiquidityManager({ config }).preflightInstantWithdrawal(
-        requestedAssets,
-      );
-
-      const responseRequest: unknown = request;
-      const responseStatus: string = request.status;
-
-      const statusCode = preflight.ready ? 200 : preflight.error ? 503 : 200;
-
-      res.status(statusCode).json({
-        success: preflight.ready,
+      res.status(200).json({
+        success: true,
+        ready: true,
+        mode: "instant",
+        executionMode: "instant",
+        telemetryFresh: true,
+        liquidityMode: "vault_liquid",
+        triggeredRecall: false,
         requestId,
-        status: responseStatus,
-        request: responseRequest,
-        ready: preflight.ready,
-        mode: preflight.mode,
-        executionMode: preflight.executionMode,
-        telemetryFresh: preflight.telemetryFresh,
-        liquidityMode: preflight.liquidityMode,
-        triggeredRecall: preflight.triggeredRecall,
-        requestedAssets: preflight.requestedAssets,
-        vaultBalance: preflight.vaultBalance,
-        safeBalance: preflight.safeBalance,
-        shortfall: preflight.shortfall,
-        reason: preflight.reason,
-        recallTxHash: preflight.recallTxHash,
-        error: preflight.error,
+        status: request.status,
+        request,
+        requestedAssets: cachedEstimate.toFixed(6),
+        vaultBalance: null,
+        safeBalance: null,
+        shortfall: "0.000000",
+        reason: "Withdrawal amount locked and ready to claim.",
       });
+      return;
     } catch (error) {
       logger.error("Vault API: Withdrawal instant preflight failed", {
         requestId,

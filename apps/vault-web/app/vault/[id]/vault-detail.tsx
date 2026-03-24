@@ -36,6 +36,7 @@ import {
 import {
   preflightWithdrawal,
   useCycleStatus,
+  useDepositQueue,
   usePreviewDeposit,
   usePreviewRedeem,
   useQueueDeposit,
@@ -145,11 +146,14 @@ function formatCompactCurrency(value: number): string {
 }
 
 function formatPercent(value: number | null): string {
-  if (value === null || Number.isNaN(value)) {
+  if (value === null || Number.isNaN(value) || !Number.isFinite(value)) {
     return "--";
   }
 
   const percentage = value * 100;
+  if (!Number.isFinite(percentage) || Math.abs(percentage) > 100_000) {
+    return "--";
+  }
   const sign = percentage > 0 ? "+" : "";
   return `${sign}${percentage.toFixed(2)}%`;
 }
@@ -258,15 +262,15 @@ function getHeroSentence(vault: VaultInstance): string {
 }
 
 function getManagementLabel(vault: VaultInstance): string {
-  return vault.type === "custom" ? "Agent mandate" : "Vault mandate";
+  return vault.type === "custom" ? "Agent managed" : "Vault managed";
 }
 
 function getInfraLabel(vault: VaultInstance): string {
-  return vault.type === "custom" ? "Custom vault rails" : "Standard vault rails";
+  return vault.type === "custom" ? "Custom vault" : "Standard vault";
 }
 
 function getStyleLabel(vault: VaultInstance): string {
-  return vault.type === "custom" ? "Cycle-based execution" : "Share-based execution";
+  return vault.type === "custom" ? "Cycle-based" : "Share-based";
 }
 
 function getRiskScore(level: VaultInstance["profile"]["riskLevel"]): string {
@@ -821,6 +825,7 @@ function DepositRail({
   onSuccess,
   refetchCycleStatus,
   walletConnected,
+  sessionAuthenticated,
   userAuthorized,
   vaultId,
 }: {
@@ -830,6 +835,7 @@ function DepositRail({
   onSuccess: () => void;
   refetchCycleStatus: () => Promise<unknown>;
   walletConnected: boolean;
+  sessionAuthenticated: boolean;
   userAuthorized: boolean;
   vaultId: number;
 }) {
@@ -880,6 +886,16 @@ function DepositRail({
     error: queueDepositError,
     reset: resetQueueDeposit,
   } = useQueueDeposit();
+  const {
+    queueStatus,
+    hasQueuedDeposit,
+    queuedFormatted,
+    queuedSharesFormatted,
+    depositCreatedAt,
+    estimateBasis,
+    refetch: refetchDepositQueue,
+    isLoading: depositQueueLoading,
+  } = useDepositQueue(vaultId, userAuthorized);
 
   const needsApproval = isValidAmount ? allowance < parsedAmount : false;
   const actionPending =
@@ -1088,6 +1104,32 @@ function DepositRail({
         </p>
       )}
 
+      {isCustomVault && hasQueuedDeposit && (
+        <div className="rounded-[10px] border border-amber-400/20 bg-amber-400/10 p-3 text-amber-50">
+          <p className="text-sm font-medium">Deposit is queued</p>
+          <p className="mt-1 text-xs leading-6 text-amber-50/90">
+            {queuedFormatted} USDC.e is waiting for the current cycle to finish. Estimated shares:{" "}
+            {queuedSharesFormatted}.
+          </p>
+          {estimateBasis && (
+            <p className="mt-1 text-xs leading-6 text-amber-50/90">{estimateBasis}</p>
+          )}
+          {depositCreatedAt && (
+            <p className="mt-1 text-xs leading-6 text-amber-50/90">
+              Queued: {formatDate(depositCreatedAt)}
+            </p>
+          )}
+        </div>
+      )}
+
+      {depositQueueLoading && <Skeleton className="h-16 w-full bg-white/10" />}
+
+      {walletConnected && !sessionAuthenticated && (
+        <p className="text-xs leading-6 text-amber-200/90">
+          Sign in with Ethereum to load your queued deposit status.
+        </p>
+      )}
+
       {!meetsMinDeposit && amount.trim() && (
         <p className="text-xs text-amber-200">
           Minimum deposit is {formatCurrency(vault.profile.minDeposit)}.
@@ -1147,6 +1189,7 @@ function WithdrawRail({
   vault,
   vaultId,
   cycle,
+  navSharePrice,
   onSuccess,
   walletConnected,
   walletAddress,
@@ -1157,6 +1200,7 @@ function WithdrawRail({
   vault: VaultInstance;
   vaultId: number;
   cycle: Cycle | null;
+  navSharePrice: number | null;
   onSuccess: () => void;
   walletConnected: boolean;
   walletAddress: string | undefined;
@@ -1191,6 +1235,8 @@ function WithdrawRail({
   const isCustomVault = vault.type === "custom";
   const currentExecutionMode = cycle?.executionMode ?? undefined;
   const isBlockedMode = isCustomVault && currentExecutionMode === "blocked";
+  const requiresFreshNavBeforeRequest = !isCustomVault || currentExecutionMode === "instant";
+  const requiresClientPreviewForRequest = !isCustomVault || currentExecutionMode === "instant";
 
   const {
     shares,
@@ -1218,11 +1264,16 @@ function WithdrawRail({
     ) ?? null;
   const customClaimableRequest = customClaimableRequests[0] ?? null;
   const customPendingRequest = customPendingRequests[0] ?? null;
-  const queueActiveRequest =
-    isCustomVault && rawQueueActiveRequest?.status === "ready" && customClaimableRequest
-      ? null
-      : rawQueueActiveRequest;
+  const queueActiveRequest = rawQueueActiveRequest;
   const readyQueueRequest = queueActiveRequest?.status === "ready" ? queueActiveRequest : null;
+  const readyLockedEstimatedAssets = readyQueueRequest
+    ? Number.parseFloat(
+        (readyQueueRequest as { assetsEstimated?: string; claimableAssets?: string | null })
+          .assetsEstimated ??
+          (readyQueueRequest as { claimableAssets?: string | null }).claimableAssets ??
+          "0",
+      )
+    : Number.NaN;
   const readyRequestShares = readyQueueRequest
     ? getParsedUnits(readyQueueRequest.shares, 6)
     : undefined;
@@ -1236,18 +1287,23 @@ function WithdrawRail({
     readyQueueRequest && readyPreviewAssets !== undefined
       ? Number(formatUnits(readyPreviewAssets, 6))
       : Number.NaN;
-  const displayedEstimatedAssets =
-    readyQueueRequest && Number.isFinite(readyLiveEstimatedAssets)
-      ? readyLiveEstimatedAssets
-      : queueActiveRequest
-        ? Number.parseFloat(
-            (queueActiveRequest as { assetsEstimated?: string; claimableAssets?: string | null })
-              .assetsEstimated ??
-              (queueActiveRequest as { claimableAssets?: string | null }).claimableAssets ??
-              "0",
-          )
-        : customClaimableRequest?.claimableAssetsFormatted
-          ? Number.parseFloat(customClaimableRequest.claimableAssetsFormatted)
+  const displayedEstimatedAssets = readyQueueRequest
+    ? isCustomVault
+      ? readyLockedEstimatedAssets
+      : Number.isFinite(readyLiveEstimatedAssets)
+        ? readyLiveEstimatedAssets
+        : readyLockedEstimatedAssets
+    : queueActiveRequest
+      ? Number.parseFloat(
+          (queueActiveRequest as { assetsEstimated?: string; claimableAssets?: string | null })
+            .assetsEstimated ??
+            (queueActiveRequest as { claimableAssets?: string | null }).claimableAssets ??
+            "0",
+        )
+      : customClaimableRequest?.claimableAssetsFormatted
+        ? Number.parseFloat(customClaimableRequest.claimableAssetsFormatted)
+        : isCustomVault && parsedShares !== undefined && navSharePrice !== null
+          ? Number(formatUnits(parsedShares, 6)) * navSharePrice
           : effectivePreviewAssets !== undefined
             ? Number(formatUnits(effectivePreviewAssets, 6))
             : 0;
@@ -1445,20 +1501,29 @@ function WithdrawRail({
     reset();
 
     try {
-      const refreshed = await ensureFreshNav();
-      if (!refreshed) {
-        return;
+      let previewForRequest: bigint | undefined;
+
+      if (requiresFreshNavBeforeRequest) {
+        const refreshed = await ensureFreshNav();
+        if (!refreshed) {
+          return;
+        }
       }
 
-      const latestPreview = await refetchPreviewAssets();
-      if (latestPreview === undefined || latestPreview <= 0n) {
-        setErrorMessage("Unable to estimate redeemable assets. Please try again in a few seconds.");
-        return;
+      if (requiresClientPreviewForRequest) {
+        const latestPreview = await refetchPreviewAssets();
+        if (latestPreview === undefined || latestPreview <= 0n) {
+          setErrorMessage(
+            "Unable to estimate redeemable assets. Please try again in a few seconds.",
+          );
+          return;
+        }
+        previewForRequest = latestPreview;
       }
 
       const result = await postWithdrawalRequest(
         formatUnits(parsedShares, 6),
-        formatUnits(latestPreview, 6),
+        previewForRequest !== undefined ? formatUnits(previewForRequest, 6) : undefined,
         vaultId,
       );
       setMessage(result.message);
@@ -1494,9 +1559,11 @@ function WithdrawRail({
     setMessage(null);
 
     try {
-      const refreshed = await ensureFreshNav();
-      if (!refreshed) {
-        return;
+      if (!isCustomVault) {
+        const refreshed = await ensureFreshNav();
+        if (!refreshed) {
+          return;
+        }
       }
 
       let requestToClaim = readyQueueRequest;
@@ -1632,8 +1699,8 @@ function WithdrawRail({
     isPending ||
     isConfirming ||
     hasBlockingRequest ||
-    effectivePreviewAssets === undefined ||
-    effectivePreviewAssets <= 0n;
+    (requiresClientPreviewForRequest &&
+      (effectivePreviewAssets === undefined || effectivePreviewAssets <= 0n));
 
   const claimDisabled =
     !userAuthorized ||
@@ -1762,16 +1829,21 @@ function WithdrawRail({
         <div className="space-y-3 rounded-[24px] border border-amber-400/20 bg-amber-400/10 p-4 text-amber-50">
           <p className="text-sm font-medium">
             {readyQueueRequest
-              ? "Claim is ready"
-              : `Withdrawal ${queueActiveRequest.requestId} is queued`}
+              ? isCustomVault
+                ? "Your withdrawal is ready"
+                : "Claim is ready"
+              : `Withdrawal request is queued`}
           </p>
           <p className="text-xs leading-6 text-amber-50/90">
             {readyQueueRequest
-              ? "Settlement is complete. Sign the claim transaction to receive USDC.e."
-              : "Your exit request is queued. You can leave it in queue or cancel it before claiming."}
+              ? isCustomVault
+                ? "Your withdrawal has been processed. Claim your USDC.e below."
+                : "Settlement is complete. Sign the claim transaction to receive USDC.e."
+              : "Your withdrawal request is queued. You can leave it or cancel it before claiming."}
           </p>
           <p className="text-xs leading-6 text-amber-50/90">
-            Estimated payout: {formatCurrency(displayedEstimatedAssets || 0)}
+            {readyQueueRequest && isCustomVault ? "Locked payout" : "Estimated payout"}:{" "}
+            {formatCurrency(displayedEstimatedAssets || 0)}
           </p>
           <p className="text-xs leading-6 text-amber-50/90">
             Requested: {formatDate(queueActiveRequest.requestedAt)}
@@ -1809,7 +1881,7 @@ function WithdrawRail({
         </div>
       )}
 
-      {customClaimableRequest && (
+      {!readyQueueRequest && customClaimableRequest && (
         <div className="space-y-3 rounded-[24px] border border-emerald-400/20 bg-emerald-400/10 p-4 text-emerald-50">
           <p className="text-sm font-medium">
             {customClaimableRequest.requestKind === "controller_claimable"
@@ -1818,8 +1890,8 @@ function WithdrawRail({
           </p>
           <p className="text-xs leading-6 text-emerald-50/90">
             {customClaimableRequest.requestKind === "controller_claimable"
-              ? "Flat-book vaults keep one aggregated claimable balance per wallet. This amount can include older settled withdrawals, so it is not tied to a single request row."
-              : "This withdrawal was already settled on-chain. Claiming it is a separate action and does not happen automatically."}
+              ? "Your withdrawal is ready to claim."
+              : "Your withdrawal has been settled. Claim it below."}
           </p>
           <p className="text-xs leading-6 text-emerald-50/90">
             Claimable now:{" "}
@@ -1845,8 +1917,7 @@ function WithdrawRail({
         <div className="space-y-3 rounded-[24px] border border-amber-400/20 bg-amber-400/10 p-4 text-amber-50">
           <p className="text-sm font-medium">Withdrawal is queued</p>
           <p className="text-xs leading-6 text-amber-50/90">
-            An older on-chain withdrawal request is already pending settlement. It will remain
-            visible here and in activity until it becomes claimable.
+            You have a pending withdrawal that is being processed.
           </p>
           <p className="text-xs leading-6 text-amber-50/90">
             Requested: {formatDate(customPendingRequest.createdAt)}
@@ -1962,6 +2033,8 @@ export default function VaultDetailPage() {
     claimableRequests,
     isLoading: requestsLoading,
   } = useRequests(vault?.id, userAuthorized);
+  const { data: legacyWithdrawalQueue, isLoading: legacyWithdrawalQueueLoading } =
+    useWithdrawalQueue(vault?.config.vaultAddress);
   const {
     data: vaultEventsData,
     isLoading: vaultEventsLoading,
@@ -1987,6 +2060,13 @@ export default function VaultDetailPage() {
     address,
     vault?.type === "custom" ? 6 : 18,
   );
+  const hasLegacyCustomWithdrawalRequest =
+    vault?.type === "custom" &&
+    Boolean(
+      legacyWithdrawalQueue?.requests.some(
+        (request) => request.status === "pending" || request.status === "ready",
+      ),
+    );
 
   const refreshAll = async () => {
     await Promise.all([invalidateVaultQueries(queryClient, vault?.id), refetchNavHistory()]);
@@ -1996,6 +2076,34 @@ export default function VaultDetailPage() {
     () => deriveVaultPerformanceStats(navHistoryData?.snapshots ?? []),
     [navHistoryData?.snapshots],
   );
+  const freshestNavSnapshot = useMemo(() => {
+    const statusUpdatedAt = status?.nav.lastUpdated
+      ? new Date(status.nav.lastUpdated).getTime()
+      : 0;
+    const historyLatest = (navHistoryData?.snapshots ?? []).reduce<{
+      timestamp: number;
+      sharePrice: number;
+      totalAssets: number;
+    } | null>((latest, snapshot) => {
+      const snapshotTime = new Date(snapshot.timestamp).getTime();
+      const candidate = {
+        timestamp: snapshotTime,
+        sharePrice: Number(snapshot.sharePrice),
+        totalAssets: Number(snapshot.totalAssets),
+      };
+      return !latest || candidate.timestamp > latest.timestamp ? candidate : latest;
+    }, null);
+
+    if (historyLatest && historyLatest.timestamp > statusUpdatedAt) {
+      return {
+        sharePrice: historyLatest.sharePrice,
+        totalAssets: historyLatest.totalAssets,
+        lastUpdated: new Date(historyLatest.timestamp).toISOString(),
+      };
+    }
+
+    return status?.nav ?? null;
+  }, [navHistoryData?.snapshots, status?.nav]);
 
   const networkInfo = getNetworkDisplayInfo(VAULT_NETWORK);
   const tags = vault
@@ -2074,16 +2182,16 @@ export default function VaultDetailPage() {
     },
     {
       label: "NAV",
-      value: status ? formatSharePrice(status.nav.sharePrice) : "--",
-      hint: status?.nav.lastUpdated
-        ? `Updated ${formatDate(status.nav.lastUpdated)}`
+      value: freshestNavSnapshot ? formatSharePrice(freshestNavSnapshot.sharePrice) : "--",
+      hint: freshestNavSnapshot?.lastUpdated
+        ? `Updated ${formatDate(freshestNavSnapshot.lastUpdated)}`
         : "Waiting for first NAV snapshot.",
       tooltip: "Latest share price.",
     },
     {
       label: "TVL",
-      value: status ? formatCompactCurrency(status.nav.totalAssets) : "--",
-      hint: status
+      value: freshestNavSnapshot ? formatCompactCurrency(freshestNavSnapshot.totalAssets) : "--",
+      hint: freshestNavSnapshot
         ? "Total assets tracked by the vault right now."
         : "Waiting for first TVL snapshot.",
       tooltip: "Current total assets in the vault.",
@@ -2262,11 +2370,7 @@ export default function VaultDetailPage() {
                   <div className="flex flex-col gap-4 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-5 sm:flex-row sm:items-center sm:justify-between">
                     <div className="max-w-2xl">
                       <p className="text-sm font-medium text-white">
-                        Technical details are available on demand.
-                      </p>
-                      <p className="mt-1 text-sm leading-6 text-slate-400">
-                        Keep the main surface focused on mandate and operator context, then open the
-                        drawer for contract addresses and live wallet balances.
+                        View contract addresses and wallet balances.
                       </p>
                     </div>
                     <TechnicalDetailsDialog vault={vault} status={status} />
@@ -2303,7 +2407,7 @@ export default function VaultDetailPage() {
               <SectionShell title="Activity">
                 <div className="mb-4 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span>Meaningful vault updates only</span>
+                    <span>Recent updates</span>
                     <Badge
                       variant="outline"
                       className="rounded-full border-white/10 bg-white/6 px-3 py-1 text-[11px] text-slate-200"
@@ -2406,6 +2510,7 @@ export default function VaultDetailPage() {
                     pendingRequests={pendingRequests}
                     claimableRequests={claimableRequests}
                     isLoading={requestsLoading || cycleLoading}
+                    estimatedExitValueUsd={freshestNavSnapshot?.sharePrice ?? null}
                     onRequestCreated={() => {
                       void refreshAll();
                     }}
@@ -2457,6 +2562,7 @@ export default function VaultDetailPage() {
                     cycle={cycle}
                     nav={status?.nav ?? null}
                     walletConnected={walletConnected}
+                    sessionAuthenticated={sessionAuthenticated}
                     userAuthorized={userAuthorized}
                     vaultId={vault.id}
                     onSuccess={() => {
@@ -2468,19 +2574,43 @@ export default function VaultDetailPage() {
 
                 <TabsContent value="withdraw">
                   {vault.type === "custom" ? (
-                    <WithdrawRail
-                      vault={vault}
-                      vaultId={vault.id}
-                      cycle={cycle}
-                      walletConnected={walletConnected}
-                      walletAddress={address}
-                      userAuthorized={userAuthorized}
-                      customPendingRequests={pendingRequests}
-                      customClaimableRequests={claimableRequests}
-                      onSuccess={() => {
-                        void refreshAll();
-                      }}
-                    />
+                    legacyWithdrawalQueueLoading ? (
+                      <div className="space-y-4 rounded-[24px] border border-white/10 bg-slate-950/35 p-4">
+                        <Skeleton className="h-12 w-full rounded-2xl bg-white/10" />
+                        <Skeleton className="h-40 w-full rounded-2xl bg-white/10" />
+                      </div>
+                    ) : hasLegacyCustomWithdrawalRequest ? (
+                      <WithdrawRail
+                        vault={vault}
+                        vaultId={vault.id}
+                        cycle={cycle}
+                        navSharePrice={freshestNavSnapshot?.sharePrice ?? null}
+                        walletConnected={walletConnected}
+                        walletAddress={address}
+                        userAuthorized={userAuthorized}
+                        customPendingRequests={pendingRequests}
+                        customClaimableRequests={claimableRequests}
+                        onSuccess={() => {
+                          void refreshAll();
+                        }}
+                      />
+                    ) : (
+                      <RedemptionPanel
+                        vault={vault}
+                        cycleInfo={cycle}
+                        pendingRequests={pendingRequests}
+                        claimableRequests={claimableRequests}
+                        isLoading={requestsLoading || cycleLoading}
+                        estimatedExitValueUsd={freshestNavSnapshot?.sharePrice ?? null}
+                        onRequestCreated={() => {
+                          void refreshAll();
+                        }}
+                        onClaimSuccess={() => {
+                          void refreshAll();
+                        }}
+                        userShares={redemptionUserShares}
+                      />
+                    )
                   ) : (
                     <div className="space-y-4 rounded-[24px] border border-white/10 bg-slate-950/35 p-4 text-sm leading-7 text-slate-300">
                       <div>

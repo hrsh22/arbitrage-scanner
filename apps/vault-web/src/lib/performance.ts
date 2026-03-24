@@ -12,6 +12,9 @@ export interface DerivedVaultPerformanceStats {
   points: Array<{ timestamp: string; value: number; totalAssets: number }>;
 }
 
+const MIN_MEANINGFUL_TOTAL_ASSETS = 1;
+const MIN_APY_DAYS = 7;
+
 function normalizeNavPoints(snapshots: VaultNavHistoryItem[]) {
   const rawPoints = [...snapshots]
     .map((snapshot) => ({
@@ -28,7 +31,9 @@ function normalizeNavPoints(snapshots: VaultNavHistoryItem[]) {
     )
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
-  const meaningfulPoints = rawPoints.filter((point) => point.totalAssets > 0);
+  const meaningfulPoints = rawPoints.filter(
+    (point) => point.totalAssets >= MIN_MEANINGFUL_TOTAL_ASSETS,
+  );
   return meaningfulPoints.length >= 2 ? meaningfulPoints : rawPoints;
 }
 
@@ -74,7 +79,7 @@ export function deriveVaultPerformanceStats(
       : null;
 
   const apy =
-    first !== null && latest !== null && first > 0 && latest > 0 && days > 0
+    first !== null && latest !== null && first > 0 && latest > 0 && days >= MIN_APY_DAYS
       ? Math.pow(latest / first, 365 / days) - 1
       : null;
 

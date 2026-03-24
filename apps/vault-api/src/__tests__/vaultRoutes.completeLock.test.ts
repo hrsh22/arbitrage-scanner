@@ -7,21 +7,27 @@ const {
   mockReleaseLock,
   mockGetRequestById,
   mockMarkCompletedIdempotent,
+  mockPreflightInstantWithdrawal,
+  mockCalculateAndPushNav,
   mockReadContract,
   mockGetTransactionReceipt,
   mockGetBlock,
   mockGetTransaction,
   mockFindFirst,
+  mockGetAllVaultConfigs,
 } = vi.hoisted(() => ({
   mockAcquireLock: vi.fn(),
   mockReleaseLock: vi.fn().mockReturnValue(true),
   mockGetRequestById: vi.fn(),
   mockMarkCompletedIdempotent: vi.fn(),
+  mockPreflightInstantWithdrawal: vi.fn(),
+  mockCalculateAndPushNav: vi.fn(),
   mockReadContract: vi.fn(),
   mockGetTransactionReceipt: vi.fn(),
   mockGetBlock: vi.fn(),
   mockGetTransaction: vi.fn(),
   mockFindFirst: vi.fn(),
+  mockGetAllVaultConfigs: vi.fn(),
 }));
 
 vi.mock("../middleware/auth.js", () => ({
@@ -59,6 +65,10 @@ vi.mock("../repositories/withdrawalRepository.js", () => ({
 
 vi.mock("../services/liquidityManager.js", () => ({
   LiquidityManager: class {
+    async preflightInstantWithdrawal(requestedAssets: bigint) {
+      return mockPreflightInstantWithdrawal(requestedAssets);
+    }
+
     async runReconciliation() {
       return {
         action: "none",
@@ -75,11 +85,7 @@ vi.mock("../services/liquidityManager.js", () => ({
 vi.mock("../services/navOracle.js", () => ({
   createNavOracle: vi.fn(() => ({
     getNavHealth: vi.fn().mockResolvedValue({ stale: false }),
-    calculateAndPushNav: vi.fn().mockResolvedValue({
-      updatedOnChain: false,
-      newValue: "1",
-      txHash: undefined,
-    }),
+    calculateAndPushNav: mockCalculateAndPushNav,
   })),
 }));
 
@@ -115,7 +121,7 @@ vi.mock("../config/index.js", () => ({
     vaultReserveUsdc: 0,
     autoLiquidityManagement: true,
   })),
-  getAllVaultConfigs: vi.fn(() => []),
+  getAllVaultConfigs: mockGetAllVaultConfigs,
 }));
 
 vi.mock("../config/network.js", () => ({
@@ -135,6 +141,7 @@ vi.mock("../config/network.js", () => ({
     },
   })),
   getRpcUrlForNetwork: vi.fn(() => "https://rpc-amoy.polygon.technology"),
+  getRpcUrlsForNetwork: vi.fn(() => ["https://rpc-amoy.polygon.technology"]),
 }));
 
 vi.mock("viem", async () => {
@@ -191,6 +198,35 @@ describe("vaultRoutes complete lock behavior", () => {
     vi.clearAllMocks();
     mockReleaseLock.mockReturnValue(true);
     mockFindFirst.mockResolvedValue(null);
+    mockCalculateAndPushNav.mockResolvedValue({
+      updatedOnChain: false,
+      newValue: "1",
+      txHash: undefined,
+    });
+    mockPreflightInstantWithdrawal.mockResolvedValue({
+      ready: true,
+      mode: "instant",
+      executionMode: "instant",
+      telemetryFresh: true,
+      liquidityMode: "vault_liquid",
+      triggeredRecall: false,
+      requestedAssets: 1.25,
+      vaultBalance: 1.25,
+      safeBalance: 0,
+      shortfall: 0,
+      reason: "Vault idle liquidity already covers this withdrawal",
+    });
+    mockGetAllVaultConfigs.mockReturnValue([
+      {
+        id: 1,
+        enabled: true,
+        type: "custom",
+        providerType: "custom",
+        vaultAddress: "0x62646C39547c004a922D928DCe247Cae11F7d2d2",
+        safeAddress: "0x5991fd6Ecc5634C4de497b47Eb0Aa0065fffb214",
+        vaultContractType: "flatBookVaultV2",
+      },
+    ]);
   });
 
   it("returns idempotent success when lock is held but request already completed", async () => {
@@ -254,6 +290,129 @@ describe("vaultRoutes complete lock behavior", () => {
     expect(res.payload).toMatchObject({
       error: "Concurrent operation in progress. Please retry shortly.",
       requestId: "wr-2",
+    });
+  });
+
+  it("treats ready custom withdrawals as locked during preflight", async () => {
+    mockAcquireLock.mockReturnValue({ acquired: true });
+    mockReadContract
+      .mockResolvedValueOnce(644703n)
+      .mockResolvedValueOnce(1408998n)
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(2185500360000000000n);
+    mockGetRequestById.mockResolvedValue({
+      requestId: "wr-3",
+      vaultAddress: "0x62646C39547c004a922D928DCe247Cae11F7d2d2",
+      userAddress: "0x1234567890123456789012345678901234567890",
+      shares: "0.644703000000000000",
+      assetsEstimated: "1.408998",
+      status: "ready",
+      readyAt: new Date("2026-03-20T11:00:00.000Z"),
+      requestedAt: new Date("2026-03-20T10:50:00.000Z"),
+      txHash: null,
+    });
+
+    const handler = getRouteHandler("/withdrawal-request/:requestId/preflight");
+    const req = {
+      params: { requestId: "wr-3" },
+      session: { address: "0x1234567890123456789012345678901234567890" },
+    } as unknown as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.payload).toMatchObject({
+      success: true,
+      ready: true,
+      requestId: "wr-3",
+      status: "ready",
+      requestedAssets: "1.408998",
+      reason: "Withdrawal amount locked and ready to claim.",
+    });
+  });
+
+  it("rejects ready custom withdrawals that are not actually claimable on-chain", async () => {
+    mockAcquireLock.mockReturnValue({ acquired: true });
+    mockReadContract
+      .mockResolvedValueOnce(0n)
+      .mockResolvedValueOnce(0n)
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(1900000000000000000n);
+    mockGetRequestById.mockResolvedValue({
+      requestId: "wr-4",
+      vaultAddress: "0x62646C39547c004a922D928DCe247Cae11F7d2d2",
+      userAddress: "0x1234567890123456789012345678901234567890",
+      shares: "0.644703000000000000",
+      assetsEstimated: "1.408998",
+      status: "ready",
+      readyAt: new Date("2026-03-20T11:00:00.000Z"),
+      requestedAt: new Date("2026-03-20T10:50:00.000Z"),
+      txHash: null,
+    });
+
+    const handler = getRouteHandler("/withdrawal-request/:requestId/preflight");
+    const req = {
+      params: { requestId: "wr-4" },
+      session: { address: "0x1234567890123456789012345678901234567890" },
+    } as unknown as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.payload).toMatchObject({
+      success: false,
+      ready: false,
+      requestId: "wr-4",
+      status: "ready",
+      requestedAssets: "1.408998",
+    });
+  });
+
+  it("allows instant custom withdraw preflight when NAV is already fresh without a new publish", async () => {
+    mockAcquireLock.mockReturnValue({ acquired: true });
+    mockReadContract.mockResolvedValueOnce(1250000000000000000n).mockResolvedValueOnce(true);
+
+    const handler = getRouteHandler("/:vaultId/instant-withdraw-preflight");
+    const req = {
+      params: { vaultId: "1" },
+      body: { shares: "1.000000" },
+      session: { address: "0x1234567890123456789012345678901234567890" },
+    } as unknown as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(mockCalculateAndPushNav).toHaveBeenCalledTimes(1);
+    expect(mockPreflightInstantWithdrawal).toHaveBeenCalledWith(1250000n);
+    expect(res.statusCode).toBe(200);
+    expect(res.payload).toMatchObject({
+      ready: true,
+      mode: "instant",
+      executionMode: "instant",
+    });
+  });
+
+  it("rejects instant custom withdraw preflight when NAV remains stale after refresh", async () => {
+    mockAcquireLock.mockReturnValue({ acquired: true });
+    mockReadContract.mockResolvedValueOnce(1250000000000000000n).mockResolvedValueOnce(false);
+
+    const handler = getRouteHandler("/:vaultId/instant-withdraw-preflight");
+    const req = {
+      params: { vaultId: "1" },
+      body: { shares: "1.000000" },
+      session: { address: "0x1234567890123456789012345678901234567890" },
+    } as unknown as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(503);
+    expect(res.payload).toMatchObject({
+      ready: false,
+      executionMode: "blocked",
+      error: "NAV is still stale on-chain after refresh. Retry once it confirms.",
     });
   });
 });

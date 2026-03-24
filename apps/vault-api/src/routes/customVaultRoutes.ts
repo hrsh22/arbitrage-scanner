@@ -68,6 +68,7 @@ import {
   validateClaimOperation,
 } from "../services/claimStateMachine.js";
 import { activityEventRepository } from "../repositories/activityEventRepository.js";
+import { flatBookStateRepository } from "../repositories/flatBookStateRepository.js";
 import type { BatchStatus } from "../services/vaultProvider.js";
 
 const LIFECYCLE_CACHE_TTL_MS = 5_000;
@@ -202,7 +203,7 @@ function buildUserQueueActivity(
       type: "deposit_minted",
       scope: "user",
       title: "Deposit minted",
-      detail: "Queued deposit was converted into vault shares.",
+      detail: "Queued deposit finished processing and your shares were minted automatically.",
       occurredAt: participant.processedAt.toISOString(),
       cycleId: participant.cycleId,
       status: participant.status,
@@ -853,14 +854,14 @@ function deriveIncrementalLifecycleEventsFromUserActivity(args: {
       continue;
     }
 
-    if (row.eventType === "deposit_minted") {
+    if (row.eventType === "deposit_processed" || row.eventType === "deposit_minted") {
       events.push({
         vaultId,
         vaultAddress,
-        cycleId: cycleId + 1,
-        eventType: "deposit_queue_processed",
-        title: "Deposit queue processed",
-        detail: "A queued deposit was processed into vault shares.",
+        cycleId: row.cycleId ?? cycleId,
+        eventType: "deposit_minted",
+        title: "Deposit minted",
+        detail: "A queued deposit finished processing and shares were minted automatically.",
         occurredAt: row.occurredAt,
         status: batchStatus,
         assetAmount: row.assetAmount ?? undefined,
@@ -1451,6 +1452,20 @@ export function buildCustomVaultRouter(): Router {
         batchId: result.batchId,
       });
 
+      await activityEventRepository.appendUserVaultActivityEvent({
+        vaultId,
+        vaultAddress: provider.config.vaultAddress,
+        userAddress,
+        eventType: "withdraw_requested",
+        title: "Withdrawal requested",
+        detail: "Your withdrawal request entered the queue and will be processed by the worker.",
+        cycleId: result.batchId ?? undefined,
+        requestId: result.requestId,
+        status: "pending",
+        assetAmount: undefined,
+        shareAmount: shares,
+      });
+
       res.status(201).json({
         success: true,
         requestId: result.requestId,
@@ -1513,7 +1528,7 @@ export function buildCustomVaultRouter(): Router {
           const currentBatch = await provider.getClient().getCurrentBatch();
           const currentBatchId = Number(currentBatch);
           if (Number.isFinite(currentBatchId)) {
-            queuedCycleId = currentBatchId + 1;
+            queuedCycleId = currentBatchId;
           }
         } catch (error) {
           logger.warn("CustomVault API: Failed to resolve queued deposit cycle", {
@@ -1544,6 +1559,22 @@ export function buildCustomVaultRouter(): Router {
         assetAmount: assets,
         shareAmount: shares,
       });
+
+      if (mode === "queued" && assets && queuedCycleId !== undefined) {
+        await flatBookStateRepository.recordQueuedDeposit({
+          vaultAddress: provider.config.vaultAddress,
+          cycleId: queuedCycleId,
+          userAddress,
+          assetAmount: assets,
+          occurredAt: new Date(),
+        });
+
+        await flatBookStateRepository.upsertCycle({
+          vaultAddress: provider.config.vaultAddress,
+          cycleId: queuedCycleId,
+          state: "closed",
+        });
+      }
 
       res.json({ success: true });
     } catch (error) {
@@ -2723,24 +2754,37 @@ export function buildCustomVaultRouter(): Router {
 
       const client = provider.getClient();
       const currentEpochId = await client.getCurrentBatch();
-      const targetEpochId = currentEpochId + 1n;
-      const depositRequestId = await client.getDepositorBatchRequest(userAddress, targetEpochId);
-      const depositRequest =
-        depositRequestId > 0n ? await client.getDepositRequest(depositRequestId) : null;
+      const currentParticipant = await flatBookStateRepository.getQueueParticipant(
+        provider.config.vaultAddress,
+        Number(currentEpochId),
+        userAddress,
+      );
+      const previousParticipant =
+        currentEpochId > 0n
+          ? await flatBookStateRepository.getQueueParticipant(
+              provider.config.vaultAddress,
+              Number(currentEpochId - 1n),
+              userAddress,
+            )
+          : null;
 
-      const [navStatus, epoch, targetEpoch, requestIds] = await Promise.all([
+      const [navStatus, epoch, requestIds, depositState] = await Promise.all([
         client.getNAVStatus(),
         client.getBatch(currentEpochId),
-        client.getBatch(targetEpochId),
         client.getControllerRequestIds(userAddress),
+        client.getControllerDepositState(userAddress),
       ]);
 
-      const queuedAssets =
-        depositRequest && depositRequest.status !== "processed" ? depositRequest.assets : 0n;
+      const queuedAssets = depositState.queuedAssets;
+      const hasQueuedDeposit = queuedAssets > 0n;
+      const hasProcessedDeposit = false;
+      const queueStatus = queuedAssets > 0n ? "queued" : "idle";
+      const targetCycleId =
+        queuedAssets > 0n
+          ? (currentParticipant?.cycleId ?? Number(currentEpochId))
+          : Number(currentEpochId);
       const estimateNav =
-        targetEpoch?.snapshotNAV && targetEpoch.snapshotNAV > 0n
-          ? targetEpoch.snapshotNAV
-          : navStatus.currentNAV;
+        epoch?.snapshotNAV && epoch.snapshotNAV > 0n ? epoch.snapshotNAV : navStatus.currentNAV;
       const estimatedQueuedShares =
         queuedAssets > 0n
           ? estimateNav > 0n
@@ -2776,35 +2820,37 @@ export function buildCustomVaultRouter(): Router {
         queuedFormatted: formatUnits(queuedAssets, 6),
         queuedShares: estimatedQueuedShares.toString(),
         queuedSharesFormatted: formatUnits(estimatedQueuedShares, 6),
+        hasQueuedDeposit,
         cycleOpenNavEstimate: estimateNav.toString(),
         cycleOpenNavFormatted: formatUnits(estimateNav, 18),
         estimateBasis:
-          targetEpoch?.snapshotNAV && targetEpoch.snapshotNAV > 0n
+          epoch?.snapshotNAV && epoch.snapshotNAV > 0n
             ? "Estimated from locked processing NAV for the active cycle."
             : "Estimated from current NAV. Final minted shares use the locked processing NAV when the queue is processed.",
         frozen: frozenAssets.toString(),
         frozenFormatted: formatUnits(frozenAssets, 6),
         frozenShares: frozenShares.toString(),
         frozenSharesFormatted: formatUnits(frozenShares, 6),
-        depositRequestId: depositRequestId > 0n ? depositRequestId.toString() : null,
+        claimableAssets: "0",
+        claimableAssetsFormatted: "0",
+        claimableShares: "0",
+        claimableSharesFormatted: "0",
+        hasProcessedDeposit,
+        depositRequestId: null,
         depositCreatedAt:
-          depositRequest?.createdAt && depositRequest.createdAt > 0n
-            ? new Date(Number(depositRequest.createdAt) * 1000).toISOString()
-            : null,
-        targetCycleId: Number(depositRequest?.targetBatch ?? targetEpochId),
+          currentParticipant?.firstQueuedAt?.toISOString() ??
+          previousParticipant?.firstQueuedAt?.toISOString() ??
+          null,
+        targetCycleId,
         currentCycleId: Number(currentEpochId),
         currentCycleStart,
         currentCycleEnd: null,
         nextCycleStart: null,
         activationTime: null,
         batchState: epoch?.status ?? null,
-        queueStatus: depositRequest
-          ? depositRequest.status === "processed"
-            ? "processed"
-            : "queued"
-          : "idle",
+        queueStatus,
         mintRule:
-          "Deposits queue while the vault is closed and mint during processing at the locked NAV.",
+          "Deposits queue while the vault is closed and are minted automatically at the locked NAV when processing begins.",
         timestamp: new Date().toISOString(),
       });
     } catch (error) {

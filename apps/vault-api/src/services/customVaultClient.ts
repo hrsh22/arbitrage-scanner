@@ -61,6 +61,13 @@ export interface ControllerRedemptionState {
   claimableAssets: bigint;
 }
 
+export interface ControllerDepositState {
+  currentCycle: bigint;
+  queuedAssets: bigint;
+  claimableAssets: bigint;
+  claimableShares: bigint;
+}
+
 export interface EpochData {
   epochId: bigint;
   startTime: bigint;
@@ -85,6 +92,19 @@ export interface NAVStatus {
 }
 
 interface CycleData {
+  lockedNav: bigint;
+  totalQueuedDepositAssets: bigint;
+  totalQueuedRedeemShares: bigint;
+  totalQueuedRedeemAssets: bigint;
+  depositCursor: bigint;
+  redeemCursor: bigint;
+  processingStartedAt: bigint;
+  depositsComplete: boolean;
+  redeemsComplete: boolean;
+  finalized: boolean;
+}
+
+export interface RawCycleData {
   lockedNav: bigint;
   totalQueuedDepositAssets: bigint;
   totalQueuedRedeemShares: bigint;
@@ -251,6 +271,20 @@ export const FLAT_BOOK_VAULT_V2_ABI = [
   {
     type: "function",
     name: "claimableRedeemAssetsByController",
+    stateMutability: "view",
+    inputs: [{ type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "claimableDepositRequest",
+    stateMutability: "view",
+    inputs: [{ type: "uint256" }, { type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "claimableDepositSharesByController",
     stateMutability: "view",
     inputs: [{ type: "address" }],
     outputs: [{ type: "uint256" }],
@@ -664,6 +698,11 @@ export class CustomVaultClient {
     };
   }
 
+  async getCycleData(cycleId: bigint): Promise<RawCycleData> {
+    const cycle = await this.getCycle(cycleId);
+    return { ...cycle };
+  }
+
   async getBatch(batchId: bigint): Promise<BatchData | null> {
     const [currentCycleId, rawState, navStatus] = await Promise.all([
       this.read<bigint>("currentCycleId"),
@@ -763,6 +802,22 @@ export class CustomVaultClient {
     };
   }
 
+  async getControllerDepositState(controller: Address): Promise<ControllerDepositState> {
+    const currentCycle = await this.read<bigint>("currentCycleId");
+    const [queuedAssets, claimableAssets, claimableShares] = await Promise.all([
+      this.read<bigint>("queuedDepositAssets", [currentCycle, controller]),
+      this.read<bigint>("claimableDepositRequest", [0n, controller]),
+      this.read<bigint>("claimableDepositSharesByController", [controller]),
+    ]);
+
+    return {
+      currentCycle,
+      queuedAssets,
+      claimableAssets,
+      claimableShares,
+    };
+  }
+
   async getDepositorBatchRequest(depositor: Address, batchId: bigint): Promise<bigint> {
     const cycleId = batchId > 0n ? batchId - 1n : await this.read<bigint>("currentCycleId");
     const queuedAssets = await this.read<bigint>("queuedDepositAssets", [cycleId, depositor]);
@@ -851,6 +906,25 @@ export class CustomVaultClient {
     const cycleId = await this.read<bigint>("currentCycleId");
     const cycle = await this.getCycle(cycleId);
     return cycle.totalQueuedDepositAssets;
+  }
+
+  async getClaimableDepositAssets(controller: Address): Promise<bigint> {
+    return this.read<bigint>("claimableDepositRequest", [0n, controller]);
+  }
+
+  async getClaimableDepositShares(controller: Address): Promise<bigint> {
+    return this.read<bigint>("claimableDepositSharesByController", [controller]);
+  }
+
+  async getCycleParticipants(
+    cycleId: bigint,
+  ): Promise<{ depositParticipants: Address[]; redeemParticipants: Address[] }> {
+    const [depositParticipants, redeemParticipants] = await this.read<[Address[], Address[]]>(
+      "getCycleParticipants",
+      [cycleId],
+    );
+
+    return { depositParticipants, redeemParticipants };
   }
 
   async getReservedRedemptionAssets(): Promise<bigint> {

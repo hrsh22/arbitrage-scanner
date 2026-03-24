@@ -1,10 +1,6 @@
 "use client";
-
-import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@workspace/ui/components/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@workspace/ui/components/tabs";
-import { AlertCircle, Clock, CheckCircle2, Wallet } from "lucide-react";
-import { Alert, AlertDescription } from "@workspace/ui/components/alert";
+import { Clock, CheckCircle2, Wallet } from "lucide-react";
 import type { VaultInstance, Cycle, RedemptionRequest } from "../../../../src/types";
 import { getCyclePresentation } from "../../../../src/lib/cyclePresentation";
 import { RequestForm } from "./RequestForm";
@@ -20,6 +16,7 @@ interface RedemptionPanelProps {
   onRequestCreated: () => void;
   onClaimSuccess: () => void;
   userShares: bigint;
+  estimatedExitValueUsd?: number | null;
 }
 
 export function RedemptionPanel({
@@ -31,13 +28,38 @@ export function RedemptionPanel({
   onRequestCreated,
   onClaimSuccess,
   userShares,
+  estimatedExitValueUsd,
 }: RedemptionPanelProps) {
   const hasPending = pendingRequests.length > 0;
   const hasClaimable = claimableRequests.length > 0;
-  const [activeTab, setActiveTab] = useState<string>(
-    hasClaimable ? "claim" : hasPending ? "pending" : "request",
-  );
   const cyclePresentation = getCyclePresentation(cycleInfo?.batchState);
+  const executionMode =
+    vault.type === "custom"
+      ? cycleInfo?.telemetryFresh === false
+        ? "blocked"
+        : !cycleInfo?.batchState || cycleInfo.batchState === "processing"
+          ? "blocked"
+          : "queued"
+      : cycleInfo?.telemetryFresh === false
+        ? "blocked"
+        : cycleInfo?.executionMode
+          ? cycleInfo.executionMode
+          : cycleInfo?.batchState === "open"
+            ? "instant"
+            : cycleInfo?.batchState === "closed" || cycleInfo?.batchState === "cutoff"
+              ? "queued"
+              : "blocked";
+  const title = executionMode === "instant" ? "Withdraw now" : "Exit queue";
+  const subtitle =
+    executionMode === "instant"
+      ? "Withdraw your shares instantly at the current price."
+      : executionMode === "queued"
+        ? vault.type === "custom"
+          ? "Submit a withdrawal request now. The worker will process it and make it claimable once settlement runs."
+          : "Request a queued exit. You'll be able to claim once the cycle completes."
+        : vault.type === "custom"
+          ? "Withdrawals use the queue-first flow for this vault. Requests resume after processing finishes."
+          : "Withdrawals are temporarily paused.";
 
   return (
     <Card
@@ -45,109 +67,77 @@ export function RedemptionPanel({
       data-testid="redemption-panel"
     >
       <CardHeader className="pb-3">
-        <div className="flex items-start justify-between">
-          <div>
-            <CardTitle className="text-lg font-semibold text-white">Exit queue</CardTitle>
-            <p className="mt-1 text-sm text-slate-400">
-              Start an exit request, track it through the cycle, and claim USDC.e when settlement is
-              done.
-            </p>
-          </div>
-          {cycleInfo && (
-            <div className="text-right">
-              <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                Current cycle
-              </p>
-              <p className="text-sm font-mono font-semibold text-white">#{cycleInfo.cycleId}</p>
-            </div>
-          )}
+        <div>
+          <CardTitle className="text-lg font-semibold text-white">{title}</CardTitle>
+          <p className="mt-1 text-sm text-slate-400">{subtitle}</p>
         </div>
       </CardHeader>
 
       <CardContent>
-        <Alert
-          className="mb-4 border border-cyan-400/20 bg-cyan-400/10 text-cyan-50"
-          data-testid="redemption-info-alert"
-        >
-          <AlertCircle className="h-4 w-4 text-cyan-200" aria-hidden="true" />
-          <AlertDescription className="text-xs leading-6 text-cyan-50/90">
-            <span className="font-medium">{cyclePresentation.eyebrow}:</span>{" "}
+        <div className="mb-4 flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Mode</p>
+            <p className="mt-1 text-sm text-white">{cyclePresentation.label}</p>
+          </div>
+          <p className="max-w-[240px] text-right text-xs leading-5 text-slate-400">
             {cyclePresentation.detail}
-          </AlertDescription>
-        </Alert>
+          </p>
+        </div>
 
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
-          <TabsList
-            className="grid w-full grid-cols-3 border border-white/10 bg-white/5"
-            aria-label="Redemption tabs"
-          >
-            <TabsTrigger
-              value="request"
-              className="text-xs text-slate-400 hover:text-white data-[state=active]:bg-white data-[state=active]:text-slate-950"
-              aria-label="Create new redemption request"
-            >
-              <Wallet className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-white/10 bg-slate-950/35 p-4">
+            <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-slate-500">
+              <Wallet className="h-3.5 w-3.5" />
               Start exit
-            </TabsTrigger>
-            <TabsTrigger
-              value="pending"
-              className="text-xs text-slate-400 hover:text-white data-[state=active]:bg-white data-[state=active]:text-slate-950"
-              aria-label={`View pending requests${hasPending ? ` (${pendingRequests.length})` : ""}`}
-            >
-              <Clock className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
-              In progress
-              {hasPending && (
-                <span className="ml-1.5 inline-flex items-center justify-center rounded-full bg-amber-400/20 px-1.5 py-0 text-[10px] font-medium text-amber-100">
-                  {pendingRequests.length}
-                </span>
-              )}
-            </TabsTrigger>
-            <TabsTrigger
-              value="claim"
-              className="text-xs text-slate-400 hover:text-white data-[state=active]:bg-white data-[state=active]:text-slate-950"
-              aria-label={`View claimable requests${hasClaimable ? ` (${claimableRequests.length})` : ""}`}
-            >
-              <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
-              Ready to claim
-              {hasClaimable && (
-                <span className="ml-1.5 inline-flex items-center justify-center rounded-full bg-emerald-400/20 px-1.5 py-0 text-[10px] font-medium text-emerald-100">
-                  {claimableRequests.length}
-                </span>
-              )}
-            </TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="request" className="space-y-4">
+            </div>
             <RequestForm
               vault={vault}
               cycleInfo={cycleInfo}
               userShares={userShares}
               isLoading={isLoading}
               existingRequest={pendingRequests[0] ?? null}
+              estimatedExitValueUsd={estimatedExitValueUsd}
               onSuccess={() => {
                 onRequestCreated();
-                setActiveTab("pending");
               }}
             />
-          </TabsContent>
+          </div>
 
-          <TabsContent value="pending" className="space-y-4">
-            <PendingRequests
-              requests={pendingRequests}
-              cycleInfo={cycleInfo}
-              isLoading={isLoading}
-            />
-          </TabsContent>
+          {hasPending && (
+            <div className="rounded-2xl border border-white/10 bg-slate-950/35 p-4">
+              <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-slate-500">
+                <Clock className="h-3.5 w-3.5" />
+                In progress
+                <span className="inline-flex items-center justify-center rounded-full bg-amber-400/20 px-1.5 py-0 text-[10px] font-medium text-amber-100">
+                  {pendingRequests.length}
+                </span>
+              </div>
+              <PendingRequests
+                requests={pendingRequests}
+                cycleInfo={cycleInfo}
+                isLoading={isLoading}
+              />
+            </div>
+          )}
 
-          <TabsContent value="claim" className="space-y-4">
-            <ClaimableRequests
-              requests={claimableRequests}
-              isLoading={isLoading}
-              onClaimSuccess={onClaimSuccess}
-              vaultAddress={vault.config.vaultAddress}
-            />
-          </TabsContent>
-        </Tabs>
+          {hasClaimable && (
+            <div className="rounded-2xl border border-white/10 bg-slate-950/35 p-4">
+              <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-slate-500">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                Ready to claim
+                <span className="inline-flex items-center justify-center rounded-full bg-emerald-400/20 px-1.5 py-0 text-[10px] font-medium text-emerald-100">
+                  {claimableRequests.length}
+                </span>
+              </div>
+              <ClaimableRequests
+                requests={claimableRequests}
+                isLoading={isLoading}
+                onClaimSuccess={onClaimSuccess}
+                vaultAddress={vault.config.vaultAddress}
+              />
+            </div>
+          )}
+        </div>
       </CardContent>
     </Card>
   );

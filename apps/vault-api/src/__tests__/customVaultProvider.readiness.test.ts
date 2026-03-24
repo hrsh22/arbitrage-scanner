@@ -9,6 +9,11 @@ const { mockGetPendingRequests, mockGetReadyRequests } = vi.hoisted(() => ({
   mockGetReadyRequests: vi.fn().mockResolvedValue([]),
 }));
 
+const { mockListDepositParticipantAddresses, mockEnsureQueueParticipant } = vi.hoisted(() => ({
+  mockListDepositParticipantAddresses: vi.fn().mockResolvedValue([]),
+  mockEnsureQueueParticipant: vi.fn().mockResolvedValue(undefined),
+}));
+
 const mockVaultInstanceConfig = {
   id: 1,
   name: "test-vault",
@@ -138,8 +143,21 @@ vi.mock("../repositories/withdrawalRepository.js", () => ({
   },
 }));
 
+vi.mock("../repositories/flatBookStateRepository.js", () => ({
+  flatBookStateRepository: {
+    listDepositParticipantAddresses: mockListDepositParticipantAddresses,
+    ensureQueueParticipant: mockEnsureQueueParticipant,
+    upsertCycle: vi.fn().mockResolvedValue(undefined),
+    getQueueParticipant: vi.fn().mockResolvedValue(null),
+    markDepositProcessed: vi.fn().mockResolvedValue(undefined),
+    recordProcessingEvent: vi.fn().mockResolvedValue(undefined),
+    recordQueuedDeposit: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
 import { CustomVaultProvider } from "../services/customVaultProvider.js";
 import type { BatchData, CustomVaultClient } from "../services/customVaultClient.js";
+import { SafeWalletService } from "../services/safeWallet.js";
 
 function makeBatch(overrides: Partial<BatchData>): BatchData {
   return {
@@ -161,6 +179,56 @@ function makeBatch(overrides: Partial<BatchData>): BatchData {
 }
 
 describe("CustomVaultProvider settlement readiness", () => {
+  it("reserves claimable processed deposits during capital rebalancing", async () => {
+    mockListDepositParticipantAddresses.mockResolvedValueOnce([
+      "0x00000000000000000000000000000000000000aa",
+    ]);
+
+    const mockClient = {
+      getCurrentBatch: vi.fn().mockResolvedValue(3n),
+      getCycleParticipants: vi.fn().mockResolvedValue({
+        depositParticipants: ["0x00000000000000000000000000000000000000aa"],
+        redeemParticipants: [],
+      }),
+      getClaimableDepositAssets: vi.fn().mockResolvedValue(1_000_000n),
+      getClaimableDepositShares: vi.fn().mockResolvedValue(617_239n),
+      getTotalQueuedAssets: vi.fn().mockResolvedValue(0n),
+      getReservedRedemptionAssets: vi.fn().mockResolvedValue(0n),
+      getMaxAllocatableAssets: vi.fn().mockResolvedValue(5_000_000n),
+      getAdminRole: vi.fn().mockResolvedValue("0xadminrole"),
+      hasRole: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true),
+      allocateToTradingWallet: vi.fn(),
+    };
+
+    const provider = new CustomVaultProvider(
+      {
+        vaultId: 1,
+        vaultAddress: "0x1234567890123456789012345678901234567890",
+        providerType: "custom",
+      },
+      {
+        adminKey: mockMaintenanceKey,
+        safeOperatorKey: mockMaintenanceKey,
+      },
+    );
+
+    (provider as unknown as { client: CustomVaultClient }).client =
+      mockClient as unknown as CustomVaultClient;
+
+    await expect(
+      provider.rebalanceCapital({
+        vaultUsdcBalance: 5_000_000n,
+        safeUsdcBalance: 0n,
+        pendingWithdrawalLiability: 0n,
+      }),
+    ).resolves.toMatchObject({
+      success: true,
+      action: "allocated",
+      amount: 4_000_000n,
+      txHash: "0xsafe",
+    });
+  });
+
   it("surfaces pending queue state separately from aggregated claimable balance", async () => {
     const mockClient = {
       getControllerRedemptionState: vi.fn().mockResolvedValue({
@@ -199,6 +267,13 @@ describe("CustomVaultProvider settlement readiness", () => {
     mockExecuteRawTransaction.mockResolvedValueOnce({ success: true, txHash: "0xsafe" });
 
     const mockClient = {
+      getCurrentBatch: vi.fn().mockResolvedValue(3n),
+      getCycleParticipants: vi.fn().mockResolvedValue({
+        depositParticipants: [],
+        redeemParticipants: [],
+      }),
+      getClaimableDepositAssets: vi.fn().mockResolvedValue(0n),
+      getClaimableDepositShares: vi.fn().mockResolvedValue(0n),
       getTotalQueuedAssets: vi.fn().mockResolvedValue(0n),
       getReservedRedemptionAssets: vi.fn().mockResolvedValue(0n),
       getMaxAllocatableAssets: vi.fn().mockResolvedValue(5_000_000n),
@@ -310,6 +385,90 @@ describe("CustomVaultProvider settlement readiness", () => {
       mockClient as unknown as CustomVaultClient;
 
     await expect(provider.estimatePendingWithdrawalLiability()).resolves.toBe(4_000_000n);
+  });
+
+  it("recalls below minimum transfer amount when satisfying withdrawal liability", async () => {
+    const mockClient = {
+      getCurrentBatch: vi.fn().mockResolvedValue(5n),
+      getCycleParticipants: vi.fn().mockResolvedValue({
+        depositParticipants: [],
+        redeemParticipants: [],
+      }),
+      getClaimableDepositAssets: vi.fn().mockResolvedValue(0n),
+      getClaimableDepositShares: vi.fn().mockResolvedValue(0n),
+      getTotalQueuedAssets: vi.fn().mockResolvedValue(0n),
+      getReservedRedemptionAssets: vi.fn().mockResolvedValue(0n),
+      getErc20Balance: vi.fn().mockResolvedValue(1_946_228n),
+      getAsset: vi.fn().mockResolvedValue("0x1111111111111111111111111111111111111111"),
+    };
+
+    const provider = new CustomVaultProvider(
+      {
+        vaultId: 1,
+        vaultAddress: "0x1234567890123456789012345678901234567890",
+        providerType: "custom",
+      },
+      {
+        adminKey: mockMaintenanceKey,
+        safeOperatorKey: mockMaintenanceKey,
+      },
+    );
+
+    (provider as unknown as { client: CustomVaultClient }).client =
+      mockClient as unknown as CustomVaultClient;
+
+    await expect(
+      provider.rebalanceCapital({
+        vaultUsdcBalance: 1_911_950n,
+        safeUsdcBalance: 3_235_247n,
+        pendingWithdrawalLiability: 1_946_228n,
+      }),
+    ).resolves.toMatchObject({
+      success: true,
+      action: "deallocated",
+      amount: 34_278n,
+      requiredVaultBalance: 1_946_228n,
+    });
+
+    expect(SafeWalletService).toHaveBeenCalled();
+  });
+
+  it("retries post-recall balance checks before failing", async () => {
+    const mockClient = {
+      getAsset: vi.fn().mockResolvedValue("0x1111111111111111111111111111111111111111"),
+      getErc20Balance: vi
+        .fn()
+        .mockResolvedValueOnce(900_000n)
+        .mockResolvedValueOnce(900_000n)
+        .mockResolvedValueOnce(902_575n),
+    };
+
+    const provider = new CustomVaultProvider(
+      {
+        vaultId: 1,
+        vaultAddress: "0x1234567890123456789012345678901234567890",
+        providerType: "custom",
+      },
+      {
+        adminKey: mockMaintenanceKey,
+        safeOperatorKey: mockMaintenanceKey,
+      },
+    );
+
+    (provider as unknown as { client: CustomVaultClient }).client =
+      mockClient as unknown as CustomVaultClient;
+
+    await expect(
+      provider.recallWithdrawalLiquidityOnDemand({
+        vaultUsdcBalance: 0n,
+        safeUsdcBalance: 902_575n,
+        requiredAssets: 902_575n,
+      }),
+    ).resolves.toMatchObject({
+      success: true,
+      action: "deallocated",
+      amount: 902_575n,
+    });
   });
 
   it("requires a NAV refresh when actionable work exists but NAV is stale or zero", async () => {

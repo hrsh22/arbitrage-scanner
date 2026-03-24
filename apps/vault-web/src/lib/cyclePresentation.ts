@@ -20,10 +20,10 @@ export interface CyclePresentation {
 }
 
 const DEFAULT_PRESENTATION: CyclePresentation = {
-  label: "Cycle update pending",
-  eyebrow: "Waiting for sync",
-  description: "The latest cycle state is still loading.",
-  detail: "Refresh in a few seconds to see the latest vault activity.",
+  label: "Loading",
+  eyebrow: "Loading",
+  description: "Loading vault status...",
+  detail: "Refresh in a few seconds to see the latest status.",
   badgeClassName: "border-white/15 bg-white/8 text-slate-200",
   dotClassName: "bg-slate-300",
   panelClassName: "border-white/10 bg-white/6 text-slate-100",
@@ -33,8 +33,8 @@ const CYCLE_PRESENTATIONS: Record<CycleState, CyclePresentation> = {
   open: {
     label: "Open",
     eyebrow: "Instant mode",
-    description: "Vault is flat and uses live NAV for immediate deposits and withdrawals.",
-    detail: "No queue is used in this state.",
+    description: "Instant deposits and withdrawals at the current price.",
+    detail: "Deposits and withdrawals process instantly.",
     badgeClassName: "border-emerald-400/30 bg-emerald-400/12 text-emerald-200",
     dotClassName: "bg-emerald-300",
     panelClassName: "border-emerald-400/20 bg-emerald-400/10 text-emerald-50",
@@ -42,8 +42,8 @@ const CYCLE_PRESENTATIONS: Record<CycleState, CyclePresentation> = {
   closed: {
     label: "Queue only",
     eyebrow: "Trading active",
-    description: "Positions are active; deposits and redemptions are queued.",
-    detail: "Queued actions are processed together once the vault is flat again.",
+    description: "Trading is active. Deposits and withdrawals are queued.",
+    detail: "Requests process together at the end of the cycle.",
     badgeClassName: "border-amber-400/30 bg-amber-400/12 text-amber-200",
     dotClassName: "bg-amber-300",
     panelClassName: "border-amber-400/20 bg-amber-400/10 text-amber-50",
@@ -51,8 +51,8 @@ const CYCLE_PRESENTATIONS: Record<CycleState, CyclePresentation> = {
   processing: {
     label: "Processing",
     eyebrow: "Locked NAV",
-    description: "Queued deposits and redemptions are being processed at one locked NAV.",
-    detail: "Queue is frozen until processing completes.",
+    description: "Queued deposits and withdrawals are being processed.",
+    detail: "Processing in progress. Please wait.",
     badgeClassName: "border-sky-400/30 bg-sky-400/12 text-sky-200",
     dotClassName: "bg-sky-300",
     panelClassName: "border-sky-400/20 bg-sky-400/10 text-sky-50",
@@ -60,16 +60,16 @@ const CYCLE_PRESENTATIONS: Record<CycleState, CyclePresentation> = {
   processed: {
     label: "Processed",
     eyebrow: "Cycle complete",
-    description: "Queued actions were settled; vault can reopen for instant actions.",
-    detail: "This marks the boundary between invested and flat windows.",
+    description: "Cycle complete. The vault is ready for the next cycle.",
+    detail: "Cycle complete. Vault is ready for the next cycle.",
     badgeClassName: "border-cyan-400/30 bg-cyan-400/12 text-cyan-200",
     dotClassName: "bg-cyan-300",
     panelClassName: "border-cyan-400/20 bg-cyan-400/10 text-cyan-50",
   },
   cutoff: {
     label: "Queue only",
-    eyebrow: "Legacy state",
-    description: "Legacy cutoff state is treated as queue-only mode.",
+    eyebrow: "Trading active",
+    description: "Trading is active. Deposits and withdrawals are queued.",
     detail: "Requests are no longer cancellable after this point.",
     badgeClassName: "border-amber-400/30 bg-amber-400/12 text-amber-200",
     dotClassName: "bg-amber-300",
@@ -77,36 +77,36 @@ const CYCLE_PRESENTATIONS: Record<CycleState, CyclePresentation> = {
   },
   flattening: {
     label: "Processing",
-    eyebrow: "Legacy state",
-    description: "Legacy flattening state maps to processing semantics.",
-    detail: "Pricing is considered locked for queued actions.",
+    eyebrow: "Locked NAV",
+    description: "Queued deposits and withdrawals are being processed.",
+    detail: "Processing in progress. Please wait.",
     badgeClassName: "border-sky-400/30 bg-sky-400/12 text-sky-200",
     dotClassName: "bg-sky-300",
     panelClassName: "border-sky-400/20 bg-sky-400/10 text-sky-50",
   },
   settling: {
     label: "Processing",
-    eyebrow: "Legacy state",
-    description: "Legacy settling state maps to processing semantics.",
-    detail: "Queued redemptions and deposits are being finalized.",
+    eyebrow: "Locked NAV",
+    description: "Queued deposits and withdrawals are being finalized.",
+    detail: "Processing in progress. Please wait.",
     badgeClassName: "border-violet-400/30 bg-violet-400/12 text-violet-200",
     dotClassName: "bg-violet-300",
     panelClassName: "border-violet-400/20 bg-violet-400/10 text-violet-50",
   },
   settled: {
     label: "Processed",
-    eyebrow: "Legacy state",
-    description: "Legacy settled state maps to processed lifecycle semantics.",
-    detail: "Cycle payout computation has completed.",
+    eyebrow: "Cycle complete",
+    description: "Cycle complete. The vault is ready for the next cycle.",
+    detail: "Cycle complete. Vault is ready for the next cycle.",
     badgeClassName: "border-cyan-400/30 bg-cyan-400/12 text-cyan-200",
     dotClassName: "bg-cyan-300",
     panelClassName: "border-cyan-400/20 bg-cyan-400/10 text-cyan-50",
   },
   reopen: {
     label: "Processed",
-    eyebrow: "Legacy state",
-    description: "Legacy reopen state maps to processed lifecycle semantics.",
-    detail: "Vault is transitioning back to open mode.",
+    eyebrow: "Cycle complete",
+    description: "Cycle complete. The vault is transitioning back to open mode.",
+    detail: "The vault will reopen shortly.",
     badgeClassName: "border-fuchsia-400/30 bg-fuchsia-400/12 text-fuchsia-200",
     dotClassName: "bg-fuchsia-300",
     panelClassName: "border-fuchsia-400/20 bg-fuchsia-400/10 text-fuchsia-50",
@@ -126,10 +126,10 @@ export function getCustomCyclePresentationFromFields(fields: {
   // Distinguish blocked/unknown from queued
   if (fields.executionMode === "blocked" || fields.telemetryFresh !== true) {
     return {
-      label: "Blocked",
-      eyebrow: "Blocked",
-      description: "Telemetry is unavailable or vault is blocked.",
-      detail: "Blocked/Unknown lifecycle; queued actions do not apply.",
+      label: "Paused",
+      eyebrow: "Paused",
+      description: "Temporarily paused.",
+      detail: "Deposits and withdrawals are paused.",
       badgeClassName: "border-red-400/30 bg-red-400/12 text-red-200",
       dotClassName: "bg-red-300",
       panelClassName: "border-red-400/20 bg-red-400/10 text-red-50",
@@ -140,11 +140,11 @@ export function getCustomCyclePresentationFromFields(fields: {
   const label = isInstant ? "Instant" : "Queued";
   const eyebrow = isInstant ? "Instant mode" : "Queued mode";
   const description = isInstant
-    ? "Custom vault is currently allowing direct actions."
-    : "Custom vault is currently using a queued workflow.";
+    ? "Instant deposits and withdrawals available."
+    : "Deposits and withdrawals are queued for the current cycle.";
   const detail = isInstant
-    ? "Instant actions execute immediately at current NAV."
-    : "Deposits and withdrawals are queued until the vault opens its pricing window.";
+    ? "Transactions process instantly at the current price."
+    : "Requests will process at the end of the current cycle.";
   const badgeClassName = isInstant
     ? "border-emerald-400/30 bg-emerald-400/12 text-emerald-200"
     : "border-amber-400/30 bg-amber-400/12 text-amber-200";

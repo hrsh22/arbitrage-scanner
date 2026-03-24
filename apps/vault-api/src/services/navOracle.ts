@@ -18,6 +18,8 @@ import {
   positionRepository as defaultPositionRepository,
 } from "../repositories/positionRepository.js";
 import { epochRepository } from "../repositories/epochRepository.js";
+import { activityEventRepository } from "../repositories/activityEventRepository.js";
+import { flatBookStateRepository } from "../repositories/flatBookStateRepository.js";
 import { navCalculator as defaultNavCalculator, NavCalculator } from "./navCalculator.js";
 import {
   positionFetcher as defaultPositionFetcher,
@@ -239,6 +241,16 @@ const VAULT_TOTAL_CLAIMABLE_REDEEM_ASSETS_ABI = [
   },
 ] as const;
 
+const VAULT_CLAIMABLE_DEPOSIT_REQUEST_ABI = [
+  {
+    type: "function",
+    name: "claimableDepositRequest",
+    stateMutability: "view",
+    inputs: [{ type: "uint256" }, { type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+] as const;
+
 // ===== Constants =====
 
 const USDC_DECIMALS = 6;
@@ -341,6 +353,7 @@ export interface LiveNavPreview {
   vaultUsdc: number;
   safeUsdc: number;
   queuedAssets: number;
+  claimableDepositAssets: number;
   reservedRedemptionAssets: number;
   totalSupply: number;
   pricingSupply: number;
@@ -515,6 +528,7 @@ export class NavOracleService {
 
   private async readCustomLiabilityState(): Promise<{
     totalQueuedAssetsRaw: bigint;
+    claimableDepositAssetsRaw: bigint;
     reservedRedemptionAssetsRaw: bigint;
     totalPendingRedeemSharesRaw: bigint;
   }> {
@@ -605,11 +619,45 @@ export class NavOracleService {
             })
             .catch(() => 0n)) + (await getCycleTotals()).totalQueuedRedeemAssets;
 
+    const claimableDepositAssetsRaw = await this.readOutstandingClaimableDepositAssets();
+
     return {
       totalQueuedAssetsRaw,
+      claimableDepositAssetsRaw,
       reservedRedemptionAssetsRaw,
       totalPendingRedeemSharesRaw,
     };
+  }
+
+  private async readOutstandingClaimableDepositAssets(): Promise<bigint> {
+    const [participantAddresses, activityAddresses] = await Promise.all([
+      flatBookStateRepository.listDepositParticipantAddresses(this.vaultAddress),
+      activityEventRepository.listDepositActivityAddresses(this.vaultAddress),
+    ]);
+
+    const participantSet = new Set(
+      [...participantAddresses, ...activityAddresses].map((address) => address.toLowerCase()),
+    );
+    const addresses = [...participantSet];
+
+    if (addresses.length === 0) {
+      return 0n;
+    }
+
+    const claimableAssets = await Promise.all(
+      addresses.map((userAddress) =>
+        this.publicClient
+          .readContract({
+            address: this.vaultAddress,
+            abi: VAULT_CLAIMABLE_DEPOSIT_REQUEST_ABI,
+            functionName: "claimableDepositRequest",
+            args: [0n, userAddress as Address],
+          })
+          .catch(() => 0n),
+      ),
+    );
+
+    return claimableAssets.reduce((sum, value) => sum + value, 0n);
   }
 
   /**
@@ -724,9 +772,15 @@ export class NavOracleService {
       this.readCustomLiabilityState(),
     ]);
 
-    const { totalQueuedAssetsRaw, reservedRedemptionAssetsRaw } = liabilityState;
+    const {
+      totalQueuedAssetsRaw,
+      claimableDepositAssetsRaw,
+      reservedRedemptionAssetsRaw,
+      totalPendingRedeemSharesRaw,
+    } = liabilityState;
 
     const queuedAssets = Number(formatUnits(totalQueuedAssetsRaw, USDC_DECIMALS));
+    const claimableDepositAssets = Number(formatUnits(claimableDepositAssetsRaw, USDC_DECIMALS));
     const reservedRedemptionAssets = Number(
       formatUnits(reservedRedemptionAssetsRaw, USDC_DECIMALS),
     );
@@ -734,17 +788,33 @@ export class NavOracleService {
     const safeUsdc = Number(formatUnits(safeUsdcRaw, USDC_DECIMALS));
     const grossIdleAssets = vaultUsdc + safeUsdc;
     const grossTotalAssets = grossIdleAssets + deployedMarketValue;
-    const excludedAssets = queuedAssets + reservedRedemptionAssets;
+    const excludedAssets = queuedAssets + claimableDepositAssets + reservedRedemptionAssets;
     const idleAssets = Math.max(grossIdleAssets - excludedAssets, 0);
     const totalAssets = Math.max(grossTotalAssets - excludedAssets, 0);
 
     const totalSupply = Number(formatUnits(totalSupplyRaw, USDC_DECIMALS));
-    const pricingSupplyRaw = totalSupplyRaw;
+    const pricingSupplyRaw =
+      totalSupplyRaw > totalPendingRedeemSharesRaw
+        ? totalSupplyRaw - totalPendingRedeemSharesRaw
+        : 0n;
     const pricingSupply = Number(formatUnits(pricingSupplyRaw, USDC_DECIMALS));
-    const sharePrice = pricingSupply > 0 ? totalAssets / pricingSupply : 1.0;
+    const pendingRedeemShareCount = Number(formatUnits(totalPendingRedeemSharesRaw, USDC_DECIMALS));
+    const reservedRedemptionSharePrice =
+      pendingRedeemShareCount > 0 ? reservedRedemptionAssets / pendingRedeemShareCount : 0;
+    const sharePrice =
+      pricingSupply > 0
+        ? totalAssets / pricingSupply
+        : pendingRedeemShareCount > 0
+          ? reservedRedemptionSharePrice
+          : 1.0;
     const totalAssetsUnits = decimalToUsdcUnits(totalAssets);
+    const reservedRedemptionUnits = decimalToUsdcUnits(reservedRedemptionAssets);
     const navUnits =
-      pricingSupplyRaw > 0n ? (totalAssetsUnits * NAV_SCALE) / pricingSupplyRaw : NAV_SCALE;
+      pricingSupplyRaw > 0n
+        ? (totalAssetsUnits * NAV_SCALE) / pricingSupplyRaw
+        : totalPendingRedeemSharesRaw > 0n
+          ? (reservedRedemptionUnits * NAV_SCALE) / totalPendingRedeemSharesRaw
+          : NAV_SCALE;
 
     return {
       totalAssets,
@@ -757,6 +827,7 @@ export class NavOracleService {
       vaultUsdc,
       safeUsdc,
       queuedAssets,
+      claimableDepositAssets,
       reservedRedemptionAssets,
       totalSupply,
       pricingSupply,
@@ -1378,10 +1449,18 @@ export class NavOracleService {
       this.readCustomLiabilityState(),
     ]);
 
-    const { totalQueuedAssetsRaw, reservedRedemptionAssetsRaw } = liabilityState;
+    const {
+      totalQueuedAssetsRaw,
+      claimableDepositAssetsRaw,
+      reservedRedemptionAssetsRaw,
+      totalPendingRedeemSharesRaw,
+    } = liabilityState;
 
     const forcedValue = decimalToUsdcUnits(newValue);
-    const pricingSupplyRaw = totalSupplyRaw;
+    const pricingSupplyRaw =
+      totalSupplyRaw > totalPendingRedeemSharesRaw
+        ? totalSupplyRaw - totalPendingRedeemSharesRaw
+        : 0n;
     const forcedNavUnits =
       pricingSupplyRaw > 0n ? (forcedValue * NAV_SCALE) / pricingSupplyRaw : NAV_SCALE;
 
@@ -1407,17 +1486,26 @@ export class NavOracleService {
 
     const vaultUsdc = Number(formatUnits(vaultUsdcRaw, USDC_DECIMALS));
     const queuedAssets = Number(formatUnits(totalQueuedAssetsRaw, USDC_DECIMALS));
+    const claimableDepositAssets = Number(formatUnits(claimableDepositAssetsRaw, USDC_DECIMALS));
     const reservedRedemptionAssets = Number(
       formatUnits(reservedRedemptionAssetsRaw, USDC_DECIMALS),
     );
     const safeUsdc = Number(formatUnits(safeUsdcRaw, USDC_DECIMALS));
     const grossIdleAssets = vaultUsdc + safeUsdc;
-    const excludedAssets = queuedAssets + reservedRedemptionAssets;
+    const excludedAssets = queuedAssets + claimableDepositAssets + reservedRedemptionAssets;
     const idleAssets = Math.max(grossIdleAssets - excludedAssets, 0);
     const forcedDecimal = Number(usdcUnitsToDecimalString(forcedValue));
     const totalAssets = idleAssets + forcedDecimal;
     const pricingSupply = Number(formatUnits(pricingSupplyRaw, USDC_DECIMALS));
-    const sharePrice = pricingSupply > 0 ? totalAssets / pricingSupply : 1.0;
+    const pendingRedeemShareCount = Number(formatUnits(totalPendingRedeemSharesRaw, USDC_DECIMALS));
+    const reservedRedemptionSharePrice =
+      pendingRedeemShareCount > 0 ? reservedRedemptionAssets / pendingRedeemShareCount : 0;
+    const sharePrice =
+      pricingSupply > 0
+        ? totalAssets / pricingSupply
+        : pendingRedeemShareCount > 0
+          ? reservedRedemptionSharePrice
+          : 1.0;
 
     await this.navSnapshots.recordNavSnapshot({
       navId: `nav-force-custom-${Date.now()}-${randomUUID()}`,
@@ -1453,6 +1541,7 @@ export class NavOracleService {
       idleAssets: idleAssets.toFixed(USDC_DECIMALS),
       vaultUsdc: vaultUsdc.toFixed(USDC_DECIMALS),
       queuedAssets: queuedAssets.toFixed(USDC_DECIMALS),
+      claimableDepositAssets: claimableDepositAssets.toFixed(USDC_DECIMALS),
       reservedRedemptionAssets: reservedRedemptionAssets.toFixed(USDC_DECIMALS),
       sharePrice: sharePrice.toFixed(8),
       txHash,

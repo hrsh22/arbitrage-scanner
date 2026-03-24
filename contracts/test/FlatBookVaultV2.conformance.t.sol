@@ -94,6 +94,7 @@ contract FlatBookVaultV2ConformanceTest is Test {
         assertEq(vault.pendingRedeemRequest(0, alice), 0);
         assertEq(vault.claimableRedeemRequest(0, alice), 70_000 * 1e6);
         assertEq(vault.pendingDepositRequest(0, bob), 0);
-        assertEq(vault.claimableDepositRequest(0, bob), 120_000 * 1e6);
+        assertEq(vault.claimableDepositRequest(0, bob), 0);
+        assertEq(vault.balanceOf(bob), 60_000 * 1e6);
     }
 }

@@ -8,743 +8,341 @@ Read this file before making any vault-related change in:
 - `apps/vault-web/`
 - `contracts/`
 
-**Current State (March 2026):** The codebase targets **ClosedBookBatchVault**, but the active Amoy deployment still uses the legacy **EpochTrancheVault** contract. A deployment cutover is required to use the new batch/cycle system.
+---
+
+## 1) Current State
+
+As of March 2026, the active custom vault flow in this repo is built around `FlatBookVaultV2`, not `ClosedBookBatchVault` and not `EpochTrancheVault`.
+
+That distinction matters because the deployed contract semantics are materially different:
+
+- queued deposits auto-mint into shares during processing at the locked NAV
+- queued redeems are queue-first requests, not DB-only intents; they should be accepted immediately and later become controller-level claimable redemption balances during processing
+- `currentNAV` and all custom-vault pricing must exclude:
+  - queued deposits
+  - claimable redemption liabilities
+
+If an agent prices shares from raw `totalAssets / totalSupply` or treats queued redeems as free allocatable liquidity, it will break accounting.
 
 ---
 
-## 1) Current Architecture at a Glance
+## 2) Active Deployments And Config
 
-The vault system uses **ClosedBookBatchVault** as the canonical smart contract for batch-gated deposit and redemption processing.
+Primary custom vault configs live in:
 
-### Core Flow (Closed-Book Batch System)
+- `apps/vault-api/src/config/vaults/mainnet/vault1-pph.ts`
+- `apps/vault-api/src/config/vaults/amoy/vault1-pph.ts`
 
+Current configured deployments:
+
+| Network | Contract Type     | Vault Address                                | Trading Safe                                 |
+| ------- | ----------------- | -------------------------------------------- | -------------------------------------------- |
+| Mainnet | `flatBookVaultV2` | `0xfE5F6D149148aD5F31f6868152698E19A0F73a58` | `0xc8447F7d4dF6d717684fC9A3d242ee7713F43927` |
+| Amoy    | `flatBookVaultV2` | `0x62646C39547c004a922D928DCe247Cae11F7d2d2` | `0x5991fd6Ecc5634C4de497b47Eb0Aa0065fffb214` |
+
+The config field to trust is:
+
+```ts
+vaultContractType: "flatBookVaultV2";
 ```
-Deposit:   queueDeposit -> (batch cutoff/flatten) -> processDepositQueue -> mint shares
-Redeem:    requestRedeem -> shares escrowed -> (batch settle) -> claim assets
-Batch:     Open -> Cutoff -> Flattening -> Settling -> Settled -> Closed -> Reopen
-```
-
-### Key Components
-
-| Component          | File                                                 | Purpose                                                                   |
-| ------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------- |
-| Canonical Contract | `contracts/src/ClosedBookBatchVault.sol`             | Closed-book vault with deposit queue, redemption escrow, batch settlement |
-| Legacy Contract    | `contracts/src/EpochTrancheVault.sol`                | Epoch-gated vault with carry (still deployed on Amoy)                     |
-| Backend Provider   | `apps/vault-api/src/services/customVaultProvider.ts` | Reads vault state, manages redemption flow                                |
-| Backend Client     | `apps/vault-api/src/services/customVaultClient.ts`   | viem-based contract interactions                                          |
-| API Routes         | `apps/vault-api/src/routes/customVaultRoutes.ts`     | REST endpoints for lifecycle operations                                   |
-| Frontend Hooks     | `apps/vault-web/src/lib/hooks.ts`                    | React hooks for vault interactions                                        |
-| Frontend API       | `apps/vault-web/src/lib/api.ts`                      | API client for vault operations                                           |
-
-### Primary Active Vault
-
-- `vault1` configured in `apps/vault-api/src/config/vaults/vault1-pph.ts`
-- `type: "custom"` with custom batch settings (1 hour default in dev, 7 days in prod)
-- Provider routing: `VaultProviderFactory` instantiates `CustomVaultProvider`
-
-### Current Deployment Gap
-
-| Environment  | Contract             | Address                                      | Status      |
-| ------------ | -------------------- | -------------------------------------------- | ----------- |
-| Amoy Testnet | EpochTrancheVault    | `0x8D87Cc370e3751d5bBDBaE702e6618D59D950b2D` | **Legacy**  |
-| Amoy Testnet | ClosedBookBatchVault | Not deployed                                 | **Pending** |
-
-**Impact:** API endpoints like `/cycles/current` will not function until the new contract is deployed.
 
 ---
 
-## 2) Smart Contract Layer (ClosedBookBatchVault)
+## 3) FlatBookVaultV2 Lifecycle
 
-### 2.1 Contract Overview
+File: `contracts/src/FlatBookVaultV2.sol`
 
-File: `contracts/src/ClosedBookBatchVault.sol`
+Core lifecycle:
 
-Core model:
+```text
+Open -> BookClosed -> Processing -> Open(next cycle)
+```
 
-- **Deposit Queue**: Async deposits queued for batch processing after flatten
-- **Redemption Escrow**: Shares held by vault during settlement, burned at settlement time
-- **Batch Settlement**: Discrete cycles with cutoff, flatten, settle, close, reopen phases
-- **Flatten-Time Pricing**: All deposits in a batch mint at the same locked clearing price
-- **Pro-rata Distribution**: Applied if insufficient assets for full redemptions
+High-level behavior:
 
-### 2.2 Constructor Parameters
+- while `Open`
+  - instant deposits mint immediately using `currentNAV`
+  - redeem requests can now also be queued for the current cycle
+- while `Closed`
+  - deposits are queued into `queuedDepositAssets[currentCycleId][controller]`
+  - redeems are queued into `queuedRedeemShares[currentCycleId][controller]`
+- while `Processing`
+  - no new requests can be created
+- during `Processing`
+  - `processDeposits(maxUsers)` moves queued deposits into:
+    - `claimableDepositAssetsByController`
+    - `claimableDepositSharesByController`
+  - `processRedeems(maxUsers)` moves queued redeems into:
+    - `claimableRedeemAssetsByController`
+    - `claimableRedeemSharesByController`
+- `finalizeProcessing()` advances `currentCycleId` and reopens the next cycle
+
+Important: queued deposits are minted during `processDeposits()` at the cycle's locked NAV; `finalizeProcessing()` reopens the next cycle after both deposit and redeem processing complete.
+
+---
+
+## 4) Deposit Semantics
+
+### 4.1 Open-State Instant Deposit
+
+Contract entrypoint:
 
 ```solidity
-constructor(
-    address _asset,              // USDC or other ERC20
-    address _admin,              // Admin role
-    address _settler,            // Settlement role
-    address _navUpdater,         // NAV update role
-    address _snapshotter,        // Cutoff/flatten role
-    address _depositProcessor,   // Deposit queue processor
-    uint256 _navStalenessThreshold  // NAV freshness threshold
-)
+deposit(uint256 assets, address receiver)
 ```
 
-### 2.3 Batch/Cycle Lifecycle
+File reference: `contracts/src/FlatBookVaultV2.sol:296`
 
-```
-Open -> Cutoff -> Flattening -> Settling -> Settled -> Closed -> Reopen
-  |        |          |           |           |         |        |
-  |        |          |           |           |         |        +-- New batch starts
-  |        |          |           |           |         +-- Claims window ended
-  |        |          |           |           +-- Claims available
-  |        |          |           +-- Chunked settlement in progress
-  |        |          +-- NAV locked, clearing price set, deposits processed
-  |        +-- Deposits closed, redemptions frozen
-  +-- Accepting deposits and redemption requests
-```
+Properties:
 
-**Key Semantics:**
+- only works while vault state is `Open`
+- prices at `currentNAV`
+- transfers USDC in and mints shares immediately
 
-1. **Cutoff** (SNAPSHOT_ROLE): Closes deposits for current batch
-   - Deposits are now queued for the _next_ batch
-   - Redemptions can still be requested but are frozen in place
+### 4.2 Closed-State Queued Deposit
 
-2. **Flatten** (SNAPSHOT_ROLE): Locks cohort economics
-   - Records NAV snapshot
-   - Locks clearing price (excluding sealed/queued deposits)
-   - Transitions batch to Flattening state
-   - Creates next batch for new deposits
-
-3. **Deposit Processing** (DEPOSIT_PROCESSOR_ROLE): Mints shares at locked price
-   - Only callable in Flattening or Settling states
-   - All deposits mint at the same lockedClearingPrice
-   - Chunked processing for gas efficiency
-
-4. **Settlement** (SETTLER_ROLE): Processes redemptions
-   - Requires: batch ended + flattened + fresh NAV
-   - Shares escrowed during settlement
-   - Burns shares at settlement, calculates claimable assets
-   - Applies pro-rata ratio if insufficient liquidity
-
-5. **Close** (SETTLER_ROLE): Ends claims window
-   - Called after sufficient time for claims
-   - Batch enters Closed state
-
-6. **Reopen** (SETTLER_ROLE): Starts next batch
-   - Creates new batch with fresh timing
-   - Cycle begins again
-
-### 2.4 Role Structure
-
-| Role                     | Purpose                           |
-| ------------------------ | --------------------------------- |
-| `ADMIN_ROLE`             | Emergency mode, admin functions   |
-| `SETTLER_ROLE`           | Batch settlement, close, reopen   |
-| `NAV_UPDATER_ROLE`       | NAV updates with freshness checks |
-| `SNAPSHOT_ROLE`          | Cutoff and flatten operations     |
-| `DEPOSIT_PROCESSOR_ROLE` | Processing deposit queue          |
-
-### 2.5 Key Invariants
-
-- Batch duration is immutable after deployment
-- NAV staleness threshold is immutable after deployment
-- Settlement requires: batch cutoff + flattened + fresh NAV
-- Claims require: settled batch
-- All deposits in a batch mint at the same locked clearing price
-- Shares are escrowed during redemption, burned at settlement
-- Pro-rata ratio preserves fairness when assets are insufficient
-
----
-
-## 3) Deposit Queue Flow
-
-### 3.1 User Deposit
+Contract entrypoint:
 
 ```solidity
-function queueDeposit(uint256 assets) external returns (uint256 requestId)
+requestDeposit(uint256 assets)
+requestDeposit(uint256 assets, address controller, address owner)
 ```
 
-1. User calls `queueDeposit(assets)`
-2. Assets transferred to vault
-3. Request queued for next batch processing
-4. Multiple deposits from same user in same target batch accumulate
+File reference: `contracts/src/FlatBookVaultV2.sol:165`
 
-### 3.2 Deposit Processing
+Properties:
+
+- accumulates into `queuedDepositAssets[currentCycleId][controller]`
+- no shares are minted yet
+- assets are already inside the vault accounting perimeter
+
+### 4.3 Processed Queued Deposit
+
+Contract behavior during processing:
 
 ```solidity
-function processDepositQueue(
-    uint256 batchId,
-    uint256 startIndex,
-    uint256 endIndex
-) external onlyRole(DEPOSIT_PROCESSOR_ROLE)
+processDeposits(uint256 maxUsers)
 ```
 
-- Can only be called for Flattening or Settling batches
-- Mints shares based on `lockedClearingPrice` (set at flatten time)
-- Ensures fair pricing: all deposits in batch get same price
-- Chunked processing for gas efficiency (max 100 per call)
+File reference: `contracts/src/FlatBookVaultV2.sol:574`
+
+Properties:
+
+- queued deposit assets are removed from `queuedDepositAssets`
+- shares are minted directly to the `controller` during `processDeposits()` using the cycle's locked NAV
+- there is no manual claim-shares step for new queued deposits in this contract version
 
 ---
 
-## 4) Redemption Flow (ERC-7540)
+## 5) Redemption Semantics
 
-### 4.1 Request Redemption
+Queued redemption path:
 
-```solidity
-function requestRedeem(
-    uint256 shares,
-    address controller,
-    address owner
-) external returns (uint256 requestId)
-```
+- `requestRedeem(shares)` is the queue-first redeem request path
+- in the updated source contract, redeem requests are accepted while `Open` or `Closed`
+- the request immediately locks shares on-chain by moving them into vault custody
+- while the vault is still `Open`, accepted queued redeems also reserve estimated redeem assets in cycle accounting so admin allocation cannot strand them before processing starts
+- worker processing later converts them into:
+  - `claimableRedeemSharesByController`
+  - `claimableRedeemAssetsByController`
+- user later claims with `redeem(...)` / `withdraw(...)` against that claimable redeem balance
 
-- Returns unique `requestId`
-- Shares transferred to vault and held in escrow
-- Request enters Pending state
-- Can be cancelled while batch is Open
+Important redeem invariant:
 
-### 4.2 Cancel Redemption
+- once a queued redeem has been processed into `claimableRedeem*ByController`, the claimable amount is locked on-chain and later cycles must not reprice it
 
-```solidity
-function cancelRedeemRequest(uint256 requestId) external returns (uint256 cancelledShares)
-```
+Operational implication:
 
-- Only callable by controller
-- Only while batch is Open (before cutoff)
-- Returns shares to owner
+- custom withdrawals are now request-first in both `Open` and `Closed` states
+- users do not need a separate "instant withdraw" path for the custom vault
+- if the vault is already flat, worker processing can still happen quickly, but the mental model stays `request -> process -> claim`
 
-### 4.3 Claim Redemption
+Relevant contract refs:
 
-```solidity
-function redeem(
-    uint256 requestId,
-    uint256 shares,
-    address receiver
-) external returns (uint256 assets)
-```
+- `contracts/src/FlatBookVaultV2.sol:217`
+- `contracts/src/FlatBookVaultV2.sol:391`
 
-- Claims assets for redeemed shares
-- Shares already burned at settlement
-- Claims available only after batch reaches Settled state
+Custom vault redeem claims are controller-level on-chain claimables after processing. They are fundamentally different from the legacy DB-only withdrawal-ready model that was previously attempted in `vault-api`.
 
 ---
 
-## 5) Batch Settlement Flow
+## 6) NAV And Pricing Rules
 
-### 5.1 Cutoff Batch
+### 6.1 Correct Pricing Rule
 
-```solidity
-function cutoffBatch() external onlyRole(SNAPSHOT_ROLE)
-```
+For custom vaults, all share pricing must use liability-adjusted NAV, not raw `totalAssets / totalSupply`.
 
-- Closes deposits for current batch
-- New deposits queue for next batch
-- Redemptions frozen in place
+Liabilities to exclude:
 
-### 5.2 Flatten Batch
+- queued deposits
+- claimable redeem assets / reserved redemption liabilities
 
-```solidity
-function flattenBatch(bytes32 snapshotHash) external onlyRole(SNAPSHOT_ROLE)
-```
+If these are not excluded:
 
-- Takes NAV snapshot
-- Locks clearing price for deposit processing
-- Creates next batch for new deposits
-- Transitions to Flattening state
+- existing holders get an inflated share price
+- new open-state deposits mint too few shares
+- withdraw estimates are overstated
+- TVL/NAV in the UI become economically wrong
 
-### 5.3 Settle Batch
+### 6.2 Backend Source Of Truth
 
-```solidity
-function settleBatch(
-    uint256 batchId,
-    uint256 availableAssets
-) external onlyRole(SETTLER_ROLE)
-```
+Files:
 
-- Requires: batch cutoff + flattened + fresh NAV
-- Calculates pro-rata ratio if insufficient liquidity
-- Burns escrowed shares, calculates claimable assets
-- Transitions to Settled state
+- `apps/vault-api/src/services/navOracle.ts`
+- `apps/vault-api/src/routes/vaultRoutes.ts`
 
-### 5.4 Close Batch
+Key facts:
 
-```solidity
-function closeBatch(uint256 batchId) external onlyRole(SETTLER_ROLE)
-```
+- `NavOracleService.getLiveNavPreview()` is the canonical custom-vault preview used by `/vault/status`
+- `calculateAndPushNavCustom()` republishes `currentNAV` on-chain using that same liability-adjusted calculation
+- custom vault status should prefer the live preview path and only fall back if that path fails
 
-- Called after claims window
-- Transitions to Closed state
+### 6.3 Frontend Source Of Truth
 
-### 5.5 Reopen Batch
+Files:
 
-```solidity
-function reopenBatch() external onlyRole(SETTLER_ROLE)
-```
+- `apps/vault-web/app/vault/[id]/vault-detail.tsx`
+- `apps/vault-web/src/lib/hooks.ts`
 
-- Creates new batch
-- Cycle begins again
+Rules:
+
+- show custom-vault NAV from backend `status.nav.sharePrice`
+- custom-vault withdraw estimates should use backend liability-adjusted share price, not raw on-chain `totalAssets / totalSupply`
+- queued deposits should surface only two meaningful user states: queued, then minted
 
 ---
 
-## 6) Batch Schedule and Timing
+## 7) API Surface That Matters
 
-### 6.1 Default Parameters
+Primary backend routes for the custom vault flow:
 
-| Parameter               | Development      | Production       |
-| ----------------------- | ---------------- | ---------------- |
-| Batch Duration          | 1 hour (3600s)   | 7 days (604800s) |
-| NAV Staleness Threshold | 6 hours (21600s) | 6 hours (21600s) |
+File: `apps/vault-api/src/routes/customVaultRoutes.ts`
 
-### 6.2 Timing Configuration
+| Endpoint                     | Method | Purpose                                             |
+| ---------------------------- | ------ | --------------------------------------------------- |
+| `/:vaultId/info`             | GET    | vault metadata and high-level state                 |
+| `/:vaultId/redemptions`      | GET    | user redemption queue and claim state               |
+| `/:vaultId/deposit-queue`    | GET    | user queued deposit and minted-share estimate state |
+| `/:vaultId/activity/deposit` | POST   | append canonical deposit activity after wallet txs  |
 
-Set via environment variables:
+Important deposit-queue semantics:
 
-```bash
-# apps/vault-api/.env
-VAULT_1_BATCH_DURATION_SECONDS=3600  # Dev: 1 hour
-VAULT_1_BATCH_DURATION_SECONDS=604800  # Prod: 7 days
-```
-
-### 6.3 Batch Schedule Example (Production)
-
-```
-Batch 0:  Jan 1 00:00 UTC -> Jan 8 00:00 UTC
-Batch 1:  Jan 8 00:00 UTC -> Jan 15 00:00 UTC
-Batch 2:  Jan 15 00:00 UTC -> Jan 22 00:00 UTC
-...
-```
-
-### 6.4 Realization Cadence
-
-1. **Open**: Deposits and redemption requests accepted
-2. **Cutoff**: Deposits closed, redemptions frozen
-3. **Flatten**: NAV locked, clearing price set
-4. **Settlement**: Chunked processing, shares burned, assets calculated
-5. **Claims**: Available immediately after settlement
-6. **Close**: Claims window ended
-7. **Reopen**: Next batch begins
+- queued deposits should remain visible until processing completes
+- after processing, shares should already be minted for new queued deposits
+- the UI should not expose a manual post-processing deposit claim step for the updated contract version
 
 ---
 
-## 7) Vault API Architecture
+## 8) Projection Tables And Why They Exist
 
-### 7.1 Provider Factory
+Relevant DB tables:
 
-File: `apps/vault-api/src/services/vaultProviderFactory.ts`
+- `flat_book_cycles`
+- `flat_book_queue_participants`
+- `flat_book_processing_events`
+- `user_vault_activity_events`
+- `vault_lifecycle_events`
 
-- Maps vault configs to provider instances
-- Forces custom provider path for all vaults
-- Creates `CustomVaultProvider` with batch configuration
+Purpose:
 
-### 7.2 Custom Provider
+- these are off-chain projections and history helpers
+- they are not the contract source of truth
+- they exist so the UI can show lifecycle history and queue state cleanly
 
-File: `apps/vault-api/src/services/customVaultProvider.ts`
+Critical rule:
 
-Key methods:
+- if projection tables are stale or incomplete, fallback discovery must still be able to reconstruct liability-relevant addresses from activity history and on-chain state
 
-- `getVaultInfo()` - Vault metadata and batch info
-- `getBatchStatus(batchId)` - Batch state and timing
-- `requestRedeem()` - Create redemption request
-- `cancelRedemption()` - Cancel pending request
-- `claimRedemption()` - Claim settled request
-- `getUserRedemptionState()` - User's full redemption state
+Address normalization matters:
 
-### 7.3 API Routes
-
-Base: `/api/vaults`
-
-| Endpoint                               | Method | Description               | Status                   |
-| -------------------------------------- | ------ | ------------------------- | ------------------------ |
-| `/:vaultId/redeem`                     | POST   | Create redemption request | Working                  |
-| `/:vaultId/requests/:requestId`        | GET    | Get request status        | Working                  |
-| `/:vaultId/requests/:requestId/claim`  | POST   | Claim redemption          | Working                  |
-| `/:vaultId/requests/:requestId/cancel` | POST   | Cancel redemption         | Working                  |
-| `/:vaultId/cycles/current`             | GET    | Current batch status      | **Broken until cutover** |
-| `/:vaultId/cycles/:cycleId`            | GET    | Specific batch details    | **Broken until cutover** |
-| `/:vaultId/redemptions`                | GET    | User's redemption state   | Working                  |
-| `/:vaultId/info`                       | GET    | Vault metadata            | Working                  |
-| `/:vaultId/deposit-queue`              | GET    | Deposit queue status      | Working                  |
-
-### 7.4 Lifecycle Fields
-
-API responses include these standardized fields:
-
-```typescript
-{
-  queued: string; // Assets waiting in deposit queue
-  queuedFormatted: string; // Human-readable
-  escrowed: string; // Shares escrowed in settlement
-  escrowedFormatted: string;
-  claimableNow: string; // USDC available to claim now
-  claimableNowFormatted: string;
-  batchStatus: "Open" | "Cutoff" | "Flattening" | "Settling" | "Settled" | "Closed";
-  currentBatchId: string;
-}
-```
+- normalize vault and user addresses for reads/writes
+- do not rely on exact-case string equality for address joins or lookups
+- a mixed-case vs lowercase mismatch can silently zero out liabilities in NAV calculations
 
 ---
 
-## 8) Vault Web Architecture
+## 9) Recent Production Lessons
 
-### 8.1 API Client
+### 9.1 Legacy Processed Deposits Were Liabilities Until Claimed
 
-File: `apps/vault-web/src/lib/api.ts`
+Observed in the previous contract/app flow:
 
-Two prefixes:
+- a queued `1 USDC` deposit could process into:
+  - `claimableDepositRequest(0, controller) = 1 USDC`
+  - `claimableDepositSharesByController(controller) = 0.617239 shares`
+- but ERC20 vault shares were not minted yet
 
-- `VAULT_API_PREFIX = /vault` - Legacy/general operations
-- `CUSTOM_VAULT_API_PREFIX = /api/vaults` - Batch redemption flow
+If the app assumes those shares already exist, NAV and withdraw math become wrong.
 
-### 8.2 Custom Hooks
+For the updated contract version, queued deposits auto-mint during processing and this legacy claim step should no longer appear for new deposits.
 
-File: `apps/vault-web/src/lib/hooks.ts`
+### 9.2 On-Chain `currentNAV` Can Stay Wrong Until Worker Republishes
 
-Redemption hooks:
+Even after backend math is fixed:
 
-- `useRequestRedeem()` - Create redemption request
-- `useRequests()` - Get user's redemption requests
-- `useBatchStatus()` - Get batch status
-- `useClaimRedemption()` - Claim redemption
-- `useCancelRedemption()` - Cancel redemption
+- the UI can still show stale inflated NAV if prod is running old code
+- `currentNAV` stays wrong until `vault-api` is redeployed and the NAV worker refreshes/publishes a new value
 
----
+### 9.3 UI Auth Can Hide Real Queue State
 
-## 9) Configuration and Environment
+The deposit queue route is auth-scoped.
 
-### 9.1 Vault Config
+If the wallet is connected but the SIWE session is stale:
 
-File: `apps/vault-api/src/config/vaults/vault1-pph.ts`
+- queued deposit state may disappear from the UI if auth is stale
+- the user can incorrectly think the queue state is gone
 
-```typescript
-{
-  id: 1,
-  type: "custom",
-  customVaultConfig: {
-    batchDurationSeconds: 3600,  // or 604800 for prod
-    navStalenessThresholdSeconds: 21600,
-  },
-  // ... other fields
-}
-```
-
-### 9.2 Required Environment Variables
-
-**apps/vault-api/.env:**
-
-```bash
-# Server
-VAULT_PORT=3001
-VAULT_SESSION_SECRET=...
-
-# Database
-VAULT_DATABASE_URL=postgresql://...
-
-# RPC
-POLYGON_RPC_URL=https://...
-
-# Vault 1 Keys
-VAULT_1_ALLOCATOR_NAV_KEY=...
-VAULT_1_SAFE_OPERATOR_KEY=...
-VAULT_1_TRADING_SIGNER_KEY=...
-
-# Batch Configuration
-VAULT_1_BATCH_DURATION_SECONDS=3600
-```
-
-**apps/vault-web/.env:**
-
-```bash
-NEXT_PUBLIC_REOWN_PROJECT_ID=...
-NEXT_PUBLIC_API_URL=http://localhost:3001
-```
+Always surface auth gating clearly in the UI.
 
 ---
 
-## 10) Deprecated Components
+## 10) Operational Guidance
 
-### 10.1 Superseded Contracts
+### 10.1 When Debugging Bad NAV
 
-| Contract                   | Status     | Replacement                |
-| -------------------------- | ---------- | -------------------------- |
-| `WeeklyEpochVault.sol`     | DEPRECATED | `ClosedBookBatchVault.sol` |
-| `SnapshotTrancheVault.sol` | DEPRECATED | `ClosedBookBatchVault.sol` |
-| `EpochTrancheVault.sol`    | LEGACY     | `ClosedBookBatchVault.sol` |
+Check all three layers:
 
-### 10.2 Migration Notes
+1. contract state
+   - `currentNAV`
+   - `totalSupply`
+2. backend live preview
+   - `createNavOracle(config).getLiveNavPreview()`
+3. frontend status consumption
+   - `status.nav.sharePrice`
+   - custom withdraw estimate source
 
-- `EpochTrancheVault` is still deployed on Amoy but superseded by `ClosedBookBatchVault`
-- New deployments should use `ClosedBookBatchVault`
-- Migration from old contracts requires full withdrawal and redeposit
-- Carry mechanics from EpochTrancheVault are NOT present in ClosedBookBatchVault
+### 10.2 When Debugging Missing Shares
 
-### 10.3 Deprecated Endpoints
+First determine which state the deposit is in:
 
-The following endpoints return explicit 410 Gone errors:
+- queued: still in `queuedDepositAssets`
+- minted: already converted into ERC20 shares during processing
 
-```
-POST /api/vaults/:vaultId/legacy-claim -> Use POST /api/vaults/:vaultId/requests/:requestId/claim
-GET /api/vaults/:vaultId/legacy-status -> Use GET /api/vaults/:vaultId/redemptions
-```
+For the updated contract version, queued deposits should not enter a separate manual claim state.
 
----
+### 10.3 When Adding New Vault UX
 
-## 11) Operational Runbook (Closed-Book Lifecycle)
+Never build custom-vault UX from assumptions copied from:
 
-### 11.1 Batch Lifecycle Procedures
+- legacy ERC-4626 instant mint flows
+- `ClosedBookBatchVault`
+- `EpochTrancheVault`
 
-#### Phase 1: Pre-Cutoff Preparation
-
-**Checklist before cutoff:**
-
-1. **Verify NAV freshness** (< 6 hours old):
-
-   ```bash
-   curl http://localhost:3001/api/vaults/1/nav-status
-   ```
-
-2. **Review pending redemption requests**:
-
-   ```bash
-   curl http://localhost:3001/api/vaults/1/redemptions
-   ```
-
-3. **Review deposit queue**:
-   ```bash
-   curl http://localhost:3001/api/vaults/1/deposit-queue
-   ```
-
-#### Phase 2: Cutoff Batch
-
-**Trigger cutoff (SNAPSHOT_ROLE):**
-
-```bash
-curl -X POST http://localhost:3001/api/vaults/1/cycles/current/cutoff \
-  -H "Content-Type: application/json"
-```
-
-**Cutoff effects:**
-
-- Deposits now queue for next batch
-- Redemptions frozen in place
-
-**Verification:**
-
-```bash
-curl http://localhost:3001/api/vaults/1/cycles/current
-# Check status: 'Cutoff'
-```
-
-#### Phase 3: Flatten Batch
-
-**Trigger flatten (SNAPSHOT_ROLE):**
-
-```bash
-curl -X POST http://localhost:3001/api/vaults/1/cycles/current/flatten \
-  -H "Content-Type: application/json" \
-  -d '{"snapshotHash": "0x..."}'
-```
-
-**Flatten effects:**
-
-- NAV locked at snapshot time
-- Clearing price locked
-- Next batch created
-- Deposit queue can now be processed
-
-#### Phase 4: Process Deposits
-
-**Execute deposit processing (DEPOSIT_PROCESSOR_ROLE):**
-
-```bash
-curl -X POST http://localhost:3001/api/vaults/1/cycles/current/process-deposits \
-  -H "Content-Type: application/json" \
-  -d '{
-    "startIndex": 0,
-    "endIndex": 100
-  }'
-```
-
-#### Phase 5: Settle Batch
-
-**Execute settlement (SETTLER_ROLE):**
-
-```bash
-curl -X POST http://localhost:3001/api/vaults/1/cycles/current/settle \
-  -H "Content-Type: application/json" \
-  -d '{
-    "availableAssets": "1000000000"
-  }'
-```
-
-**Settlement effects:**
-
-- Shares escrowed for redemption burned
-- Claimable assets calculated
-- Pro-rata ratio applied if needed
-
-#### Phase 6: User Claims
-
-**View claimable amounts:**
-
-```bash
-curl http://localhost:3001/api/vaults/1/redemptions
-# Check 'claimableNow'
-```
-
-#### Phase 7: Close Batch
-
-**Trigger close (SETTLER_ROLE):**
-
-```bash
-curl -X POST http://localhost:3001/api/vaults/1/cycles/current/close
-```
-
-#### Phase 8: Reopen
-
-**Trigger reopen (SETTLER_ROLE):**
-
-```bash
-curl -X POST http://localhost:3001/api/vaults/1/cycles/reopen
-```
+Always verify against `FlatBookVaultV2.sol` first.
 
 ---
 
-## 12) Current Deployment Gap (IMPORTANT)
+## 11) Checklist For Future Agents
 
-### 12.1 The Problem
+Before changing vault code, verify all of the following:
 
-The codebase targets `ClosedBookBatchVault`, but Amoy still runs `EpochTrancheVault`:
-
-- **Amoy Deployment:** `0x8D87Cc370e3751d5bBDBaE702e6618D59D950b2D` (EpochTrancheVault)
-- **Codebase Target:** ClosedBookBatchVault
-- **Gap:** New contract deployment required
-
-### 12.2 Affected Endpoints
-
-| Endpoint              | Status on Current Amoy          | Works After Cutover |
-| --------------------- | ------------------------------- | ------------------- |
-| `/cycles/current`     | **BROKEN** - function not found | Yes                 |
-| `/cycles/:id/flatten` | **BROKEN** - function not found | Yes                 |
-| `/cycles/:id/settle`  | **BROKEN** - signature mismatch | Yes                 |
-| `/epochs/current`     | Working (legacy)                | Removed             |
-| Deposit queue         | Working                         | Yes                 |
-| Redemption requests   | Partial                         | Yes                 |
-
-### 12.3 QA Finding
-
-Integrated QA confirmed `/cycles/current` fails against current Amoy deployment with:
-
-```
-Error: contract function not found: currentBatchId()
-```
-
-This is expected - the legacy contract uses `currentEpochId()` instead.
-
-### 12.4 Operator Action
-
-**Until cutover:**
-
-- Use legacy `/epochs/*` endpoints
-- Follow EpochTrancheVault procedures
-- Reference legacy documentation in operator-runbook-amoy.md Appendix C
-
-**After cutover:**
-
-- Update contract address in config
-- Switch to `/cycles/*` endpoints
-- Follow procedures in this document
+- [ ] Is this vault path using `flatBookVaultV2` semantics?
+- [ ] Am I treating queued deposits as auto-minted during processing for the updated contract version?
+- [ ] Am I pricing from liability-adjusted NAV rather than raw `totalAssets / totalSupply`?
+- [ ] Am I normalizing addresses for DB lookups and projections?
+- [ ] If I changed deposit or withdraw math, did I verify the result against on-chain state and backend live preview?
+- [ ] If I changed deposit or withdrawal queue UI, does it match the actual on-chain claim/mint path rather than a legacy DB-only flow?
 
 ---
 
-## 13) Change Checklist
-
-Before coding:
-
-- [ ] Read this file
-- [ ] Open vault1 config, provider factory, and route files
-- [ ] Confirm change targets ClosedBookBatchVault flow
-- [ ] Check current deployment state (legacy vs new)
-
-During coding:
-
-- [ ] Keep vault config, provider config, API response shapes, and frontend hooks in sync
-- [ ] Update contract ABI in `customVaultClient.ts` if adding new functions
-- [ ] Add error mapping for new contract errors
-- [ ] Test both happy path and error cases
-- [ ] Account for deployment gap if working with current Amoy
-
-After coding:
-
-- [ ] Run `pnpm --filter vault-api build`
-- [ ] Run `pnpm --filter vault-web build`
-- [ ] For contracts: `forge build` and `forge test` in `contracts/`
-- [ ] Verify endpoint paths used by frontend match mounted backend routes
-- [ ] Update deployment gap documentation if state changed
-
----
-
-## 14) Quick Commands
-
-**Backend build:**
-
-```bash
-pnpm --filter vault-api build
-```
-
-**Frontend build:**
-
-```bash
-pnpm --filter vault-web build
-```
-
-**Contracts build:**
-
-```bash
-cd contracts
-forge build
-```
-
-**Contracts test:**
-
-```bash
-cd contracts
-forge test
-```
-
-**Full build:**
-
-```bash
-pnpm build
-```
-
----
-
-## 15) Architecture Diagram
-
-```
-                                    User
-                                     |
-                                     v
-                            +--------+--------+
-                            |   vault-web     |
-                            |  (Next.js)      |
-                            +--------+--------+
-                                     |
-                                     | HTTP / API
-                                     v
-                            +--------+--------+
-                            |   vault-api     |
-                            |  (Express)      |
-                            +--------+--------+
-                                     |
-                    +----------------+----------------+
-                    |                                 |
-                    v                                 v
-        +---------------------+           +---------------------+
-        |  CustomVaultProvider|           |  Entitlement Repo   |
-        |  (reads contract)   |           |  (tracks state)     |
-        +----------+----------+           +---------------------+
-                   |
-                   | viem / RPC
-                   v
-        +---------------------+
-        | ClosedBookBatchVault|
-        | (Polygon Mainnet)   |
-        +---------------------+
-```
-
----
-
-_Last updated: March 2026 - ClosedBookBatchVault migration in progress_
+_Last updated: March 2026 - FlatBookVaultV2 request-anytime queued redeems and auto-mint queued deposit behavior documented._

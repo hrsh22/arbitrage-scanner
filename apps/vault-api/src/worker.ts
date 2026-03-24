@@ -149,149 +149,187 @@ async function runReconciliationForVault(vaultId: number): Promise<void> {
     return;
   }
 
-  const oracle = vaultNavOracles.get(vaultId);
-  let flatBookLifecycleDecision:
-    | Awaited<ReturnType<(typeof manager)["evaluateFlatBookLifecycle"]>>
-    | undefined;
+  reconciliationInFlight.add(vaultId);
 
-  const isFlatBookLifecycleVault = true;
+  try {
+    const oracle = vaultNavOracles.get(vaultId);
+    let flatBookLifecycleDecision:
+      | Awaited<ReturnType<(typeof manager)["evaluateFlatBookLifecycle"]>>
+      | undefined;
 
-  if (isFlatBookLifecycleVault) {
-    try {
-      const lifecycleDecision = await manager.evaluateFlatBookLifecycle();
-      flatBookLifecycleDecision = lifecycleDecision;
+    const isFlatBookLifecycleVault = true;
 
-      if (lifecycleDecision.riskState === "unknown") {
-        logger.warn(
-          "CapitalWorker [Lifecycle]: Flatness telemetry unavailable, skipping transitions",
-          {
-            vaultId,
-            batchStatus: lifecycleDecision.batchStatus,
-            reason: lifecycleDecision.reason,
-            blockingConditions: lifecycleDecision.flatnessCheck?.blockingConditions,
-          },
-        );
-        return;
-      }
+    if (isFlatBookLifecycleVault) {
+      try {
+        let lifecycleDecision = await manager.evaluateFlatBookLifecycle();
+        flatBookLifecycleDecision = lifecycleDecision;
 
-      if (lifecycleDecision.riskState === "risk_on") {
-        if (lifecycleDecision.action === "close_book") {
-          const closeResult = await manager.closeBook();
-          if (!closeResult.success) {
-            logger.error("CapitalWorker [Lifecycle]: Failed to close book on risk-on signal", {
+        if (lifecycleDecision.riskState === "unknown") {
+          logger.warn(
+            "CapitalWorker [Lifecycle]: Flatness telemetry unavailable, skipping transitions",
+            {
               vaultId,
-              error: closeResult.error,
-              txHash: closeResult.txHash,
+              batchStatus: lifecycleDecision.batchStatus,
+              reason: lifecycleDecision.reason,
+              blockingConditions: lifecycleDecision.flatnessCheck?.blockingConditions,
+            },
+          );
+          return;
+        }
+
+        if (lifecycleDecision.riskState === "risk_on") {
+          if (lifecycleDecision.action === "close_book") {
+            const closeResult = await manager.closeBook();
+            if (!closeResult.success) {
+              logger.error("CapitalWorker [Lifecycle]: Failed to close book on risk-on signal", {
+                vaultId,
+                error: closeResult.error,
+                txHash: closeResult.txHash,
+              });
+            }
+          }
+          return;
+        }
+
+        if (lifecycleDecision.action === "process_queue") {
+          const navReady = await runNavRefreshForVault(vaultId);
+          if (!navReady) {
+            logger.warn(
+              "CapitalWorker [Lifecycle]: Skipping queue processing because NAV refresh failed",
+              { vaultId },
+            );
+            return;
+          }
+          const processResult = await manager.processQueue();
+          if (!processResult.success) {
+            logger.error("CapitalWorker [Lifecycle]: Queue processing failed", {
+              vaultId,
+              error: processResult.error,
+              txHash: processResult.txHash,
             });
+            return;
+          }
+
+          const postSettlementNavReady = await runNavRefreshForVault(vaultId);
+          if (!postSettlementNavReady) {
+            logger.warn(
+              "CapitalWorker [Lifecycle]: Post-settlement NAV refresh failed; deferring readiness to the next pass",
+              { vaultId },
+            );
+            return;
+          }
+
+          try {
+            lifecycleDecision = await manager.evaluateFlatBookLifecycle();
+            flatBookLifecycleDecision = lifecycleDecision;
+          } catch (error) {
+            logger.warn(
+              "CapitalWorker [Lifecycle]: Failed to refresh lifecycle state after queue processing",
+              {
+                vaultId,
+                error: (error as Error).message,
+              },
+            );
+            return;
+          }
+
+          if (lifecycleDecision.riskState !== "flat" || lifecycleDecision.action !== "none") {
+            logger.warn(
+              "CapitalWorker [Lifecycle]: Queue processing changed lifecycle state; deferring further actions to the next pass",
+              {
+                vaultId,
+                riskState: lifecycleDecision.riskState,
+                action: lifecycleDecision.action,
+                batchStatus: lifecycleDecision.batchStatus,
+                reason: lifecycleDecision.reason,
+              },
+            );
+            return;
           }
         }
-        return;
-      }
 
-      if (lifecycleDecision.action === "process_queue") {
-        const navReady = await runNavRefreshForVault(vaultId);
-        if (!navReady) {
-          logger.warn(
-            "CapitalWorker [Lifecycle]: Skipping queue processing because NAV refresh failed",
-            { vaultId },
-          );
-          return;
-        }
-        const processResult = await manager.processQueue();
-        if (!processResult.success) {
-          logger.error("CapitalWorker [Lifecycle]: Queue processing failed", {
-            vaultId,
-            error: processResult.error,
-            txHash: processResult.txHash,
-          });
-        }
-        return;
-      }
-
-      if (lifecycleDecision.action === "reopen_idle_cycle") {
-        const navReady = await runNavRefreshForVault(vaultId);
-        if (!navReady) {
-          logger.warn(
-            "CapitalWorker [Lifecycle]: Skipping idle reopen because NAV refresh failed",
-            { vaultId },
-          );
-          return;
-        }
-        const reopenResult = await manager.reopenIdleCycle();
-        if (!reopenResult.success) {
-          logger.error("CapitalWorker [Lifecycle]: Idle cycle reopen failed", {
-            vaultId,
-            error: reopenResult.error,
-            txHash: reopenResult.txHash,
-          });
-        }
-        return;
-      }
-    } catch (error) {
-      logger.warn("CapitalWorker [Lifecycle]: Flat-book lifecycle evaluation failed", {
-        vaultId,
-        error: (error as Error).message,
-      });
-      return;
-    }
-  }
-
-  if (oracle) {
-    try {
-      let health = await oracle.getNavHealth();
-      if (health.stale) {
-        if (
-          flatBookLifecycleDecision?.riskState === "flat" &&
-          flatBookLifecycleDecision.action === "none"
-        ) {
-          logger.info(
-            "CapitalWorker [Liquidity]: NAV is stale for flat/open vault; continuing with idle capital reconciliation",
-            {
-              vaultId,
-              secondsSinceUpdate: health.secondsSinceUpdate,
-              thresholdSeconds: health.thresholdSeconds,
-            },
-          );
-        } else {
-          logger.warn(
-            "CapitalWorker [Liquidity]: NAV stale, attempting refresh before reconciliation",
-            {
-              vaultId,
-              secondsSinceUpdate: health.secondsSinceUpdate,
-              thresholdSeconds: health.thresholdSeconds,
-            },
-          );
-
-          await runNavRefreshForVault(vaultId);
-          health = await oracle.getNavHealth();
-
-          if (health.stale) {
+        if (lifecycleDecision.action === "reopen_idle_cycle") {
+          const navReady = await runNavRefreshForVault(vaultId);
+          if (!navReady) {
             logger.warn(
-              "CapitalWorker [Liquidity]: Skipping reconciliation while NAV remains stale",
+              "CapitalWorker [Lifecycle]: Skipping idle reopen because NAV refresh failed",
+              { vaultId },
+            );
+            return;
+          }
+          const reopenResult = await manager.reopenIdleCycle();
+          if (!reopenResult.success) {
+            logger.error("CapitalWorker [Lifecycle]: Idle cycle reopen failed", {
+              vaultId,
+              error: reopenResult.error,
+              txHash: reopenResult.txHash,
+            });
+          }
+          return;
+        }
+      } catch (error) {
+        logger.warn("CapitalWorker [Lifecycle]: Flat-book lifecycle evaluation failed", {
+          vaultId,
+          error: (error as Error).message,
+        });
+        return;
+      }
+    }
+
+    if (oracle) {
+      try {
+        let health = await oracle.getNavHealth();
+        if (health.stale) {
+          if (
+            flatBookLifecycleDecision?.riskState === "flat" &&
+            flatBookLifecycleDecision.action === "none"
+          ) {
+            logger.info(
+              "CapitalWorker [Liquidity]: NAV is stale for flat/open vault; continuing with idle capital reconciliation",
               {
                 vaultId,
                 secondsSinceUpdate: health.secondsSinceUpdate,
                 thresholdSeconds: health.thresholdSeconds,
               },
             );
-            return;
+          } else {
+            logger.warn(
+              "CapitalWorker [Liquidity]: NAV stale, attempting refresh before reconciliation",
+              {
+                vaultId,
+                secondsSinceUpdate: health.secondsSinceUpdate,
+                thresholdSeconds: health.thresholdSeconds,
+              },
+            );
+
+            await runNavRefreshForVault(vaultId);
+            health = await oracle.getNavHealth();
+
+            if (health.stale) {
+              logger.warn(
+                "CapitalWorker [Liquidity]: Skipping reconciliation while NAV remains stale",
+                {
+                  vaultId,
+                  secondsSinceUpdate: health.secondsSinceUpdate,
+                  thresholdSeconds: health.thresholdSeconds,
+                },
+              );
+              return;
+            }
           }
         }
+      } catch (error) {
+        logger.warn(
+          "CapitalWorker [Liquidity]: Unable to verify NAV health, skipping reconciliation",
+          {
+            vaultId,
+            error: (error as Error).message,
+          },
+        );
+        return;
       }
-    } catch (error) {
-      logger.warn(
-        "CapitalWorker [Liquidity]: Unable to verify NAV health, skipping reconciliation",
-        {
-          vaultId,
-          error: (error as Error).message,
-        },
-      );
-      return;
     }
-  }
 
-  reconciliationInFlight.add(vaultId);
-  try {
     const result = await manager.runReconciliation();
 
     if (result.action !== "none") {

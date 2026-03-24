@@ -170,6 +170,17 @@ export const VAULT_ABI = [
     stateMutability: "nonpayable",
     type: "function",
   },
+  {
+    inputs: [
+      { name: "assets", type: "uint256" },
+      { name: "receiver", type: "address" },
+      { name: "controller", type: "address" },
+    ],
+    name: "deposit",
+    outputs: [{ name: "shares", type: "uint256" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
   // Withdraw: burn shares, send assets to receiver
   {
     inputs: [

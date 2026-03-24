@@ -4,8 +4,8 @@ import { useState, useEffect } from "react";
 import { Button } from "@workspace/ui/components/button";
 import { Badge } from "@workspace/ui/components/badge";
 import { Skeleton } from "@workspace/ui/components/skeleton";
-import { Alert, AlertDescription } from "@workspace/ui/components/alert";
-import { CheckCircle2, Wallet, Hash, Info, Clock, Percent } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@workspace/ui/components/tooltip";
+import { CheckCircle2, Wallet, Hash, Clock, Percent, CircleHelp } from "lucide-react";
 import { useAppKitAccount } from "@reown/appkit/react";
 import { parseUnits } from "viem";
 import type { RedemptionRequest } from "../../../../src/types";
@@ -110,8 +110,6 @@ function ClaimableRequestCard({
 
   // Corrected lifecycle checks per API contract
   const claimableNow = Number(request.claimableAssetsFormatted) || 0;
-  const meetsThreshold = claimableNow >= 1.0; // 1 USDC threshold
-  const dustOverrideEligible = claimableNow > 0 && claimableNow < 1.0;
   const canClaim = request.status === "claimable" && claimableNow > 0;
   const isClaiming = isProcessing || isPending || isConfirming;
 
@@ -173,10 +171,11 @@ function ClaimableRequestCard({
       </div>
 
       {request.requestKind === "controller_claimable" && (
-        <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/10 p-2">
-          <p className="text-xs leading-6 text-cyan-50/90">
-            This vault exposes one aggregated claimable balance per wallet. The dollar amount shown
-            here is not tied to a single request row.
+        <div className="flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 p-2.5 text-xs text-cyan-50/90">
+          <CircleHelp className="h-3.5 w-3.5 text-cyan-200" />
+          <p>
+            This amount is claimable from the vault contract after processing. It does not require a
+            separate safe transfer first.
           </p>
         </div>
       )}
@@ -191,9 +190,8 @@ function ClaimableRequestCard({
           <p className="mt-1 text-xs leading-6 text-amber-50/90">
             {request.proRataPercentage && (
               <>
-                This request was filled at {(request.proRataPercentage * 100).toFixed(1)}% due to
-                insufficient liquidity during settlement. Your claimable amount reflects this final
-                settlement. Full entitlement is realized after settlement completes.
+                This withdrawal was partially filled at{" "}
+                {(request.proRataPercentage * 100).toFixed(1)}% due to limited liquidity.
               </>
             )}
           </p>
@@ -206,14 +204,6 @@ function ClaimableRequestCard({
         </div>
       ) : canClaim ? (
         <div className="space-y-2">
-          {dustOverrideEligible && !meetsThreshold && (
-            <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 p-2">
-              <p className="text-xs leading-6 text-amber-50/90">
-                <span className="font-medium">Dust amount:</span> This claim is below the 1 USDC
-                minimum threshold.
-              </p>
-            </div>
-          )}
           <Button
             type="button"
             onClick={() => {
@@ -260,7 +250,7 @@ function ClaimableRequestCard({
         >
           <Clock className="h-4 w-4 text-slate-400" aria-hidden="true" />
           <span className="text-sm text-slate-300">
-            Waiting for settlement to finish and release claimable USDC...
+            Processing — the worker is preparing your on-chain claimable balance.
           </span>
         </div>
       )}
@@ -278,11 +268,13 @@ export function ClaimableRequests({
 
   // Calculate totals
   const totalClaimable = requests
-    .filter((r) => r.status === "claimable")
+    .filter((r) => r.status === "claimable" && (Number(r.claimableAssetsFormatted) || 0) > 0)
     .reduce((sum, r) => sum + (Number(r.claimableAssetsFormatted) || 0), 0);
 
   const claimedCount = requests.filter((r) => r.status === "claimed").length;
-  const claimableCount = requests.filter((r) => r.status === "claimable").length;
+  const claimableCount = requests.filter(
+    (r) => r.status === "claimable" && (Number(r.claimableAssetsFormatted) || 0) > 0,
+  ).length;
 
   if (isLoading) {
     return (
@@ -302,7 +294,7 @@ export function ClaimableRequests({
         <Wallet className="mb-3 h-8 w-8 text-slate-500" aria-hidden="true" />
         <p className="text-sm font-medium text-white">Nothing ready to claim</p>
         <p className="mt-1 max-w-xs text-xs leading-6 text-slate-400">
-          Completed settlements will appear here once USDC is ready for pickup.
+          Completed withdrawals will appear here.
         </p>
       </div>
     );
@@ -310,21 +302,30 @@ export function ClaimableRequests({
 
   return (
     <div className="space-y-4" data-testid="claimable-requests">
-      <div className="flex items-center justify-between">
-        <span className="text-sm text-slate-400">Ready to claim</span>
+      <div className="flex items-center justify-between text-sm text-slate-400">
+        <span>Claimable now: ${totalClaimable.toFixed(2)}</span>
         <div className="flex items-center gap-2">
           {claimableCount > 0 && (
             <Badge
               variant="secondary"
               className="border border-emerald-400/25 bg-emerald-400/12 text-emerald-100"
             >
-              {claimableCount} claimable
+              {claimableCount} ready
             </Badge>
           )}
           {claimedCount > 0 && (
-            <Badge variant="outline" className="border-white/10 text-slate-300">
-              {claimedCount} claimed
-            </Badge>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div>
+                  <Badge variant="outline" className="border-white/10 text-slate-300">
+                    {claimedCount} claimed
+                  </Badge>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent side="left" className="bg-slate-100 text-slate-900">
+                Recently claimed — will update shortly.
+              </TooltipContent>
+            </Tooltip>
           )}
         </div>
       </div>
@@ -355,14 +356,6 @@ export function ClaimableRequests({
           />
         ))}
       </div>
-
-      <Alert className="border-cyan-400/20 bg-cyan-400/10">
-        <Info className="h-4 w-4 text-cyan-200" aria-hidden="true" />
-        <AlertDescription className="text-xs leading-6 text-cyan-50/90">
-          <span className="font-medium">Claim flow:</span> once a cycle finishes settlement, the
-          request keeps its settled cycle assignment and can be claimed on-chain at any time.
-        </AlertDescription>
-      </Alert>
     </div>
   );
 }

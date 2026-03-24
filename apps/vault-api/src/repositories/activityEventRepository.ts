@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { logger } from "../logger.js";
 import { userVaultActivityEvents, vaultLifecycleEvents } from "../db/schema.js";
 
@@ -38,6 +38,14 @@ interface UserVaultActivityEventInput {
 async function getDb() {
   const { db } = await import("../db/index.js");
   return db;
+}
+
+function normalizeAddress(value: string): string {
+  return value.toLowerCase();
+}
+
+function eqLower(column: { name?: string }, value: string) {
+  return sql`lower(${column}) = ${normalizeAddress(value)}`;
 }
 
 class ActivityEventRepository {
@@ -152,11 +160,35 @@ class ActivityEventRepository {
       return await db
         .select()
         .from(userVaultActivityEvents)
-        .where(eq(userVaultActivityEvents.vaultAddress, vaultAddress))
+        .where(eqLower(userVaultActivityEvents.vaultAddress, vaultAddress))
         .orderBy(desc(userVaultActivityEvents.occurredAt))
         .limit(limit);
     } catch (error) {
       logger.warn("ActivityEventRepository: Failed to read vault user activity events", {
+        vaultAddress,
+        error: (error as Error).message,
+      });
+      return [];
+    }
+  }
+
+  async listDepositActivityAddresses(vaultAddress: string): Promise<string[]> {
+    try {
+      const db = await getDb();
+      const rows = await db
+        .select({ userAddress: userVaultActivityEvents.userAddress })
+        .from(userVaultActivityEvents)
+        .where(
+          and(
+            eqLower(userVaultActivityEvents.vaultAddress, vaultAddress),
+            sql`${userVaultActivityEvents.eventType} in ('deposit_queued', 'deposit_processed', 'deposit_minted')`,
+          ),
+        )
+        .orderBy(desc(userVaultActivityEvents.occurredAt));
+
+      return [...new Set(rows.map((row) => row.userAddress.toLowerCase()))];
+    } catch (error) {
+      logger.warn("ActivityEventRepository: Failed to list deposit activity addresses", {
         vaultAddress,
         error: (error as Error).message,
       });

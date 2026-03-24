@@ -74,6 +74,14 @@ vi.mock("../repositories/activityEventRepository.js", () => ({
   },
 }));
 
+vi.mock("../repositories/flatBookStateRepository.js", () => ({
+  flatBookStateRepository: {
+    recordQueuedDeposit: vi.fn().mockResolvedValue(undefined),
+    upsertCycle: vi.fn().mockResolvedValue(undefined),
+    getQueueParticipant: vi.fn().mockResolvedValue(null),
+  },
+}));
+
 vi.mock("../repositories/withdrawalRepository.js", () => ({
   withdrawalRepository: {
     getRequestsByUser: mockGetRequestsByUser,
@@ -140,6 +148,12 @@ describe("Custom Vault Routes", () => {
       getDepositRequest: vi.fn().mockResolvedValue(null),
       getControllerRequestIds: vi.fn().mockResolvedValue([]),
       getRedemptionRequest: vi.fn().mockResolvedValue(null),
+      getControllerDepositState: vi.fn().mockResolvedValue({
+        currentCycle: 10n,
+        queuedAssets: 0n,
+        claimableAssets: 0n,
+        claimableShares: 0n,
+      }),
       isOperator: vi.fn().mockResolvedValue(false),
     };
 
@@ -436,7 +450,7 @@ describe("Custom Vault Routes", () => {
     expect(res.payload).toMatchObject({ success: true });
   });
 
-  it("records queued deposit activity with inferred next cycle id", async () => {
+  it("records queued deposit activity with inferred current cycle id", async () => {
     const handler = getRouteHandler("/:vaultId/activity/deposit", "post");
     const req = {
       params: { vaultId: "1" },
@@ -455,7 +469,7 @@ describe("Custom Vault Routes", () => {
     expect(mockAppendUserVaultActivityEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "deposit_queued",
-        cycleId: 11,
+        cycleId: 10,
         status: "queued",
         assetAmount: "2.500000",
       }),

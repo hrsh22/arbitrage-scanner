@@ -91,6 +91,89 @@ contract FlatBookVaultV2Test is Test {
         assertEq(vault.pendingRedeemRequest(0, user1), 10_000 * 1e6);
     }
 
+    function testOpenStateCanQueueRedeemRequest() public {
+        uint256 assets = 100_000 * 1e6;
+        uint256 queuedRedeem = 25_000 * 1e6;
+
+        vm.startPrank(user1);
+        asset.approve(address(vault), assets);
+        vault.deposit(assets, user1);
+        vault.approve(address(vault), queuedRedeem);
+        vault.requestRedeem(queuedRedeem, user1, user1);
+        vm.stopPrank();
+
+        assertEq(vault.pendingRedeemRequest(0, user1), queuedRedeem);
+        assertEq(vault.balanceOf(user1), assets - queuedRedeem);
+        assertEq(vault.balanceOf(address(vault)), queuedRedeem);
+        (, , uint256 totalQueuedRedeemAssets,,,,,,,) = vault.cycles(0);
+        assertEq(totalQueuedRedeemAssets, queuedRedeem);
+    }
+
+    function testOpenStateCanCancelQueuedRedeemBeforeProcessing() public {
+        uint256 assets = 100_000 * 1e6;
+        uint256 queuedRedeem = 25_000 * 1e6;
+
+        vm.startPrank(user1);
+        asset.approve(address(vault), assets);
+        vault.deposit(assets, user1);
+        vault.approve(address(vault), queuedRedeem);
+        vault.requestRedeem(queuedRedeem, user1, user1);
+        uint256 returnedShares = vault.cancelQueuedRedeem();
+        vm.stopPrank();
+
+        assertEq(returnedShares, queuedRedeem);
+        assertEq(vault.pendingRedeemRequest(0, user1), 0);
+        assertEq(vault.balanceOf(user1), assets);
+        assertEq(vault.balanceOf(address(vault)), 0);
+        (, , uint256 totalQueuedRedeemAssets,,,,,,,) = vault.cycles(0);
+        assertEq(totalQueuedRedeemAssets, 0);
+    }
+
+    function testCancelQueuedRedeemUsesOriginalReservedAssetsNotCurrentNav() public {
+        uint256 assets = 100_000 * 1e6;
+        uint256 queuedRedeem = 25_000 * 1e6;
+
+        vm.startPrank(user1);
+        asset.approve(address(vault), assets);
+        vault.deposit(assets, user1);
+        vault.approve(address(vault), queuedRedeem);
+        vault.requestRedeem(queuedRedeem, user1, user1);
+        vm.stopPrank();
+
+        vm.prank(navUpdater);
+        vault.updateNAV(2e18);
+
+        vm.prank(user1);
+        vault.cancelQueuedRedeem();
+
+        (, , uint256 totalQueuedRedeemAssets,,,,,,,) = vault.cycles(0);
+        assertEq(totalQueuedRedeemAssets, 0);
+    }
+
+    function testQueuedOpenRedeemReducesAllocatableAssets() public {
+        uint256 assets = 100_000 * 1e6;
+        uint256 queuedRedeem = 25_000 * 1e6;
+
+        vm.startPrank(user1);
+        asset.approve(address(vault), assets);
+        vault.deposit(assets, user1);
+        vault.approve(address(vault), queuedRedeem);
+        vault.requestRedeem(queuedRedeem, user1, user1);
+        vm.stopPrank();
+
+        assertEq(vault.maxAllocatableAssets(), assets - queuedRedeem);
+
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                FlatBookVaultV2.AllocationExceedsAvailable.selector,
+                assets - queuedRedeem + 1,
+                assets - queuedRedeem
+            )
+        );
+        vault.allocateToTradingWallet(assets - queuedRedeem + 1);
+    }
+
     function testClosedQueuesThenProcessingCreatesClaimables() public {
         uint256 user1Deposit = 400_000 * 1e6;
         uint256 user2DepositQueue = 120_000 * 1e6;
@@ -132,7 +215,8 @@ contract FlatBookVaultV2Test is Test {
         assertEq(vault.pendingDepositRequest(0, user2), 0);
         assertEq(vault.pendingRedeemRequest(0, user1), 0);
 
-        assertEq(vault.claimableDepositRequest(0, user2), user2DepositQueue);
+        assertEq(vault.claimableDepositRequest(0, user2), 0);
+        assertEq(vault.balanceOf(user2), 60_000 * 1e6);
         assertEq(vault.claimableRedeemRequest(0, user1), user1RedeemQueue);
     }
 
@@ -177,10 +261,9 @@ contract FlatBookVaultV2Test is Test {
         assertEq(claimedAssets, 90_000 * 1e6);
         assertEq(asset.balanceOf(user1) - user1AssetsBefore, 90_000 * 1e6);
 
-        vm.prank(user2);
-        uint256 claimedShares = vault.deposit(user2QueuedDeposit, user2, user2);
-        assertEq(claimedShares, 60_000 * 1e6);
         assertEq(vault.balanceOf(user2), 60_000 * 1e6);
+        assertEq(vault.claimableDepositRequest(0, user2), 0);
+        assertEq(vault.claimableDepositSharesByController(user2), 0);
     }
 
     function testCannotCancelAfterProcessingStarts() public {
@@ -370,7 +453,8 @@ contract FlatBookVaultV2Test is Test {
 
         assertEq(vault.pendingDepositRequest(0, user2), 0);
         assertEq(vault.pendingRedeemRequest(0, user1), 0);
-        assertEq(vault.claimableDepositRequest(0, user2), user2QueuedDeposit);
+        assertEq(vault.claimableDepositRequest(0, user2), 0);
+        assertEq(vault.balanceOf(user2), 60_000 * 1e6);
         assertEq(vault.claimableRedeemRequest(0, user1), user1QueuedRedeem);
         assertEq(vault.currentCycleId(), 1);
 
@@ -387,7 +471,8 @@ contract FlatBookVaultV2Test is Test {
         vault.reopenIdleCycle();
 
         assertEq(vault.currentCycleId(), 2);
-        assertEq(vault.claimableDepositRequest(0, user2), user2QueuedDeposit);
+        assertEq(vault.claimableDepositRequest(0, user2), 0);
+        assertEq(vault.balanceOf(user2), 60_000 * 1e6);
         assertEq(vault.claimableRedeemRequest(0, user1), user1QueuedRedeem);
     }
 }

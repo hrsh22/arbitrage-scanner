@@ -35,6 +35,7 @@ import { createLiquidityManager } from "./liquidityManager.js";
 import type { FlatBookLifecycleDecision } from "./liquidityManager.js";
 import { SafeWalletService } from "./safeWallet.js";
 import { activityEventRepository } from "../repositories/activityEventRepository.js";
+import { flatBookStateRepository } from "../repositories/flatBookStateRepository.js";
 import { withdrawalRepository } from "../repositories/withdrawalRepository.js";
 
 // Default NAV staleness threshold: 6 hours in seconds
@@ -873,7 +874,56 @@ export class CustomVaultProvider implements IVaultProvider {
         txHash: reopenResult.txHash,
       });
 
+      await this.syncCycleProjection(targetBatchId, "processed", {
+        processedAt: new Date(),
+      });
+      await this.syncCycleProjection(targetBatchId + 1, "open", {
+        openedAt: new Date(),
+      });
+      await flatBookStateRepository.recordProcessingEvent({
+        vaultAddress: this.config.vaultAddress,
+        cycleId: targetBatchId,
+        eventType: "finalize_processing",
+        txHash: reopenResult.txHash,
+      });
+
       return { success: true, txHash: reopenResult.txHash };
+    };
+
+    const ensureRedeemLiquidityForProcessing = async (
+      processingBatch: NonNullable<typeof batch>,
+    ): Promise<{ success: boolean; txHash?: Hex; error?: string }> => {
+      if (processingBatch.totalSharesPending <= 0n) {
+        return { success: true };
+      }
+
+      const assetAddress = await this.client.getAsset();
+      const [navStatus, reservedRedemptionAssets, safeBalance, vaultBalance] = await Promise.all([
+        this.client.getNAVStatus(),
+        this.client.getReservedRedemptionAssets(),
+        this.client.getErc20Balance(assetAddress, this.vaultConfig.safeAddress as Address),
+        this.client.getErc20Balance(assetAddress, this.config.vaultAddress),
+      ]);
+
+      const requiredRedeemAssets =
+        (processingBatch.totalSharesPending * navStatus.currentNAV) / 10n ** 18n;
+      const requiredVaultBalance = requiredRedeemAssets + reservedRedemptionAssets;
+
+      if (vaultBalance >= requiredVaultBalance) {
+        return { success: true };
+      }
+
+      const recallResult = await this.recallWithdrawalLiquidityOnDemand({
+        vaultUsdcBalance: vaultBalance,
+        safeUsdcBalance: safeBalance,
+        requiredAssets: requiredVaultBalance,
+      });
+
+      return {
+        success: recallResult.success,
+        txHash: recallResult.txHash,
+        error: recallResult.error,
+      };
     };
 
     if (batch.status === "settled" || batch.status === "closed") {
@@ -881,6 +931,19 @@ export class CustomVaultProvider implements IVaultProvider {
         batchId: targetBatchId,
         status: batch.status,
       });
+
+      await this.syncCycleProjection(targetBatchId, "processed", {
+        processedAt: new Date(),
+      });
+      await this.syncProcessedDeposits(targetBatchId, new Date());
+
+      const currentBatchId = Number(await this.client.getCurrentBatch());
+      if (currentBatchId > targetBatchId) {
+        await this.syncCycleProjection(currentBatchId, "open", {
+          openedAt: new Date(),
+        });
+      }
+
       return {
         success: true,
         batchId: targetBatchId,
@@ -911,6 +974,19 @@ export class CustomVaultProvider implements IVaultProvider {
             error: `Flattening blocked: ${canFlattenResult.blockingConditions?.join(", ")}`,
           };
         }
+      }
+
+      const redeemLiquidityResult = await ensureRedeemLiquidityForProcessing(batch);
+      if (!redeemLiquidityResult.success) {
+        return {
+          success: false,
+          txHash: redeemLiquidityResult.txHash,
+          batchId: targetBatchId,
+          requestsSettled: 0,
+          totalShares: 0n,
+          totalAssets: 0n,
+          error: `Failed to fund redeem processing before flattening: ${redeemLiquidityResult.error}`,
+        };
       }
 
       logger.info("CustomVaultProvider: Flattening batch", {
@@ -985,21 +1061,16 @@ export class CustomVaultProvider implements IVaultProvider {
         txHash: flattenTxHash,
       });
 
-      const nextBatch = await this.client.getBatch(BigInt(targetBatchId + 1));
-      if ((nextBatch?.totalQueuedDeposits ?? 0n) > 0n) {
-        const processResult = await this.processCurrentDepositQueue(targetBatchId + 1);
-        if (!processResult.success) {
-          return {
-            success: false,
-            txHash: flattenTxHash,
-            batchId: targetBatchId,
-            requestsSettled: 0,
-            totalShares: 0n,
-            totalAssets: 0n,
-            error: `Failed to process deposit queue for batch ${targetBatchId}: ${processResult.error}`,
-          };
-        }
-      }
+      await this.syncCycleProjection(targetBatchId, "processing", {
+        processingStartedAt: new Date(),
+      });
+
+      await flatBookStateRepository.recordProcessingEvent({
+        vaultAddress: this.config.vaultAddress,
+        cycleId: targetBatchId,
+        eventType: "begin_processing",
+        txHash: flattenTxHash,
+      });
 
       // Refresh batch data
       batch = await this.client.getBatch(BigInt(targetBatchId));
@@ -1073,23 +1144,38 @@ export class CustomVaultProvider implements IVaultProvider {
         };
       }
 
-      logger.info("CustomVaultProvider: Batch settled successfully", {
+      logger.info("CustomVaultProvider: Batch settlement chunk executed", {
         txHash: settleTxHash,
         batchId: targetBatchId,
       });
 
-      void activityEventRepository.appendVaultLifecycleEvent({
-        vaultId: this.config.vaultId,
-        vaultAddress: this.config.vaultAddress,
-        eventType: "processing_completed",
-        title: "Processing completed",
-        detail: "Queued withdrawals finished settlement for the current cycle.",
-        cycleId: targetBatchId,
-        txHash: settleTxHash,
-      });
-
       // Refresh batch data
       batch = await this.client.getBatch(BigInt(targetBatchId));
+      if (!batch) {
+        return {
+          success: false,
+          txHash: settleTxHash,
+          batchId: targetBatchId,
+          requestsSettled: 0,
+          totalShares: 0n,
+          totalAssets: 0n,
+          error: `Batch ${targetBatchId} missing after settlement`,
+        };
+      }
+
+      await this.syncProcessedDeposits(targetBatchId, new Date(), settleTxHash);
+
+      if (batch.status === "settled" || batch.status === "closed") {
+        void activityEventRepository.appendVaultLifecycleEvent({
+          vaultId: this.config.vaultId,
+          vaultAddress: this.config.vaultAddress,
+          eventType: "processing_completed",
+          title: "Processing completed",
+          detail: "Queued withdrawals and deposits finished settlement for the current cycle.",
+          cycleId: targetBatchId,
+          txHash: settleTxHash,
+        });
+      }
     }
 
     // Get final batch data
@@ -1196,6 +1282,16 @@ export class CustomVaultProvider implements IVaultProvider {
       txHash: closeResult.txHash,
     });
 
+    await this.syncCycleProjection(Number(currentBatchId), "closed", {
+      closedAt: new Date(),
+    });
+    await flatBookStateRepository.recordProcessingEvent({
+      vaultAddress: this.config.vaultAddress,
+      cycleId: Number(currentBatchId),
+      eventType: "close_book",
+      txHash: closeResult.txHash,
+    });
+
     return {
       success: true,
       txHash: closeResult.txHash,
@@ -1251,6 +1347,11 @@ export class CustomVaultProvider implements IVaultProvider {
       };
     }
 
+    const currentBatchId = Number(await this.client.getCurrentBatch());
+    await this.syncCycleProjection(currentBatchId, "open", {
+      openedAt: new Date(),
+    });
+
     return {
       success: true,
       txHash: reopenResult.txHash,
@@ -1264,6 +1365,7 @@ export class CustomVaultProvider implements IVaultProvider {
   }): Promise<CapitalRebalanceResult> {
     const queuedAssets = await this.client.getTotalQueuedAssets();
     const reservedRedemptionAssets = await this.client.getReservedRedemptionAssets();
+    const claimableDepositAssets = await this.getOutstandingClaimableDepositAssets();
 
     // CLOSED-BOOK: No previewRedeem - use conservative estimate
     const estimatedPendingRedemptionAssets = 0n;
@@ -1279,7 +1381,8 @@ export class CustomVaultProvider implements IVaultProvider {
       params.pendingWithdrawalLiability,
       estimatedPendingRedemptionAssets,
     ].reduce((max, value) => (value > max ? value : max), 0n);
-    const requiredVaultBalance = queuedAssets + withdrawalLiability + reserveBuffer;
+    const requiredVaultBalance =
+      queuedAssets + claimableDepositAssets + withdrawalLiability + reserveBuffer;
 
     if (!this.vaultConfig.autoLiquidityManagement) {
       return {
@@ -1316,7 +1419,9 @@ export class CustomVaultProvider implements IVaultProvider {
       }
 
       const recallAmount = params.safeUsdcBalance < shortfall ? params.safeUsdcBalance : shortfall;
-      if (recallAmount < minTransferAmount) {
+      const requiresLiabilityRecall =
+        params.pendingWithdrawalLiability > 0n || reservedRedemptionAssets > 0n;
+      if (recallAmount < minTransferAmount && !requiresLiabilityRecall) {
         return {
           success: true,
           action: "none",
@@ -1438,7 +1543,11 @@ export class CustomVaultProvider implements IVaultProvider {
           reservedRedemptionAssets,
           pendingWithdrawalLiability: withdrawalLiability,
           txHash: allocationResult.txHash,
-          details: `Allocated ${Number(allocationAmount) / 10 ** USDC_DECIMALS} USDC from vault to trading wallet.`,
+          details:
+            `Allocated ${Number(allocationAmount) / 10 ** USDC_DECIMALS} USDC from vault to trading wallet.` +
+            (claimableDepositAssets > 0n
+              ? ` Claimable queued deposits reserved: ${Number(claimableDepositAssets) / 10 ** USDC_DECIMALS} USDC.`
+              : ""),
         };
       }
     }
@@ -1531,10 +1640,19 @@ export class CustomVaultProvider implements IVaultProvider {
       };
     }
 
-    const postRecallVaultBalance = await this.client.getErc20Balance(
-      assetAddress,
-      this.config.vaultAddress,
-    );
+    const postRecallVaultBalance = await this.retryWithBackoff(
+      async () => {
+        const balance = await this.client.getErc20Balance(assetAddress, this.config.vaultAddress);
+        if (balance < requiredVaultBalance) {
+          throw new Error(
+            `Vault balance ${balance.toString()} below required ${requiredVaultBalance.toString()} after recall`,
+          );
+        }
+        return balance;
+      },
+      3,
+      500,
+    ).catch(() => 0n);
 
     if (postRecallVaultBalance < requiredVaultBalance) {
       return {
@@ -1811,6 +1929,195 @@ export class CustomVaultProvider implements IVaultProvider {
         "No eligible admin caller found for allocateToTradingWallet. " +
         `Admin signer ${adminAddress ?? "unavailable"} and trading safe ${safeAddress} both lack ADMIN_ROLE or required operator access.`,
     };
+  }
+
+  private async syncCycleProjection(
+    cycleId: number,
+    state: "open" | "closed" | "processing" | "processed",
+    timestamps: {
+      openedAt?: Date;
+      closedAt?: Date;
+      processingStartedAt?: Date;
+      processedAt?: Date;
+    } = {},
+  ): Promise<void> {
+    const [batch, participants] = await Promise.all([
+      this.client.getBatch(BigInt(cycleId)),
+      this.client.getCycleParticipants(BigInt(cycleId)).catch(() => ({
+        depositParticipants: [],
+        redeemParticipants: [],
+      })),
+    ]);
+
+    await flatBookStateRepository.upsertCycle({
+      vaultAddress: this.config.vaultAddress,
+      cycleId,
+      state,
+      lockedNav: batch ? formatUnits(batch.lockedClearingPrice, 18) : undefined,
+      totalQueuedDepositAssets: batch
+        ? formatUnits(batch.totalQueuedDeposits, USDC_DECIMALS)
+        : undefined,
+      totalQueuedRedeemShares: batch
+        ? formatUnits(batch.totalSharesPending, VAULT_SHARE_DECIMALS)
+        : undefined,
+      totalQueuedRedeemAssets:
+        batch?.totalAssetsSnapshot !== undefined
+          ? formatUnits(batch.totalAssetsSnapshot, USDC_DECIMALS)
+          : undefined,
+      queuedDepositParticipants: participants.depositParticipants.length,
+      queuedRedeemParticipants: participants.redeemParticipants.length,
+      ...timestamps,
+    });
+
+    await Promise.all(
+      participants.depositParticipants.map((userAddress) =>
+        flatBookStateRepository.ensureQueueParticipant({
+          vaultAddress: this.config.vaultAddress,
+          cycleId,
+          userAddress,
+          status: "queued",
+        }),
+      ),
+    );
+  }
+
+  private async syncProcessedDeposits(
+    cycleId: number,
+    processedAt: Date,
+    txHash?: Hex,
+  ): Promise<void> {
+    const [batch, cycle, participants] = await Promise.all([
+      this.client.getBatch(BigInt(cycleId)),
+      this.client.getCycleData(BigInt(cycleId)),
+      this.client.getCycleParticipants(BigInt(cycleId)),
+    ]);
+
+    if (!batch || batch.lockedClearingPrice <= 0n) {
+      return;
+    }
+
+    const processedParticipantCount = Math.min(
+      Number(cycle.depositCursor),
+      participants.depositParticipants.length,
+    );
+
+    if (processedParticipantCount === 0) {
+      return;
+    }
+
+    for (const userAddress of participants.depositParticipants.slice(
+      0,
+      processedParticipantCount,
+    )) {
+      const [claimableAssetsRaw, claimableSharesRaw] = await Promise.all([
+        this.client.getClaimableDepositAssets(userAddress),
+        this.client.getClaimableDepositShares(userAddress),
+      ]);
+      const participant = await flatBookStateRepository.getQueueParticipant(
+        this.config.vaultAddress,
+        cycleId,
+        userAddress,
+      );
+
+      if (claimableAssetsRaw <= 0n && claimableSharesRaw <= 0n) {
+        continue;
+      }
+
+      const queuedDepositAssets =
+        participant?.queuedDepositAssets && participant.queuedDepositAssets !== "0"
+          ? participant.queuedDepositAssets
+          : formatUnits(claimableAssetsRaw, USDC_DECIMALS);
+      const processedShares = formatUnits(claimableSharesRaw, VAULT_SHARE_DECIMALS);
+
+      await flatBookStateRepository.markDepositProcessed({
+        vaultAddress: this.config.vaultAddress,
+        cycleId,
+        userAddress,
+        queuedDepositAssets,
+        processedDepositShares: processedShares,
+        processedAt,
+      });
+
+      void activityEventRepository.appendUserVaultActivityEvent({
+        vaultId: this.config.vaultId,
+        vaultAddress: this.config.vaultAddress,
+        userAddress,
+        eventType: "deposit_minted",
+        title: "Deposit minted",
+        detail:
+          "Your queued deposit finished processing and the vault minted your shares automatically.",
+        cycleId,
+        txHash,
+        status: "minted",
+        assetAmount: queuedDepositAssets,
+        shareAmount: processedShares,
+        occurredAt: processedAt,
+      });
+    }
+
+    await flatBookStateRepository.recordProcessingEvent({
+      vaultAddress: this.config.vaultAddress,
+      cycleId,
+      eventType: "process_deposits_chunk",
+      txHash,
+      processedCount: processedParticipantCount,
+      createdAt: processedAt,
+    });
+  }
+
+  private async syncOutstandingClaimableDepositIndex(): Promise<void> {
+    const currentCycleId = Number(await this.client.getCurrentBatch());
+    const cycleIds = [currentCycleId, Math.max(currentCycleId - 1, 0)];
+
+    for (const cycleId of [...new Set(cycleIds)]) {
+      const participants = await this.client
+        .getCycleParticipants(BigInt(cycleId))
+        .catch(() => null);
+      if (!participants) {
+        continue;
+      }
+
+      for (const userAddress of participants.depositParticipants) {
+        const [claimableAssetsRaw, claimableSharesRaw] = await Promise.all([
+          this.client.getClaimableDepositAssets(userAddress),
+          this.client.getClaimableDepositShares(userAddress),
+        ]);
+
+        await flatBookStateRepository.ensureQueueParticipant({
+          vaultAddress: this.config.vaultAddress,
+          cycleId,
+          userAddress,
+          queuedDepositAssets:
+            claimableAssetsRaw > 0n ? formatUnits(claimableAssetsRaw, USDC_DECIMALS) : undefined,
+          processedDepositShares:
+            claimableSharesRaw > 0n
+              ? formatUnits(claimableSharesRaw, VAULT_SHARE_DECIMALS)
+              : undefined,
+          status: claimableAssetsRaw > 0n || claimableSharesRaw > 0n ? "processed" : "queued",
+          processedAt: claimableAssetsRaw > 0n || claimableSharesRaw > 0n ? new Date() : undefined,
+        });
+      }
+    }
+  }
+
+  private async getOutstandingClaimableDepositAssets(): Promise<bigint> {
+    await this.syncOutstandingClaimableDepositIndex();
+
+    const participantAddresses = await flatBookStateRepository.listDepositParticipantAddresses(
+      this.config.vaultAddress,
+    );
+
+    if (participantAddresses.length === 0) {
+      return 0n;
+    }
+
+    const claimableAssets = await Promise.all(
+      participantAddresses.map((userAddress) =>
+        this.client.getClaimableDepositAssets(userAddress as Address).catch(() => 0n),
+      ),
+    );
+
+    return claimableAssets.reduce((sum, value) => sum + value, 0n);
   }
 
   private async processCurrentDepositQueue(

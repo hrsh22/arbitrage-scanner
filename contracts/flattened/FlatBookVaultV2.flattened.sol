@@ -3822,6 +3822,7 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
     error AllocationExceedsAvailable(uint256 requested, uint256 available);
     error NotController(address controller, address caller);
     error NotOwner(address owner, address caller);
+    error InvalidRequestWindow(VaultState actual);
     error RequestNotClaimable(address controller);
     error InsufficientClaimableAmount(uint256 requested, uint256 available);
     error PreviewNotSupported();
@@ -3947,10 +3948,12 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
     function requestRedeem(uint256 shares, address controller, address owner)
         public
         nonReentrant
-        onlyState(VaultState.Closed)
         override
         returns (uint256 requestId)
     {
+        if (state != VaultState.Open && state != VaultState.Closed) {
+            revert InvalidRequestWindow(state);
+        }
         if (shares == 0) revert ZeroAmount();
         if (controller == address(0) || owner == address(0)) revert InvalidAddress();
         if (msg.sender != owner && !isOperator[owner][msg.sender]) {
@@ -3959,6 +3962,7 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
 
         uint256 cycleId = currentCycleId;
         CycleData storage cycle = cycles[cycleId];
+        uint256 estimatedAssets = _convertSharesToAssets(shares, currentNAV);
 
         _spendAllowance(owner, address(this), shares);
         _transfer(owner, address(this), shares);
@@ -3970,6 +3974,7 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
 
         queuedRedeemShares[cycleId][controller] += shares;
         cycle.totalQueuedRedeemShares += shares;
+        cycle.totalQueuedRedeemAssets += estimatedAssets;
 
         emit RedeemRequest(controller, owner, 0, msg.sender, shares);
         return 0;
@@ -4006,15 +4011,22 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
         emit DepositRequestCancelled(msg.sender, assetsReturned);
     }
 
-    function cancelQueuedRedeem() external nonReentrant onlyState(VaultState.Closed) returns (uint256 sharesReturned) {
+    function cancelQueuedRedeem() external nonReentrant returns (uint256 sharesReturned) {
+        if (state != VaultState.Open && state != VaultState.Closed) {
+            revert InvalidRequestWindow(state);
+        }
         uint256 cycleId = currentCycleId;
         CycleData storage cycle = cycles[cycleId];
 
         sharesReturned = queuedRedeemShares[cycleId][msg.sender];
         if (sharesReturned == 0) revert InsufficientQueuedAmount();
+        uint256 reservedAssets = _convertSharesToAssets(sharesReturned, currentNAV);
 
         queuedRedeemShares[cycleId][msg.sender] = 0;
         cycle.totalQueuedRedeemShares -= sharesReturned;
+        cycle.totalQueuedRedeemAssets = cycle.totalQueuedRedeemAssets > reservedAssets
+            ? cycle.totalQueuedRedeemAssets - reservedAssets
+            : 0;
         _transfer(address(this), msg.sender, sharesReturned);
         emit RedeemRequestCancelled(msg.sender, sharesReturned);
     }
@@ -4330,8 +4342,8 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
             cycle.totalQueuedDepositAssets -= assetsIn;
 
             uint256 shares = _convertAssetsToShares(assetsIn, cycle.lockedNav);
-            claimableDepositAssetsByController[controller] += assetsIn;
-            claimableDepositSharesByController[controller] += shares;
+            _mint(controller, shares);
+            emit Deposit(controller, controller, assetsIn, shares);
 
             processedUsers++;
         }
@@ -4363,6 +4375,11 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
         if (_nav == 0) revert ZeroAmount();
         currentNAV = _nav;
         lastNAVUpdate = block.timestamp;
+        if (state != VaultState.Processing) {
+            cycles[currentCycleId].totalQueuedRedeemAssets = _convertSharesToAssets(
+                cycles[currentCycleId].totalQueuedRedeemShares, _nav
+            );
+        }
         emit NAVUpdated(_nav, block.timestamp);
     }
 
@@ -4443,7 +4460,7 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
     function maxAllocatableAssets() public view returns (uint256) {
         CycleData storage cycle = cycles[currentCycleId];
         uint256 currentBalance = assetToken.balanceOf(address(this));
-        uint256 reserved = cycle.totalQueuedDepositAssets + totalClaimableRedeemAssets;
+        uint256 reserved = cycle.totalQueuedDepositAssets + cycle.totalQueuedRedeemAssets + totalClaimableRedeemAssets;
         if (currentBalance <= reserved) {
             return 0;
         }

@@ -187,8 +187,7 @@ export default function VaultsPageClient() {
               Discover vaults
             </h1>
             <p className="max-w-2xl text-base leading-7 text-slate-300 sm:text-lg">
-              Compare live vaults by mandate, manager, current state, and proof before opening the
-              full workspace.
+              Browse available vaults, compare strategies, and start investing.
             </p>
             <div className="pt-2 text-sm text-slate-400">
               {instances.length} vault{instances.length === 1 ? "" : "s"} available
@@ -200,8 +199,7 @@ export default function VaultsPageClient() {
           <div className="space-y-2">
             <h2 className="text-2xl font-semibold tracking-tight text-white">Available vaults</h2>
             <p className="max-w-2xl text-sm leading-6 text-slate-400">
-              Each card surfaces mandate, current access state, latest NAV, and tracked capital so
-              you can decide where to drill deeper.
+              View key stats at a glance, then open any vault for details.
             </p>
           </div>
         </div>

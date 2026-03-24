@@ -7,7 +7,8 @@ import { Input } from "@workspace/ui/components/input";
 import { Label } from "@workspace/ui/components/label";
 import { Skeleton } from "@workspace/ui/components/skeleton";
 import { Alert, AlertDescription } from "@workspace/ui/components/alert";
-import { Info, AlertTriangle } from "lucide-react";
+import { Info, AlertTriangle, CircleHelp, ArrowUpRight } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@workspace/ui/components/tooltip";
 import { useAppKitAccount } from "@reown/appkit/react";
 import type { VaultInstance, RedemptionRequest, Cycle } from "../../../../src/types";
 import { getCyclePresentation } from "../../../../src/lib/cyclePresentation";
@@ -25,7 +26,8 @@ interface RequestFormProps {
   userShares: bigint;
   isLoading: boolean;
   existingRequest?: RedemptionRequest | null;
-  onSuccess: () => void;
+  estimatedExitValueUsd?: number | null;
+  onSuccess: (mode: "instant" | "queued") => void;
 }
 
 export function RequestForm({
@@ -34,6 +36,7 @@ export function RequestForm({
   userShares,
   isLoading,
   existingRequest,
+  estimatedExitValueUsd,
   onSuccess,
 }: RequestFormProps) {
   const { address, isConnected } = useAppKitAccount();
@@ -42,11 +45,11 @@ export function RequestForm({
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const {
     requestRedeemTx,
-    isPending,
-    isConfirming,
-    isConfirmed,
-    error: txError,
-    reset,
+    isPending: queuePending,
+    isConfirming: queueConfirming,
+    isConfirmed: queueConfirmed,
+    error: queueError,
+    reset: resetQueue,
   } = useCustomVaultRequestRedeem();
   const { allowance: shareAllowance, refetch: refetchShareAllowance } = useTokenAllowance(
     vault.config.vaultAddress,
@@ -64,9 +67,26 @@ export function RequestForm({
   const formattedShares = formatUnits(userShares, CUSTOM_VAULT_SHARE_DECIMALS);
   const isBrokenZeroEntitlementRequest =
     !!existingRequest &&
+    existingRequest.requestKind === "request" &&
     existingRequest.lifecycleError === "No entitlement record found" &&
     Number(existingRequest.claimableAssetsFormatted ?? "0") === 0;
   const cyclePresentation = getCyclePresentation(cycleInfo?.batchState);
+  const isCustomVault = vault.type === "custom";
+  const executionMode =
+    cycleInfo?.telemetryFresh === false
+      ? "blocked"
+      : isCustomVault
+        ? !cycleInfo?.batchState || cycleInfo.batchState === "processing"
+          ? "blocked"
+          : "queued"
+        : cycleInfo?.executionMode
+          ? cycleInfo.executionMode
+          : cycleInfo?.batchState === "open"
+            ? "instant"
+            : cycleInfo?.batchState === "closed" || cycleInfo?.batchState === "cutoff"
+              ? "queued"
+              : "blocked";
+  const isQueuedMode = executionMode === "queued";
 
   const parsedShares = (() => {
     if (!amount) return undefined;
@@ -79,9 +99,25 @@ export function RequestForm({
 
   const isValidAmount =
     parsedShares !== undefined && parsedShares > 0n && parsedShares <= userShares;
-  const needsShareApproval = parsedShares !== undefined ? shareAllowance < parsedShares : false;
+  const needsShareApproval =
+    isQueuedMode && parsedShares !== undefined ? shareAllowance < parsedShares : false;
 
   const hasExistingRequest = !!existingRequest && !isBrokenZeroEntitlementRequest;
+  const exitDisabledReason = hasExistingRequest
+    ? "You already have an active withdrawal request."
+    : executionMode === "blocked"
+      ? isCustomVault
+        ? cycleInfo?.telemetryFresh === false
+          ? "Queue status is still refreshing. Please wait a moment."
+          : "Withdrawals are temporarily unavailable while the vault finishes processing."
+        : "Withdrawals are temporarily paused."
+      : null;
+  const indicativePayoutUsd =
+    parsedShares !== undefined &&
+    estimatedExitValueUsd !== null &&
+    estimatedExitValueUsd !== undefined
+      ? Number(formatUnits(parsedShares, CUSTOM_VAULT_SHARE_DECIMALS)) * estimatedExitValueUsd
+      : null;
 
   const handleMax = () => {
     setAmount(formattedShares);
@@ -102,7 +138,7 @@ export function RequestForm({
 
     setError(null);
     setSuccessMessage(null);
-    reset();
+    resetQueue();
 
     try {
       requestRedeemTx(
@@ -117,18 +153,20 @@ export function RequestForm({
   };
 
   useEffect(() => {
-    if (txError) {
-      setError(txError.message);
+    if (queueError) {
+      setError(queueError.message);
     }
-  }, [txError]);
+  }, [queueError]);
 
   useEffect(() => {
-    if (!isConfirmed) return;
+    if (!queueConfirmed) return;
     setError(null);
-    setSuccessMessage("Exit request submitted. It will move forward when the current cycle locks.");
+    setSuccessMessage(
+      "Withdrawal request submitted. It will settle when the current queue is processed.",
+    );
     setAmount("");
-    onSuccess();
-  }, [isConfirmed, onSuccess]);
+    onSuccess("queued");
+  }, [onSuccess, queueConfirmed]);
 
   useEffect(() => {
     if (approveConfirmed) {
@@ -143,7 +181,7 @@ export function RequestForm({
     }
   }, [approveError]);
 
-  const isBusy = isPending || isConfirming || approvePending || approveConfirming;
+  const isBusy = queuePending || queueConfirming || approvePending || approveConfirming;
 
   // Clear success message after 5 seconds
   useEffect(() => {
@@ -182,12 +220,34 @@ export function RequestForm({
       </div>
 
       <div className="space-y-2">
-        <Label
-          htmlFor="shares-input"
-          className="text-xs font-medium uppercase tracking-[0.16em] text-slate-400"
-        >
-          Shares to exit
-        </Label>
+        <div className="flex items-center justify-between">
+          <Label
+            htmlFor="shares-input"
+            className="text-xs font-medium uppercase tracking-[0.16em] text-slate-400"
+          >
+            Shares to exit
+          </Label>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 text-[11px] text-slate-500 transition-colors hover:text-slate-300"
+              >
+                <CircleHelp className="h-3.5 w-3.5" />
+                How this works
+              </button>
+            </TooltipTrigger>
+            <TooltipContent
+              side="left"
+              sideOffset={8}
+              className="max-w-64 bg-slate-100 text-slate-900"
+            >
+              {isQueuedMode
+                ? "Your withdrawal request is accepted immediately and will be processed by the worker in the next settlement window. Once processed, the claimable amount is locked."
+                : "Withdrawals are temporarily paused."}
+            </TooltipContent>
+          </Tooltip>
+        </div>
         <div className="flex gap-2">
           <div className="relative flex-1">
             <Input
@@ -202,7 +262,7 @@ export function RequestForm({
                 setError(null);
                 resetApprove();
               }}
-              disabled={isBusy || hasExistingRequest}
+              disabled={isBusy || hasExistingRequest || executionMode === "blocked"}
               className="border-white/10 bg-white/5 pr-16 font-mono text-white placeholder:text-slate-500"
               aria-describedby="shares-input-help"
               data-testid="shares-input"
@@ -210,7 +270,7 @@ export function RequestForm({
             <button
               type="button"
               onClick={handleMax}
-              disabled={isBusy || hasExistingRequest}
+              disabled={isBusy || hasExistingRequest || executionMode === "blocked"}
               className="absolute right-2 top-1/2 -translate-y-1/2 rounded bg-white/10 px-2 py-0.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-white/15 disabled:opacity-50"
               aria-label="Use maximum available shares"
             >
@@ -221,7 +281,9 @@ export function RequestForm({
             <Button
               type="button"
               onClick={handleApproveShares}
-              disabled={!isValidAmount || isBusy || hasExistingRequest}
+              disabled={
+                !isValidAmount || isBusy || hasExistingRequest || executionMode === "blocked"
+              }
               className="min-w-[140px] bg-white text-slate-950 hover:bg-slate-100"
             >
               {approvePending
@@ -234,30 +296,47 @@ export function RequestForm({
             <Button
               type="button"
               onClick={handleSubmit}
-              disabled={!isValidAmount || isBusy || hasExistingRequest}
+              disabled={
+                !isValidAmount || isBusy || hasExistingRequest || executionMode === "blocked"
+              }
               className="min-w-[140px] bg-cyan-300 text-slate-950 hover:bg-cyan-200 request-redeem-button"
               data-testid="request-redeem-button"
             >
-              {isPending ? "Confirm in wallet..." : isConfirming ? "Submitting..." : "Start exit"}
+              {queuePending
+                ? "Confirm in wallet..."
+                : queueConfirming
+                  ? "Submitting..."
+                  : "Start exit"}
             </Button>
           )}
         </div>
         <p id="shares-input-help" className="text-xs leading-6 text-slate-400">
-          Choose how many shares you want settled at the end of the assigned cycle.
+          {isQueuedMode
+            ? "Withdrawals are request-first. If the vault is already flat, the worker should process them quickly; otherwise they settle in the next processing window."
+            : "Withdrawals are temporarily paused."}
         </p>
       </div>
 
       {parsedShares !== undefined && parsedShares > 0n && (
-        <div className="space-y-2 rounded-2xl border border-cyan-400/20 bg-cyan-400/10 p-3">
+        <div className="space-y-3 rounded-2xl border border-cyan-400/20 bg-cyan-400/10 p-4">
           <div className="flex items-center justify-between text-sm">
-            <span className="text-cyan-50/70">Shares queued for exit</span>
-            <span className="font-mono font-medium text-cyan-50">{amount} shares</span>
+            <div>
+              <p className="text-cyan-50/70">Indicative payout</p>
+              <p className="mt-1 text-lg font-semibold text-cyan-50">
+                {indicativePayoutUsd !== null ? `$${indicativePayoutUsd.toFixed(2)}` : "--"}
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-cyan-50/70">Shares</p>
+              <p className="mt-1 font-mono font-medium text-cyan-50">{amount}</p>
+            </div>
           </div>
-          <p className="text-xs leading-6 text-cyan-50/90">
-            Your final USDC amount is set when the cycle reaches{" "}
-            <span className="font-medium">{cyclePresentation.label.toLowerCase()}</span> and
-            settlement completes.
-          </p>
+          <div className="flex items-start gap-2 rounded-xl border border-cyan-400/15 bg-black/10 p-2.5">
+            <ArrowUpRight className="mt-0.5 h-3.5 w-3.5 text-cyan-200" />
+            <p className="text-xs leading-6 text-cyan-50/90">
+              Estimated. Final amount will be confirmed when the worker processes the request.
+            </p>
+          </div>
         </div>
       )}
 
@@ -278,19 +357,20 @@ export function RequestForm({
         <Alert className="border-amber-400/20 bg-amber-400/10" data-testid="broken-request-warning">
           <AlertTriangle className="h-4 w-4 text-amber-200" aria-hidden="true" />
           <AlertDescription className="text-xs leading-6 text-amber-50/90">
-            Request #{existingRequest?.requestId.slice(0, 8)} has zero settled entitlement and will
-            need manual recovery. It will not block you from submitting a new redemption request.
+            Request #{existingRequest?.requestId.slice(0, 8)} encountered an issue. Please contact
+            support.
           </AlertDescription>
         </Alert>
       )}
 
-      <Alert className="border-cyan-400/20 bg-cyan-400/10">
-        <Info className="h-4 w-4 text-cyan-200" aria-hidden="true" />
-        <AlertDescription className="text-xs leading-6 text-cyan-50/90">
-          <span className="font-medium">How exits work:</span> requests lock into a cycle, the vault
-          finalizes positions, then settlement turns your shares into claimable USDC.
-        </AlertDescription>
-      </Alert>
+      {exitDisabledReason && !hasExistingRequest && (
+        <Alert className="border-amber-400/20 bg-amber-400/10">
+          <AlertTriangle className="h-4 w-4 text-amber-200" aria-hidden="true" />
+          <AlertDescription className="text-xs leading-6 text-amber-50/90">
+            {exitDisabledReason}
+          </AlertDescription>
+        </Alert>
+      )}
 
       {error && (
         <Alert className="border-rose-400/20 bg-rose-400/10" data-testid="request-error">

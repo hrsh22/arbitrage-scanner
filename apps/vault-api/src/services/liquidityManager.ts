@@ -228,8 +228,7 @@ export class LiquidityManager {
       } as FlatBookLifecycleDecision;
     }
 
-    const tradingWalletAddress =
-      this.vaultConfig.safeAddress;
+    const tradingWalletAddress = this.vaultConfig.safeAddress;
     const flatnessCheck = await this.flatnessDetector.checkFlatness(
       this.vaultConfig,
       tradingWalletAddress,
@@ -740,98 +739,152 @@ export class LiquidityManager {
       }
     }
 
-    const head = pendingRequests[0];
-    if (!head) {
-      return null;
-    }
-
-    let requestedAssets = this.parseUsdcAmount(head.assetsEstimated);
-    if (currentNav && currentNav > 0n) {
-      const shares = parseUnits(head.shares, USDC_DECIMALS);
-      const refreshedAssets = (shares * currentNav) / 10n ** 18n;
-      if (refreshedAssets > 0n && refreshedAssets !== requestedAssets) {
-        const oldValue = Number.parseFloat(head.assetsEstimated);
-        const newValue = Number.parseFloat(formatUnits(refreshedAssets, USDC_DECIMALS));
-        await this.withdrawalRepo.updateAssetsEstimated(
-          head.requestId,
-          formatUnits(refreshedAssets, USDC_DECIMALS),
-          {
-            timestamp: new Date(),
-            oldValue: Number.isFinite(oldValue) ? oldValue : 0,
-            newValue,
-            reason: "worker_ready_refresh",
-            source: "worker_queue",
-          },
-        );
-        requestedAssets = refreshedAssets;
-      }
-    }
-
-    const reservedReadyAssets = readyRequests.reduce(
+    let reservedReadyAssets = readyRequests.reduce(
       (sum, request) => sum + this.parseUsdcAmount(request.assetsEstimated),
       0n,
     );
-    const availableVaultLiquidity =
-      vaultBalance > reservedReadyAssets ? vaultBalance - reservedReadyAssets : 0n;
 
-    if (requestedAssets <= 0n || availableVaultLiquidity < requestedAssets) {
+    let effectiveVaultBalance = vaultBalance;
+    let effectiveSafeBalance = safeBalance;
+    let availableVaultLiquidity =
+      effectiveVaultBalance > reservedReadyAssets
+        ? effectiveVaultBalance - reservedReadyAssets
+        : 0n;
+
+    const providerWithOnDemandRecall = this.provider as IVaultProvider & {
+      recallWithdrawalLiquidityOnDemand?: (params: {
+        vaultUsdcBalance: bigint;
+        safeUsdcBalance: bigint;
+        requiredAssets: bigint;
+      }) => Promise<CapitalRebalanceResult>;
+    };
+
+    let processedCount = 0;
+    let processedAssets = 0n;
+    const processedRequestIds: string[] = [];
+
+    for (const head of pendingRequests) {
+      let requestedAssets = this.parseUsdcAmount(head.assetsEstimated);
+      if (currentNav && currentNav > 0n) {
+        const shares = parseUnits(head.shares, USDC_DECIMALS);
+        const refreshedAssets = (shares * currentNav) / 10n ** 18n;
+        if (refreshedAssets > 0n && refreshedAssets !== requestedAssets) {
+          const oldValue = Number.parseFloat(head.assetsEstimated);
+          const newValue = Number.parseFloat(formatUnits(refreshedAssets, USDC_DECIMALS));
+          await this.withdrawalRepo.updateAssetsEstimated(
+            head.requestId,
+            formatUnits(refreshedAssets, USDC_DECIMALS),
+            {
+              timestamp: new Date(),
+              oldValue: Number.isFinite(oldValue) ? oldValue : 0,
+              newValue,
+              reason: "worker_ready_refresh",
+              source: "worker_queue",
+            },
+          );
+          requestedAssets = refreshedAssets;
+        }
+      }
+
+      if (requestedAssets > 0n && availableVaultLiquidity < requestedAssets) {
+        if (typeof providerWithOnDemandRecall.recallWithdrawalLiquidityOnDemand === "function") {
+          const recallTarget = requestedAssets + reservedReadyAssets;
+          const recallResult = await providerWithOnDemandRecall.recallWithdrawalLiquidityOnDemand({
+            vaultUsdcBalance: effectiveVaultBalance,
+            safeUsdcBalance: effectiveSafeBalance,
+            requiredAssets: recallTarget,
+          });
+
+          if (recallResult.success) {
+            [effectiveVaultBalance, effectiveSafeBalance] = await Promise.all([
+              this.getUsdcBalance(this.vaultAddress),
+              this.getUsdcBalance(this.safeAddress),
+            ]);
+            availableVaultLiquidity =
+              effectiveVaultBalance > reservedReadyAssets
+                ? effectiveVaultBalance - reservedReadyAssets
+                : 0n;
+          }
+        }
+      }
+
+      if (requestedAssets <= 0n || availableVaultLiquidity < requestedAssets) {
+        break;
+      }
+
+      const transitionResult = await this.withdrawalRepo.markReadyIdempotent(head.requestId);
+      if (!transitionResult.success) {
+        return {
+          vaultBalance: this.toUsdc(effectiveVaultBalance),
+          safeBalance: this.toUsdc(effectiveSafeBalance),
+          pendingWithdrawals: params?.pendingWithdrawalsCount ?? pendingRequests.length,
+          action: processedCount > 0 ? "marked_ready" : "none",
+          amount: processedCount > 0 ? this.toUsdc(processedAssets) : undefined,
+          details:
+            processedCount > 0
+              ? `Marked ${processedCount} queued withdrawals ready before failing on ${head.requestId}: ${transitionResult.error}`
+              : `Failed to mark withdrawal ${head.requestId} ready: ${transitionResult.error}`,
+        };
+      }
+
+      if (!transitionResult.alreadyInTargetState) {
+        const readyAssetAmount = formatUnits(requestedAssets, USDC_DECIMALS);
+        await activityEventRepository.appendVaultLifecycleEvent({
+          vaultId: this.vaultId,
+          vaultAddress: this.vaultAddress,
+          cycleId: vaultInfo.batchInfo?.currentBatchId,
+          eventType: "withdraw_ready",
+          title: "Withdrawal processed",
+          detail: "A queued withdrawal became ready to claim.",
+          status: transitionResult.request?.status ?? "ready",
+          requestId: head.requestId,
+          assetAmount: readyAssetAmount,
+          shareAmount: head.shares,
+          occurredAt: transitionResult.request?.readyAt ?? new Date(),
+        });
+
+        void activityEventRepository.appendUserVaultActivityEvent({
+          vaultId: this.vaultId,
+          vaultAddress: this.vaultAddress,
+          userAddress: head.userAddress,
+          eventType: "withdraw_ready",
+          title: "Withdrawal ready",
+          detail: "Your withdrawal request is ready to claim.",
+          requestId: head.requestId,
+          status: transitionResult.request?.status ?? "ready",
+          assetAmount: readyAssetAmount,
+          shareAmount: head.shares,
+          occurredAt: transitionResult.request?.readyAt ?? new Date(),
+        });
+      }
+
+      processedCount += 1;
+      processedAssets += requestedAssets;
+      processedRequestIds.push(head.requestId);
+      reservedReadyAssets += requestedAssets;
+      availableVaultLiquidity =
+        effectiveVaultBalance > reservedReadyAssets
+          ? effectiveVaultBalance - reservedReadyAssets
+          : 0n;
+    }
+
+    if (processedCount === 0) {
       return null;
-    }
-
-    const transitionResult = await this.withdrawalRepo.markReadyIdempotent(head.requestId);
-    if (!transitionResult.success) {
-      return {
-        vaultBalance: this.toUsdc(vaultBalance),
-        safeBalance: this.toUsdc(safeBalance),
-        pendingWithdrawals: params?.pendingWithdrawalsCount ?? pendingRequests.length,
-        action: "none",
-        details: `Failed to mark withdrawal ${head.requestId} ready: ${transitionResult.error}`,
-      };
-    }
-
-    if (!transitionResult.alreadyInTargetState) {
-      await activityEventRepository.appendVaultLifecycleEvent({
-        vaultId: this.vaultId,
-        vaultAddress: this.vaultAddress,
-        cycleId: vaultInfo.batchInfo?.currentBatchId,
-        eventType: "withdraw_ready",
-        title: "Withdrawal processed",
-        detail: "A queued withdrawal became ready to claim.",
-        status: transitionResult.request?.status ?? "ready",
-        requestId: head.requestId,
-        assetAmount: head.assetsEstimated,
-        shareAmount: head.shares,
-        occurredAt: transitionResult.request?.readyAt ?? new Date(),
-      });
-
-      void activityEventRepository.appendUserVaultActivityEvent({
-        vaultId: this.vaultId,
-        vaultAddress: this.vaultAddress,
-        userAddress: head.userAddress,
-        eventType: "withdraw_ready",
-        title: "Withdrawal ready",
-        detail: "Your withdrawal request is ready to claim.",
-        requestId: head.requestId,
-        status: transitionResult.request?.status ?? "ready",
-        assetAmount: head.assetsEstimated,
-        shareAmount: head.shares,
-        occurredAt: transitionResult.request?.readyAt ?? new Date(),
-      });
     }
 
     const details = [
       params?.rebalanceDetails,
-      `Marked withdrawal ${head.requestId} as ready in FIFO order`,
+      `Marked ${processedCount} queued withdrawal${processedCount === 1 ? "" : "s"} ready in FIFO order (${processedRequestIds.join(", ")})`,
     ]
       .filter(Boolean)
       .join(" ");
 
     return {
-      vaultBalance: this.toUsdc(vaultBalance),
-      safeBalance: this.toUsdc(safeBalance),
+      vaultBalance: this.toUsdc(effectiveVaultBalance),
+      safeBalance: this.toUsdc(effectiveSafeBalance),
       pendingWithdrawals: params?.pendingWithdrawalsCount ?? pendingRequests.length,
       action: "marked_ready",
-      amount: this.toUsdc(requestedAssets),
+      amount: this.toUsdc(processedAssets),
       details,
     };
   }

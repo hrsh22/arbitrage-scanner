@@ -30,7 +30,7 @@ const config: VaultInstanceConfig = {
 
   vaultContractType: "flatBookVaultV2" as const,
 
-  vaultAddress: "0xfd8A02133c2619c92589A2ceC95dA0a2da578AE5",
+  vaultAddress: "0xfE5F6D149148aD5F31f6868152698E19A0F73a58",
   safeAddress: "0xc8447F7d4dF6d717684fC9A3d242ee7713F43927",
   allocatorNavSignerKeyEnv: "VAULT_1_ALLOCATOR_NAV_KEY",
   safeOperatorKeyEnv: "VAULT_1_SAFE_OPERATOR_KEY",

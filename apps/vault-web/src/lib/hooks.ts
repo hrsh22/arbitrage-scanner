@@ -69,6 +69,7 @@ interface AsyncState<T> {
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function getErrorMessage(error: unknown): string | null {
   if (!error) {
@@ -271,9 +272,23 @@ function useEip155WriteState(): Eip155WriteState {
               estimateMessage.includes("does not exist");
 
             if (!walletCanEstimateLater) {
-              throw estimateError instanceof Error
-                ? estimateError
-                : new Error("Transaction gas estimation failed.");
+              await wait(1200);
+              try {
+                const retriedEstimate = await walletProvider.request({
+                  method: "eth_estimateGas",
+                  params: [txRequest],
+                });
+
+                if (typeof retriedEstimate === "string" && retriedEstimate.startsWith("0x")) {
+                  txRequest.gas = toHex((BigInt(retriedEstimate) * 12n) / 10n);
+                }
+              } catch (retryError) {
+                throw retryError instanceof Error
+                  ? retryError
+                  : estimateError instanceof Error
+                    ? estimateError
+                    : new Error("Transaction gas estimation failed.");
+              }
             }
           }
 
@@ -931,6 +946,56 @@ export function useVaultDeposit(): VaultDepositResult {
   };
 }
 
+interface ClaimProcessedDepositResult {
+  claimProcessedDeposit: (
+    vaultAddress: `0x${string}`,
+    assets: bigint,
+    receiver: `0x${string}`,
+    controller: `0x${string}`,
+  ) => void;
+  isPending: boolean;
+  isConfirming: boolean;
+  isConfirmed: boolean;
+  hash?: `0x${string}`;
+  error: Error | null;
+  reset: () => void;
+}
+
+export function useClaimProcessedDeposit(): ClaimProcessedDepositResult {
+  const { write, hash, isPending, error, reset } = useEip155WriteState();
+  const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
+    hash,
+  });
+
+  const claimProcessedDeposit = (
+    vaultAddress: `0x${string}`,
+    assets: bigint,
+    receiver: `0x${string}`,
+    controller: `0x${string}`,
+  ) => {
+    const data = encodeFunctionData({
+      abi: VAULT_ABI,
+      functionName: "deposit",
+      args: [assets, receiver, controller],
+    });
+
+    write({
+      to: vaultAddress,
+      data,
+    });
+  };
+
+  return {
+    claimProcessedDeposit,
+    isPending,
+    isConfirming,
+    isConfirmed,
+    hash,
+    error,
+    reset,
+  };
+}
+
 export function useQueueDeposit(): QueueDepositResult {
   const { write, hash, isPending, error, reset } = useEip155WriteState();
   const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
@@ -1345,6 +1410,7 @@ export interface UseDepositQueueResult {
   queuedFormatted: string;
   queuedShares: string;
   queuedSharesFormatted: string;
+  hasQueuedDeposit: boolean;
   // No current NAV estimate in closed-book; shares minted at cycle-open NAV
   cycleOpenNavEstimate: string | null;
   cycleOpenNavFormatted: string | null;
@@ -1353,6 +1419,11 @@ export interface UseDepositQueueResult {
   frozenFormatted: string;
   frozenShares: string;
   frozenSharesFormatted: string;
+  claimableAssets: string;
+  claimableAssetsFormatted: string;
+  claimableShares: string;
+  claimableSharesFormatted: string;
+  hasProcessedDeposit: boolean;
   depositRequestId: string | null;
   depositCreatedAt: string | null;
   targetCycleId: number | null;
@@ -1405,6 +1476,7 @@ export function useDepositQueue(vaultId?: number, isAuthenticated = false): UseD
     queuedFormatted: query.data?.queuedFormatted ?? "0",
     queuedShares: query.data?.queuedShares ?? "0",
     queuedSharesFormatted: query.data?.queuedSharesFormatted ?? "0",
+    hasQueuedDeposit: query.data?.hasQueuedDeposit ?? false,
     cycleOpenNavEstimate: query.data?.cycleOpenNavEstimate ?? null,
     cycleOpenNavFormatted: query.data?.cycleOpenNavFormatted ?? null,
     estimateBasis: query.data?.estimateBasis ?? null,
@@ -1412,6 +1484,11 @@ export function useDepositQueue(vaultId?: number, isAuthenticated = false): UseD
     frozenFormatted: query.data?.frozenFormatted ?? "0",
     frozenShares: query.data?.frozenShares ?? "0",
     frozenSharesFormatted: query.data?.frozenSharesFormatted ?? "0",
+    claimableAssets: query.data?.claimableAssets ?? "0",
+    claimableAssetsFormatted: query.data?.claimableAssetsFormatted ?? "0",
+    claimableShares: query.data?.claimableShares ?? "0",
+    claimableSharesFormatted: query.data?.claimableSharesFormatted ?? "0",
+    hasProcessedDeposit: query.data?.hasProcessedDeposit ?? false,
     depositRequestId: query.data?.depositRequestId ?? null,
     depositCreatedAt: query.data?.depositCreatedAt ?? null,
     targetCycleId: query.data?.targetCycleId ?? null,
