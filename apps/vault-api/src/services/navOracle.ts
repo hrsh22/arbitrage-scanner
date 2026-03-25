@@ -344,12 +344,16 @@ export interface NavSnapshotData {
 
 export interface LiveNavPreview {
   totalAssets: number;
+  trackedTotalAssets: number;
   idleAssets: number;
   deployedMarketValue: number;
   deployedCostBasis: number;
+  redeemableMarketValue: number;
+  redeemableCostBasis: number;
   sharePrice: number;
   positionsWithPrices: number;
   positionsWithoutPrices: number;
+  redeemablePositions: number;
   vaultUsdc: number;
   safeUsdc: number;
   queuedAssets: number;
@@ -686,12 +690,16 @@ export class NavOracleService {
     const networkConfig = getNetworkConfigFromEnv();
 
     let openPositions: OpenPosition[] = [];
+    let redeemablePositions: OpenPosition[] = [];
     if (networkConfig.supportsPolymarketTrading) {
       try {
-        openPositions = await this.fetcher.fetchOpenPositions(this.safeAddress);
+        [openPositions, redeemablePositions] = await Promise.all([
+          this.fetcher.fetchOpenPositions(this.safeAddress),
+          this.fetcher.fetchRedeemablePositions(this.safeAddress),
+        ]);
       } catch (error) {
         throw new Error(
-          `NavOracleService: Failed to fetch open positions for safe ${this.safeAddress}: ${getErrorMessage(error)}`,
+          `NavOracleService: Failed to fetch live positions for safe ${this.safeAddress}: ${getErrorMessage(error)}`,
         );
       }
     }
@@ -711,6 +719,8 @@ export class NavOracleService {
 
     let deployedMarketValue = 0;
     let deployedCostBasis = 0;
+    let redeemableMarketValue = 0;
+    let redeemableCostBasis = 0;
     let positionsWithPrices = 0;
     let positionsWithoutPrices = 0;
 
@@ -750,6 +760,14 @@ export class NavOracleService {
       }
     }
 
+    for (const position of redeemablePositions) {
+      redeemableCostBasis += position.costBasis;
+      redeemableMarketValue +=
+        typeof position.currentValue === "number" && Number.isFinite(position.currentValue)
+          ? position.currentValue
+          : position.size;
+    }
+
     const usdcAddress = USDC_E_ADDRESS as Address;
     const [vaultUsdcRaw, safeUsdcRaw, totalSupplyRaw, liabilityState] = await Promise.all([
       this.publicClient.readContract({
@@ -787,7 +805,7 @@ export class NavOracleService {
     const vaultUsdc = Number(formatUnits(vaultUsdcRaw, USDC_DECIMALS));
     const safeUsdc = Number(formatUnits(safeUsdcRaw, USDC_DECIMALS));
     const grossIdleAssets = vaultUsdc + safeUsdc;
-    const grossTotalAssets = grossIdleAssets + deployedMarketValue;
+    const grossTotalAssets = grossIdleAssets + deployedMarketValue + redeemableMarketValue;
     const excludedAssets = queuedAssets + claimableDepositAssets + reservedRedemptionAssets;
     const idleAssets = Math.max(grossIdleAssets - excludedAssets, 0);
     const totalAssets = Math.max(grossTotalAssets - excludedAssets, 0);
@@ -818,12 +836,16 @@ export class NavOracleService {
 
     return {
       totalAssets,
+      trackedTotalAssets: grossTotalAssets,
       idleAssets,
       deployedMarketValue,
       deployedCostBasis,
+      redeemableMarketValue,
+      redeemableCostBasis,
       sharePrice,
       positionsWithPrices,
       positionsWithoutPrices,
+      redeemablePositions: redeemablePositions.length,
       vaultUsdc,
       safeUsdc,
       queuedAssets,

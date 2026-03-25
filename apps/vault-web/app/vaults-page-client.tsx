@@ -5,12 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@workspace/ui/componen
 import { Badge } from "@workspace/ui/components/badge";
 import { Skeleton } from "@workspace/ui/components/skeleton";
 import { ArrowUpRight } from "lucide-react";
-import {
-  useCycleStatus,
-  useVaultInstances,
-  useVaultPositions,
-  useVaultStatus,
-} from "../src/lib/hooks";
+import { useCycleStatus, useVaultInstances, useVaultStatus } from "../src/lib/hooks";
 import type { VaultInstance, VaultRiskLevel } from "../src/types";
 
 function formatCompactCurrency(value: number): string {
@@ -64,13 +59,10 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
   const router = useRouter();
   const { data, isLoading } = useVaultStatus(vault.id);
   const { executionMode, telemetryFresh } = useCycleStatus(vault.id);
-  const positions = useVaultPositions(vault.id);
 
-  const tvl = data?.nav?.totalAssets ?? 0;
-  const deployedCostBasis = positions.data?.positions.reduce(
-    (sum, position) => sum + position.costBasis,
-    0,
-  );
+  const tvl = data?.nav?.trackedTotalAssets ?? data?.nav?.totalAssets ?? 0;
+  const deployedCapital =
+    (data?.nav?.deployedCostBasis ?? 0) + (data?.nav?.redeemableCostBasis ?? 0);
 
   const showAweCredit = /sisyphus/i.test(vault.name);
   const vaultHref = `/vault/${vault.id}`;
@@ -154,9 +146,7 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
                 Capital deployed
               </span>
               <span className="text-lg font-semibold text-white">
-                {positions.isLoading || deployedCostBasis === undefined
-                  ? "--"
-                  : formatCompactCurrency(deployedCostBasis)}
+                {isLoading ? "--" : formatCompactCurrency(deployedCapital)}
               </span>
             </div>
           </div>

@@ -1281,7 +1281,7 @@ export function useCycleStatus(vaultId?: number, cycleId?: number): UseCycleStat
     queryFn: () =>
       cycleId !== undefined
         ? fetchCycleStatus(vaultId!, cycleId)
-        : fetchCurrentCycleStatus(vaultId!),
+        : fetchCurrentCycleStatus(vaultId!, true),
     enabled: vaultId !== undefined,
     refetchInterval: DEFAULT_POLL_INTERVAL_MS,
   });

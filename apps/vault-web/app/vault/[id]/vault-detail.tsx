@@ -58,6 +58,7 @@ import {
 } from "../../../src/lib/hooks";
 import {
   fetchAuthMe,
+  fetchCurrentCycleStatus,
   postCancelWithdrawalRequest,
   postRecordClaimActivity,
   postCompleteWithdrawalRequest,
@@ -227,6 +228,18 @@ function getFeeLabel(vault: VaultInstance): string {
 function getDepositActionLabel(vault: VaultInstance, cycle: Cycle | null): string {
   if (!vault.enabled || cycle?.executionMode === "blocked") {
     return "Paused";
+  }
+
+  if (vault.type === "custom" && cycle?.executionMode === "instant") {
+    return "Open now";
+  }
+
+  if (
+    vault.type === "custom" &&
+    cycle?.executionMode === "queued" &&
+    cycle.batchState !== "closed"
+  ) {
+    return "Waiting for close";
   }
 
   if (vault.type === "custom" && cycle?.executionMode === "queued") {
@@ -750,6 +763,10 @@ function TechnicalDetailsDialog({
   vault: VaultInstance;
   status: VaultStatusResponse | null;
 }) {
+  const tradingWalletBalance = status
+    ? status.nav.safeUsdc + (status.nav.redeemableMarketValue ?? 0)
+    : null;
+
   return (
     <Dialog>
       <DialogTrigger asChild>
@@ -784,19 +801,32 @@ function TechnicalDetailsDialog({
             hint="On-chain vault contract for deposits, shares, and redemptions."
           />
           <KeyInfoItem
-            label="Hot wallet"
+            label="Vault Balance"
             value={status ? formatCurrency(status.nav.vaultUsdc) : "--"}
-            tooltip="USDC currently sitting in the vault wallet."
+            tooltip="USDC currently sitting in the vault contract."
           />
           <KeyInfoItem
-            label="Safe wallet"
-            value={status ? formatCurrency(status.nav.safeUsdc) : "--"}
-            tooltip="USDC currently sitting in the trading safe."
+            label="Trading Wallet Balance"
+            value={tradingWalletBalance !== null ? formatCurrency(tradingWalletBalance) : "--"}
+            tooltip="USDC currently in the trading safe plus resolved-but-unredeemed position value still controlled by the trading wallet."
           />
         </div>
       </DialogContent>
     </Dialog>
   );
+}
+
+function getDisplayedTvl(
+  snapshot: {
+    totalAssets: number;
+    trackedTotalAssets?: number;
+  } | null,
+): number | null {
+  if (!snapshot) {
+    return null;
+  }
+
+  return snapshot.trackedTotalAssets ?? snapshot.totalAssets;
 }
 
 function TxFeedback({ message, error }: { message: string | null; error: string | null }) {
@@ -850,6 +880,11 @@ function DepositRail({
   const parsedAmount = getParsedUnits(amount, 6);
   const meetsMinDeposit = Number.parseFloat(amount || "0") >= vault.profile.minDeposit;
   const isValidAmount = parsedAmount !== undefined && parsedAmount > 0n && meetsMinDeposit;
+  const customQueueWindowOpen =
+    isCustomVault && cycle?.executionMode === "queued" && cycle.batchState === "closed";
+  const customQueuePendingClose =
+    isCustomVault && cycle?.executionMode === "queued" && cycle.batchState !== "closed";
+  const cycleStateUnavailable = isCustomVault && !cycle;
 
   const { shares: previewShares } = usePreviewDeposit(
     vault.config.vaultAddress,
@@ -1001,16 +1036,27 @@ function DepositRail({
     resetQueueDeposit();
 
     try {
-      const latestCycleResult = await refetchCycleStatus();
-      const latestCycle =
-        typeof latestCycleResult === "object" && latestCycleResult && "cycle" in latestCycleResult
-          ? ((latestCycleResult as { cycle?: Cycle | null }).cycle ?? cycle)
-          : cycle;
+      const latestCycleResponse = await fetchCurrentCycleStatus(vaultId, true).catch(() => null);
+      const latestCycle = latestCycleResponse?.cycle;
 
       if (isCustomVault) {
-        if (latestCycle?.executionMode === "queued") {
+        if (!latestCycle) {
+          setErrorMessage(
+            "Could not refresh the live vault cycle state. Please try again in a moment.",
+          );
+          return;
+        }
+
+        if (latestCycle?.executionMode === "queued" && latestCycle?.batchState === "closed") {
           setSubmittedDepositAmount(amount);
           queueDeposit(vault.config.vaultAddress as `0x${string}`, parsedAmount);
+          return;
+        }
+
+        if (latestCycle?.executionMode === "queued") {
+          setErrorMessage(
+            "Queued deposits open only after the current book is closed on-chain. While the vault is still open, this contract only allows instant deposits.",
+          );
           return;
         }
 
@@ -1032,8 +1078,9 @@ function DepositRail({
           return;
         }
 
-        setSubmittedDepositAmount(amount);
-        queueDeposit(vault.config.vaultAddress as `0x${string}`, parsedAmount);
+        setErrorMessage(
+          "Deposit state is still syncing. Please wait a moment and try again after the vault cycle status refreshes.",
+        );
         return;
       }
 
@@ -1130,6 +1177,14 @@ function DepositRail({
         </p>
       )}
 
+      {(customQueuePendingClose || cycleStateUnavailable) && (
+        <p className="text-xs leading-6 text-amber-200/90">
+          {cycleStateUnavailable
+            ? "Vault cycle status is still loading. Deposit routing will unlock once the current on-chain state is confirmed."
+            : "The latest cycle snapshot still shows the book as open while positions are being managed. Clicking deposit will re-check live cycle state before routing the transaction."}
+        </p>
+      )}
+
       {!meetsMinDeposit && amount.trim() && (
         <p className="text-xs text-amber-200">
           Minimum deposit is {formatCurrency(vault.profile.minDeposit)}.
@@ -1162,21 +1217,26 @@ function DepositRail({
             !address ||
             !isValidAmount ||
             actionPending ||
-            cycle?.executionMode === "blocked"
+            cycle?.executionMode === "blocked" ||
+            cycleStateUnavailable
           }
           className="h-12 w-full rounded-[10px] bg-white text-black hover:bg-white/90"
         >
           {navSyncPending || depositPreflightPending
             ? "Loading..."
             : depositPending || depositConfirming || queueDepositPending || queueDepositConfirming
-              ? isCustomVault && cycle?.executionMode === "queued"
+              ? customQueueWindowOpen
                 ? "Queuing..."
                 : "Depositing..."
-              : isCustomVault && cycle?.executionMode === "queued"
-                ? "Join next cycle"
-                : cycle?.executionMode === "blocked"
-                  ? "Deposit blocked"
-                  : "Deposit"}
+              : cycleStateUnavailable
+                ? "Loading cycle state"
+                : customQueuePendingClose
+                  ? "Re-checking live state"
+                  : customQueueWindowOpen
+                    ? "Join next cycle"
+                    : cycle?.executionMode === "blocked"
+                      ? "Deposit blocked"
+                      : "Deposit"}
         </Button>
       )}
 
@@ -2072,11 +2132,16 @@ export default function VaultDetailPage() {
     await Promise.all([invalidateVaultQueries(queryClient, vault?.id), refetchNavHistory()]);
   };
 
+  const navChartSnapshots = navHistoryData?.snapshots ?? [];
   const performance = useMemo(
-    () => deriveVaultPerformanceStats(navHistoryData?.snapshots ?? []),
-    [navHistoryData?.snapshots],
+    () => deriveVaultPerformanceStats(navChartSnapshots),
+    [navChartSnapshots],
   );
   const freshestNavSnapshot = useMemo(() => {
+    if (vault?.type === "custom" && status?.nav) {
+      return status.nav;
+    }
+
     const statusUpdatedAt = status?.nav.lastUpdated
       ? new Date(status.nav.lastUpdated).getTime()
       : 0;
@@ -2103,7 +2168,7 @@ export default function VaultDetailPage() {
     }
 
     return status?.nav ?? null;
-  }, [navHistoryData?.snapshots, status?.nav]);
+  }, [navHistoryData?.snapshots, status?.nav, vault?.type]);
 
   const networkInfo = getNetworkDisplayInfo(VAULT_NETWORK);
   const tags = vault
@@ -2190,11 +2255,14 @@ export default function VaultDetailPage() {
     },
     {
       label: "TVL",
-      value: freshestNavSnapshot ? formatCompactCurrency(freshestNavSnapshot.totalAssets) : "--",
+      value: freshestNavSnapshot
+        ? formatCompactCurrency(getDisplayedTvl(freshestNavSnapshot) ?? 0)
+        : "--",
       hint: freshestNavSnapshot
         ? "Total assets tracked by the vault right now."
         : "Waiting for first TVL snapshot.",
-      tooltip: "Current total assets in the vault.",
+      tooltip:
+        "Current gross assets tracked by the vault before liability adjustments used for share pricing.",
     },
   ];
 

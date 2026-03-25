@@ -21,6 +21,10 @@ That distinction matters because the deployed contract semantics are materially 
 - `currentNAV` and all custom-vault pricing must exclude:
   - queued deposits
   - claimable redemption liabilities
+- UI TVL is not the same thing as pricing NAV assets anymore:
+  - share-price / NAV math remains liability-adjusted
+  - TVL should reflect gross tracked assets controlled by the vault stack
+  - in practice that means vault contract USDC + trading-safe USDC + open-position market value + resolved-but-unredeemed redeemable value
 
 If an agent prices shares from raw `totalAssets / totalSupply` or treats queued redeems as free allocatable liquidity, it will break accounting.
 
@@ -184,6 +188,12 @@ If these are not excluded:
 - withdraw estimates are overstated
 - TVL/NAV in the UI become economically wrong
 
+Important distinction introduced in the March 2026 fixes:
+
+- pricing NAV assets are liability-adjusted and drive `sharePrice`
+- UI TVL is gross tracked assets and should not subtract queued deposits / redemption liabilities
+- do not reuse the pricing-NAV `totalAssets` field as the displayed TVL metric unless the product explicitly wants net assets instead of tracked assets
+
 ### 6.2 Backend Source Of Truth
 
 Files:
@@ -196,6 +206,10 @@ Key facts:
 - `NavOracleService.getLiveNavPreview()` is the canonical custom-vault preview used by `/vault/status`
 - `calculateAndPushNavCustom()` republishes `currentNAV` on-chain using that same liability-adjusted calculation
 - custom vault status should prefer the live preview path and only fall back if that path fails
+- `getLiveNavPreview()` now carries both:
+  - liability-adjusted `totalAssets` for pricing
+  - gross `trackedTotalAssets` for UI TVL
+- resolved-but-unredeemed Polymarket positions must be included in custom-vault tracked assets using redeemable/current value, not dropped until claim
 
 ### 6.3 Frontend Source Of Truth
 
@@ -207,8 +221,16 @@ Files:
 Rules:
 
 - show custom-vault NAV from backend `status.nav.sharePrice`
+- show custom-vault TVL from backend gross tracked assets (`status.nav.trackedTotalAssets` when available), not the liability-adjusted pricing asset field
 - custom-vault withdraw estimates should use backend liability-adjusted share price, not raw on-chain `totalAssets / totalSupply`
 - queued deposits should surface only two meaningful user states: queued, then minted
+- the NAV/performance chart should use only worker-published nav snapshots; do not inject live preview points into chart history
+- technical-details cash boxes may show gross wallet-controlled value for operator context; those values are not guaranteed to equal pricing NAV assets
+- the technical-details `Trading Wallet Balance` field is currently:
+  - trading-safe USDC
+  - plus resolved-but-unredeemed redeemable value
+  - but it does not include open-position market value
+  - therefore `Vault Balance + Trading Wallet Balance = TVL` is only true when open-position market value is zero
 
 ---
 
@@ -294,6 +316,59 @@ If the wallet is connected but the SIWE session is stale:
 
 Always surface auth gating clearly in the UI.
 
+### 9.4 Resolved But Unredeemed Value Must Stay In TVL
+
+Observed in the current FlatBookVaultV2 + Polymarket flow:
+
+- a position can be resolved / redeemable before the operator redeems it back into USDC
+- that value is still economically real and still controlled by the vault stack
+- if the app drops redeemable positions from TVL until claim, TVL can look lower than the trading-wallet-controlled balance shown elsewhere in the UI
+
+Correct treatment:
+
+- include redeemable position value in gross tracked assets / TVL
+- keep pricing NAV liability-adjusted for share-price math
+- if needed, expose a separate `redeemableMarketValue` or equivalent field so the UI can reconcile gross tracked assets vs pricing NAV
+
+### 9.5 Stale Cycle State Can Wrongly Block Deposits
+
+Observed in the custom deposit flow:
+
+- the worker can move the vault back to flat/open before the frontend poll catches up
+- if the deposit CTA is disabled from a stale queued/open-book snapshot, the user can see `Waiting for book close` even though the live cycle state has already changed
+
+Correct treatment:
+
+- current-cycle polling for the active custom vault view should prefer a fresh lifecycle read
+- stale `customQueuePendingClose` style flags should inform messaging, not hard-block the CTA before the live re-check runs
+- click-time deposit routing should use a fresh cycle fetch and fail closed if the refresh fails
+
+### 9.6 Worker-Processed Queue Events Need Canonical User Activity Rows
+
+Observed in the custom activity timeline:
+
+- queue completion can happen in worker processing rather than directly from a user wallet click
+- if the worker updates projections but does not append canonical `user_vault_activity_events`, the user activity tab misses deposit/withdraw completion notifications
+
+Correct treatment:
+
+- worker processing should append canonical user activity for:
+  - queued deposit completion / minted shares
+  - queued withdrawal becoming claimable
+- those writes must be idempotent because the worker can revisit the same cycle multiple times
+
+### 9.7 Chart History Should Be Worker Snapshots Only
+
+Observed in the vault detail chart:
+
+- mixing live preview status points into nav-history makes the chart move on values that were never actually published by the worker and never usable for entry/exit decisions
+
+Correct treatment:
+
+- hero NAV / TVL boxes may use live status
+- nav/performance chart should use only stored worker-published nav snapshots from `/vault/:id/nav-history`
+- do not append synthetic live preview points in either the backend nav-history route or the frontend chart merge logic
+
 ---
 
 ## 10) Operational Guidance
@@ -310,6 +385,17 @@ Check all three layers:
 3. frontend status consumption
    - `status.nav.sharePrice`
    - custom withdraw estimate source
+
+When the complaint is specifically about TVL being lower than visible wallet balances, also compare:
+
+4. gross tracked assets vs pricing assets
+   - `status.nav.trackedTotalAssets`
+   - `status.nav.totalAssets`
+   - `status.nav.redeemableMarketValue`
+   - `status.nav.vaultUsdc`
+   - `status.nav.safeUsdc`
+
+If live preview is unavailable and status falls back to stored snapshots, gross TVL can temporarily collapse toward pricing NAV until the next successful worker/live preview refresh.
 
 ### 10.2 When Debugging Missing Shares
 
@@ -339,10 +425,13 @@ Before changing vault code, verify all of the following:
 - [ ] Is this vault path using `flatBookVaultV2` semantics?
 - [ ] Am I treating queued deposits as auto-minted during processing for the updated contract version?
 - [ ] Am I pricing from liability-adjusted NAV rather than raw `totalAssets / totalSupply`?
+- [ ] If I touched TVL, did I keep it distinct from pricing NAV assets where the product expects gross tracked assets?
 - [ ] Am I normalizing addresses for DB lookups and projections?
 - [ ] If I changed deposit or withdraw math, did I verify the result against on-chain state and backend live preview?
 - [ ] If I changed deposit or withdrawal queue UI, does it match the actual on-chain claim/mint path rather than a legacy DB-only flow?
+- [ ] If I changed chart data, did I keep live preview points out of worker-history performance charts?
+- [ ] If I changed worker-driven queue processing, did I preserve canonical user activity events for completion states?
 
 ---
 
-_Last updated: March 2026 - FlatBookVaultV2 request-anytime queued redeems and auto-mint queued deposit behavior documented._
+_Last updated: March 2026 - FlatBookVaultV2 queue semantics, liability-adjusted NAV vs gross TVL, worker-only chart history, and worker-driven activity updates documented._

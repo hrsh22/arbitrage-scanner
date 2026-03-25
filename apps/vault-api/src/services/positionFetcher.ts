@@ -93,6 +93,7 @@ export interface OpenPosition {
   costBasis: number;
   /** Current mid-price from Data API */
   curPrice: number;
+  currentValue?: number;
   /** Market title for logging */
   title: string;
   slug: string;
@@ -251,6 +252,7 @@ export class PositionFetcher {
           avgPrice: p.avgPrice,
           costBasis: p.size * p.avgPrice,
           curPrice: p.curPrice,
+          currentValue: p.currentValue,
           title: p.title,
           slug: p.slug,
           eventSlug: p.eventSlug,
@@ -287,6 +289,7 @@ export class PositionFetcher {
           avgPrice: p.avgPrice,
           costBasis: p.size * p.avgPrice,
           curPrice: p.curPrice,
+          currentValue: p.currentValue,
           title: p.title,
           slug: p.slug,
           eventSlug: p.eventSlug,

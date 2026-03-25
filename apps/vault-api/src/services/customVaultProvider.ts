@@ -1,5 +1,11 @@
 import type { Address, Hex } from "viem";
-import { createWalletClient, encodeFunctionData, formatUnits, type WalletClient } from "viem";
+import {
+  createWalletClient,
+  encodeFunctionData,
+  formatUnits,
+  parseUnits,
+  type WalletClient,
+} from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Chain } from "viem/chains";
 import { logger } from "../logger.js";
@@ -611,7 +617,7 @@ export class CustomVaultProvider implements IVaultProvider {
       return batch.isPriceLocked;
     }
 
-    if (batch.status === "open" || batch.status === "cutoff") {
+    if (batch.status === "open" || batch.status === "closed" || batch.status === "cutoff") {
       const hasActionableWork = await this.hasActionableBatchWork(targetBatchId);
       if (!hasActionableWork) {
         return false;
@@ -644,7 +650,11 @@ export class CustomVaultProvider implements IVaultProvider {
       return false;
     }
 
-    if (batch.status !== "open" && batch.status !== "cutoff") {
+    if (batch.status === "settled") {
+      return true;
+    }
+
+    if (batch.status !== "open" && batch.status !== "closed" && batch.status !== "cutoff") {
       return false;
     }
 
@@ -728,10 +738,12 @@ export class CustomVaultProvider implements IVaultProvider {
     }
 
     // Check batch status
-    if (batch.status !== "cutoff" && batch.status !== "open") {
+    if (batch.status !== "closed" && batch.status !== "open" && batch.status !== "cutoff") {
       return {
         canFlatten: false,
-        blockingConditions: [`Batch status is ${batch.status}, expected cutoff or open`],
+        blockingConditions: [
+          `Batch status is ${batch.status}, expected closed/open pre-processing state`,
+        ],
       };
     }
 
@@ -926,7 +938,12 @@ export class CustomVaultProvider implements IVaultProvider {
       };
     };
 
-    if (batch.status === "settled" || batch.status === "closed") {
+    const currentBatchId = Number(await this.client.getCurrentBatch());
+
+    if (
+      (batch.status === "settled" || batch.status === "closed") &&
+      currentBatchId > targetBatchId
+    ) {
       logger.info("CustomVaultProvider: Batch already finalized - skipping automatic reopen", {
         batchId: targetBatchId,
         status: batch.status,
@@ -937,7 +954,6 @@ export class CustomVaultProvider implements IVaultProvider {
       });
       await this.syncProcessedDeposits(targetBatchId, new Date());
 
-      const currentBatchId = Number(await this.client.getCurrentBatch());
       if (currentBatchId > targetBatchId) {
         await this.syncCycleProjection(currentBatchId, "open", {
           openedAt: new Date(),
@@ -959,7 +975,7 @@ export class CustomVaultProvider implements IVaultProvider {
     // cutoff transaction only burns extra gas without changing the lifecycle outcome.
     let cutoffTxHash: Hex | undefined;
     let flattenTxHash: Hex | undefined;
-    if (batch.status === "open" || batch.status === "cutoff") {
+    if (batch.status === "open" || batch.status === "closed" || batch.status === "cutoff") {
       // FLATNESS GATE: Verify vault is flat before flattening
       if (!skipFlatnessCheck) {
         const canFlattenResult = await this.canFlattenBatch(targetBatchId);
@@ -1163,6 +1179,7 @@ export class CustomVaultProvider implements IVaultProvider {
         };
       }
 
+      await this.syncProcessedRedeems(targetBatchId, new Date(), settleTxHash);
       await this.syncProcessedDeposits(targetBatchId, new Date(), settleTxHash);
 
       if (batch.status === "settled" || batch.status === "closed") {
@@ -2019,15 +2036,22 @@ export class CustomVaultProvider implements IVaultProvider {
         userAddress,
       );
 
-      if (claimableAssetsRaw <= 0n && claimableSharesRaw <= 0n) {
-        continue;
-      }
-
       const queuedDepositAssets =
         participant?.queuedDepositAssets && participant.queuedDepositAssets !== "0"
           ? participant.queuedDepositAssets
           : formatUnits(claimableAssetsRaw, USDC_DECIMALS);
-      const processedShares = formatUnits(claimableSharesRaw, VAULT_SHARE_DECIMALS);
+      const processedSharesRaw =
+        claimableSharesRaw > 0n
+          ? claimableSharesRaw
+          : queuedDepositAssets !== "0" && batch.lockedClearingPrice > 0n
+            ? (parseUnits(queuedDepositAssets, USDC_DECIMALS) * 10n ** 18n) /
+              batch.lockedClearingPrice
+            : 0n;
+      const processedShares = formatUnits(processedSharesRaw, VAULT_SHARE_DECIMALS);
+
+      if (processedSharesRaw <= 0n && queuedDepositAssets === "0") {
+        continue;
+      }
 
       await flatBookStateRepository.markDepositProcessed({
         vaultAddress: this.config.vaultAddress,
@@ -2038,9 +2062,7 @@ export class CustomVaultProvider implements IVaultProvider {
         processedAt,
       });
 
-      void activityEventRepository.appendUserVaultActivityEvent({
-        vaultId: this.config.vaultId,
-        vaultAddress: this.config.vaultAddress,
+      await this.appendUserActivityEventIfMissing({
         userAddress,
         eventType: "deposit_minted",
         title: "Deposit minted",
@@ -2062,6 +2084,110 @@ export class CustomVaultProvider implements IVaultProvider {
       txHash,
       processedCount: processedParticipantCount,
       createdAt: processedAt,
+    });
+  }
+
+  private async syncProcessedRedeems(
+    cycleId: number,
+    processedAt: Date,
+    txHash?: Hex,
+  ): Promise<void> {
+    const [cycle, participants] = await Promise.all([
+      this.client.getCycleData(BigInt(cycleId)),
+      this.client.getCycleParticipants(BigInt(cycleId)),
+    ]);
+
+    const processedParticipantCount = Math.min(
+      Number(cycle.redeemCursor),
+      participants.redeemParticipants.length,
+    );
+
+    if (processedParticipantCount === 0) {
+      return;
+    }
+
+    for (const userAddress of participants.redeemParticipants.slice(0, processedParticipantCount)) {
+      const redemptionState = await this.client.getControllerRedemptionState(userAddress);
+      if (redemptionState.claimableShares <= 0n && redemptionState.claimableAssets <= 0n) {
+        continue;
+      }
+
+      const requestCycleId = Math.max(Number(redemptionState.currentCycle) - 1, 0);
+      const requestId = `claimable-${userAddress.toLowerCase()}`;
+
+      await this.appendUserActivityEventIfMissing({
+        userAddress,
+        eventType: "withdraw_ready",
+        title: "Withdrawal ready",
+        detail: "Your queued withdrawal finished processing and is ready to claim.",
+        cycleId: requestCycleId,
+        requestId,
+        txHash,
+        status: "claimable",
+        assetAmount: formatUnits(redemptionState.claimableAssets, USDC_DECIMALS),
+        shareAmount: formatUnits(redemptionState.claimableShares, VAULT_SHARE_DECIMALS),
+        occurredAt: processedAt,
+      });
+    }
+
+    await flatBookStateRepository.recordProcessingEvent({
+      vaultAddress: this.config.vaultAddress,
+      cycleId,
+      eventType: "process_redeems_chunk",
+      txHash,
+      processedCount: processedParticipantCount,
+      createdAt: processedAt,
+    });
+  }
+
+  private async appendUserActivityEventIfMissing(input: {
+    userAddress: Address;
+    eventType: string;
+    title: string;
+    detail: string;
+    occurredAt: Date;
+    cycleId?: number;
+    requestId?: string;
+    txHash?: Hex;
+    status?: string;
+    assetAmount?: string;
+    shareAmount?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<void> {
+    const existingEvents = await activityEventRepository.listUserVaultActivityEvents(
+      this.config.vaultAddress,
+      input.userAddress,
+      100,
+      0,
+    );
+
+    const alreadyExists = existingEvents.some(
+      (event) =>
+        event.eventType === input.eventType &&
+        (event.cycleId ?? null) === (input.cycleId ?? null) &&
+        (event.requestId ?? null) === (input.requestId ?? null) &&
+        (event.status ?? null) === (input.status ?? null),
+    );
+
+    if (alreadyExists) {
+      return;
+    }
+
+    await activityEventRepository.appendUserVaultActivityEvent({
+      vaultId: this.config.vaultId,
+      vaultAddress: this.config.vaultAddress,
+      userAddress: input.userAddress,
+      eventType: input.eventType,
+      title: input.title,
+      detail: input.detail,
+      occurredAt: input.occurredAt,
+      cycleId: input.cycleId,
+      requestId: input.requestId,
+      txHash: input.txHash,
+      status: input.status,
+      assetAmount: input.assetAmount,
+      shareAmount: input.shareAmount,
+      metadata: input.metadata,
     });
   }
 

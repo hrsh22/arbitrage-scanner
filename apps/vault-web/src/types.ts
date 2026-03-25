@@ -7,11 +7,13 @@
 // NAV snapshot from /vault/status
 export interface VaultNAV {
   totalAssets: number;
+  trackedTotalAssets?: number;
   idleAssets: number;
   vaultUsdc: number;
   safeUsdc: number;
   deployedCostBasis: number;
   redeemableCostBasis?: number;
+  redeemableMarketValue?: number;
   sharePrice: number;
   positionCount: number;
   redeemableCount?: number;

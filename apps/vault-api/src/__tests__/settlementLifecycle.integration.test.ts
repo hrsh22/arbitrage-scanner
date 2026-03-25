@@ -179,6 +179,8 @@ const {
   mockMarkDepositProcessed,
   mockRecordProcessingEvent,
   mockUpsertCycle,
+  mockAppendUserVaultActivityEvent,
+  mockListUserVaultActivityEvents,
   mockSafeInitialize,
   mockSafeTransferToken,
 } = vi.hoisted(() => ({
@@ -190,6 +192,8 @@ const {
   mockMarkDepositProcessed: vi.fn().mockResolvedValue(undefined),
   mockRecordProcessingEvent: vi.fn().mockResolvedValue(undefined),
   mockUpsertCycle: vi.fn().mockResolvedValue(undefined),
+  mockAppendUserVaultActivityEvent: vi.fn().mockResolvedValue(undefined),
+  mockListUserVaultActivityEvents: vi.fn().mockResolvedValue([]),
   mockSafeInitialize: vi.fn().mockResolvedValue(undefined),
   mockSafeTransferToken: vi.fn().mockResolvedValue({ success: true, txHash: "0xsafe" }),
 }));
@@ -203,6 +207,17 @@ vi.mock("../repositories/flatBookStateRepository.js", () => ({
     upsertCycle: mockUpsertCycle,
     listDepositParticipantAddresses: vi.fn().mockResolvedValue([]),
     recordQueuedDeposit: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
+vi.mock("../repositories/activityEventRepository.js", () => ({
+  activityEventRepository: {
+    appendUserVaultActivityEvent: mockAppendUserVaultActivityEvent,
+    appendVaultLifecycleEvent: vi.fn().mockResolvedValue(undefined),
+    listUserVaultActivityEvents: mockListUserVaultActivityEvents,
+    listVaultLifecycleEvents: vi.fn().mockResolvedValue([]),
+    listVaultUserActivityEvents: vi.fn().mockResolvedValue([]),
+    listDepositActivityAddresses: vi.fn().mockResolvedValue([]),
   },
 }));
 
@@ -359,6 +374,12 @@ describe("Settlement Lifecycle Integration Tests", () => {
       }),
       getClaimableDepositAssets: vi.fn().mockResolvedValue(0n),
       getClaimableDepositShares: vi.fn().mockResolvedValue(0n),
+      getControllerRedemptionState: vi.fn().mockResolvedValue({
+        currentCycle: 10n,
+        pendingShares: 0n,
+        claimableShares: 0n,
+        claimableAssets: 0n,
+      }),
       getReservedRedemptionAssets: vi.fn().mockResolvedValue(0n),
       getErc20Balance: vi.fn().mockResolvedValue(10_000_000n),
       getBatch: vi.fn().mockResolvedValue({
@@ -704,6 +725,102 @@ describe("Settlement Lifecycle Integration Tests", () => {
       expect(mockClient.flattenBatch).toHaveBeenCalledTimes(1);
     });
 
+    it("processes a current closed batch instead of treating it as finalized", async () => {
+      (mockClient.getCurrentBatch as ReturnType<typeof vi.fn>).mockResolvedValue(10n);
+      (mockClient.getBatch as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({
+          batchId: 10n,
+          startTime: 1705272000n,
+          endTime: 1705275600n,
+          cutoffTime: 1705275600n,
+          snapshotNAV: 1000000000000n,
+          lockedClearingPrice: 0n,
+          snapshotTimestamp: 1705272000n,
+          totalSharesPending: 0n,
+          totalAssetsSnapshot: 0n,
+          proRataRatio: 1000000000000000000n,
+          totalQueuedDeposits: 1000000n,
+          status: "closed",
+          isPriceLocked: false,
+          exists: true,
+        })
+        .mockResolvedValueOnce({
+          batchId: 10n,
+          startTime: 1705272000n,
+          endTime: 1705275600n,
+          cutoffTime: 1705275600n,
+          snapshotNAV: 1000000000000n,
+          lockedClearingPrice: 1000000000000000000n,
+          snapshotTimestamp: 1705272000n,
+          totalSharesPending: 0n,
+          totalAssetsSnapshot: 0n,
+          proRataRatio: 1000000000000000000n,
+          totalQueuedDeposits: 1000000n,
+          status: "flattening",
+          isPriceLocked: true,
+          exists: true,
+        })
+        .mockResolvedValueOnce({
+          batchId: 10n,
+          startTime: 1705272000n,
+          endTime: 1705275600n,
+          cutoffTime: 1705275600n,
+          snapshotNAV: 1000000000000n,
+          lockedClearingPrice: 1000000000000000000n,
+          snapshotTimestamp: 1705272000n,
+          totalSharesPending: 0n,
+          totalAssetsSnapshot: 0n,
+          proRataRatio: 1000000000000000000n,
+          totalQueuedDeposits: 0n,
+          status: "settled",
+          isPriceLocked: true,
+          exists: true,
+        })
+        .mockResolvedValueOnce({
+          batchId: 10n,
+          startTime: 1705272000n,
+          endTime: 1705275600n,
+          cutoffTime: 1705275600n,
+          snapshotNAV: 1000000000000n,
+          lockedClearingPrice: 1000000000000000000n,
+          snapshotTimestamp: 1705272000n,
+          totalSharesPending: 0n,
+          totalAssetsSnapshot: 0n,
+          proRataRatio: 1000000000000000000n,
+          totalQueuedDeposits: 0n,
+          status: "settled",
+          isPriceLocked: true,
+          exists: true,
+        });
+
+      const provider = new CustomVaultProvider(
+        {
+          vaultId: 1,
+          vaultAddress: mockVaultAddress,
+          providerType: "custom",
+        },
+        mockSettlerKey,
+      );
+      vi.spyOn(provider, "recallWithdrawalLiquidityOnDemand").mockResolvedValue({
+        success: true,
+        action: "none",
+        amount: 0n,
+        requiredVaultBalance: 0n,
+        queuedAssets: 0n,
+        reservedRedemptionAssets: 0n,
+        pendingWithdrawalLiability: 0n,
+        details: "no recall needed",
+      });
+      (provider as unknown as { client: CustomVaultClient }).client =
+        mockClient as CustomVaultClient;
+      vi.spyOn(provider, "canFlattenBatch").mockResolvedValue({ canFlatten: true });
+
+      const result = await provider.executeSettlement(10);
+
+      expect(result.success).toBe(true);
+      expect(mockClient.flattenBatch).toHaveBeenCalledTimes(1);
+    });
+
     it("only syncs deposit participants up to the on-chain deposit cursor", async () => {
       (mockClient.getBatch as ReturnType<typeof vi.fn>)
         .mockResolvedValueOnce({
@@ -796,11 +913,328 @@ describe("Settlement Lifecycle Integration Tests", () => {
 
       expect(result.success).toBe(true);
       expect(mockMarkDepositProcessed).toHaveBeenCalledTimes(1);
+      expect(mockAppendUserVaultActivityEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userAddress: "0x00000000000000000000000000000000000000aa",
+          eventType: "deposit_minted",
+          shareAmount: "0.617239",
+          assetAmount: "1.000000",
+        }),
+      );
       expect(mockMarkDepositProcessed).toHaveBeenCalledWith(
         expect.objectContaining({
           userAddress: "0x00000000000000000000000000000000000000aa",
         }),
       );
+    });
+
+    it("emits deposit completion activity when FlatBook auto-mints and claimable deposit fields stay zero", async () => {
+      mockAppendUserVaultActivityEvent.mockClear();
+      mockListUserVaultActivityEvents.mockResolvedValue([]);
+      (mockClient.getBatch as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({
+          batchId: 10n,
+          startTime: 1705272000n,
+          endTime: 1705275600n,
+          cutoffTime: 1705275600n,
+          snapshotNAV: 1000000000000n,
+          lockedClearingPrice: 1000000000000000000n,
+          snapshotTimestamp: 1705272000n,
+          totalSharesPending: 0n,
+          totalAssetsSnapshot: 0n,
+          proRataRatio: 1000000000000000000n,
+          totalQueuedDeposits: 1000000n,
+          status: "flattening",
+          isPriceLocked: true,
+          exists: true,
+        })
+        .mockResolvedValueOnce({
+          batchId: 10n,
+          startTime: 1705272000n,
+          endTime: 1705275600n,
+          cutoffTime: 1705275600n,
+          snapshotNAV: 1000000000000n,
+          lockedClearingPrice: 1000000000000000000n,
+          snapshotTimestamp: 1705272000n,
+          totalSharesPending: 0n,
+          totalAssetsSnapshot: 0n,
+          proRataRatio: 1000000000000000000n,
+          totalQueuedDeposits: 0n,
+          status: "settled",
+          isPriceLocked: true,
+          exists: true,
+        })
+        .mockResolvedValueOnce({
+          batchId: 10n,
+          startTime: 1705272000n,
+          endTime: 1705275600n,
+          cutoffTime: 1705275600n,
+          snapshotNAV: 1000000000000n,
+          lockedClearingPrice: 1000000000000000000n,
+          snapshotTimestamp: 1705272000n,
+          totalSharesPending: 0n,
+          totalAssetsSnapshot: 0n,
+          proRataRatio: 1000000000000000000n,
+          totalQueuedDeposits: 0n,
+          status: "settled",
+          isPriceLocked: true,
+          exists: true,
+        });
+      (mockClient.getCycleParticipants as ReturnType<typeof vi.fn>).mockResolvedValue({
+        depositParticipants: ["0x00000000000000000000000000000000000000dd"],
+        redeemParticipants: [],
+      });
+      (mockClient.getCycleData as ReturnType<typeof vi.fn>).mockResolvedValue({
+        lockedNav: 1000000000000000000n,
+        totalQueuedDepositAssets: 1000000n,
+        totalQueuedRedeemShares: 0n,
+        totalQueuedRedeemAssets: 0n,
+        depositCursor: 1n,
+        redeemCursor: 0n,
+        processingStartedAt: 1705272000n,
+        depositsComplete: true,
+        redeemsComplete: true,
+        finalized: false,
+      });
+      (mockClient.getClaimableDepositAssets as ReturnType<typeof vi.fn>).mockResolvedValue(0n);
+      (mockClient.getClaimableDepositShares as ReturnType<typeof vi.fn>).mockResolvedValue(0n);
+      mockGetQueueParticipant.mockResolvedValue({
+        id: 2,
+        queuedDepositAssets: "1.000000",
+      });
+
+      const provider = new CustomVaultProvider(
+        {
+          vaultId: 1,
+          vaultAddress: mockVaultAddress,
+          providerType: "custom",
+        },
+        mockSettlerKey,
+      );
+      (provider as unknown as { client: CustomVaultClient }).client =
+        mockClient as CustomVaultClient;
+
+      const result = await provider.executeSettlement(10);
+
+      expect(result.success).toBe(true);
+      expect(mockAppendUserVaultActivityEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userAddress: "0x00000000000000000000000000000000000000dd",
+          eventType: "deposit_minted",
+          assetAmount: "1.000000",
+          shareAmount: "1",
+        }),
+      );
+    });
+
+    it("writes canonical user activity when queued withdrawals become claimable", async () => {
+      (mockClient.getBatch as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({
+          batchId: 10n,
+          startTime: 1705272000n,
+          endTime: 1705275600n,
+          cutoffTime: 1705275600n,
+          snapshotNAV: 1000000000000n,
+          lockedClearingPrice: 1000000000000000000n,
+          snapshotTimestamp: 1705272000n,
+          totalSharesPending: 1000000n,
+          totalAssetsSnapshot: 1000000n,
+          proRataRatio: 1000000000000000000n,
+          totalQueuedDeposits: 0n,
+          status: "flattening",
+          isPriceLocked: true,
+          exists: true,
+        })
+        .mockResolvedValueOnce({
+          batchId: 10n,
+          startTime: 1705272000n,
+          endTime: 1705275600n,
+          cutoffTime: 1705275600n,
+          snapshotNAV: 1000000000000n,
+          lockedClearingPrice: 1000000000000000000n,
+          snapshotTimestamp: 1705272000n,
+          totalSharesPending: 0n,
+          totalAssetsSnapshot: 1000000n,
+          proRataRatio: 1000000000000000000n,
+          totalQueuedDeposits: 0n,
+          status: "settled",
+          isPriceLocked: true,
+          exists: true,
+        })
+        .mockResolvedValueOnce({
+          batchId: 10n,
+          startTime: 1705272000n,
+          endTime: 1705275600n,
+          cutoffTime: 1705275600n,
+          snapshotNAV: 1000000000000n,
+          lockedClearingPrice: 1000000000000000000n,
+          snapshotTimestamp: 1705272000n,
+          totalSharesPending: 0n,
+          totalAssetsSnapshot: 1000000n,
+          proRataRatio: 1000000000000000000n,
+          totalQueuedDeposits: 0n,
+          status: "settled",
+          isPriceLocked: true,
+          exists: true,
+        });
+      (mockClient.getCycleParticipants as ReturnType<typeof vi.fn>).mockResolvedValue({
+        depositParticipants: [],
+        redeemParticipants: ["0x00000000000000000000000000000000000000cc"],
+      });
+      (mockClient.getCycleData as ReturnType<typeof vi.fn>).mockResolvedValue({
+        lockedNav: 1000000000000000000n,
+        totalQueuedDepositAssets: 0n,
+        totalQueuedRedeemShares: 1000000n,
+        totalQueuedRedeemAssets: 1000000n,
+        depositCursor: 0n,
+        redeemCursor: 1n,
+        processingStartedAt: 1705272000n,
+        depositsComplete: true,
+        redeemsComplete: true,
+        finalized: false,
+      });
+      (mockClient.getControllerRedemptionState as ReturnType<typeof vi.fn>).mockResolvedValue({
+        currentCycle: 10n,
+        pendingShares: 0n,
+        claimableShares: 1000000n,
+        claimableAssets: 902575n,
+      });
+
+      const provider = new CustomVaultProvider(
+        {
+          vaultId: 1,
+          vaultAddress: mockVaultAddress,
+          providerType: "custom",
+        },
+        mockSettlerKey,
+      );
+      (provider as unknown as { client: CustomVaultClient }).client =
+        mockClient as CustomVaultClient;
+
+      const result = await provider.executeSettlement(10);
+
+      expect(result.success).toBe(true);
+      expect(mockAppendUserVaultActivityEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userAddress: "0x00000000000000000000000000000000000000cc",
+          eventType: "withdraw_ready",
+          requestId: "claimable-0x00000000000000000000000000000000000000cc",
+          status: "claimable",
+          assetAmount: "0.902575",
+          shareAmount: "1",
+        }),
+      );
+    });
+
+    it("suppresses duplicate worker activity events on repeat passes", async () => {
+      mockAppendUserVaultActivityEvent.mockClear();
+      mockListUserVaultActivityEvents.mockResolvedValueOnce([
+        {
+          id: 1,
+          vaultId: 1,
+          vaultAddress: mockVaultAddress,
+          userAddress: "0x00000000000000000000000000000000000000cc",
+          cycleId: 9,
+          eventType: "withdraw_ready",
+          title: "Withdrawal ready",
+          detail: "Your queued withdrawal finished processing and is ready to claim.",
+          status: "claimable",
+          requestId: "claimable-0x00000000000000000000000000000000000000cc",
+          txHash: null,
+          assetAmount: "0.902575",
+          shareAmount: "1",
+          metadata: null,
+          occurredAt: new Date("2024-01-15T12:00:00Z"),
+          createdAt: new Date("2024-01-15T12:00:00Z"),
+        },
+      ]);
+      (mockClient.getBatch as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({
+          batchId: 10n,
+          startTime: 1705272000n,
+          endTime: 1705275600n,
+          cutoffTime: 1705275600n,
+          snapshotNAV: 1000000000000n,
+          lockedClearingPrice: 1000000000000000000n,
+          snapshotTimestamp: 1705272000n,
+          totalSharesPending: 0n,
+          totalAssetsSnapshot: 1000000n,
+          proRataRatio: 1000000000000000000n,
+          totalQueuedDeposits: 0n,
+          status: "flattening",
+          isPriceLocked: true,
+          exists: true,
+        })
+        .mockResolvedValueOnce({
+          batchId: 10n,
+          startTime: 1705272000n,
+          endTime: 1705275600n,
+          cutoffTime: 1705275600n,
+          snapshotNAV: 1000000000000n,
+          lockedClearingPrice: 1000000000000000000n,
+          snapshotTimestamp: 1705272000n,
+          totalSharesPending: 0n,
+          totalAssetsSnapshot: 1000000n,
+          proRataRatio: 1000000000000000000n,
+          totalQueuedDeposits: 0n,
+          status: "settled",
+          isPriceLocked: true,
+          exists: true,
+        })
+        .mockResolvedValueOnce({
+          batchId: 10n,
+          startTime: 1705272000n,
+          endTime: 1705275600n,
+          cutoffTime: 1705275600n,
+          snapshotNAV: 1000000000000n,
+          lockedClearingPrice: 1000000000000000000n,
+          snapshotTimestamp: 1705272000n,
+          totalSharesPending: 0n,
+          totalAssetsSnapshot: 1000000n,
+          proRataRatio: 1000000000000000000n,
+          totalQueuedDeposits: 0n,
+          status: "settled",
+          isPriceLocked: true,
+          exists: true,
+        });
+      (mockClient.getCycleParticipants as ReturnType<typeof vi.fn>).mockResolvedValue({
+        depositParticipants: [],
+        redeemParticipants: ["0x00000000000000000000000000000000000000cc"],
+      });
+      (mockClient.getCycleData as ReturnType<typeof vi.fn>).mockResolvedValue({
+        lockedNav: 1000000000000000000n,
+        totalQueuedDepositAssets: 0n,
+        totalQueuedRedeemShares: 1000000n,
+        totalQueuedRedeemAssets: 1000000n,
+        depositCursor: 0n,
+        redeemCursor: 1n,
+        processingStartedAt: 1705272000n,
+        depositsComplete: true,
+        redeemsComplete: true,
+        finalized: false,
+      });
+      (mockClient.getControllerRedemptionState as ReturnType<typeof vi.fn>).mockResolvedValue({
+        currentCycle: 10n,
+        pendingShares: 0n,
+        claimableShares: 1000000n,
+        claimableAssets: 902575n,
+      });
+
+      const provider = new CustomVaultProvider(
+        {
+          vaultId: 1,
+          vaultAddress: mockVaultAddress,
+          providerType: "custom",
+        },
+        mockSettlerKey,
+      );
+      (provider as unknown as { client: CustomVaultClient }).client =
+        mockClient as CustomVaultClient;
+
+      const result = await provider.executeSettlement(10);
+
+      expect(result.success).toBe(true);
+      expect(mockAppendUserVaultActivityEvent).not.toHaveBeenCalled();
     });
 
     it("should return early if epoch is already settled", async () => {
@@ -1631,7 +2065,7 @@ describe("Settlement Lifecycle Integration Tests", () => {
       expect(claimResult.assetsReceived).toBeGreaterThan(0n);
     });
 
-    it("should not auto-reopen an already settled batch during maintenance polling", async () => {
+    it("reopens the current settled batch during maintenance polling", async () => {
       (mockClient.getBatch as ReturnType<typeof vi.fn>)
         .mockResolvedValueOnce({
           batchId: 10n,
@@ -1693,8 +2127,8 @@ describe("Settlement Lifecycle Integration Tests", () => {
       const result = await provider.executeSettlement(10);
 
       expect(result.success).toBe(true);
-      expect(mockClient.reopenBatch).not.toHaveBeenCalled();
-      expect(result.txHash).toBeUndefined();
+      expect(mockClient.reopenBatch).toHaveBeenCalledTimes(1);
+      expect(result.txHash).toBe("0xreopen");
     });
 
     it("should allow cancellation before settlement cutoff", async () => {

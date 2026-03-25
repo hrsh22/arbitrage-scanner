@@ -666,7 +666,7 @@ export class CustomVaultClient {
       return cycle.finalized ? "settled" : "closed";
     }
     if (state === 0) return "open";
-    if (state === 1) return "cutoff";
+    if (state === 1) return "closed";
     if (state === 2) {
       if (cycle.redeemsComplete && cycle.depositsComplete) {
         return "settled";

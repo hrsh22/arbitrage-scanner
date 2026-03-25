@@ -527,7 +527,9 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> 
   let safeUsdc = 0;
   let deployedCostBasis = 0;
   let redeemableCostBasis = 0;
+  let redeemableMarketValue = 0;
   let totalAssets = 0;
+  let trackedTotalAssets = 0;
   let sharePrice = 1;
   let lastUpdated = latestNav
     ? new Date(String(latestNav.timestamp)).toISOString()
@@ -544,27 +546,24 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> 
     // For custom vaults, use boundary NAV from contract (excludes queued/reserved)
     if (config.type === "custom") {
       try {
+        const livePreviewCalculatedAt = new Date().toISOString();
         const livePreview = await createNavOracle(config).getLiveNavPreview();
-        const [lastNavUpdateRaw, totalSupplyRaw] = await Promise.all([
-          publicClient.readContract({
-            address: config.vaultAddress as Address,
-            abi: CUSTOM_VAULT_NAV_ABI,
-            functionName: "lastNAVUpdate",
-          }),
-          publicClient.readContract({
-            address: config.vaultAddress as Address,
-            abi: VAULT_TOTAL_SUPPLY_ABI,
-            functionName: "totalSupply",
-          }),
-        ]);
+        const totalSupplyRaw = await publicClient.readContract({
+          address: config.vaultAddress as Address,
+          abi: VAULT_TOTAL_SUPPLY_ABI,
+          functionName: "totalSupply",
+        });
 
         vaultUsdc = livePreview.vaultUsdc;
         safeUsdc = livePreview.safeUsdc;
         idleAssets = livePreview.idleAssets;
         deployedCostBasis = livePreview.deployedCostBasis;
+        redeemableCostBasis = livePreview.redeemableCostBasis;
+        redeemableMarketValue = livePreview.redeemableMarketValue;
         totalAssets = livePreview.totalAssets;
+        trackedTotalAssets = livePreview.trackedTotalAssets;
         sharePrice = livePreview.sharePrice;
-        lastUpdated = new Date(Number(lastNavUpdateRaw) * 1000).toISOString();
+        lastUpdated = livePreviewCalculatedAt;
         customStatusReadSucceeded = true;
 
         logger.debug("Vault API: Using live NAV preview for custom vault status", {
@@ -572,9 +571,13 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> 
           pricingSupply: livePreview.pricingSupply,
           sharePrice,
           totalAssets,
+          totalSupply: Number(formatUnits(totalSupplyRaw, VAULT_SHARE_DECIMALS)),
           vaultUsdc,
           safeUsdc,
           idleAssets,
+          redeemableCostBasis,
+          redeemableMarketValue: livePreview.redeemableMarketValue,
+          livePreviewCalculatedAt,
         });
       } catch (error) {
         logger.warn("Vault API: Failed to read boundary NAV for custom vault, falling back", {
@@ -585,8 +588,7 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> 
       }
     }
 
-    // For legacy vaults OR if custom vault boundary NAV read failed
-    if (config.type !== "custom" || !customStatusReadSucceeded) {
+    if (config.type !== "custom") {
       const [vaultUsdcRaw, safeUsdcRaw, totalSupplyRaw] = await Promise.all([
         publicClient.readContract({
           address: USDC_E_ADDRESS as Address,
@@ -618,6 +620,7 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> 
         0,
       );
       totalAssets = idleAssets + deployedCostBasis;
+      trackedTotalAssets = totalAssets;
       sharePrice = totalSupply > 0 ? totalAssets / totalSupply : 1;
 
       logger.debug("Vault API: Using raw ratio for legacy vault status", {
@@ -634,8 +637,7 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> 
     });
   }
 
-  // Fallback to NAV snapshot if on-chain reads failed
-  if (!customStatusReadSucceeded && totalAssets <= 0 && latestTotalAssets > 0) {
+  if (config.type === "custom" && !customStatusReadSucceeded && latestTotalAssets > 0) {
     totalAssets = latestTotalAssets;
     idleAssets = latestIdleAssets;
     deployedCostBasis = latestDeployed;
@@ -643,6 +645,21 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> 
       (sum, position) => sum + position.costBasis,
       0,
     );
+    redeemableMarketValue = Math.max(totalAssets - idleAssets - deployedCostBasis, 0);
+    trackedTotalAssets = totalAssets;
+    sharePrice = latestSharePrice > 0 ? latestSharePrice : sharePrice;
+    lastUpdated = latestNav ? new Date(String(latestNav.timestamp)).toISOString() : lastUpdated;
+  }
+
+  if (config.type !== "custom" && totalAssets <= 0 && latestTotalAssets > 0) {
+    totalAssets = latestTotalAssets;
+    idleAssets = latestIdleAssets;
+    deployedCostBasis = latestDeployed;
+    redeemableCostBasis = redeemablePositions.reduce(
+      (sum, position) => sum + position.costBasis,
+      0,
+    );
+    trackedTotalAssets = totalAssets;
     sharePrice = latestSharePrice > 0 ? latestSharePrice : sharePrice;
   }
 
@@ -653,11 +670,13 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> 
   return {
     nav: {
       totalAssets,
+      trackedTotalAssets,
       idleAssets,
       vaultUsdc,
       safeUsdc,
       deployedCostBasis,
       redeemableCostBasis,
+      redeemableMarketValue,
       sharePrice,
       positionCount: openPositions.length,
       redeemableCount: redeemablePositions.length,
@@ -666,7 +685,7 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> 
     positionCount: openPositions.length,
     deployedRatio,
     committedExposureRatio,
-    totalCostBasis: deployedCostBasis,
+    totalCostBasis: deployedCostBasis + redeemableCostBasis,
     mode: getEffectiveMode(config),
     capState,
     riskState: lifecycle?.riskState ?? "unknown",

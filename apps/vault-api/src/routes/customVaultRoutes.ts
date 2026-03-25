@@ -1005,11 +1005,14 @@ async function getCustomVaultProvider(vaultId: number): Promise<CustomVaultProvi
 
 async function getCachedLifecycleFields(
   provider: CustomVaultProvider,
+  fresh = false,
 ): Promise<Record<string, unknown> | undefined> {
-  const cached = lifecycleCache.get(provider);
   const now = Date.now();
-  if (cached && cached.expiresAt > now) {
-    return cached.value;
+  if (!fresh) {
+    const cached = lifecycleCache.get(provider);
+    if (cached && cached.expiresAt > now) {
+      return cached.value;
+    }
   }
 
   const lifecycle = { ...(await provider.getLifecycle()) };
@@ -2169,7 +2172,9 @@ export function buildCustomVaultRouter(): Router {
       // and exposed through a dedicated route method in the provider.
       let lifecycleFields: Record<string, unknown> | undefined = undefined;
       try {
-        lifecycleFields = await getCachedLifecycleFields(provider);
+        const freshLifecycle =
+          typeof req.query === "object" && req.query !== null && req.query.fresh === "1";
+        lifecycleFields = await getCachedLifecycleFields(provider, freshLifecycle);
       } catch {
         lifecycleFields = undefined;
       }

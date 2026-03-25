@@ -373,8 +373,12 @@ export async function postRecordClaimActivity(
  * Get current cycle status
  * GET /api/vaults/:vaultId/cycles/current
  */
-export async function fetchCurrentCycleStatus(vaultId: number): Promise<CycleStatusResponse> {
-  return fetchWithAuth(makeUrl(`${CUSTOM_VAULT_API_PREFIX}/${vaultId}/cycles/current`));
+export async function fetchCurrentCycleStatus(
+  vaultId: number,
+  fresh = false,
+): Promise<CycleStatusResponse> {
+  const qs = fresh ? buildQuery({ fresh: 1 }) : undefined;
+  return fetchWithAuth(makeUrl(`${CUSTOM_VAULT_API_PREFIX}/${vaultId}/cycles/current`, qs));
 }
 
 /**
