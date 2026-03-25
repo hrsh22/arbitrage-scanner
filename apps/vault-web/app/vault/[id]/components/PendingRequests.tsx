@@ -30,9 +30,7 @@ function PendingRequestCard({ request }: { request: RedemptionRequest; cycleInfo
         <div className="flex items-center gap-2">
           <Hash className="h-4 w-4 text-amber-200" aria-hidden="true" />
           <span className="text-sm font-mono font-medium text-amber-50" data-testid="request-id">
-            {request.requestKind === "controller_pending"
-              ? "current queue"
-              : `${request.requestId.slice(0, 8)}...${request.requestId.slice(-4)}`}
+            Pending withdrawal
           </span>
           <Badge
             variant="outline"
@@ -43,27 +41,21 @@ function PendingRequestCard({ request }: { request: RedemptionRequest; cycleInfo
         </div>
         <span className="text-xs text-amber-50/70">
           {request.requestKind === "controller_pending"
-            ? "Current cycle"
+            ? ""
             : formatDateTime(request.createdAt)}
         </span>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <p className="text-xs text-amber-50/70">Shares leaving</p>
+          <p className="text-xs text-amber-50/70">Amount</p>
           <p className="text-sm font-mono font-medium text-amber-50" data-testid="shares-requested">
             {request.sharesFormatted} shares
           </p>
         </div>
-        <div>
-          <p className="text-xs text-amber-50/70">Queued cycle</p>
-          <p className="text-sm font-mono font-medium text-amber-50" data-testid="target-cycle">
-            #{request.targetCycle}
-          </p>
-        </div>
       </div>
       <p className="text-xs leading-6 text-amber-50/90">
-        Your withdrawal is pending. The final amount will be confirmed at settlement.
+        Your withdrawal is being processed.
       </p>
     </div>
   );

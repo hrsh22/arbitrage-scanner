@@ -8,8 +8,8 @@ const showcaseVaults = [
     category: "Vault",
     manager: "Sisyphus Agent",
     risk: "High",
-    focus: "BTC 15m double-or-nothing",
-    state: "Queue only",
+    focus: "BTC 15m market",
+    state: "Active",
   },
 ];
 
@@ -22,12 +22,8 @@ export function ShowcaseSection() {
         <div className="mb-12 flex flex-col md:flex-row md:items-end justify-between gap-6">
           <div>
             <h2 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl mb-4">
-              Preview live vault workspaces
+              Discover Vaults
             </h2>
-            <p className="text-slate-400 max-w-xl">
-              See the mandate, current state, and operator context before you open the full vault
-              page.
-            </p>
           </div>
           <Link
             href="/discover"

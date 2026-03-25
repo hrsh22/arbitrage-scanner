@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Button } from "@workspace/ui/components/button";
 import { Badge } from "@workspace/ui/components/badge";
 import { Separator } from "@workspace/ui/components/separator";
@@ -53,6 +54,8 @@ export function Header({ className }: HeaderProps) {
   const { walletProvider } = useAppKitProvider<Eip1193Provider>("eip155");
   const { disconnect } = useDisconnect();
   const { open } = useAppKit();
+  const pathname = usePathname();
+  const isHomePage = pathname === '/';
 
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -175,7 +178,7 @@ export function Header({ className }: HeaderProps) {
                 Polymarket Vault
               </span>
               <span className="block text-xs text-slate-400">
-                Agent-managed vaults for prediction markets
+                Prediction Market Vaults
               </span>
             </div>
           </Link>
@@ -192,104 +195,106 @@ export function Header({ className }: HeaderProps) {
           </nav>
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-3">
-          <Badge
-            variant="outline"
-            className={`gap-1.5 font-normal ${networkBadgeClass}`}
-            title={
-              isTestnet
-                ? "Polymarket trading is disabled on testnet"
-                : "Connected to Polygon Mainnet"
-            }
-          >
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${isTestnet ? "bg-amber-500" : "bg-emerald-500"}`}
-            />
-            {networkDisplayName}
-          </Badge>
-
-          {error && <span className="animate-pulse text-xs text-rose-300">{error}</span>}
-
-          {isAuthenticated ? (
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2 rounded-[2px] border border-[#212121] bg-[#121212] px-3 py-2">
-                <Badge
-                  variant="outline"
-                  className="gap-1.5 border-emerald-400/25 bg-emerald-400/5 font-normal text-emerald-200"
-                >
-                  <span className="h-1.5 w-1.5 rounded-[1px] bg-emerald-500" />
-                  Signed in
-                </Badge>
-                <Separator orientation="vertical" className="h-5 bg-white/10" />
-                <span className="font-mono text-sm text-[#E4E4E7]">{truncateAddress(address)}</span>
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleDisconnect}
-                className="rounded-[10px] text-slate-300 hover:bg-[#212121] hover:text-white"
-              >
-                Disconnect
-              </Button>
-            </div>
-          ) : isConnected ? (
-            <div className="flex items-center gap-3">
-              <div className="hidden rounded-[2px] border border-[#212121] bg-[#121212] px-3 py-2 sm:block">
-                <span className="font-mono text-sm text-[#E4E4E7]">{truncateAddress(address)}</span>
-              </div>
-              <Button
-                onClick={handleSignIn}
-                disabled={isLoading}
-                size="sm"
-                className="min-w-[120px] rounded-[10px] bg-white text-black hover:bg-white/90"
-              >
-                {isLoading ? (
-                  <span className="flex items-center gap-2">
-                    <svg
-                      className="animate-spin h-3.5 w-3.5"
-                      xmlns="http://www.w3.org/2000/svg"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                    >
-                      <circle
-                        className="opacity-25"
-                        cx="12"
-                        cy="12"
-                        r="10"
-                        stroke="currentColor"
-                        strokeWidth="4"
-                      />
-                      <path
-                        className="opacity-75"
-                        fill="currentColor"
-                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                      />
-                    </svg>
-                    Signing...
-                  </span>
-                ) : (
-                  "Sign In"
-                )}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleDisconnect}
-                className="rounded-[10px] text-slate-300 hover:bg-[#212121] hover:text-white"
-              >
-                Disconnect
-              </Button>
-            </div>
-          ) : (
-            <Button
-              onClick={() => open()}
-              size="sm"
-              className="rounded-[10px] bg-white text-black hover:bg-white/90"
+        {!isHomePage && (
+          <div className="flex items-center gap-2 sm:gap-3">
+            <Badge
+              variant="outline"
+              className={`gap-1.5 font-normal ${networkBadgeClass}`}
+              title={
+                isTestnet
+                  ? "Polymarket trading is disabled on testnet"
+                  : "Connected to Polygon Mainnet"
+              }
             >
-              Connect Wallet
-            </Button>
-          )}
-        </div>
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${isTestnet ? "bg-amber-500" : "bg-emerald-500"}`}
+              />
+              {networkDisplayName}
+            </Badge>
+
+            {error && <span className="animate-pulse text-xs text-rose-300">{error}</span>}
+
+            {isAuthenticated ? (
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2 rounded-[2px] border border-[#212121] bg-[#121212] px-3 py-2">
+                  <Badge
+                    variant="outline"
+                    className="gap-1.5 border-emerald-400/25 bg-emerald-400/5 font-normal text-emerald-200"
+                  >
+                    <span className="h-1.5 w-1.5 rounded-[1px] bg-emerald-500" />
+                    Signed in
+                  </Badge>
+                  <Separator orientation="vertical" className="h-5 bg-white/10" />
+                  <span className="font-mono text-sm text-[#E4E4E7]">{truncateAddress(address)}</span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleDisconnect}
+                  className="rounded-[10px] text-slate-300 hover:bg-[#212121] hover:text-white"
+                >
+                  Disconnect
+                </Button>
+              </div>
+            ) : isConnected ? (
+              <div className="flex items-center gap-3">
+                <div className="hidden rounded-[2px] border border-[#212121] bg-[#121212] px-3 py-2 sm:block">
+                  <span className="font-mono text-sm text-[#E4E4E7]">{truncateAddress(address)}</span>
+                </div>
+                <Button
+                  onClick={handleSignIn}
+                  disabled={isLoading}
+                  size="sm"
+                  className="min-w-[120px] rounded-[10px] bg-white text-black hover:bg-white/90"
+                >
+                  {isLoading ? (
+                    <span className="flex items-center gap-2">
+                      <svg
+                        className="animate-spin h-3.5 w-3.5"
+                        xmlns="http://www.w3.org/2000/svg"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                      >
+                        <circle
+                          className="opacity-25"
+                          cx="12"
+                          cy="12"
+                          r="10"
+                          stroke="currentColor"
+                          strokeWidth="4"
+                        />
+                        <path
+                          className="opacity-75"
+                          fill="currentColor"
+                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                        />
+                      </svg>
+                      Signing...
+                    </span>
+                  ) : (
+                    "Sign In"
+                  )}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleDisconnect}
+                  className="rounded-[10px] text-slate-300 hover:bg-[#212121] hover:text-white"
+                >
+                  Disconnect
+                </Button>
+              </div>
+            ) : (
+              <Button
+                onClick={() => open()}
+                size="sm"
+                className="rounded-[10px] bg-white text-black hover:bg-white/90"
+              >
+                Connect Wallet
+              </Button>
+            )}
+          </div>
+        )}
       </div>
     </header>
   );

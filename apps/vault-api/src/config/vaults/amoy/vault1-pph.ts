@@ -18,7 +18,7 @@ const config: VaultInstanceConfig = {
   network: "amoy",
   profile: {
     strategy: "external-ai",
-    strategyLabel: "Double or Nothing BTC 15m",
+    strategyLabel: "BTC 15m",
     description: "Amoy testnet deployment - External AI agent trading Bitcoin 15-minute markets",
     longDescription:
       "Amoy testnet version of Sisyphus Vault. External AI agent managing the vault's Polymarket Safe account with a high-risk, double-or-nothing strategy on Bitcoin 15-minute markets.",

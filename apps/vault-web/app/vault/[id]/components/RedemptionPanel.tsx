@@ -49,17 +49,15 @@ export function RedemptionPanel({
             : cycleInfo?.batchState === "closed" || cycleInfo?.batchState === "cutoff"
               ? "queued"
               : "blocked";
-  const title = executionMode === "instant" ? "Withdraw now" : "Exit queue";
+  const title = executionMode === "instant" ? "Withdraw" : "Withdraw";
   const subtitle =
     executionMode === "instant"
-      ? "Withdraw your shares instantly at the current price."
+      ? "Withdraw instantly at the current price."
       : executionMode === "queued"
         ? vault.type === "custom"
-          ? "Submit a withdrawal request now. The worker will process it and make it claimable once settlement runs."
-          : "Request a queued exit. You'll be able to claim once the cycle completes."
-        : vault.type === "custom"
-          ? "Withdrawals use the queue-first flow for this vault. Requests resume after processing finishes."
-          : "Withdrawals are temporarily paused.";
+          ? "Submit a withdrawal request. You'll be notified when it's ready to claim."
+          : "Request a withdrawal. You can claim once it's processed."
+        : "Withdrawals are temporarily paused.";
 
   return (
     <Card
@@ -76,7 +74,7 @@ export function RedemptionPanel({
       <CardContent>
         <div className="mb-4 flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Mode</p>
+            <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Vault status</p>
             <p className="mt-1 text-sm text-white">{cyclePresentation.label}</p>
           </div>
           <p className="max-w-[240px] text-right text-xs leading-5 text-slate-400">
@@ -88,7 +86,7 @@ export function RedemptionPanel({
           <div className="rounded-2xl border border-white/10 bg-slate-950/35 p-4">
             <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-slate-500">
               <Wallet className="h-3.5 w-3.5" />
-              Start exit
+              New withdrawal
             </div>
             <RequestForm
               vault={vault}

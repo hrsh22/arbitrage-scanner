@@ -14,7 +14,7 @@ const config: VaultInstanceConfig = {
   network: "mainnet",
   profile: {
     strategy: "external-ai",
-    strategyLabel: "Double or Nothing BTC 15m",
+    strategyLabel: "BTC 15m",
     description: "External AI agent trading high-risk Bitcoin 15-minute markets on Polygon",
     longDescription:
       "Sisyphus is an external AI agent managing the vault's Polymarket Safe account with a high-risk, double-or-nothing strategy on Bitcoin 15-minute markets. The system keeps NAV, position, and allocation tracking continuously updated for transparent monitoring.",

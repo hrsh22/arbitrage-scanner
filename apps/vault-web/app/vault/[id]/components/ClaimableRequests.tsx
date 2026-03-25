@@ -122,9 +122,7 @@ function ClaimableRequestCard({
         <div className="flex items-center gap-2">
           <Hash className="h-4 w-4 text-emerald-200" aria-hidden="true" />
           <span className="text-sm font-mono font-medium text-emerald-50">
-            {request.requestKind === "controller_claimable"
-              ? "wallet aggregate"
-              : `${request.requestId.slice(0, 8)}...${request.requestId.slice(-4)}`}
+            Withdrawal
           </span>
           <Badge
             variant="outline"
@@ -132,29 +130,25 @@ function ClaimableRequestCard({
           >
             {request.status === "claimed"
               ? "Claimed"
-              : request.requestKind === "controller_claimable"
-                ? "Claimable balance"
-                : "Claimable"}
+              : "Ready to claim"}
           </Badge>
         </div>
         <span className="text-xs text-emerald-50/70">
           {request.requestKind === "controller_claimable"
-            ? "Across settled cycles"
+            ? ""
             : `Requested ${formatDateTime(request.createdAt)}`}
         </span>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <p className="text-xs text-emerald-50/70">
-            {request.requestKind === "controller_claimable" ? "Shares claimable" : "Shares settled"}
-          </p>
+          <p className="text-xs text-emerald-50/70">Amount</p>
           <p className="text-sm font-mono font-medium text-emerald-50">
-            {request.sharesFormatted} shares
+            ${request.claimableAssetsFormatted || "0.00"}
           </p>
         </div>
         <div>
-          <p className="text-xs text-emerald-50/70">USDC ready now</p>
+          <p className="text-xs text-emerald-50/70">Available</p>
           <p
             className="text-sm font-mono font-medium text-emerald-50"
             data-testid="claimable-amount"
@@ -162,36 +156,23 @@ function ClaimableRequestCard({
             ${request.claimableAssetsFormatted || "0.00"}
           </p>
         </div>
-        {request.requestKind !== "controller_claimable" && (
-          <div>
-            <p className="text-xs text-emerald-50/70">Settled cycle</p>
-            <p className="text-sm font-mono font-medium text-emerald-50">#{request.targetCycle}</p>
-          </div>
-        )}
+
       </div>
 
-      {request.requestKind === "controller_claimable" && (
-        <div className="flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 p-2.5 text-xs text-cyan-50/90">
-          <CircleHelp className="h-3.5 w-3.5 text-cyan-200" />
-          <p>
-            This amount is claimable from the vault contract after processing. It does not require a
-            separate safe transfer first.
-          </p>
-        </div>
-      )}
+
 
       {/* Settlement indicator */}
       {request.proRataApplied && (
         <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 p-2">
           <div className="flex items-center gap-2">
             <Percent className="h-3.5 w-3.5 text-amber-200" aria-hidden="true" />
-            <span className="text-xs font-medium text-amber-100">Pro-rata settlement applied</span>
+            <span className="text-xs font-medium text-amber-100">Partial withdrawal</span>
           </div>
           <p className="mt-1 text-xs leading-6 text-amber-50/90">
             {request.proRataPercentage && (
               <>
                 This withdrawal was partially filled at{" "}
-                {(request.proRataPercentage * 100).toFixed(1)}% due to limited liquidity.
+                {(request.proRataPercentage * 100).toFixed(1)}% due to limited availability.
               </>
             )}
           </p>
@@ -250,7 +231,7 @@ function ClaimableRequestCard({
         >
           <Clock className="h-4 w-4 text-slate-400" aria-hidden="true" />
           <span className="text-sm text-slate-300">
-            Processing — the worker is preparing your on-chain claimable balance.
+            Processing — your withdrawal will be ready shortly.
           </span>
         </div>
       )}

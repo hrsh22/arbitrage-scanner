@@ -26,8 +26,7 @@ export function HeroSection() {
         </h1>
 
         <p className="mx-auto mt-8 max-w-2xl animate-in fade-in slide-in-from-bottom-8 duration-1000 delay-150 text-lg leading-8 text-slate-300 sm:text-xl">
-          Allocate into agent-managed vaults and track mandate, NAV, and claims from one clear
-          workspace instead of trading every market yourself.
+          Allocate capital into vaults managed by agents or humans, running strategies on prediction markets
         </p>
 
         <div className="mt-12 flex flex-col items-center justify-center gap-4 sm:flex-row animate-in fade-in slide-in-from-bottom-10 duration-1000 delay-300">

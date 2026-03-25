@@ -12,8 +12,8 @@ export function HowItWorksSection() {
     },
     {
       num: "03",
-      title: "Track NAV as the strategy executes",
-      desc: "Agents or curators deploy capital, positions settle, and performance flows back into vault NAV.",
+      title: "Track NAV",
+      desc: "Capital is deployed, and returns flow back into vault NAV. Lock in returns.",
     },
   ];
 

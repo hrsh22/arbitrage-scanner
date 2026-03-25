@@ -108,8 +108,8 @@ export function RequestForm({
     : executionMode === "blocked"
       ? isCustomVault
         ? cycleInfo?.telemetryFresh === false
-          ? "Queue status is still refreshing. Please wait a moment."
-          : "Withdrawals are temporarily unavailable while the vault finishes processing."
+           ? "Loading, please wait…"
+           : "Withdrawals are temporarily unavailable while the vault finishes processing."
         : "Withdrawals are temporarily paused."
       : null;
   const indicativePayoutUsd =
@@ -162,7 +162,7 @@ export function RequestForm({
     if (!queueConfirmed) return;
     setError(null);
     setSuccessMessage(
-      "Withdrawal request submitted. It will settle when the current queue is processed.",
+      "Withdrawal request submitted. You'll be notified when it's ready.",
     );
     setAmount("");
     onSuccess("queued");
@@ -213,7 +213,7 @@ export function RequestForm({
     <div className="space-y-4" data-testid="request-form">
       {/* Shares Balance */}
       <div className="flex items-center justify-between text-sm">
-        <span className="text-slate-400">Available shares</span>
+        <span className="text-slate-400">Your balance</span>
         <span className="font-medium font-mono text-slate-100" data-testid="share-balance">
           {Number(formattedShares).toFixed(6)} shares
         </span>
@@ -225,7 +225,7 @@ export function RequestForm({
             htmlFor="shares-input"
             className="text-xs font-medium uppercase tracking-[0.16em] text-slate-400"
           >
-            Shares to exit
+            Shares to withdraw
           </Label>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -243,7 +243,7 @@ export function RequestForm({
               className="max-w-64 bg-slate-100 text-slate-900"
             >
               {isQueuedMode
-                ? "Your withdrawal request is accepted immediately and will be processed by the worker in the next settlement window. Once processed, the claimable amount is locked."
+                ? "Your request is submitted instantly. You'll be able to claim once it's processed."
                 : "Withdrawals are temporarily paused."}
             </TooltipContent>
           </Tooltip>
@@ -306,13 +306,13 @@ export function RequestForm({
                 ? "Confirm in wallet..."
                 : queueConfirming
                   ? "Submitting..."
-                  : "Start exit"}
+                  : "Withdraw"}
             </Button>
           )}
         </div>
         <p id="shares-input-help" className="text-xs leading-6 text-slate-400">
           {isQueuedMode
-            ? "Withdrawals are request-first. If the vault is already flat, the worker should process them quickly; otherwise they settle in the next processing window."
+            ? "Your request will be processed shortly."
             : "Withdrawals are temporarily paused."}
         </p>
       </div>
@@ -321,7 +321,7 @@ export function RequestForm({
         <div className="space-y-3 rounded-2xl border border-cyan-400/20 bg-cyan-400/10 p-4">
           <div className="flex items-center justify-between text-sm">
             <div>
-              <p className="text-cyan-50/70">Indicative payout</p>
+              <p className="text-cyan-50/70">Estimated payout</p>
               <p className="mt-1 text-lg font-semibold text-cyan-50">
                 {indicativePayoutUsd !== null ? `$${indicativePayoutUsd.toFixed(2)}` : "--"}
               </p>
@@ -334,7 +334,7 @@ export function RequestForm({
           <div className="flex items-start gap-2 rounded-xl border border-cyan-400/15 bg-black/10 p-2.5">
             <ArrowUpRight className="mt-0.5 h-3.5 w-3.5 text-cyan-200" />
             <p className="text-xs leading-6 text-cyan-50/90">
-              Estimated. Final amount will be confirmed when the worker processes the request.
+              Estimated. Final amount confirmed after processing.
             </p>
           </div>
         </div>
@@ -347,8 +347,8 @@ export function RequestForm({
         >
           <AlertTriangle className="h-4 w-4 text-amber-200" aria-hidden="true" />
           <AlertDescription className="text-xs leading-6 text-amber-50/90">
-            You have an active redemption request (#{existingRequest?.requestId.slice(0, 8)}). Start
-            a new one after the current request finishes or is cleared.
+            You have an active withdrawal request. Start
+            a new one after the current request finishes.
           </AlertDescription>
         </Alert>
       )}
@@ -357,7 +357,7 @@ export function RequestForm({
         <Alert className="border-amber-400/20 bg-amber-400/10" data-testid="broken-request-warning">
           <AlertTriangle className="h-4 w-4 text-amber-200" aria-hidden="true" />
           <AlertDescription className="text-xs leading-6 text-amber-50/90">
-            Request #{existingRequest?.requestId.slice(0, 8)} encountered an issue. Please contact
+            A previous request encountered an issue. Please contact
             support.
           </AlertDescription>
         </Alert>

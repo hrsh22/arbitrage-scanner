@@ -10,7 +10,7 @@ export function InfrastructureTrustSection() {
     {
       icon: LineChart,
       title: "NAV & shares",
-      desc: "Users own a product, not scattered positions.",
+      desc: "Users invest in a strategy, not individual positions.",
     },
     {
       icon: ShieldCheck,

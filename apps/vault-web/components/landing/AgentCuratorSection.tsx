@@ -37,10 +37,7 @@ export function AgentCuratorSection() {
             <span className="text-slate-400">to prediction markets</span>
           </h2>
           <p className="text-lg text-slate-300 leading-relaxed">
-            PM Vaults are built to make prediction market capital allocatable. Users shouldn’t need
-            to parse individual trades to understand what they own. Each vault surfaces the manager,
-            strategy type, and risk profile up front, while the execution layer stays contained
-            inside the vault.
+            PM Vaults are built to make prediction market capital allocatable. Users delegate capital to experts, generating passive exposure to Predication Markets. Each vault surfaces the manager, strategy type, and risk profile up front, while the execution stays contained inside the vault.
           </p>
         </div>
 

@@ -231,7 +231,7 @@ function getDepositActionLabel(vault: VaultInstance, cycle: Cycle | null): strin
   }
 
   if (vault.type === "custom" && cycle?.executionMode === "instant") {
-    return "Open now";
+    return "Open";
   }
 
   if (
@@ -239,14 +239,14 @@ function getDepositActionLabel(vault: VaultInstance, cycle: Cycle | null): strin
     cycle?.executionMode === "queued" &&
     cycle.batchState !== "closed"
   ) {
-    return "Waiting for close";
+    return "Accepting soon";
   }
 
   if (vault.type === "custom" && cycle?.executionMode === "queued") {
-    return "Join next cycle";
+    return "Queue deposit";
   }
 
-  return "Open now";
+  return "Open";
 }
 
 function getHeroStateLabel(vault: VaultInstance, cycle: Cycle | null): string {
@@ -259,31 +259,22 @@ function getHeroStateLabel(vault: VaultInstance, cycle: Cycle | null): string {
     cycle?.batchState === "flattening" ||
     cycle?.batchState === "settling"
   ) {
-    return "Processing";
+    return "Trading";
   }
 
   if (vault.type === "custom" && cycle?.executionMode === "queued") {
-    return "Queued";
+    return "Accepting deposits";
   }
 
   return "Open";
 }
 
 function getHeroSentence(vault: VaultInstance): string {
-  const managementLabel = vault.type === "custom" ? "Agent-managed" : "Vault-managed";
-  return `${managementLabel} ${vault.profile.strategyLabel} vault running a ${vault.profile.riskLevel}-risk strategy on Polymarket.`;
+  return `${vault.profile.strategyLabel} strategy with ${vault.profile.riskLevel} risk, running on Polymarket.`;
 }
 
 function getManagementLabel(vault: VaultInstance): string {
-  return vault.type === "custom" ? "Agent managed" : "Vault managed";
-}
-
-function getInfraLabel(vault: VaultInstance): string {
-  return vault.type === "custom" ? "Custom vault" : "Standard vault";
-}
-
-function getStyleLabel(vault: VaultInstance): string {
-  return vault.type === "custom" ? "Cycle-based" : "Share-based";
+  return vault.type === "custom" ? "Agent-operated" : "Automated";
 }
 
 function getRiskScore(level: VaultInstance["profile"]["riskLevel"]): string {
@@ -300,7 +291,7 @@ function getRiskScore(level: VaultInstance["profile"]["riskLevel"]): string {
 }
 
 function getRiskSummary(vault: VaultInstance, cycle: Cycle | null): string {
-  return `${toTitleCase(vault.profile.riskLevel)}-risk strategy with ${getLiquidityLabel(vault, cycle).toLowerCase()} and no principal protection.`;
+  return `${toTitleCase(vault.profile.riskLevel)} risk strategy. ${getLiquidityLabel(vault, cycle)}. No principal protection.`;
 }
 
 const MEANINGFUL_ACTIVITY_TYPES = new Set([
@@ -775,17 +766,16 @@ function TechnicalDetailsDialog({
           variant="outline"
           className="rounded-[10px] border border-[#656565]/40 bg-[#121212] text-white hover:bg-[#212121]"
         >
-          Technical details
+          Addresses
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-3xl rounded-[2px] border border-[#212121] bg-[#0A0A0A] text-white shadow-none">
         <DialogHeader>
           <DialogTitle className="text-2xl tracking-tight text-white">
-            Technical details
+            Addresses
           </DialogTitle>
           <DialogDescription className="text-sm leading-6 text-slate-400">
-            Contract addresses and cash-location context for power users monitoring execution and
-            liquidity routing.
+            Contract addresses and wallet balances.
           </DialogDescription>
         </DialogHeader>
 
@@ -974,8 +964,8 @@ function DepositRail({
       setErrorMessage(null);
       setMessage(
         queueDepositConfirmed
-          ? "Deposit queued."
-          : "Deposit confirmed and minted at the latest NAV.",
+          ? "Deposit queued — it will process shortly."
+          : "Deposit confirmed!",
       );
       resetApprove();
       resetDeposit();
@@ -1017,7 +1007,7 @@ function DepositRail({
       return true;
     } catch (error) {
       setErrorMessage(
-        `Live NAV refresh failed. Please retry in a few seconds (${error instanceof Error ? error.message : "Unknown error"}).`,
+        "Price refresh failed. Please try again.",
       );
       return false;
     } finally {
@@ -1042,7 +1032,7 @@ function DepositRail({
       if (isCustomVault) {
         if (!latestCycle) {
           setErrorMessage(
-            "Could not refresh the live vault cycle state. Please try again in a moment.",
+            "Could not verify vault status. Please try again in a moment.",
           );
           return;
         }
@@ -1055,7 +1045,7 @@ function DepositRail({
 
         if (latestCycle?.executionMode === "queued") {
           setErrorMessage(
-            "Queued deposits open only after the current book is closed on-chain. While the vault is still open, this contract only allows instant deposits.",
+            "Deposits are temporarily queued. Please try again shortly.",
           );
           return;
         }
@@ -1079,7 +1069,7 @@ function DepositRail({
         }
 
         setErrorMessage(
-          "Deposit state is still syncing. Please wait a moment and try again after the vault cycle status refreshes.",
+          "Still loading. Please wait a moment and try again.",
         );
         return;
       }
@@ -1099,7 +1089,7 @@ function DepositRail({
   return (
     <div className="space-y-2">
       <div className="space-y-2">
-        <RailStat label="Deposit state" value={getDepositActionLabel(vault, cycle)} />
+        <RailStat label="Status" value={getDepositActionLabel(vault, cycle)} />
         <RailStat label="NAV" value={nav ? formatSharePrice(nav.sharePrice) : "--"} />
         <RailStat label="Min deposit" value={formatCurrency(vault.profile.minDeposit)} />
         <RailStat
@@ -1155,7 +1145,7 @@ function DepositRail({
         <div className="rounded-[10px] border border-amber-400/20 bg-amber-400/10 p-3 text-amber-50">
           <p className="text-sm font-medium">Deposit is queued</p>
           <p className="mt-1 text-xs leading-6 text-amber-50/90">
-            {queuedFormatted} USDC.e is waiting for the current cycle to finish. Estimated shares:{" "}
+            {queuedFormatted} USDC.e is being processed. Estimated shares:{" "}
             {queuedSharesFormatted}.
           </p>
           {estimateBasis && (
@@ -1173,15 +1163,15 @@ function DepositRail({
 
       {walletConnected && !sessionAuthenticated && (
         <p className="text-xs leading-6 text-amber-200/90">
-          Sign in with Ethereum to load your queued deposit status.
+          Sign in to see your deposit status.
         </p>
       )}
 
       {(customQueuePendingClose || cycleStateUnavailable) && (
         <p className="text-xs leading-6 text-amber-200/90">
           {cycleStateUnavailable
-            ? "Vault cycle status is still loading. Deposit routing will unlock once the current on-chain state is confirmed."
-            : "The latest cycle snapshot still shows the book as open while positions are being managed. Clicking deposit will re-check live cycle state before routing the transaction."}
+            ? "Loading status, please wait…"
+            : "Processing, try again shortly."}
         </p>
       )}
 
@@ -1231,7 +1221,7 @@ function DepositRail({
               : cycleStateUnavailable
                 ? "Loading cycle state"
                 : customQueuePendingClose
-                  ? "Re-checking live state"
+                  ? "Checking status..."
                   : customQueueWindowOpen
                     ? "Join next cycle"
                     : cycle?.executionMode === "blocked"
@@ -1507,7 +1497,7 @@ function WithdrawRail({
         normalized.includes("user")
       ) {
         setErrorMessage(
-          "Wallet confirmation was cancelled. Your withdrawal request is still ready and can be claimed again or cancelled.",
+          "Transaction cancelled. You can try again.",
         );
       } else {
         setErrorMessage(error.message);
@@ -1542,7 +1532,7 @@ function WithdrawRail({
       return true;
     } catch (error) {
       setErrorMessage(
-        `Live NAV refresh failed. Please retry in a few seconds (${error instanceof Error ? error.message : "Unknown error"}).`,
+        "Price refresh failed. Please try again.",
       );
       return false;
     } finally {
@@ -1633,7 +1623,7 @@ function WithdrawRail({
           const preflight = await preflightWithdrawal(readyQueueRequest.requestId);
           if (!preflight.ready) {
             setErrorMessage(
-              preflight.error ?? "Withdrawal liquidity is not ready yet. Please retry.",
+              preflight.error ?? "Not ready yet. Please try again shortly.",
             );
             return;
           }
@@ -1647,7 +1637,7 @@ function WithdrawRail({
 
         if (requestToClaim.status !== "ready") {
           setMessage(
-            `Withdrawal ${requestToClaim.requestId} is ${requestToClaim.status}. Please wait for it to become ready again.`,
+            "Your withdrawal is being processed. Please wait.",
           );
           return;
         }
@@ -1664,7 +1654,7 @@ function WithdrawRail({
       try {
         requestShares = parseUnits(requestToClaim.shares, 6);
       } catch {
-        setErrorMessage("Ready withdrawal request has invalid share amount.");
+        setErrorMessage("Something went wrong. Please contact support.");
         return;
       }
 
@@ -1789,16 +1779,16 @@ function WithdrawRail({
   return (
     <div className="space-y-4">
       <div className="grid gap-3">
-        <RailStat label="Exit state" value={withdrawActionLabel} />
+        <RailStat label="Status" value={withdrawActionLabel} />
         <RailStat
-          label="Share balance"
+          label="Your shares"
           value={`${Number(effectiveFormattedShares).toFixed(6)} shares`}
-          tooltip="Current wallet share balance for this vault."
+          tooltip="Your share balance in this vault."
         />
         <RailStat
           label="Est. value"
           value={formatCurrency(displayedEstimatedAssets || 0)}
-          tooltip="Estimated assets based on the latest available preview or request estimate."
+          tooltip="Estimated value based on current share price."
         />
       </div>
 
@@ -1846,8 +1836,8 @@ function WithdrawRail({
       <div className="flex items-center gap-2 text-xs text-slate-400">
         <span>How claims work</span>
         <InfoTooltip
-          label="How claims work"
-          content="After your exit request is processed and settlement is complete, your redeemed USDC becomes claimable."
+          label="How it works"
+          content="After your withdrawal is processed, your USDC will be available to claim."
         />
       </div>
 
@@ -1881,7 +1871,7 @@ function WithdrawRail({
 
       {walletConnected && !userAuthorized && (
         <p className="text-xs leading-6 text-amber-200/90">
-          Sign in with Ethereum first so the withdrawal request can be recorded and tracked.
+          Sign in to withdraw.
         </p>
       )}
 
@@ -2240,18 +2230,18 @@ export default function VaultDetailPage() {
       value: formatPercent(performance.apy),
       hint:
         performance.apy !== null
-          ? `Annualized from ${performance.daysCovered.toFixed(1)} days of NAV history.`
-          : "Waiting for enough NAV history to annualize returns.",
+          ? "Based on past performance."
+          : "Not enough history yet.",
       tooltip:
-        "Annualized return derived from vault NAV history. This is an estimate based on available performance data.",
+        "Estimated annual return based on vault performance.",
     },
     {
       label: "NAV",
       value: freshestNavSnapshot ? formatSharePrice(freshestNavSnapshot.sharePrice) : "--",
       hint: freshestNavSnapshot?.lastUpdated
         ? `Updated ${formatDate(freshestNavSnapshot.lastUpdated)}`
-        : "Waiting for first NAV snapshot.",
-      tooltip: "Latest share price.",
+        : "Waiting for first update.",
+      tooltip: "Current price per share.",
     },
     {
       label: "TVL",
@@ -2259,10 +2249,10 @@ export default function VaultDetailPage() {
         ? formatCompactCurrency(getDisplayedTvl(freshestNavSnapshot) ?? 0)
         : "--",
       hint: freshestNavSnapshot
-        ? "Total assets tracked by the vault right now."
-        : "Waiting for first TVL snapshot.",
+        ? "Total value in this vault."
+        : "Waiting for first update.",
       tooltip:
-        "Current gross assets tracked by the vault before liability adjustments used for share pricing.",
+        "Total value held in this vault.",
     },
   ];
 
@@ -2338,7 +2328,7 @@ export default function VaultDetailPage() {
                         <span>How vaults work</span>
                         <InfoTooltip
                           label="How vaults work"
-                          content="Deposit into a strategy, receive vault shares, and track performance through NAV. The agent executes within its mandate and withdrawals are handled through the vault flow."
+                          content="Deposit into a strategy, receive vault shares, and track performance. Withdrawals are processed through the vault."
                         />
                       </div>
                     </div>
@@ -2391,7 +2381,7 @@ export default function VaultDetailPage() {
                           ? "good"
                           : "warning"
                       }
-                      tooltip="Calculated from the first and latest NAV snapshots available in history."
+                      tooltip="Total return since the vault launched."
                     />
                     <PerformanceTile
                       label="30D return"
@@ -2401,13 +2391,13 @@ export default function VaultDetailPage() {
                           ? "good"
                           : "warning"
                       }
-                      tooltip="Shown only when the available NAV history covers a full 30-day lookback."
+                      tooltip="Return over the past 30 days."
                     />
                     <PerformanceTile
                       label="Max drawdown"
                       value={formatPercent(performance.maxDrawdown)}
                       tone="warning"
-                      tooltip="Largest peak-to-trough decline across the available NAV history."
+                      tooltip="Largest decline from peak value."
                     />
                     <PerformanceTile
                       label="Win rate"
@@ -2419,30 +2409,21 @@ export default function VaultDetailPage() {
                       tone="neutral"
                       tooltip={
                         tradingAnalyticsData?.analytics
-                          ? `Resolved-position win rate based on ${tradingAnalyticsData.analytics.positionCount} settled positions. Last refreshed ${formatDate(tradingAnalyticsData.analytics.computedAt)}.`
-                          : "Resolved-position win rate for this vault."
+                          ? `Based on ${tradingAnalyticsData.analytics.positionCount} settled positions.`
+                          : "Percentage of winning trades."
                       }
                     />
                   </div>
                 </div>
               </SectionShell>
 
-              <SectionShell title="Strategy & Operator">
+              <SectionShell title="Strategy">
                 <div className="space-y-5">
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="grid gap-3 sm:grid-cols-2">
                     <KeyInfoItem label="Managed by" value={getManagementLabel(vault)} />
-                    <KeyInfoItem label="Infra" value={getInfraLabel(vault)} />
                     <KeyInfoItem label="Focus" value={vault.profile.strategyLabel} />
-                    <KeyInfoItem label="Style" value={getStyleLabel(vault)} />
                   </div>
-                  <div className="flex flex-col gap-4 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-5 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="max-w-2xl">
-                      <p className="text-sm font-medium text-white">
-                        View contract addresses and wallet balances.
-                      </p>
-                    </div>
-                    <TechnicalDetailsDialog vault={vault} status={status} />
-                  </div>
+                  <TechnicalDetailsDialog vault={vault} status={status} />
                 </div>
               </SectionShell>
 
@@ -2452,19 +2433,19 @@ export default function VaultDetailPage() {
                     label="Risk score"
                     value={getRiskScore(vault.profile.riskLevel)}
                     hint={`${toTitleCase(vault.profile.riskLevel)} risk mandate.`}
-                    tooltip="Overall vault risk assessment."
+                    tooltip="Overall risk level of this vault."
                   />
                   <SummaryMetric
                     label="Liquidity"
                     value={getLiquidityLabel(vault, cycle)}
-                    hint="Withdrawal access relies on vault cycles."
-                    tooltip="This is derived from the current vault mode and cycle execution state."
+                    hint="How you can withdraw."
+                    tooltip="Withdrawal availability for this vault."
                   />
                   <SummaryMetric
                     label="Fees"
                     value={getFeeLabel(vault)}
                     hint="Management and performance fee."
-                    tooltip="Fees come from the configured vault profile."
+                    tooltip="Fees charged by this vault."
                   />
                 </div>
                 <div className="mt-5 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-5 text-sm leading-7 text-slate-400">
@@ -2568,9 +2549,9 @@ export default function VaultDetailPage() {
               {vault.type !== "custom" && (
                 <SectionShell
                   id="exit-queue"
-                  eyebrow="Redemptions"
-                  title="Exit Queue"
-                  description="Manage your vault exit requests and claim settled USDC.e."
+                  eyebrow="Withdrawals"
+                  title="Withdraw"
+                  description="Manage your withdrawal requests and claim USDC.e."
                 >
                   <RedemptionPanel
                     vault={vault}
@@ -2680,18 +2661,17 @@ export default function VaultDetailPage() {
                       />
                     )
                   ) : (
-                    <div className="space-y-4 rounded-[24px] border border-white/10 bg-slate-950/35 p-4 text-sm leading-7 text-slate-300">
-                      <div>
-                        Standard vault exits use the full request, pending, and claim flow in Exit
-                        Queue so you can track readiness and claim from one place.
+                      <div className="space-y-4 rounded-[24px] border border-white/10 bg-slate-950/35 p-4 text-sm leading-7 text-slate-300">
+                        <div>
+                          For this vault, use the Withdraw section below.
+                        </div>
+                        <Button
+                          asChild
+                          className="w-full rounded-full bg-white text-slate-950 hover:bg-slate-100"
+                        >
+                          <a href="#exit-queue">Go to Withdraw</a>
+                        </Button>
                       </div>
-                      <Button
-                        asChild
-                        className="w-full rounded-full bg-white text-slate-950 hover:bg-slate-100"
-                      >
-                        <a href="#exit-queue">Open Exit Queue</a>
-                      </Button>
-                    </div>
                   )}
                 </TabsContent>
               </Tabs>

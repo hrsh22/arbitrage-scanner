@@ -92,8 +92,8 @@ export function StaleNavWarning({ navIsStale, dismissible, onDismiss }: StaleNav
   return (
     <RiskCallout
       type="warning"
-      title="NAV Update Needed"
-      message="Vault NAV is stale. Deposit/redemption calculations may be delayed."
+      title="Price Update Needed"
+      message="Share price is updating. Some actions may be temporarily delayed."
       dismissible={dismissible}
       onDismiss={onDismiss}
     />
@@ -116,8 +116,8 @@ export function BelowThresholdInfo({
   return (
     <RiskCallout
       type="info"
-      title="Below Minimum Claim"
-      message="Claim amount is below the 100 USDC threshold. Dust override available after epoch finalization."
+      title="Below Minimum"
+      message="Your claim amount is below the minimum threshold."
       dismissible={dismissible}
       onDismiss={onDismiss}
     />
@@ -136,8 +136,8 @@ export function ProRataWarning({ proRataRatio, dismissible, onDismiss }: ProRata
   return (
     <RiskCallout
       type="warning"
-      title="Partial Settlement Possible"
-      message="High redemption demand may result in pro-rata fulfillment."
+      title="Partial Withdrawal Possible"
+      message="High demand may result in partial withdrawals."
       dismissible={dismissible}
       onDismiss={onDismiss}
     />
@@ -160,8 +160,8 @@ export function DustOverrideInfo({
   return (
     <RiskCallout
       type="info"
-      title="Small Balance Claim Available"
-      message="You can claim remaining balance below the normal threshold."
+      title="Small Balance Available"
+      message="You can claim your remaining balance."
       dismissible={dismissible}
       onDismiss={onDismiss}
     />
