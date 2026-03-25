@@ -366,7 +366,12 @@ export class PositionFetcher {
       const totalSold = sells.reduce((sum, item) => sum + item.usdcSize, 0);
       const totalRedeemed = redeems.reduce((sum, item) => sum + item.usdcSize, 0);
 
-      const effectivelyClosed = redeems.length > 0 || totalSold >= totalBought * 0.9;
+      const totalSharesBought = buys.reduce((sum, item) => sum + item.size, 0);
+      const totalSharesSold = sells.reduce((sum, item) => sum + item.size, 0);
+
+      // A position is effectively closed if redeemed or if substantially all shares have been sold.
+      // Comparing usdcSize here incorrectly filters out trades closed at a loss.
+      const effectivelyClosed = redeems.length > 0 || totalSharesSold >= totalSharesBought * 0.98;
       if (!effectivelyClosed) continue;
 
       const last = entries.sort((a, b) => b.timestamp - a.timestamp)[0]!;

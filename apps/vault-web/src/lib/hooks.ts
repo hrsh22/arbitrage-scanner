@@ -384,15 +384,29 @@ export function useVaultInstances(): AsyncState<VaultInstancesResponse> {
 }
 
 export function useVaultPositions(vaultId?: number): AsyncState<VaultPositionsResponse> {
-  const fetcher = useCallback(() => fetchVaultPositions(vaultId!), [vaultId]);
-  return usePolledFetch(fetcher);
+  const fetcher = useCallback(async () => {
+    if (vaultId === undefined) throw new Error("WAIT_FOR_VAULT_ID");
+    return fetchVaultPositions(vaultId);
+  }, [vaultId]);
+  const result = usePolledFetch(fetcher);
+  if (result.error === "WAIT_FOR_VAULT_ID") {
+    return { ...result, error: null, isLoading: true };
+  }
+  return result;
 }
 
 export function useVaultPositionHistory(
   vaultId?: number,
 ): AsyncState<VaultPositionHistoryResponse> {
-  const fetcher = useCallback(() => fetchVaultPositionHistory(vaultId!), [vaultId]);
-  return usePolledFetch(fetcher);
+  const fetcher = useCallback(async () => {
+    if (vaultId === undefined) throw new Error("WAIT_FOR_VAULT_ID");
+    return fetchVaultPositionHistory(vaultId);
+  }, [vaultId]);
+  const result = usePolledFetch(fetcher);
+  if (result.error === "WAIT_FOR_VAULT_ID") {
+    return { ...result, error: null, isLoading: true };
+  }
+  return result;
 }
 
 export function useVaultNavHistory(

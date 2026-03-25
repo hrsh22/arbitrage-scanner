@@ -47,6 +47,7 @@ import {
   useVaultEvents,
   useVaultInstances,
   useVaultNavHistory,
+  useVaultPositionHistory,
   useVaultRedeem,
   useVaultShares,
   useVaultStatus,
@@ -74,6 +75,7 @@ import type {
   RedemptionRequest,
   VaultActivityFeedItem,
   VaultInstance,
+  VaultPositionHistoryResponse,
   VaultStatusResponse,
 } from "../../../src/types";
 import { RedemptionPanel } from "./components";
@@ -581,7 +583,9 @@ function ActivityTimeline({
               </div>
               <p className="text-sm leading-6 text-slate-400">{item.detail}</p>
             </div>
-            <p className="text-xs text-slate-500">{formatDate(item.timestamp)}</p>
+            <p className="whitespace-nowrap text-xs font-medium text-slate-500 mt-0.5">
+              {formatDate(item.timestamp)}
+            </p>
           </div>
         </div>
       ))}
@@ -642,6 +646,134 @@ function ActivityPaginationControls({
           Next
         </Button>
       </div>
+    </div>
+  );
+}
+
+function TradesList({
+  positions,
+  emptyState = "No trades yet.",
+  pageSize,
+}: {
+  positions: VaultPositionHistoryResponse["positions"];
+  emptyState?: string;
+  pageSize: number;
+}) {
+  if (!positions || positions.length === 0) {
+    return (
+      <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-5 text-sm text-[#828B8D]">
+        {emptyState}
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] overflow-hidden">
+      {positions.map((pos, i) => {
+        const isClosed = pos.status === "closed";
+        const pnl = pos.realizedPnl ?? pos.cashPnl ?? 0;
+        const isWin = pnl >= 0;
+        const pnlFormatted = `${isWin ? "+" : ""}${formatCurrency(pnl)}`;
+
+        return (
+          <div
+            key={`${pos.tokenId}-${pos.status}-${i}`}
+            className="group flex flex-col gap-3 border-b border-[#212121] p-4 transition-colors hover:bg-[#121212] last:border-b-0 sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div className="flex flex-1 flex-col min-w-0 pr-4">
+              <div className="mb-1.5 flex items-center gap-2">
+                <span
+                  className={cn(
+                    "rounded-[2px] bg-white/5 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider",
+                    pos.outcome === "Yes"
+                      ? "text-emerald-400"
+                      : pos.outcome === "No"
+                        ? "text-rose-400"
+                        : "text-cyan-400",
+                  )}
+                >
+                  {pos.outcome}
+                </span>
+                <span className="whitespace-nowrap text-xs font-medium text-slate-500">
+                  {formatDate(pos.endDate)}
+                </span>
+                {!isClosed && (
+                  <span className="rounded-[2px] bg-amber-400/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-400">
+                    Open
+                  </span>
+                )}
+              </div>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <p className="cursor-default truncate text-sm font-medium text-white transition-colors group-hover:text-cyan-50">
+                    {pos.title}
+                  </p>
+                </TooltipTrigger>
+                <TooltipContent
+                  sideOffset={8}
+                  className="max-w-[320px] rounded-xl bg-slate-950 px-3 py-2 text-slate-100 shadow-2xl"
+                >
+                  <p className="text-sm font-medium leading-relaxed">{pos.title}</p>
+                </TooltipContent>
+              </Tooltip>
+            </div>
+
+            <div className="grid grid-cols-3 gap-4 sm:flex sm:shrink-0 sm:items-center sm:gap-8">
+              <div className="flex flex-col text-left sm:text-right">
+                <span className="text-[10px] uppercase tracking-wider text-slate-500">Invested</span>
+                <span className="font-mono text-sm text-white">
+                  {Number.isFinite(pos.size) && Number.isFinite(pos.avgPrice)
+                    ? formatCurrency(pos.size * pos.avgPrice)
+                    : "--"}
+                </span>
+                {Number.isFinite(pos.size) && (
+                  <span className="mt-0.5 font-mono text-[9px] text-slate-500">
+                    {pos.size.toFixed(2)} shares
+                  </span>
+                )}
+              </div>
+              <div className="flex flex-col text-left sm:text-right">
+                <span className="text-[10px] uppercase tracking-wider text-slate-500">Avg Price</span>
+                <span className="font-mono text-sm text-white">
+                  {Number.isFinite(pos.avgPrice) ? `$${pos.avgPrice.toFixed(2)}` : "--"}
+                </span>
+              </div>
+              <div className="flex flex-col text-right">
+                {!isClosed ? (
+                  <>
+                    <span className="text-[10px] uppercase tracking-wider text-slate-500">Value</span>
+                    <span className="font-mono text-sm font-medium text-white">
+                      {typeof pos.currentValue === "number"
+                        ? formatCurrency(pos.currentValue)
+                        : "--"}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-[10px] uppercase tracking-wider text-slate-500">Return</span>
+                    <span
+                      className={cn(
+                        "font-mono text-sm font-semibold",
+                        isWin ? "text-emerald-400" : "text-slate-400",
+                      )}
+                    >
+                      {pnlFormatted}
+                    </span>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+
+      {Array.from({ length: Math.max(pageSize - positions.length, 0) }).map((_, index) => (
+        <div
+          key={`trades-placeholder-${index}`}
+          className="invisible min-h-[96px] border-b border-[#212121] last:border-b-0"
+          aria-hidden="true"
+        />
+      ))}
     </div>
   );
 }
@@ -2004,6 +2136,7 @@ export default function VaultDetailPage() {
   const [sessionAuthenticated, setSessionAuthenticated] = useState(false);
   const [vaultActivityOffset, setVaultActivityOffset] = useState(0);
   const [userActivityOffset, setUserActivityOffset] = useState(0);
+  const [tradesOffset, setTradesOffset] = useState(0);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -2072,6 +2205,11 @@ export default function VaultDetailPage() {
     isLoading: navHistoryLoading,
     refetch: refetchNavHistory,
   } = useVaultNavHistory(undefined, vault?.id);
+  const {
+    data: positionHistoryData,
+    isLoading: positionHistoryLoading,
+    error: positionHistoryError,
+  } = useVaultPositionHistory(vault?.id);
   const {
     cycle,
     isLoading: cycleLoading,
@@ -2471,79 +2609,156 @@ export default function VaultDetailPage() {
                       : "--"}
                   </span>
                 </div>
-                {vaultEventsLoading ? (
-                  <Skeleton className="h-40 w-full rounded-[22px] bg-white/10" />
-                ) : vaultEventsError ? (
-                  <div className="rounded-[22px] border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-rose-100">
-                    {vaultEventsError}
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    <ActivityTimeline
-                      items={vaultActivity}
-                      emptyState="No meaningful vault updates yet."
-                      pageSize={ACTIVITY_PAGE_SIZE}
-                    />
-                    <ActivityPaginationControls
-                      offset={vaultActivityOffset}
-                      pageSize={ACTIVITY_PAGE_SIZE}
-                      currentCount={vaultActivity.length}
-                      hasMore={vaultActivityHasMore}
-                      isLoading={vaultEventsLoading}
-                      onPrevious={() => {
-                        setVaultActivityOffset((previous) =>
-                          Math.max(previous - ACTIVITY_PAGE_SIZE, 0),
-                        );
-                      }}
-                      onNext={() => {
-                        if (vaultActivityHasMore) {
-                          setVaultActivityOffset((previous) => previous + ACTIVITY_PAGE_SIZE);
-                        }
-                      }}
-                    />
-                  </div>
-                )}
-              </SectionShell>
 
-              <SectionShell title="Your activity">
-                {userAuthorized ? (
-                  userHistoryLoading ? (
-                    <Skeleton className="h-40 w-full rounded-[22px] bg-white/10" />
-                  ) : userHistoryError ? (
-                    <div className="rounded-[22px] border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-rose-100">
-                      {userHistoryError}
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      <ActivityTimeline
-                        items={userActivity}
-                        emptyState="No account activity yet."
-                        pageSize={ACTIVITY_PAGE_SIZE}
-                      />
-                      <ActivityPaginationControls
-                        offset={userActivityOffset}
-                        pageSize={ACTIVITY_PAGE_SIZE}
-                        currentCount={userActivity.length}
-                        hasMore={userActivityHasMore}
-                        isLoading={userHistoryLoading}
-                        onPrevious={() => {
-                          setUserActivityOffset((previous) =>
-                            Math.max(previous - ACTIVITY_PAGE_SIZE, 0),
-                          );
-                        }}
-                        onNext={() => {
-                          if (userActivityHasMore) {
-                            setUserActivityOffset((previous) => previous + ACTIVITY_PAGE_SIZE);
+                <Tabs defaultValue="user" className="space-y-3">
+                  <TabsList className="grid h-auto w-full grid-cols-3 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-1">
+                    <TabsTrigger
+                      value="user"
+                      className="rounded-[2px] py-1.5 text-sm text-slate-400 hover:text-white data-[state=active]:border-b data-[state=active]:border-[#656565]/40 data-[state=active]:bg-[#212121] data-[state=active]:text-white"
+                    >
+                      Your activity
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="vault"
+                      className="rounded-[2px] py-1.5 text-sm text-slate-400 hover:text-white data-[state=active]:border-b data-[state=active]:border-[#656565]/40 data-[state=active]:bg-[#212121] data-[state=active]:text-white"
+                    >
+                      Vault activity
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="trades"
+                      className="rounded-[2px] py-1.5 text-sm text-slate-400 hover:text-white data-[state=active]:border-b data-[state=active]:border-[#656565]/40 data-[state=active]:bg-[#212121] data-[state=active]:text-white"
+                    >
+                      Trades
+                    </TabsTrigger>
+                  </TabsList>
+
+                  <TabsContent value="user" className="space-y-3">
+                    {userAuthorized ? (
+                      userHistoryLoading ? (
+                        <Skeleton className="h-40 w-full rounded-[22px] bg-white/10" />
+                      ) : userHistoryError ? (
+                        <div className="rounded-[22px] border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-rose-100">
+                          {userHistoryError}
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          <ActivityTimeline
+                            items={userActivity}
+                            emptyState="No account activity yet."
+                            pageSize={ACTIVITY_PAGE_SIZE}
+                          />
+                          <ActivityPaginationControls
+                            offset={userActivityOffset}
+                            pageSize={ACTIVITY_PAGE_SIZE}
+                            currentCount={userActivity.length}
+                            hasMore={userActivityHasMore}
+                            isLoading={userHistoryLoading}
+                            onPrevious={() => {
+                              setUserActivityOffset((previous) =>
+                                Math.max(previous - ACTIVITY_PAGE_SIZE, 0),
+                              );
+                            }}
+                            onNext={() => {
+                              if (userActivityHasMore) {
+                                setUserActivityOffset((previous) => previous + ACTIVITY_PAGE_SIZE);
+                              }
+                            }}
+                          />
+                        </div>
+                      )
+                    ) : (
+                      <div className="rounded-[22px] border border-white/10 bg-slate-950/30 p-5 text-sm text-slate-400">
+                        Sign in to view your deposit, withdrawal, and claim history.
+                      </div>
+                    )}
+                  </TabsContent>
+
+                  <TabsContent value="vault" className="space-y-3">
+                    {vaultEventsLoading ? (
+                      <Skeleton className="h-40 w-full rounded-[22px] bg-white/10" />
+                    ) : vaultEventsError ? (
+                      <div className="rounded-[22px] border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-rose-100">
+                        {vaultEventsError}
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <ActivityTimeline
+                          items={vaultActivity}
+                          emptyState="No meaningful vault updates yet."
+                          pageSize={ACTIVITY_PAGE_SIZE}
+                        />
+                        <ActivityPaginationControls
+                          offset={vaultActivityOffset}
+                          pageSize={ACTIVITY_PAGE_SIZE}
+                          currentCount={vaultActivity.length}
+                          hasMore={vaultActivityHasMore}
+                          isLoading={vaultEventsLoading}
+                          onPrevious={() => {
+                            setVaultActivityOffset((previous) =>
+                              Math.max(previous - ACTIVITY_PAGE_SIZE, 0),
+                            );
+                          }}
+                          onNext={() => {
+                            if (vaultActivityHasMore) {
+                              setVaultActivityOffset((previous) => previous + ACTIVITY_PAGE_SIZE);
+                            }
+                          }}
+                        />
+                      </div>
+                    )}
+                  </TabsContent>
+
+                  <TabsContent value="trades" className="space-y-3">
+                    {positionHistoryLoading ? (
+                      <Skeleton className="h-40 w-full rounded-[22px] bg-white/10" />
+                    ) : positionHistoryError ? (
+                      <div className="rounded-[22px] border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-rose-100">
+                        {positionHistoryError}
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <TradesList
+                          positions={
+                            positionHistoryData?.positions?.slice(
+                              tradesOffset,
+                              tradesOffset + ACTIVITY_PAGE_SIZE,
+                            ) || []
                           }
-                        }}
-                      />
-                    </div>
-                  )
-                ) : (
-                  <div className="rounded-[22px] border border-white/10 bg-slate-950/30 p-5 text-sm text-slate-400">
-                    Sign in to view your deposit, withdrawal, and claim history.
-                  </div>
-                )}
+                          emptyState="No trades yet."
+                          pageSize={ACTIVITY_PAGE_SIZE}
+                        />
+                        <ActivityPaginationControls
+                          offset={tradesOffset}
+                          pageSize={ACTIVITY_PAGE_SIZE}
+                          currentCount={
+                            positionHistoryData?.positions?.slice(
+                              tradesOffset,
+                              tradesOffset + ACTIVITY_PAGE_SIZE,
+                            )?.length || 0
+                          }
+                          hasMore={
+                            tradesOffset + ACTIVITY_PAGE_SIZE <
+                            (positionHistoryData?.positions?.length || 0)
+                          }
+                          isLoading={positionHistoryLoading}
+                          onPrevious={() => {
+                            setTradesOffset((previous) =>
+                              Math.max(previous - ACTIVITY_PAGE_SIZE, 0),
+                            );
+                          }}
+                          onNext={() => {
+                            if (
+                              tradesOffset + ACTIVITY_PAGE_SIZE <
+                              (positionHistoryData?.positions?.length || 0)
+                            ) {
+                              setTradesOffset((previous) => previous + ACTIVITY_PAGE_SIZE);
+                            }
+                          }}
+                        />
+                      </div>
+                    )}
+                  </TabsContent>
+                </Tabs>
               </SectionShell>
 
               {vault.type !== "custom" && (
