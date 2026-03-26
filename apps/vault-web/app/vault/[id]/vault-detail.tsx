@@ -6,7 +6,7 @@ import { useParams } from "next/navigation";
 import { formatUnits, parseUnits } from "viem";
 import { useAppKitAccount } from "@reown/appkit/react";
 import { useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, ArrowLeft, Dot, Wallet } from "lucide-react";
+import { AlertCircle, ArrowDown, ArrowLeft, Dot, Wallet } from "lucide-react";
 import { Badge } from "@workspace/ui/components/badge";
 import { Button } from "@workspace/ui/components/button";
 import {
@@ -720,7 +720,9 @@ function TradesList({
 
             <div className="grid grid-cols-3 gap-4 sm:flex sm:shrink-0 sm:items-center sm:gap-8">
               <div className="flex flex-col text-left sm:text-right">
-                <span className="text-[10px] uppercase tracking-wider text-slate-500">Invested</span>
+                <span className="text-[10px] uppercase tracking-wider text-slate-500">
+                  Invested
+                </span>
                 <span className="font-mono text-sm text-white">
                   {Number.isFinite(pos.size) && Number.isFinite(pos.avgPrice)
                     ? formatCurrency(pos.size * pos.avgPrice)
@@ -733,7 +735,9 @@ function TradesList({
                 )}
               </div>
               <div className="flex flex-col text-left sm:text-right">
-                <span className="text-[10px] uppercase tracking-wider text-slate-500">Avg Price</span>
+                <span className="text-[10px] uppercase tracking-wider text-slate-500">
+                  Avg Price
+                </span>
                 <span className="font-mono text-sm text-white">
                   {Number.isFinite(pos.avgPrice) ? `$${pos.avgPrice.toFixed(2)}` : "--"}
                 </span>
@@ -741,7 +745,9 @@ function TradesList({
               <div className="flex flex-col text-right">
                 {!isClosed ? (
                   <>
-                    <span className="text-[10px] uppercase tracking-wider text-slate-500">Value</span>
+                    <span className="text-[10px] uppercase tracking-wider text-slate-500">
+                      Value
+                    </span>
                     <span className="font-mono text-sm font-medium text-white">
                       {typeof pos.currentValue === "number"
                         ? formatCurrency(pos.currentValue)
@@ -750,7 +756,9 @@ function TradesList({
                   </>
                 ) : (
                   <>
-                    <span className="text-[10px] uppercase tracking-wider text-slate-500">Return</span>
+                    <span className="text-[10px] uppercase tracking-wider text-slate-500">
+                      Return
+                    </span>
                     <span
                       className={cn(
                         "font-mono text-sm font-semibold",
@@ -815,7 +823,17 @@ function formatAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
-function AddressField({ label, address, hint }: { label: string; address: string; hint: string }) {
+function AddressField({
+  label,
+  address,
+  balanceLabel,
+  balance,
+}: {
+  label: string;
+  address: string;
+  balanceLabel?: string;
+  balance?: string;
+}) {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -849,7 +867,7 @@ function AddressField({ label, address, hint }: { label: string; address: string
           </TooltipTrigger>
           <TooltipContent
             sideOffset={8}
-            className="max-w-sm rounded-xl bg-slate-950 px-3 py-2 text-slate-100 shadow-2xl"
+            className="max-w-sm rounded-[4px] bg-[#212121] px-3 py-2 text-xs text-white shadow-xl"
           >
             Click to copy full address
           </TooltipContent>
@@ -869,12 +887,18 @@ function AddressField({ label, address, hint }: { label: string; address: string
         </TooltipTrigger>
         <TooltipContent
           sideOffset={8}
-          className="max-w-sm rounded-xl bg-slate-950 px-3 py-2 text-slate-100 shadow-2xl"
+          className="max-w-sm rounded-[4px] bg-[#212121] px-3 py-2 font-mono text-xs text-white shadow-xl"
         >
           {address}
         </TooltipContent>
       </Tooltip>
-      <p className="mt-2 text-xs leading-6 text-slate-400">{hint}</p>
+      
+      {balance !== undefined && (
+        <div className="mt-4 flex items-center justify-between border-t border-[#212121] pt-3">
+          <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{balanceLabel}</span>
+          <span className="font-mono text-sm font-medium text-white">{balance}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -903,9 +927,7 @@ function TechnicalDetailsDialog({
       </DialogTrigger>
       <DialogContent className="max-w-3xl rounded-[2px] border border-[#212121] bg-[#0A0A0A] text-white shadow-none">
         <DialogHeader>
-          <DialogTitle className="text-2xl tracking-tight text-white">
-            Addresses
-          </DialogTitle>
+          <DialogTitle className="text-2xl tracking-tight text-white">Addresses</DialogTitle>
           <DialogDescription className="text-sm leading-6 text-slate-400">
             Contract addresses and wallet balances.
           </DialogDescription>
@@ -915,23 +937,168 @@ function TechnicalDetailsDialog({
           <AddressField
             label="Operator safe"
             address={vault.config.safeAddress}
-            hint="Primary execution safe that controls trading and batch processing."
+            balanceLabel="Trading Wallet Balance"
+            balance={tradingWalletBalance !== null ? formatCurrency(tradingWalletBalance) : "--"}
           />
           <AddressField
             label="Vault contract"
             address={vault.config.vaultAddress}
-            hint="On-chain vault contract for deposits, shares, and redemptions."
+            balanceLabel="Vault Balance"
+            balance={status ? formatCurrency(status.nav.vaultUsdc) : "--"}
           />
-          <KeyInfoItem
-            label="Vault Balance"
-            value={status ? formatCurrency(status.nav.vaultUsdc) : "--"}
-            tooltip="USDC currently sitting in the vault contract."
-          />
-          <KeyInfoItem
-            label="Trading Wallet Balance"
-            value={tradingWalletBalance !== null ? formatCurrency(tradingWalletBalance) : "--"}
-            tooltip="USDC currently in the trading safe plus resolved-but-unredeemed position value still controlled by the trading wallet."
-          />
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
+  const [open, setOpen] = useState(false);
+
+  const flowItems: Array<{
+    key: string;
+    label: string;
+    detail: string;
+    nodeClassName: string;
+    nodeText?: string;
+  }> = [
+    {
+      key: "depositor",
+      label: "Depositor",
+      detail: "Capital source",
+      nodeClassName:
+        "h-16 w-16 rounded-full bg-[radial-gradient(circle_at_30%_20%,rgba(125,211,252,0.95),rgba(37,99,235,0.82)_55%,rgba(15,23,42,0.92))] shadow-[0_0_36px_rgba(56,189,248,0.45)]",
+    },
+    {
+      key: "deposit",
+      label: "Deposit USDC.e",
+      detail: "Mint vault shares",
+      nodeClassName:
+        "flex h-14 w-20 items-center justify-center rounded-full border border-cyan-300/70 bg-[radial-gradient(circle_at_30%_20%,rgba(34,211,238,0.45),rgba(59,130,246,0.2),rgba(2,6,23,0.95))] shadow-[0_0_26px_rgba(34,211,238,0.38)]",
+      nodeText: "USDC.e",
+    },
+    {
+      key: "safe",
+      label: "Trading Safe",
+      detail: "Executes strategy",
+      nodeClassName:
+        "flex h-14 w-24 items-center justify-center rounded-[10px] border border-indigo-300/65 bg-[linear-gradient(140deg,rgba(30,64,175,0.52),rgba(99,102,241,0.28),rgba(2,6,23,0.96))] shadow-[0_0_26px_rgba(99,102,241,0.35)]",
+      nodeText: "Execution",
+    },
+    {
+      key: "vault",
+      label: "Vault",
+      detail: "Tracks NAV & claims",
+      nodeClassName:
+        "relative h-24 w-24 rounded-[14px] border border-cyan-300/60 bg-[linear-gradient(140deg,rgba(34,211,238,0.34),rgba(37,99,235,0.3),rgba(15,23,42,0.98))] shadow-[0_0_42px_rgba(34,211,238,0.32)]",
+    },
+  ];
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          className="mt-2 inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-[4px] bg-[#121212] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-300 ring-1 ring-inset ring-[#212121] transition-all hover:bg-[#212121] hover:text-white"
+        >
+          <AlertCircle className="h-3.5 w-3.5" />
+          <span>How Vaults Work</span>
+        </button>
+      </DialogTrigger>
+      <DialogContent className="w-[min(1120px,96vw)] !max-w-none overflow-hidden rounded-[16px] border border-[#2A2F3A] bg-[#06080D] p-0 text-white shadow-[0_35px_120px_-45px_rgba(0,0,0,0.95)] max-h-[90vh] overflow-y-auto sm:rounded-[24px]">
+        <div className="grid lg:grid-cols-[1fr_1.5fr]">
+          {/* Left Flowchart Panel */}
+          <div className="border-b border-[#1C2533] bg-[#0A0E17] p-8 lg:border-b-0 lg:border-r">
+            <div className="relative mx-auto w-full max-w-[280px]">
+              <div className="pointer-events-none absolute left-1/2 top-8 h-[calc(100%-3rem)] w-px -translate-x-1/2 bg-gradient-to-b from-cyan-300/70 via-cyan-300/40 to-transparent" />
+              {flowItems.map((item, index) => (
+                <div
+                  key={item.key}
+                  className={cn(
+                    "relative grid grid-cols-[1fr_88px_1fr] items-center gap-4",
+                    index < flowItems.length - 1 && "mb-8",
+                  )}
+                >
+                  <span className="text-right text-[10px] uppercase tracking-[0.14em] text-cyan-200/70">
+                    {item.label}
+                  </span>
+
+                  <div className="relative flex justify-center">
+                    <div className="pointer-events-none absolute left-0 top-1/2 h-px w-4 -translate-y-1/2 bg-cyan-300/60" />
+                    <div className={item.nodeClassName}>
+                      {item.key === "vault" ? (
+                        <div className="absolute inset-2 rounded-[10px] border border-white/15" />
+                      ) : null}
+                      {item.nodeText ? (
+                        <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-cyan-100">
+                          {item.nodeText}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="pointer-events-none absolute right-0 top-1/2 h-px w-4 -translate-y-1/2 bg-cyan-300/60" />
+                  </div>
+
+                  <span className="text-left text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                    {item.detail}
+                  </span>
+
+                  {index < flowItems.length - 1 ? (
+                    <ArrowDown className="absolute left-1/2 top-[calc(100%+8px)] h-4 w-4 -translate-x-1/2 text-cyan-300/85" />
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Right Text Panel */}
+          <div className="p-8 lg:p-12">
+            <h2 className="mb-10 text-xl font-medium tracking-tight text-white lg:text-3xl">
+              How Vaults Work
+            </h2>
+
+            <div className="space-y-10">
+              <div className="flex gap-6">
+                <span className="text-sm font-semibold tracking-wider text-slate-500">01</span>
+                <div>
+                  <h3 className="text-base font-medium text-slate-200">
+                    Deposit and receive shares
+                  </h3>
+                  <p className="mt-2.5 text-sm leading-relaxed text-slate-400">
+                    Your deposit mints vault shares, giving you proportional exposure to the
+                    vault's pooled strategy.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex gap-6">
+                <span className="text-sm font-semibold tracking-wider text-slate-500">02</span>
+                <div>
+                  <h3 className="text-base font-medium text-slate-200">Trading safe executes</h3>
+                  <p className="mt-2.5 text-sm leading-relaxed text-slate-400">
+                    The trading safe deploys capital under {vault.profile.strategyLabel?.toLowerCase() || 'strategy'} rules with risk controls and position management.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex gap-6">
+                <span className="text-sm font-semibold tracking-wider text-slate-500">03</span>
+                <div>
+                  <h3 className="text-base font-medium text-slate-200">Withdraw and claim</h3>
+                  <p className="mt-2.5 text-sm leading-relaxed text-slate-400">
+                    Withdrawal requests move through queue processing, then become claimable as USDC.e
+                    when settlement is ready.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-12 border-t border-[#1C2533] pt-6">
+              <p className="text-[11px] leading-relaxed text-slate-500">
+                Risk notice: strategy performance can vary with market conditions, execution
+                quality, and liquidity. Review terms and risk profile before allocating capital.
+              </p>
+            </div>
+          </div>
         </div>
       </DialogContent>
     </Dialog>
@@ -1095,9 +1262,7 @@ function DepositRail({
       setAmount("");
       setErrorMessage(null);
       setMessage(
-        queueDepositConfirmed
-          ? "Deposit queued — it will process shortly."
-          : "Deposit confirmed!",
+        queueDepositConfirmed ? "Deposit queued — it will process shortly." : "Deposit confirmed!",
       );
       resetApprove();
       resetDeposit();
@@ -1138,9 +1303,7 @@ function DepositRail({
       await postVaultNavUpdate();
       return true;
     } catch (error) {
-      setErrorMessage(
-        "Price refresh failed. Please try again.",
-      );
+      setErrorMessage("Price refresh failed. Please try again.");
       return false;
     } finally {
       setNavSyncPending(false);
@@ -1163,9 +1326,7 @@ function DepositRail({
 
       if (isCustomVault) {
         if (!latestCycle) {
-          setErrorMessage(
-            "Could not verify vault status. Please try again in a moment.",
-          );
+          setErrorMessage("Could not verify vault status. Please try again in a moment.");
           return;
         }
 
@@ -1176,9 +1337,7 @@ function DepositRail({
         }
 
         if (latestCycle?.executionMode === "queued") {
-          setErrorMessage(
-            "Deposits are temporarily queued. Please try again shortly.",
-          );
+          setErrorMessage("Deposits are temporarily queued. Please try again shortly.");
           return;
         }
 
@@ -1200,9 +1359,7 @@ function DepositRail({
           return;
         }
 
-        setErrorMessage(
-          "Still loading. Please wait a moment and try again.",
-        );
+        setErrorMessage("Still loading. Please wait a moment and try again.");
         return;
       }
 
@@ -1277,8 +1434,7 @@ function DepositRail({
         <div className="rounded-[10px] border border-amber-400/20 bg-amber-400/10 p-3 text-amber-50">
           <p className="text-sm font-medium">Deposit is queued</p>
           <p className="mt-1 text-xs leading-6 text-amber-50/90">
-            {queuedFormatted} USDC.e is being processed. Estimated shares:{" "}
-            {queuedSharesFormatted}.
+            {queuedFormatted} USDC.e is being processed. Estimated shares: {queuedSharesFormatted}.
           </p>
           {estimateBasis && (
             <p className="mt-1 text-xs leading-6 text-amber-50/90">{estimateBasis}</p>
@@ -1294,9 +1450,7 @@ function DepositRail({
       {depositQueueLoading && <Skeleton className="h-16 w-full bg-white/10" />}
 
       {walletConnected && !sessionAuthenticated && (
-        <p className="text-xs leading-6 text-amber-200/90">
-          Sign in to see your deposit status.
-        </p>
+        <p className="text-xs leading-6 text-amber-200/90">Sign in to see your deposit status.</p>
       )}
 
       {(customQueuePendingClose || cycleStateUnavailable) && (
@@ -1628,9 +1782,7 @@ function WithdrawRail({
         normalized.includes("4001") ||
         normalized.includes("user")
       ) {
-        setErrorMessage(
-          "Transaction cancelled. You can try again.",
-        );
+        setErrorMessage("Transaction cancelled. You can try again.");
       } else {
         setErrorMessage(error.message);
       }
@@ -1663,9 +1815,7 @@ function WithdrawRail({
       await postVaultNavUpdate();
       return true;
     } catch (error) {
-      setErrorMessage(
-        "Price refresh failed. Please try again.",
-      );
+      setErrorMessage("Price refresh failed. Please try again.");
       return false;
     } finally {
       setNavSyncPending(false);
@@ -1754,9 +1904,7 @@ function WithdrawRail({
         if (isCustomVault) {
           const preflight = await preflightWithdrawal(readyQueueRequest.requestId);
           if (!preflight.ready) {
-            setErrorMessage(
-              preflight.error ?? "Not ready yet. Please try again shortly.",
-            );
+            setErrorMessage(preflight.error ?? "Not ready yet. Please try again shortly.");
             return;
           }
           requestToClaim = preflight.request ?? readyQueueRequest;
@@ -1768,9 +1916,7 @@ function WithdrawRail({
         await Promise.all([refetchQueue(), refetchShares(), refetchReadyPreviewAssets()]);
 
         if (requestToClaim.status !== "ready") {
-          setMessage(
-            "Your withdrawal is being processed. Please wait.",
-          );
+          setMessage("Your withdrawal is being processed. Please wait.");
           return;
         }
       } catch (error) {
@@ -2002,9 +2148,7 @@ function WithdrawRail({
       </Button>
 
       {walletConnected && !userAuthorized && (
-        <p className="text-xs leading-6 text-amber-200/90">
-          Sign in to withdraw.
-        </p>
+        <p className="text-xs leading-6 text-amber-200/90">Sign in to withdraw.</p>
       )}
 
       {queueActiveRequest && (
@@ -2366,12 +2510,8 @@ export default function VaultDetailPage() {
     {
       label: "APY",
       value: formatPercent(performance.apy),
-      hint:
-        performance.apy !== null
-          ? "Based on past performance."
-          : "Not enough history yet.",
-      tooltip:
-        "Estimated annual return based on vault performance.",
+      hint: performance.apy !== null ? "Based on past performance." : "Not enough history yet.",
+      tooltip: "Estimated annual return based on vault performance.",
     },
     {
       label: "NAV",
@@ -2386,11 +2526,8 @@ export default function VaultDetailPage() {
       value: freshestNavSnapshot
         ? formatCompactCurrency(getDisplayedTvl(freshestNavSnapshot) ?? 0)
         : "--",
-      hint: freshestNavSnapshot
-        ? "Total value in this vault."
-        : "Waiting for first update.",
-      tooltip:
-        "Total value held in this vault.",
+      hint: freshestNavSnapshot ? "Total value in this vault." : "Waiting for first update.",
+      tooltip: "Total value held in this vault.",
     },
   ];
 
@@ -2462,13 +2599,7 @@ export default function VaultDetailPage() {
                       <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">
                         Vault
                       </p>
-                      <div className="inline-flex items-center gap-2 rounded-[2px] border border-[#656565]/40 bg-[#0A0A0A] px-3 py-1 text-xs text-slate-300">
-                        <span>How vaults work</span>
-                        <InfoTooltip
-                          label="How vaults work"
-                          content="Deposit into a strategy, receive vault shares, and track performance. Withdrawals are processed through the vault."
-                        />
-                      </div>
+                      <HowVaultWorksDialog vault={vault} />
                     </div>
 
                     <div className="space-y-3">
@@ -2876,17 +3007,15 @@ export default function VaultDetailPage() {
                       />
                     )
                   ) : (
-                      <div className="space-y-4 rounded-[24px] border border-white/10 bg-slate-950/35 p-4 text-sm leading-7 text-slate-300">
-                        <div>
-                          For this vault, use the Withdraw section below.
-                        </div>
-                        <Button
-                          asChild
-                          className="w-full rounded-full bg-white text-slate-950 hover:bg-slate-100"
-                        >
-                          <a href="#exit-queue">Go to Withdraw</a>
-                        </Button>
-                      </div>
+                    <div className="space-y-4 rounded-[24px] border border-white/10 bg-slate-950/35 p-4 text-sm leading-7 text-slate-300">
+                      <div>For this vault, use the Withdraw section below.</div>
+                      <Button
+                        asChild
+                        className="w-full rounded-full bg-white text-slate-950 hover:bg-slate-100"
+                      >
+                        <a href="#exit-queue">Go to Withdraw</a>
+                      </Button>
+                    </div>
                   )}
                 </TabsContent>
               </Tabs>

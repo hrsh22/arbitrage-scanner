@@ -6,6 +6,7 @@ import { getCyclePresentation } from "../../../../src/lib/cyclePresentation";
 import { RequestForm } from "./RequestForm";
 import { PendingRequests } from "./PendingRequests";
 import { ClaimableRequests } from "./ClaimableRequests";
+import { WithdrawalInfoDialog } from "./WithdrawalInfoDialog";
 
 interface RedemptionPanelProps {
   vault: VaultInstance;
@@ -59,6 +60,8 @@ export function RedemptionPanel({
           : "Request a withdrawal. You can claim once it's processed."
         : "Withdrawals are temporarily paused.";
 
+  const isQueuedMode = executionMode === "queued";
+
   return (
     <Card
       className="rounded-[28px] border border-white/10 bg-white/[0.045] shadow-[0_30px_90px_-40px_rgba(8,15,36,0.95)] backdrop-blur-xl"
@@ -72,14 +75,14 @@ export function RedemptionPanel({
       </CardHeader>
 
       <CardContent>
-        <div className="mb-4 flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+        <div className="mb-4 flex items-center justify-between rounded-[8px] border border-[#212121] bg-[#0A0A0A] px-4 py-3">
           <div>
             <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Vault status</p>
-            <p className="mt-1 text-sm text-white">{cyclePresentation.label}</p>
+            <p className="mt-1 text-sm font-medium text-white">{cyclePresentation.label}</p>
           </div>
-          <p className="max-w-[240px] text-right text-xs leading-5 text-slate-400">
-            {cyclePresentation.detail}
-          </p>
+          {isQueuedMode && (
+            <WithdrawalInfoDialog isQueuedMode={true} triggerLabel="How this works" triggerClassName="inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-[4px] bg-[#121212] px-3 py-1.5 text-xs font-semibold text-slate-300 ring-1 ring-inset ring-[#212121] transition-all hover:bg-[#212121] hover:text-white" />
+          )}
         </div>
 
         <div className="space-y-4">

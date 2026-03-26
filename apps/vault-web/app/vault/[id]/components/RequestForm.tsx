@@ -219,97 +219,97 @@ export function RequestForm({
         </span>
       </div>
 
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <Label
-            htmlFor="shares-input"
-            className="text-xs font-medium uppercase tracking-[0.16em] text-slate-400"
-          >
-            Shares to withdraw
-          </Label>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                className="inline-flex items-center gap-1 text-[11px] text-slate-500 transition-colors hover:text-slate-300"
-              >
-                <CircleHelp className="h-3.5 w-3.5" />
-                How this works
-              </button>
-            </TooltipTrigger>
-            <TooltipContent
-              side="left"
-              sideOffset={8}
-              className="max-w-64 bg-slate-100 text-slate-900"
-            >
-              {isQueuedMode
-                ? "Your request is submitted instantly. You'll be able to claim once it's processed."
-                : "Withdrawals are temporarily paused."}
-            </TooltipContent>
-          </Tooltip>
-        </div>
-        <div className="flex gap-2">
-          <div className="relative flex-1">
-            <Input
-              id="shares-input"
-              type="number"
-              step="0.000001"
-              min="0"
-              placeholder="0.00"
-              value={amount}
-              onChange={(e) => {
-                setAmount(e.target.value);
-                setError(null);
-                resetApprove();
-              }}
-              disabled={isBusy || hasExistingRequest || executionMode === "blocked"}
-              className="border-white/10 bg-white/5 pr-16 font-mono text-white placeholder:text-slate-500"
-              aria-describedby="shares-input-help"
-              data-testid="shares-input"
-            />
+      <div className="space-y-4">
+        <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-2.5">
+          <div className="mb-2 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <label htmlFor="shares-input" className="text-xs font-medium uppercase tracking-[0.16em] text-slate-400">
+                Shares
+              </label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 text-[11px] text-slate-500 transition-colors hover:text-slate-300"
+                  >
+                    <CircleHelp className="h-3.5 w-3.5" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="right"
+                  sideOffset={8}
+                  className="max-w-64 bg-slate-100 text-slate-900"
+                >
+                  {isQueuedMode
+                    ? "Your request is submitted instantly. You'll be able to claim once it's processed."
+                    : "Withdrawals are temporarily paused."}
+                </TooltipContent>
+              </Tooltip>
+            </div>
             <button
               type="button"
               onClick={handleMax}
               disabled={isBusy || hasExistingRequest || executionMode === "blocked"}
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded bg-white/10 px-2 py-0.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-white/15 disabled:opacity-50"
+              className="text-[10px] font-medium uppercase tracking-[0.18em] text-cyan-200 transition-colors hover:text-white disabled:opacity-50"
               aria-label="Use maximum available shares"
             >
               MAX
             </button>
           </div>
-          {needsShareApproval ? (
-            <Button
-              type="button"
-              onClick={handleApproveShares}
-              disabled={
-                !isValidAmount || isBusy || hasExistingRequest || executionMode === "blocked"
+          <Input
+            id="shares-input"
+            type="text"
+            inputMode="decimal"
+            placeholder="0.00"
+            value={amount}
+            onChange={(e) => {
+              const val = e.target.value;
+              if (val === "" || /^[0-9]*[.,]?[0-9]*$/.test(val)) {
+                setAmount(val.replace(",", "."));
+                setError(null);
+                resetApprove();
               }
-              className="min-w-[140px] bg-white text-slate-950 hover:bg-slate-100"
-            >
-              {approvePending
-                ? "Approve in Wallet..."
-                : approveConfirming
-                  ? "Approving..."
-                  : "Approve Shares"}
-            </Button>
-          ) : (
-            <Button
-              type="button"
-              onClick={handleSubmit}
-              disabled={
-                !isValidAmount || isBusy || hasExistingRequest || executionMode === "blocked"
-              }
-              className="min-w-[140px] bg-cyan-300 text-slate-950 hover:bg-cyan-200 request-redeem-button"
-              data-testid="request-redeem-button"
-            >
-              {queuePending
-                ? "Confirm in wallet..."
-                : queueConfirming
-                  ? "Submitting..."
-                  : "Withdraw"}
-            </Button>
-          )}
+            }}
+            disabled={isBusy || hasExistingRequest || executionMode === "blocked"}
+            className="h-10 rounded-[2px] border border-[#212121] bg-transparent px-3 font-mono text-sm text-white placeholder:text-slate-500"
+            aria-describedby="shares-input-help"
+            data-testid="shares-input"
+          />
         </div>
+
+        {needsShareApproval ? (
+          <Button
+            type="button"
+            onClick={handleApproveShares}
+            disabled={
+              !isValidAmount || isBusy || hasExistingRequest || executionMode === "blocked"
+            }
+            className="h-12 w-full rounded-[10px] bg-white text-slate-950 hover:bg-white/90"
+          >
+            {approvePending
+              ? "Approve in Wallet..."
+              : approveConfirming
+                ? "Approving..."
+                : "Approve Shares"}
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            onClick={handleSubmit}
+            disabled={
+              !isValidAmount || isBusy || hasExistingRequest || executionMode === "blocked"
+            }
+            className="h-12 w-full rounded-[10px] bg-cyan-300 text-slate-950 hover:bg-cyan-200 request-redeem-button"
+            data-testid="request-redeem-button"
+          >
+            {queuePending
+              ? "Confirm in wallet..."
+              : queueConfirming
+                ? "Submitting..."
+                : "Withdraw"}
+          </Button>
+        )}
+
         <p id="shares-input-help" className="text-xs leading-6 text-slate-400">
           {isQueuedMode
             ? "Your request will be processed shortly."
