@@ -975,14 +975,14 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
       icon: User,
       label: "Depositor",
       sublabel: "You",
-      color: "cyan",
+      color: "orange",
     },
     {
       key: "usdc",
       icon: Coins,
       label: "USDC.e",
       sublabel: "Deposit",
-      color: "blue",
+      color: "amber",
     },
     {
       key: "vault",
@@ -996,43 +996,43 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
       icon: TrendingUp,
       label: "Trading Safe",
       sublabel: "Execution",
-      color: "violet",
+      color: "slate",
       bidirectional: true,
     },
   ];
 
   const colorMap = {
-    cyan: {
-      bg: "from-cyan-500/20 to-cyan-600/5",
-      border: "border-cyan-400/40",
-      glow: "shadow-[0_0_30px_rgba(34,211,238,0.25)]",
-      icon: "text-cyan-400",
-      ring: "ring-cyan-400/30",
-      line: "from-cyan-400",
+    orange: {
+      bg: "from-orange-500/15 to-orange-600/5",
+      border: "border-orange-400/30",
+      glow: "shadow-[0_0_20px_rgba(251,146,60,0.15)]",
+      icon: "text-orange-400",
+      ring: "ring-orange-400/30",
+      line: "from-orange-400",
     },
-    blue: {
-      bg: "from-blue-500/20 to-blue-600/5",
-      border: "border-blue-400/40",
-      glow: "shadow-[0_0_30px_rgba(59,130,246,0.25)]",
-      icon: "text-blue-400",
-      ring: "ring-blue-400/30",
-      line: "from-blue-400",
-    },
-    violet: {
-      bg: "from-violet-500/20 to-violet-600/5",
-      border: "border-violet-400/40",
-      glow: "shadow-[0_0_30px_rgba(139,92,246,0.25)]",
-      icon: "text-violet-400",
-      ring: "ring-violet-400/30",
-      line: "from-violet-400",
+    amber: {
+      bg: "from-amber-500/15 to-amber-600/5",
+      border: "border-amber-400/30",
+      glow: "shadow-[0_0_20px_rgba(251,191,36,0.15)]",
+      icon: "text-amber-400",
+      ring: "ring-amber-400/30",
+      line: "from-amber-400",
     },
     emerald: {
-      bg: "from-emerald-500/20 to-emerald-600/5",
-      border: "border-emerald-400/40",
-      glow: "shadow-[0_0_30px_rgba(52,211,153,0.25)]",
+      bg: "from-emerald-500/15 to-emerald-600/5",
+      border: "border-emerald-400/30",
+      glow: "shadow-[0_0_20px_rgba(52,211,153,0.15)]",
       icon: "text-emerald-400",
       ring: "ring-emerald-400/30",
       line: "from-emerald-400",
+    },
+    slate: {
+      bg: "from-slate-500/15 to-slate-600/5",
+      border: "border-slate-400/30",
+      glow: "shadow-[0_0_20px_rgba(148,163,184,0.1)]",
+      icon: "text-slate-400",
+      ring: "ring-slate-400/30",
+      line: "from-slate-400",
     },
   };
 
@@ -1047,14 +1047,14 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
           <span>How Vaults Work</span>
         </button>
       </DialogTrigger>
-      <DialogContent className="w-[min(1120px,96vw)] !max-w-none overflow-hidden rounded-[16px] border border-[#2A2F3A] bg-[#06080D] p-0 text-white shadow-[0_35px_120px_-45px_rgba(0,0,0,0.95)] max-h-[90vh] overflow-y-auto sm:rounded-[24px]">
+      <DialogContent className="w-[min(1120px,96vw)] !max-w-none overflow-hidden rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-0 text-white shadow-[0_35px_120px_-45px_rgba(0,0,0,0.95)] max-h-[90vh] overflow-y-auto">
         <DialogTitle className="sr-only">How Vaults Work Flowchart</DialogTitle>
         <DialogDescription className="sr-only">
           Explains the lifecycle of a vault deposit.
         </DialogDescription>
 
         <div className="grid lg:grid-cols-[1fr_1.4fr]">
-          <div className="relative border-b border-[#1C2533] bg-gradient-to-b from-[#0A0E17] to-[#060810] p-8 lg:border-b-0 lg:border-r lg:p-10">
+          <div className="relative border-b border-[#212121] bg-[#0A0A0A] p-8 lg:border-b-0 lg:border-r lg:p-10">
             <div
               className="pointer-events-none absolute inset-0 opacity-[0.03]"
               style={{
@@ -1085,7 +1085,7 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
                     >
                       <div
                         className={cn(
-                          "flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-[#0D1117] ring-1",
+                          "flex h-11 w-11 shrink-0 items-center justify-center rounded-[2px] bg-[#121212] ring-1",
                           colors.ring,
                         )}
                       >
@@ -1100,18 +1100,18 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
                       <div
                         className={cn(
                           "absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full",
-                          step.color === "cyan" && "bg-cyan-400",
-                          step.color === "blue" && "bg-blue-400",
-                          step.color === "violet" && "bg-violet-400",
+                          step.color === "orange" && "bg-orange-400",
+                          step.color === "amber" && "bg-amber-400",
+                          step.color === "slate" && "bg-slate-400",
                           step.color === "emerald" && "bg-emerald-400",
                         )}
                       >
                         <div
                           className={cn(
                             "absolute inset-0 animate-ping rounded-full opacity-75",
-                            step.color === "cyan" && "bg-cyan-400",
-                            step.color === "blue" && "bg-blue-400",
-                            step.color === "violet" && "bg-violet-400",
+                            step.color === "orange" && "bg-orange-400",
+                            step.color === "amber" && "bg-amber-400",
+                            step.color === "slate" && "bg-slate-400",
                             step.color === "emerald" && "bg-emerald-400",
                           )}
                         />
@@ -1153,14 +1153,14 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
 
             <div className="space-y-8">
               <div className="group flex gap-5">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-cyan-500/10 text-sm font-bold text-cyan-400 ring-1 ring-cyan-500/20">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] bg-orange-500/10 text-sm font-bold text-orange-400 ring-1 ring-orange-500/20">
                   1
                 </div>
                 <div>
                   <h3 className="text-[15px] font-semibold text-white">
                     Deposit and receive shares
                   </h3>
-                  <p className="mt-2 text-sm leading-relaxed text-slate-400">
+                  <p className="mt-2 text-sm leading-relaxed text-[#828B8D]">
                     Your USDC.e deposit mints vault shares, giving you proportional exposure to the
                     vault's pooled strategy and returns.
                   </p>
@@ -1168,14 +1168,14 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
               </div>
 
               <div className="group flex gap-5">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-violet-500/10 text-sm font-bold text-violet-400 ring-1 ring-violet-500/20">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] bg-emerald-500/10 text-sm font-bold text-emerald-400 ring-1 ring-emerald-500/20">
                   2
                 </div>
                 <div>
                   <h3 className="text-[15px] font-semibold text-white">
                     Trading safe executes strategy
                   </h3>
-                  <p className="mt-2 text-sm leading-relaxed text-slate-400">
+                  <p className="mt-2 text-sm leading-relaxed text-[#828B8D]">
                     The trading safe deploys capital under{" "}
                     {vault.profile.strategyLabel?.toLowerCase() || "the defined strategy"} rules
                     with built-in risk controls and active position management.
@@ -1184,14 +1184,14 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
               </div>
 
               <div className="group flex gap-5">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-sm font-bold text-emerald-400 ring-1 ring-emerald-500/20">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] bg-slate-500/10 text-sm font-bold text-slate-400 ring-1 ring-slate-500/20">
                   3
                 </div>
                 <div>
                   <h3 className="text-[15px] font-semibold text-white">
                     Withdraw and claim proceeds
                   </h3>
-                  <p className="mt-2 text-sm leading-relaxed text-slate-400">
+                  <p className="mt-2 text-sm leading-relaxed text-[#828B8D]">
                     Withdrawal requests enter queue processing, then become claimable as USDC.e once
                     settlement completes.
                   </p>
@@ -1199,11 +1199,11 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
               </div>
             </div>
 
-            <div className="mt-10 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
-              <p className="text-[12px] leading-relaxed text-amber-200/80">
-                <span className="font-semibold">Risk notice:</span> Strategy performance varies with
-                market conditions, execution quality, and liquidity. Review the risk profile before
-                allocating capital.
+            <div className="mt-10 rounded-[2px] border border-[#212121] bg-[#121212] p-4">
+              <p className="text-[12px] leading-relaxed text-[#828B8D]">
+                <span className="font-semibold text-white">Risk notice:</span> Strategy performance
+                varies with market conditions, execution quality, and liquidity. Review the risk
+                profile before allocating capital.
               </p>
             </div>
           </div>

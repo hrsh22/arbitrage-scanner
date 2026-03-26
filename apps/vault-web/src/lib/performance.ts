@@ -13,7 +13,7 @@ export interface DerivedVaultPerformanceStats {
 }
 
 const MIN_MEANINGFUL_TOTAL_ASSETS = 1;
-const MIN_APY_DAYS = 7;
+const MIN_APY_DAYS = 1; // Require at least 1 day to avoid wild extrapolations
 
 function normalizeNavPoints(snapshots: VaultNavHistoryItem[]) {
   const rawPoints = [...snapshots]

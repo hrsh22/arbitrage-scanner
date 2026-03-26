@@ -118,6 +118,8 @@ export const vaultQueryKeys = {
   events: (vaultId?: number) => [...vaultQueryKeys.scope(vaultId), "events"] as const,
   history: (vaultId: number | undefined, userScope: string) =>
     [...vaultQueryKeys.scope(vaultId), "history", userScope] as const,
+  navHistory: (vaultId?: number, limit?: number) =>
+    [...vaultQueryKeys.scope(vaultId), "nav-history", limit ?? "all"] as const,
   cycleStatus: (vaultId?: number, cycleId?: number) =>
     [...vaultQueryKeys.scope(vaultId), "cycle", cycleId ?? "current"] as const,
   requests: (vaultId: number | undefined, userScope: string) =>
@@ -413,8 +415,25 @@ export function useVaultNavHistory(
   limit?: number,
   vaultId?: number,
 ): AsyncState<VaultNavHistoryResponse> {
-  const fetcher = useCallback(() => fetchVaultNavHistory(limit, vaultId!), [limit, vaultId]);
-  return usePolledFetch(fetcher);
+  const query = useQuery({
+    queryKey: vaultQueryKeys.navHistory(vaultId, limit),
+    queryFn: () => fetchVaultNavHistory(limit, vaultId!),
+    enabled: vaultId !== undefined,
+    refetchInterval: DEFAULT_POLL_INTERVAL_MS,
+  });
+
+  const refetch = useCallback(async (): Promise<VaultNavHistoryResponse | null> => {
+    const result = await query.refetch();
+    return result.data ?? null;
+  }, [query]);
+
+  return {
+    data: query.data ?? null,
+    isLoading: vaultId !== undefined ? query.isLoading : false,
+    error: getErrorMessage(query.error),
+    lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
+    refetch,
+  };
 }
 
 export function useVaultAllocations(limit?: number): AsyncState<VaultAllocationsResponse> {
