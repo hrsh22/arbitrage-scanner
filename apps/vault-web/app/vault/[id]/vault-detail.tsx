@@ -6,7 +6,19 @@ import { useParams } from "next/navigation";
 import { formatUnits, parseUnits } from "viem";
 import { useAppKitAccount } from "@reown/appkit/react";
 import { useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, ArrowDown, ArrowLeft, Dot, Wallet } from "lucide-react";
+import {
+  AlertCircle,
+  ArrowDown,
+  ArrowLeft,
+  Dot,
+  Wallet,
+  User,
+  Coins,
+  TrendingUp,
+  Building2,
+  ChevronDown,
+  ChevronUp,
+} from "lucide-react";
 import { Badge } from "@workspace/ui/components/badge";
 import { Button } from "@workspace/ui/components/button";
 import {
@@ -892,10 +904,12 @@ function AddressField({
           {address}
         </TooltipContent>
       </Tooltip>
-      
+
       {balance !== undefined && (
         <div className="mt-4 flex items-center justify-between border-t border-[#212121] pt-3">
-          <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{balanceLabel}</span>
+          <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+            {balanceLabel}
+          </span>
           <span className="font-mono text-sm font-medium text-white">{balance}</span>
         </div>
       )}
@@ -955,44 +969,72 @@ function TechnicalDetailsDialog({
 function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
   const [open, setOpen] = useState(false);
 
-  const flowItems: Array<{
-    key: string;
-    label: string;
-    detail: string;
-    nodeClassName: string;
-    nodeText?: string;
-  }> = [
+  const flowSteps = [
     {
       key: "depositor",
+      icon: User,
       label: "Depositor",
-      detail: "Capital source",
-      nodeClassName:
-        "h-16 w-16 rounded-full bg-[radial-gradient(circle_at_30%_20%,rgba(125,211,252,0.95),rgba(37,99,235,0.82)_55%,rgba(15,23,42,0.92))] shadow-[0_0_36px_rgba(56,189,248,0.45)]",
+      sublabel: "You",
+      color: "cyan",
     },
     {
-      key: "deposit",
-      label: "Deposit USDC.e",
-      detail: "Mint vault shares",
-      nodeClassName:
-        "flex h-14 w-20 items-center justify-center rounded-full border border-cyan-300/70 bg-[radial-gradient(circle_at_30%_20%,rgba(34,211,238,0.45),rgba(59,130,246,0.2),rgba(2,6,23,0.95))] shadow-[0_0_26px_rgba(34,211,238,0.38)]",
-      nodeText: "USDC.e",
-    },
-    {
-      key: "safe",
-      label: "Trading Safe",
-      detail: "Executes strategy",
-      nodeClassName:
-        "flex h-14 w-24 items-center justify-center rounded-[10px] border border-indigo-300/65 bg-[linear-gradient(140deg,rgba(30,64,175,0.52),rgba(99,102,241,0.28),rgba(2,6,23,0.96))] shadow-[0_0_26px_rgba(99,102,241,0.35)]",
-      nodeText: "Execution",
+      key: "usdc",
+      icon: Coins,
+      label: "USDC.e",
+      sublabel: "Deposit",
+      color: "blue",
     },
     {
       key: "vault",
+      icon: Building2,
       label: "Vault",
-      detail: "Tracks NAV & claims",
-      nodeClassName:
-        "relative h-24 w-24 rounded-[14px] border border-cyan-300/60 bg-[linear-gradient(140deg,rgba(34,211,238,0.34),rgba(37,99,235,0.3),rgba(15,23,42,0.98))] shadow-[0_0_42px_rgba(34,211,238,0.32)]",
+      sublabel: "NAV Tracking",
+      color: "emerald",
+    },
+    {
+      key: "safe",
+      icon: TrendingUp,
+      label: "Trading Safe",
+      sublabel: "Execution",
+      color: "violet",
+      bidirectional: true,
     },
   ];
+
+  const colorMap = {
+    cyan: {
+      bg: "from-cyan-500/20 to-cyan-600/5",
+      border: "border-cyan-400/40",
+      glow: "shadow-[0_0_30px_rgba(34,211,238,0.25)]",
+      icon: "text-cyan-400",
+      ring: "ring-cyan-400/30",
+      line: "from-cyan-400",
+    },
+    blue: {
+      bg: "from-blue-500/20 to-blue-600/5",
+      border: "border-blue-400/40",
+      glow: "shadow-[0_0_30px_rgba(59,130,246,0.25)]",
+      icon: "text-blue-400",
+      ring: "ring-blue-400/30",
+      line: "from-blue-400",
+    },
+    violet: {
+      bg: "from-violet-500/20 to-violet-600/5",
+      border: "border-violet-400/40",
+      glow: "shadow-[0_0_30px_rgba(139,92,246,0.25)]",
+      icon: "text-violet-400",
+      ring: "ring-violet-400/30",
+      line: "from-violet-400",
+    },
+    emerald: {
+      bg: "from-emerald-500/20 to-emerald-600/5",
+      border: "border-emerald-400/40",
+      glow: "shadow-[0_0_30px_rgba(52,211,153,0.25)]",
+      icon: "text-emerald-400",
+      ring: "ring-emerald-400/30",
+      line: "from-emerald-400",
+    },
+  };
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -1006,96 +1048,162 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
         </button>
       </DialogTrigger>
       <DialogContent className="w-[min(1120px,96vw)] !max-w-none overflow-hidden rounded-[16px] border border-[#2A2F3A] bg-[#06080D] p-0 text-white shadow-[0_35px_120px_-45px_rgba(0,0,0,0.95)] max-h-[90vh] overflow-y-auto sm:rounded-[24px]">
-        <div className="grid lg:grid-cols-[1fr_1.5fr]">
-          {/* Left Flowchart Panel */}
-          <div className="border-b border-[#1C2533] bg-[#0A0E17] p-8 lg:border-b-0 lg:border-r">
-            <div className="relative mx-auto w-full max-w-[280px]">
-              <div className="pointer-events-none absolute left-1/2 top-8 h-[calc(100%-3rem)] w-px -translate-x-1/2 bg-gradient-to-b from-cyan-300/70 via-cyan-300/40 to-transparent" />
-              {flowItems.map((item, index) => (
-                <div
-                  key={item.key}
-                  className={cn(
-                    "relative grid grid-cols-[1fr_88px_1fr] items-center gap-4",
-                    index < flowItems.length - 1 && "mb-8",
-                  )}
-                >
-                  <span className="text-right text-[10px] uppercase tracking-[0.14em] text-cyan-200/70">
-                    {item.label}
-                  </span>
+        <DialogTitle className="sr-only">How Vaults Work Flowchart</DialogTitle>
+        <DialogDescription className="sr-only">
+          Explains the lifecycle of a vault deposit.
+        </DialogDescription>
 
-                  <div className="relative flex justify-center">
-                    <div className="pointer-events-none absolute left-0 top-1/2 h-px w-4 -translate-y-1/2 bg-cyan-300/60" />
-                    <div className={item.nodeClassName}>
-                      {item.key === "vault" ? (
-                        <div className="absolute inset-2 rounded-[10px] border border-white/15" />
-                      ) : null}
-                      {item.nodeText ? (
-                        <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-cyan-100">
-                          {item.nodeText}
-                        </span>
-                      ) : null}
+        <div className="grid lg:grid-cols-[1fr_1.4fr]">
+          <div className="relative border-b border-[#1C2533] bg-gradient-to-b from-[#0A0E17] to-[#060810] p-8 lg:border-b-0 lg:border-r lg:p-10">
+            <div
+              className="pointer-events-none absolute inset-0 opacity-[0.03]"
+              style={{
+                backgroundImage: `radial-gradient(circle at 1px 1px, white 1px, transparent 0)`,
+                backgroundSize: "24px 24px",
+              }}
+            />
+
+            <h3 className="mb-8 text-center text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
+              Capital Flow
+            </h3>
+
+            <div className="relative mx-auto flex max-w-[200px] flex-col items-center gap-3">
+              {flowSteps.map((step, index) => {
+                const colors = colorMap[step.color as keyof typeof colorMap];
+                const Icon = step.icon;
+                const isLast = index === flowSteps.length - 1;
+
+                return (
+                  <div key={step.key} className="relative flex w-full flex-col items-center">
+                    <div
+                      className={cn(
+                        "group relative flex h-[72px] w-full items-center gap-4 rounded-xl border bg-gradient-to-br px-4 transition-all duration-300 hover:scale-[1.02]",
+                        colors.border,
+                        colors.bg,
+                        colors.glow,
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-[#0D1117] ring-1",
+                          colors.ring,
+                        )}
+                      >
+                        <Icon className={cn("h-5 w-5", colors.icon)} />
+                      </div>
+
+                      <div className="flex flex-col">
+                        <span className="text-sm font-semibold text-white">{step.label}</span>
+                        <span className="text-[11px] text-slate-500">{step.sublabel}</span>
+                      </div>
+
+                      <div
+                        className={cn(
+                          "absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full",
+                          step.color === "cyan" && "bg-cyan-400",
+                          step.color === "blue" && "bg-blue-400",
+                          step.color === "violet" && "bg-violet-400",
+                          step.color === "emerald" && "bg-emerald-400",
+                        )}
+                      >
+                        <div
+                          className={cn(
+                            "absolute inset-0 animate-ping rounded-full opacity-75",
+                            step.color === "cyan" && "bg-cyan-400",
+                            step.color === "blue" && "bg-blue-400",
+                            step.color === "violet" && "bg-violet-400",
+                            step.color === "emerald" && "bg-emerald-400",
+                          )}
+                        />
+                      </div>
                     </div>
-                    <div className="pointer-events-none absolute right-0 top-1/2 h-px w-4 -translate-y-1/2 bg-cyan-300/60" />
+
+                    {!isLast && (
+                      <div className="flex h-8 flex-col items-center justify-center">
+                        {flowSteps[index + 1]?.bidirectional ? (
+                          <div className="flex items-center gap-0.5">
+                            <ChevronDown className={cn("h-4 w-4", colors.icon, "opacity-70")} />
+                            <ChevronUp className={cn("h-4 w-4", colors.icon, "opacity-70")} />
+                          </div>
+                        ) : (
+                          <>
+                            <div
+                              className={cn(
+                                "h-4 w-px bg-gradient-to-b to-transparent",
+                                colors.line,
+                              )}
+                            />
+                            <ChevronDown
+                              className={cn("h-4 w-4 -mt-1", colors.icon, "opacity-60")}
+                            />
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
-
-                  <span className="text-left text-[10px] uppercase tracking-[0.14em] text-slate-500">
-                    {item.detail}
-                  </span>
-
-                  {index < flowItems.length - 1 ? (
-                    <ArrowDown className="absolute left-1/2 top-[calc(100%+8px)] h-4 w-4 -translate-x-1/2 text-cyan-300/85" />
-                  ) : null}
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 
-          {/* Right Text Panel */}
           <div className="p-8 lg:p-12">
             <h2 className="mb-10 text-xl font-medium tracking-tight text-white lg:text-3xl">
               How Vaults Work
             </h2>
 
-            <div className="space-y-10">
-              <div className="flex gap-6">
-                <span className="text-sm font-semibold tracking-wider text-slate-500">01</span>
+            <div className="space-y-8">
+              <div className="group flex gap-5">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-cyan-500/10 text-sm font-bold text-cyan-400 ring-1 ring-cyan-500/20">
+                  1
+                </div>
                 <div>
-                  <h3 className="text-base font-medium text-slate-200">
+                  <h3 className="text-[15px] font-semibold text-white">
                     Deposit and receive shares
                   </h3>
-                  <p className="mt-2.5 text-sm leading-relaxed text-slate-400">
-                    Your deposit mints vault shares, giving you proportional exposure to the
-                    vault's pooled strategy.
+                  <p className="mt-2 text-sm leading-relaxed text-slate-400">
+                    Your USDC.e deposit mints vault shares, giving you proportional exposure to the
+                    vault's pooled strategy and returns.
                   </p>
                 </div>
               </div>
 
-              <div className="flex gap-6">
-                <span className="text-sm font-semibold tracking-wider text-slate-500">02</span>
+              <div className="group flex gap-5">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-violet-500/10 text-sm font-bold text-violet-400 ring-1 ring-violet-500/20">
+                  2
+                </div>
                 <div>
-                  <h3 className="text-base font-medium text-slate-200">Trading safe executes</h3>
-                  <p className="mt-2.5 text-sm leading-relaxed text-slate-400">
-                    The trading safe deploys capital under {vault.profile.strategyLabel?.toLowerCase() || 'strategy'} rules with risk controls and position management.
+                  <h3 className="text-[15px] font-semibold text-white">
+                    Trading safe executes strategy
+                  </h3>
+                  <p className="mt-2 text-sm leading-relaxed text-slate-400">
+                    The trading safe deploys capital under{" "}
+                    {vault.profile.strategyLabel?.toLowerCase() || "the defined strategy"} rules
+                    with built-in risk controls and active position management.
                   </p>
                 </div>
               </div>
 
-              <div className="flex gap-6">
-                <span className="text-sm font-semibold tracking-wider text-slate-500">03</span>
+              <div className="group flex gap-5">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-sm font-bold text-emerald-400 ring-1 ring-emerald-500/20">
+                  3
+                </div>
                 <div>
-                  <h3 className="text-base font-medium text-slate-200">Withdraw and claim</h3>
-                  <p className="mt-2.5 text-sm leading-relaxed text-slate-400">
-                    Withdrawal requests move through queue processing, then become claimable as USDC.e
-                    when settlement is ready.
+                  <h3 className="text-[15px] font-semibold text-white">
+                    Withdraw and claim proceeds
+                  </h3>
+                  <p className="mt-2 text-sm leading-relaxed text-slate-400">
+                    Withdrawal requests enter queue processing, then become claimable as USDC.e once
+                    settlement completes.
                   </p>
                 </div>
               </div>
             </div>
 
-            <div className="mt-12 border-t border-[#1C2533] pt-6">
-              <p className="text-[11px] leading-relaxed text-slate-500">
-                Risk notice: strategy performance can vary with market conditions, execution
-                quality, and liquidity. Review terms and risk profile before allocating capital.
+            <div className="mt-10 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
+              <p className="text-[12px] leading-relaxed text-amber-200/80">
+                <span className="font-semibold">Risk notice:</span> Strategy performance varies with
+                market conditions, execution quality, and liquidity. Review the risk profile before
+                allocating capital.
               </p>
             </div>
           </div>
