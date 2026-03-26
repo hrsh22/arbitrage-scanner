@@ -26,6 +26,11 @@ const config: VaultInstanceConfig = {
       performance: 0,
       withdrawal: 0,
     },
+    tradingMetadata: {
+      assets: ["btc"],
+      platforms: ["polymarket"],
+      marketType: "15min",
+    },
   },
 
   vaultContractType: "flatBookVaultV2" as const,

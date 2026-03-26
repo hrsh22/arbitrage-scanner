@@ -22,6 +22,11 @@ export interface VaultProfile {
   minDeposit: number;
   maxDeposit: number;
   fees: VaultFeeConfig;
+  tradingMetadata?: {
+    assets: string[]; // e.g., ["btc"]
+    platforms: string[]; // e.g., ["polymarket"]
+    marketType?: string; // e.g., "15min"
+  };
 }
 
 export interface HedgingConfig {

@@ -35,6 +35,11 @@ export interface VaultProfile {
     performance: number;
     withdrawal: number;
   };
+  tradingMetadata?: {
+    assets: string[];
+    platforms: string[];
+    marketType?: string;
+  };
 }
 
 export interface VaultInstance {

@@ -6,6 +6,7 @@ import { Badge } from "@workspace/ui/components/badge";
 import { Skeleton } from "@workspace/ui/components/skeleton";
 import { ArrowUpRight } from "lucide-react";
 import { useCycleStatus, useVaultInstances, useVaultStatus } from "../src/lib/hooks";
+import { AssetBadge, AssetLogoStack, type AssetType } from "../components/asset-logo";
 import type { VaultInstance, VaultRiskLevel } from "../src/types";
 
 function formatCompactCurrency(value: number): string {
@@ -35,7 +36,7 @@ function getDepositStatusLabel(
 }
 
 function getVaultCardSummary(vault: VaultInstance): string {
-  const managerLabel = /sisyphus/i.test(vault.name)
+  const managerLabel = vault.profile.tradingMetadata?.assets?.includes("btc")
     ? "Managed by @AWEnetwork_ai"
     : "Managed by vault operator";
   return `${managerLabel} with a focus on ${vault.profile.strategyLabel.toLowerCase()}.`;
@@ -64,7 +65,11 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
   const deployedCapital =
     (data?.nav?.deployedCostBasis ?? 0) + (data?.nav?.redeemableCostBasis ?? 0);
 
-  const showAweCredit = /sisyphus/i.test(vault.name);
+  const hasTradingMetadata = Boolean(
+    vault.profile.tradingMetadata?.assets?.length ||
+    vault.profile.tradingMetadata?.platforms?.length,
+  );
+  const showAweCredit = vault.profile.tradingMetadata?.assets?.includes("btc");
   const vaultHref = `/vault/${vault.id}`;
 
   return (
@@ -86,6 +91,7 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
           <div className="flex items-start justify-between gap-3">
             <div className="flex flex-col gap-3">
               <div className="flex flex-wrap items-center gap-2">
+                <AssetBadge asset="usdc" size="sm" variant="default" />
                 <Badge className="w-fit border border-white/10 bg-white/8 text-[10px] uppercase tracking-[0.22em] text-slate-300">
                   {vault.type === "custom" ? "Vault" : vault.type}
                 </Badge>
@@ -106,6 +112,29 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
                 >
                   {vault.profile.strategyLabel}
                 </Badge>
+                {hasTradingMetadata &&
+                  (() => {
+                    const validAssets: AssetType[] = [
+                      ...(vault.profile.tradingMetadata?.assets || []),
+                      ...(vault.profile.tradingMetadata?.platforms || []),
+                    ].filter((asset): asset is AssetType =>
+                      ["usdc", "btc", "gnosis-safe", "polymarket"].includes(asset),
+                    );
+
+                    if (validAssets.length === 0) return null;
+
+                    return (
+                      <Badge
+                        variant="secondary"
+                        className="inline-flex items-center gap-1.5 border border-white/10 bg-white/6 text-slate-200"
+                      >
+                        <AssetLogoStack assets={validAssets} size="xs" />
+                        <span>
+                          {vault.profile.tradingMetadata?.assets?.[0]?.toUpperCase() || "Markets"}
+                        </span>
+                      </Badge>
+                    );
+                  })()}
                 <Badge
                   variant="secondary"
                   className="border border-white/10 bg-white/6 text-slate-200"

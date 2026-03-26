@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { formatUnits, parseUnits } from "viem";
@@ -91,6 +92,7 @@ import type {
   VaultStatusResponse,
 } from "../../../src/types";
 import { RedemptionPanel } from "./components";
+import { AssetLogoStack, type AssetType } from "../../../components/asset-logo";
 
 declare global {
   interface Window {
@@ -840,11 +842,13 @@ function AddressField({
   address,
   balanceLabel,
   balance,
+  logoSrc,
 }: {
   label: string;
   address: string;
   balanceLabel?: string;
   balance?: string;
+  logoSrc?: string;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -863,7 +867,10 @@ function AddressField({
   return (
     <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4">
       <div className="flex items-center justify-between gap-3">
-        <span className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</span>
+        <span className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-slate-500">
+          {logoSrc && <Image src={logoSrc} alt={label} width={16} height={16} />}
+          {label}
+        </span>
         <Tooltip>
           <TooltipTrigger asChild>
             <button
@@ -953,6 +960,7 @@ function TechnicalDetailsDialog({
             address={vault.config.safeAddress}
             balanceLabel="Trading Wallet Balance"
             balance={tradingWalletBalance !== null ? formatCurrency(tradingWalletBalance) : "--"}
+            logoSrc="/logo/gnosis-safe.svg"
           />
           <AddressField
             label="Vault contract"
@@ -979,7 +987,7 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
     },
     {
       key: "usdc",
-      icon: Coins,
+      logoSrc: "/logo/usdc-logo.svg",
       label: "USDC.e",
       sublabel: "Deposit",
       color: "amber",
@@ -993,7 +1001,7 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
     },
     {
       key: "safe",
-      icon: TrendingUp,
+      logoSrc: "/logo/gnosis-safe.svg",
       label: "Trading Safe",
       sublabel: "Execution",
       color: "slate",
@@ -1070,7 +1078,8 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
             <div className="relative mx-auto flex max-w-[200px] flex-col items-center gap-3">
               {flowSteps.map((step, index) => {
                 const colors = colorMap[step.color as keyof typeof colorMap];
-                const Icon = step.icon;
+                const Icon = "icon" in step ? step.icon : undefined;
+                const logoSrc = "logoSrc" in step ? step.logoSrc : undefined;
                 const isLast = index === flowSteps.length - 1;
 
                 return (
@@ -1089,7 +1098,11 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
                           colors.ring,
                         )}
                       >
-                        <Icon className={cn("h-5 w-5", colors.icon)} />
+                        {logoSrc ? (
+                          <Image src={logoSrc} alt={step.label} width={24} height={24} />
+                        ) : Icon ? (
+                          <Icon className={cn("h-5 w-5", colors.icon)} />
+                        ) : null}
                       </div>
 
                       <div className="flex flex-col">
@@ -1489,17 +1502,26 @@ function DepositRail({
         <RailStat label="Status" value={getDepositActionLabel(vault, cycle)} />
         <RailStat label="NAV" value={nav ? formatSharePrice(nav.sharePrice) : "--"} />
         <RailStat label="Min deposit" value={formatCurrency(vault.profile.minDeposit)} />
-        <RailStat
-          label="Wallet balance"
-          value={balanceLoading ? "Loading..." : `${formatted} USDC.e`}
-        />
+        <div className="flex items-center justify-between gap-3 rounded-[2px] border border-[#212121] bg-[#0A0A0A] px-4 py-3">
+          <span className="flex items-center gap-2 text-sm text-slate-400">
+            <Image src="/logo/usdc-logo.svg" alt="USDC.e" width={16} height={16} />
+            Wallet balance
+          </span>
+          <span className="text-sm font-medium text-white">
+            {balanceLoading ? "Loading..." : `${formatted} USDC.e`}
+          </span>
+        </div>
       </div>
 
       {!walletConnected && <p className="text-[11px] text-slate-400">Connect wallet to deposit.</p>}
 
       <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-2.5">
         <div className="mb-2 flex items-center justify-between">
-          <label htmlFor="vault-deposit-amount" className="text-xs text-slate-400">
+          <label
+            htmlFor="vault-deposit-amount"
+            className="flex items-center gap-1.5 text-xs text-slate-400"
+          >
+            <Image src="/logo/usdc-logo.svg" alt="USDC.e" width={14} height={14} />
             Amount
           </label>
           <button
@@ -2719,7 +2741,30 @@ export default function VaultDetailPage() {
                       </p>
                     </div>
 
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/6 px-3 py-1 text-xs text-slate-200">
+                        <Image src="/logo/usdc-logo.svg" alt="USDC.e" width={14} height={14} />
+                        USDC.e
+                      </span>
+                      {(() => {
+                        const validAssets: AssetType[] = [
+                          ...(vault.profile.tradingMetadata?.assets || []),
+                          ...(vault.profile.tradingMetadata?.platforms || []),
+                        ].filter((asset): asset is AssetType =>
+                          ["usdc", "btc", "gnosis-safe", "polymarket"].includes(asset),
+                        );
+
+                        if (validAssets.length === 0) return null;
+
+                        return (
+                          <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/6 px-3 py-1 text-xs text-slate-200">
+                            <AssetLogoStack assets={validAssets} size="xs" />
+                            <span>
+                              {vault.profile.tradingMetadata?.assets?.[0]?.toUpperCase()} Markets
+                            </span>
+                          </span>
+                        );
+                      })()}
                       {tags.map((tag) => (
                         <Badge
                           key={tag}
@@ -2796,9 +2841,40 @@ export default function VaultDetailPage() {
 
               <SectionShell title="Strategy">
                 <div className="space-y-5">
-                  <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                     <KeyInfoItem label="Managed by" value={getManagementLabel(vault)} />
                     <KeyInfoItem label="Focus" value={vault.profile.strategyLabel} />
+                    {(() => {
+                      const validAssets: AssetType[] = [
+                        ...(vault.profile.tradingMetadata?.assets || []),
+                        ...(vault.profile.tradingMetadata?.platforms || []),
+                      ].filter((asset): asset is AssetType =>
+                        ["usdc", "btc", "gnosis-safe", "polymarket"].includes(asset),
+                      );
+
+                      if (validAssets.length === 0) return null;
+
+                      const assetLabel =
+                        vault.profile.tradingMetadata?.assets?.[0]?.toUpperCase() || "";
+                      const platformLabel = vault.profile.tradingMetadata?.platforms?.[0]
+                        ? vault.profile.tradingMetadata.platforms[0].charAt(0).toUpperCase() +
+                          vault.profile.tradingMetadata.platforms[0].slice(1)
+                        : "";
+
+                      return (
+                        <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-3">
+                          <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                            Trading on
+                          </p>
+                          <div className="mt-1.5 flex items-center gap-2">
+                            <AssetLogoStack assets={validAssets} size="sm" />
+                            <p className="text-sm font-medium text-white">
+                              {assetLabel} on {platformLabel}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                   <TechnicalDetailsDialog vault={vault} status={status} />
                 </div>
