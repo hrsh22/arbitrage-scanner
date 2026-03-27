@@ -27,7 +27,6 @@ out/
 build
 dist
 
-
 # Debug
 npm-debug.log*
 
@@ -37,3 +36,4 @@ npm-debug.log*
 
 .agents
 skills-lock.json
+.sisyphus
