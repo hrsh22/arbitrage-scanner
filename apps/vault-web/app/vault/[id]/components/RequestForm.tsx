@@ -1,76 +1,70 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useState } from "react";
 import { formatUnits, parseUnits } from "viem";
 import { Button } from "@workspace/ui/components/button";
 import { Input } from "@workspace/ui/components/input";
-import { Label } from "@workspace/ui/components/label";
 import { Skeleton } from "@workspace/ui/components/skeleton";
 import { Alert, AlertDescription } from "@workspace/ui/components/alert";
 import { Info, AlertTriangle, CircleHelp, ArrowUpRight } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@workspace/ui/components/tooltip";
 import { useAppKitAccount } from "@reown/appkit/react";
 import type { VaultInstance, RedemptionRequest, Cycle } from "../../../../src/types";
-import { getCyclePresentation } from "../../../../src/lib/cyclePresentation";
-import {
-  useCustomVaultRequestRedeem,
-  useTokenAllowance,
-  useTokenApprove,
-} from "../../../../src/lib/hooks";
+import { AuthGatedState } from "../../../../components/async-state";
+import { useQueuedRedemptionRequest } from "../../../../src/lib/hooks/redemptionLifecycle";
+import { useAuthSession } from "../../../../src/lib/hooks";
 
 const CUSTOM_VAULT_SHARE_DECIMALS = 6;
 
 interface RequestFormProps {
+  vaultId: number;
   vault: VaultInstance;
   cycleInfo?: Cycle | null;
   userShares: bigint;
   isLoading: boolean;
   existingRequest?: RedemptionRequest | null;
   estimatedExitValueUsd?: number | null;
-  onSuccess: (mode: "instant" | "queued") => void;
 }
 
 export function RequestForm({
+  vaultId,
   vault,
   cycleInfo,
   userShares,
   isLoading,
   existingRequest,
   estimatedExitValueUsd,
-  onSuccess,
 }: RequestFormProps) {
   const { address, isConnected } = useAppKitAccount();
+  const { sessionKnown, sessionAuthenticated } = useAuthSession();
+  const userAuthorized = isConnected && sessionAuthenticated;
   const [amount, setAmount] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const handleRequestConfirmed = useCallback(() => {
+    setAmount("");
+  }, []);
   const {
-    requestRedeemTx,
-    isPending: queuePending,
-    isConfirming: queueConfirming,
-    isConfirmed: queueConfirmed,
-    error: queueError,
-    reset: resetQueue,
-  } = useCustomVaultRequestRedeem();
-  const { allowance: shareAllowance, refetch: refetchShareAllowance } = useTokenAllowance(
-    vault.config.vaultAddress,
-    address,
-    vault.config.vaultAddress,
-  );
-  const {
-    approve: approveShares,
-    isPending: approvePending,
-    isConfirming: approveConfirming,
-    isConfirmed: approveConfirmed,
-    error: approveError,
-    reset: resetApprove,
-  } = useTokenApprove(vault.config.vaultAddress);
+    shareAllowance,
+    approveShares,
+    submitRequest,
+    resetApprovalState,
+    showSuccessMessage,
+    isBusy,
+    queuePending,
+    queueConfirming,
+    approvePending,
+    approveConfirming,
+    visibleError,
+  } = useQueuedRedemptionRequest({
+    vaultId,
+    vaultAddress: vault.config.vaultAddress,
+    onConfirmed: handleRequestConfirmed,
+  });
   const formattedShares = formatUnits(userShares, CUSTOM_VAULT_SHARE_DECIMALS);
   const isBrokenZeroEntitlementRequest =
     !!existingRequest &&
     existingRequest.requestKind === "request" &&
     existingRequest.lifecycleError === "No entitlement record found" &&
     Number(existingRequest.claimableAssetsFormatted ?? "0") === 0;
-  const cyclePresentation = getCyclePresentation(cycleInfo?.batchState);
   const isCustomVault = vault.type === "custom";
   const executionMode =
     cycleInfo?.telemetryFresh === false
@@ -108,8 +102,8 @@ export function RequestForm({
     : executionMode === "blocked"
       ? isCustomVault
         ? cycleInfo?.telemetryFresh === false
-           ? "Loading, please wait…"
-           : "Withdrawals are temporarily unavailable while the vault finishes processing."
+          ? "Loading, please wait…"
+          : "Withdrawals are temporarily unavailable while the vault finishes processing."
         : "Withdrawals are temporarily paused."
       : null;
   const indicativePayoutUsd =
@@ -121,81 +115,25 @@ export function RequestForm({
 
   const handleMax = () => {
     setAmount(formattedShares);
-    setError(null);
-    resetApprove();
+    resetApprovalState();
   };
 
   const handleApproveShares = () => {
     if (!parsedShares) return;
-    setError(null);
-    setSuccessMessage(null);
-    resetApprove();
-    approveShares(vault.config.vaultAddress as `0x${string}`, parsedShares);
+    approveShares(parsedShares);
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
     if (!isValidAmount || !address || !parsedShares) return;
-
-    setError(null);
-    setSuccessMessage(null);
-    resetQueue();
-
-    try {
-      requestRedeemTx(
-        vault.config.vaultAddress as `0x${string}`,
-        parsedShares,
-        address as `0x${string}`,
-        address as `0x${string}`,
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to submit request");
-    }
+    submitRequest(parsedShares);
   };
-
-  useEffect(() => {
-    if (queueError) {
-      setError(queueError.message);
-    }
-  }, [queueError]);
-
-  useEffect(() => {
-    if (!queueConfirmed) return;
-    setError(null);
-    setSuccessMessage(
-      "Withdrawal request submitted. You'll be notified when it's ready.",
-    );
-    setAmount("");
-    onSuccess("queued");
-  }, [onSuccess, queueConfirmed]);
-
-  useEffect(() => {
-    if (approveConfirmed) {
-      setError(null);
-      void refetchShareAllowance();
-    }
-  }, [approveConfirmed, refetchShareAllowance]);
-
-  useEffect(() => {
-    if (approveError) {
-      setError(approveError.message);
-    }
-  }, [approveError]);
-
-  const isBusy = queuePending || queueConfirming || approvePending || approveConfirming;
-
-  // Clear success message after 5 seconds
-  useEffect(() => {
-    if (successMessage) {
-      const timer = setTimeout(() => setSuccessMessage(null), 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [successMessage]);
 
   if (!isConnected) {
     return (
-      <div className="rounded-2xl border border-dashed border-white/15 bg-white/[0.03] p-6 text-center">
-        <p className="text-sm text-slate-300">Connect your wallet to start an exit request.</p>
-      </div>
+      <AuthGatedState
+        variant="transparent"
+        description="Connect your wallet to start an exit request."
+      />
     );
   }
 
@@ -223,7 +161,10 @@ export function RequestForm({
         <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-2.5">
           <div className="mb-2 flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <label htmlFor="shares-input" className="text-xs font-medium uppercase tracking-[0.16em] text-slate-400">
+              <label
+                htmlFor="shares-input"
+                className="text-xs font-medium uppercase tracking-[0.16em] text-slate-400"
+              >
                 Shares
               </label>
               <Tooltip>
@@ -266,8 +207,7 @@ export function RequestForm({
               const val = e.target.value;
               if (val === "" || /^[0-9]*[.,]?[0-9]*$/.test(val)) {
                 setAmount(val.replace(",", "."));
-                setError(null);
-                resetApprove();
+                resetApprovalState();
               }
             }}
             disabled={isBusy || hasExistingRequest || executionMode === "blocked"}
@@ -282,7 +222,11 @@ export function RequestForm({
             type="button"
             onClick={handleApproveShares}
             disabled={
-              !isValidAmount || isBusy || hasExistingRequest || executionMode === "blocked"
+              !isValidAmount ||
+              !userAuthorized ||
+              isBusy ||
+              hasExistingRequest ||
+              executionMode === "blocked"
             }
             className="h-12 w-full rounded-[10px] bg-white text-slate-950 hover:bg-white/90"
           >
@@ -290,14 +234,22 @@ export function RequestForm({
               ? "Approve in Wallet..."
               : approveConfirming
                 ? "Approving..."
-                : "Approve Shares"}
+                : isConnected && !sessionKnown
+                  ? "Checking session..."
+                  : !userAuthorized
+                    ? "Sign in to approve"
+                    : "Approve Shares"}
           </Button>
         ) : (
           <Button
             type="button"
             onClick={handleSubmit}
             disabled={
-              !isValidAmount || isBusy || hasExistingRequest || executionMode === "blocked"
+              !isValidAmount ||
+              !userAuthorized ||
+              isBusy ||
+              hasExistingRequest ||
+              executionMode === "blocked"
             }
             className="h-12 w-full rounded-[10px] bg-cyan-300 text-slate-950 hover:bg-cyan-200 request-redeem-button"
             data-testid="request-redeem-button"
@@ -306,7 +258,11 @@ export function RequestForm({
               ? "Confirm in wallet..."
               : queueConfirming
                 ? "Submitting..."
-                : "Withdraw"}
+                : isConnected && !sessionKnown
+                  ? "Checking session..."
+                  : !userAuthorized
+                    ? "Sign in to withdraw"
+                    : "Withdraw"}
           </Button>
         )}
 
@@ -347,8 +303,8 @@ export function RequestForm({
         >
           <AlertTriangle className="h-4 w-4 text-amber-200" aria-hidden="true" />
           <AlertDescription className="text-xs leading-6 text-amber-50/90">
-            You have an active withdrawal request. Start
-            a new one after the current request finishes.
+            You have an active withdrawal request. Start a new one after the current request
+            finishes.
           </AlertDescription>
         </Alert>
       )}
@@ -357,8 +313,7 @@ export function RequestForm({
         <Alert className="border-amber-400/20 bg-amber-400/10" data-testid="broken-request-warning">
           <AlertTriangle className="h-4 w-4 text-amber-200" aria-hidden="true" />
           <AlertDescription className="text-xs leading-6 text-amber-50/90">
-            A previous request encountered an issue. Please contact
-            support.
+            A previous request encountered an issue. Please contact support.
           </AlertDescription>
         </Alert>
       )}
@@ -372,18 +327,20 @@ export function RequestForm({
         </Alert>
       )}
 
-      {error && (
+      {visibleError && (
         <Alert className="border-rose-400/20 bg-rose-400/10" data-testid="request-error">
           <AlertTriangle className="h-4 w-4 text-rose-200" aria-hidden="true" />
-          <AlertDescription className="text-xs leading-6 text-rose-50/90">{error}</AlertDescription>
+          <AlertDescription className="text-xs leading-6 text-rose-50/90">
+            {visibleError}
+          </AlertDescription>
         </Alert>
       )}
 
-      {successMessage && (
+      {showSuccessMessage && (
         <Alert className="border-emerald-400/20 bg-emerald-400/10" data-testid="request-success">
           <Info className="h-4 w-4 text-emerald-200" aria-hidden="true" />
           <AlertDescription className="text-xs leading-6 text-emerald-50/90">
-            {successMessage}
+            Withdrawal request submitted. You'll be notified when it's ready.
           </AlertDescription>
         </Alert>
       )}

@@ -6,7 +6,7 @@ import { createAppKit } from "@reown/appkit/react";
 import { polygon, polygonAmoy } from "@reown/appkit/networks";
 import { WagmiAdapter } from "@reown/appkit-adapter-wagmi";
 import { WagmiProvider, createStorage, cookieStorage } from "wagmi";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import {
   REOWN_PROJECT_ID,
   REOWN_APP_METADATA,
@@ -15,16 +15,7 @@ import {
   type NetworkDisplayInfo,
   getNetworkDisplayInfo,
 } from "../src/constants";
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 5_000,
-      gcTime: 5 * 60_000,
-      refetchOnWindowFocus: false,
-    },
-  },
-});
+import { getQueryClient } from "../src/lib/queryClient";
 
 // Select the appropriate network based on VAULT_NETWORK config
 const selectedNetwork = VAULT_NETWORK === "amoy" ? polygonAmoy : polygon;
@@ -102,6 +93,8 @@ function NetworkProvider({ children }: { children: React.ReactNode }) {
 }
 
 export function Providers({ children }: { children: React.ReactNode }) {
+  const queryClient = getQueryClient();
+
   return (
     <WagmiProvider config={wagmiAdapter.wagmiConfig}>
       <QueryClientProvider client={queryClient}>

@@ -5,11 +5,15 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
+    "dev:e2e": "node ./e2e/dev-e2e.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint . --ext .ts,.tsx",
     "lint:fix": "eslint . --ext .ts,.tsx --fix",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "playwright test",
+    "test:e2e:regression": "playwright test e2e/route-regression.spec.ts",
+    "test:e2e:regression:headed": "playwright test e2e/route-regression.spec.ts --headed"
   },
   "dependencies": {
     "@reown/appkit": "^1.8.18",

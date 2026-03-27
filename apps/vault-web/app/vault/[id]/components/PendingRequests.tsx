@@ -1,13 +1,14 @@
 "use client";
 
+import { useAppKitAccount } from "@reown/appkit/react";
 import { Badge } from "@workspace/ui/components/badge";
 import { Skeleton } from "@workspace/ui/components/skeleton";
 import { Clock, Hash } from "lucide-react";
-import type { RedemptionRequest, Cycle } from "../../../../src/types";
+import type { RedemptionRequest } from "../../../../src/types";
+import { EmptyState, AuthGatedState } from "../../../../components/async-state";
 
 interface PendingRequestsProps {
   requests: RedemptionRequest[];
-  cycleInfo?: Cycle | null;
   isLoading: boolean;
 }
 
@@ -20,7 +21,7 @@ function formatDateTime(iso: string): string {
   });
 }
 
-function PendingRequestCard({ request }: { request: RedemptionRequest; cycleInfo?: Cycle | null }) {
+function PendingRequestCard({ request }: { request: RedemptionRequest }) {
   return (
     <div
       className="space-y-3 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4"
@@ -40,9 +41,7 @@ function PendingRequestCard({ request }: { request: RedemptionRequest; cycleInfo
           </Badge>
         </div>
         <span className="text-xs text-amber-50/70">
-          {request.requestKind === "controller_pending"
-            ? ""
-            : formatDateTime(request.createdAt)}
+          {request.requestKind === "controller_pending" ? "" : formatDateTime(request.createdAt)}
         </span>
       </div>
 
@@ -54,14 +53,18 @@ function PendingRequestCard({ request }: { request: RedemptionRequest; cycleInfo
           </p>
         </div>
       </div>
-      <p className="text-xs leading-6 text-amber-50/90">
-        Your withdrawal is being processed.
-      </p>
+      <p className="text-xs leading-6 text-amber-50/90">Your withdrawal is being processed.</p>
     </div>
   );
 }
 
-export function PendingRequests({ requests, cycleInfo, isLoading }: PendingRequestsProps) {
+export function PendingRequests({ requests, isLoading }: PendingRequestsProps) {
+  const { isConnected } = useAppKitAccount();
+
+  if (!isConnected) {
+    return <AuthGatedState variant="transparent" />;
+  }
+
   if (isLoading) {
     return (
       <div className="space-y-4" data-testid="pending-requests-loading">
@@ -73,16 +76,12 @@ export function PendingRequests({ requests, cycleInfo, isLoading }: PendingReque
 
   if (requests.length === 0) {
     return (
-      <div
-        className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/15 bg-white/[0.03] py-12 text-center"
-        data-testid="no-pending-requests"
-      >
-        <Clock className="mb-3 h-8 w-8 text-slate-500" aria-hidden="true" />
-        <p className="text-sm font-medium text-white">No pending withdrawals</p>
-        <p className="mt-1 max-w-xs text-xs leading-6 text-slate-400">
-          Active withdrawal requests will appear here.
-        </p>
-      </div>
+      <EmptyState
+        variant="transparent"
+        icon={<Clock className="h-8 w-8" />}
+        title="No pending withdrawals"
+        description="Active withdrawal requests will appear here."
+      />
     );
   }
 
@@ -90,7 +89,7 @@ export function PendingRequests({ requests, cycleInfo, isLoading }: PendingReque
     <div className="space-y-4" data-testid="pending-requests">
       <div className="space-y-3">
         {requests.map((request) => (
-          <PendingRequestCard key={request.requestId} request={request} cycleInfo={cycleInfo} />
+          <PendingRequestCard key={request.requestId} request={request} />
         ))}
       </div>
     </div>

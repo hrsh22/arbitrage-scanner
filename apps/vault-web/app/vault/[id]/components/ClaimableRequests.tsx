@@ -1,22 +1,22 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import { Button } from "@workspace/ui/components/button";
 import { Badge } from "@workspace/ui/components/badge";
 import { Skeleton } from "@workspace/ui/components/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@workspace/ui/components/tooltip";
-import { CheckCircle2, Wallet, Hash, Clock, Percent, CircleHelp } from "lucide-react";
+import { CheckCircle2, Wallet, Hash, Clock, Percent } from "lucide-react";
 import { useAppKitAccount } from "@reown/appkit/react";
-import { parseUnits } from "viem";
-import type { RedemptionRequest } from "../../../../src/types";
-import { useVaultRedeem } from "../../../../src/lib/hooks";
+import type { RedemptionRequest, VaultInstance } from "../../../../src/types";
 import { EXPLORER_BASE_URL } from "../../../../src/constants";
+import { EmptyState, AuthGatedState } from "../../../../components/async-state";
+import { useRedemptionClaimLifecycle } from "../../../../src/lib/hooks/redemptionLifecycle";
 
 interface ClaimableRequestsProps {
+  vaultId: number;
   requests: RedemptionRequest[];
   isLoading: boolean;
-  onClaimSuccess: () => void;
   vaultAddress: string;
+  vaultType: VaultInstance["type"];
 }
 
 function formatDateTime(iso: string): string {
@@ -30,88 +30,23 @@ function formatDateTime(iso: string): string {
 
 interface ClaimableRequestCardProps {
   request: RedemptionRequest;
-  vaultAddress: string;
-  onClaimSuccess: () => void;
+  isBusy: boolean;
   isProcessing: boolean;
-  setProcessing: (id: string | null) => void;
+  onClaim: (request: RedemptionRequest) => void;
+  successTx: string | null;
+  visibleError: string | null;
 }
 
 function ClaimableRequestCard({
   request,
-  vaultAddress,
-  onClaimSuccess,
+  isBusy,
   isProcessing,
-  setProcessing,
+  onClaim,
+  successTx,
+  visibleError,
 }: ClaimableRequestCardProps) {
-  const { address, isConnected } = useAppKitAccount();
-  const [error, setError] = useState<string | null>(null);
-  const [successTx, setSuccessTx] = useState<string | null>(null);
-  const {
-    redeem,
-    hash,
-    isPending,
-    isConfirming,
-    isConfirmed,
-    error: redeemError,
-    reset,
-  } = useVaultRedeem();
-
-  // Track processing state
-  useEffect(() => {
-    if (isPending || isConfirming) {
-      setProcessing(request.requestId);
-    } else if (isConfirmed || redeemError) {
-      setProcessing(null);
-    }
-  }, [isPending, isConfirming, isConfirmed, redeemError, request.requestId, setProcessing]);
-
-  // Handle success
-  useEffect(() => {
-    if (isConfirmed && hash) {
-      setError(null);
-      setSuccessTx(hash);
-      setTimeout(() => {
-        onClaimSuccess();
-      }, 2000);
-    }
-  }, [isConfirmed, hash, onClaimSuccess]);
-
-  // Handle error
-  useEffect(() => {
-    if (redeemError) {
-      setError(redeemError.message);
-    }
-  }, [redeemError]);
-
-  const handleClaim = async () => {
-    if (!isConnected) return;
-
-    setError(null);
-    setSuccessTx(null);
-    reset();
-
-    try {
-      const receiverAddress =
-        request.ownerAddress || request.controllerAddress || (address as `0x${string}` | undefined);
-      if (!receiverAddress) {
-        throw new Error("Missing receiver address for claim");
-      }
-
-      redeem(
-        vaultAddress as `0x${string}`,
-        parseUnits(request.sharesFormatted, 6),
-        receiverAddress as `0x${string}`,
-        (request.ownerAddress || request.controllerAddress || receiverAddress) as `0x${string}`,
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to claim redemption request");
-    }
-  };
-
-  // Corrected lifecycle checks per API contract
   const claimableNow = Number(request.claimableAssetsFormatted) || 0;
   const canClaim = request.status === "claimable" && claimableNow > 0;
-  const isClaiming = isProcessing || isPending || isConfirming;
 
   return (
     <div
@@ -121,16 +56,12 @@ function ClaimableRequestCard({
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-2">
           <Hash className="h-4 w-4 text-emerald-200" aria-hidden="true" />
-          <span className="text-sm font-mono font-medium text-emerald-50">
-            Withdrawal
-          </span>
+          <span className="text-sm font-mono font-medium text-emerald-50">Withdrawal</span>
           <Badge
             variant="outline"
             className="border-emerald-400/25 bg-emerald-400/15 text-[10px] text-emerald-100"
           >
-            {request.status === "claimed"
-              ? "Claimed"
-              : "Ready to claim"}
+            {request.status === "claimed" ? "Claimed" : "Ready to claim"}
           </Badge>
         </div>
         <span className="text-xs text-emerald-50/70">
@@ -156,10 +87,7 @@ function ClaimableRequestCard({
             ${request.claimableAssetsFormatted || "0.00"}
           </p>
         </div>
-
       </div>
-
-
 
       {/* Settlement indicator */}
       {request.proRataApplied && (
@@ -188,13 +116,13 @@ function ClaimableRequestCard({
           <Button
             type="button"
             onClick={() => {
-              void handleClaim();
+              onClaim(request);
             }}
-            disabled={isClaiming || !canClaim}
+            disabled={isBusy || !canClaim}
             className="w-full bg-emerald-300 text-slate-950 hover:bg-emerald-200 claim-button"
             data-testid="claim-button"
           >
-            {isClaiming ? (
+            {isProcessing ? (
               <>
                 <Clock className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden="true" />
                 Processing...
@@ -207,7 +135,7 @@ function ClaimableRequestCard({
             )}
           </Button>
 
-          {successTx && (
+          {successTx && !visibleError && (
             <a
               href={`${EXPLORER_BASE_URL}/tx/${successTx}`}
               target="_blank"
@@ -218,9 +146,9 @@ function ClaimableRequestCard({
             </a>
           )}
 
-          {error && (
+          {visibleError && (
             <div className="rounded-xl border border-rose-400/20 bg-rose-400/10 p-2 text-xs leading-6 text-rose-50/90">
-              {error}
+              {visibleError}
             </div>
           )}
         </div>
@@ -240,14 +168,20 @@ function ClaimableRequestCard({
 }
 
 export function ClaimableRequests({
+  vaultId,
   requests,
   isLoading,
-  onClaimSuccess,
   vaultAddress,
+  vaultType,
 }: ClaimableRequestsProps) {
-  const [processingId, setProcessingId] = useState<string | null>(null);
+  const { isConnected } = useAppKitAccount();
+  const { activeRequestId, feedbackRequestId, feedbackError, successTx, isBusy, claim } =
+    useRedemptionClaimLifecycle({
+      vaultId,
+      vaultAddress,
+      vaultType,
+    });
 
-  // Calculate totals
   const totalClaimable = requests
     .filter((r) => r.status === "claimable" && (Number(r.claimableAssetsFormatted) || 0) > 0)
     .reduce((sum, r) => sum + (Number(r.claimableAssetsFormatted) || 0), 0);
@@ -256,6 +190,10 @@ export function ClaimableRequests({
   const claimableCount = requests.filter(
     (r) => r.status === "claimable" && (Number(r.claimableAssetsFormatted) || 0) > 0,
   ).length;
+
+  if (!isConnected) {
+    return <AuthGatedState variant="transparent" />;
+  }
 
   if (isLoading) {
     return (
@@ -268,16 +206,13 @@ export function ClaimableRequests({
 
   if (requests.length === 0) {
     return (
-      <div
-        className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/15 bg-white/[0.03] py-12 text-center"
+      <EmptyState
+        variant="transparent"
+        icon={<Wallet className="h-8 w-8" />}
+        title="Nothing ready to claim"
+        description="Completed withdrawals will appear here."
         data-testid="no-claimable-requests"
-      >
-        <Wallet className="mb-3 h-8 w-8 text-slate-500" aria-hidden="true" />
-        <p className="text-sm font-medium text-white">Nothing ready to claim</p>
-        <p className="mt-1 max-w-xs text-xs leading-6 text-slate-400">
-          Completed withdrawals will appear here.
-        </p>
-      </div>
+      />
     );
   }
 
@@ -330,10 +265,11 @@ export function ClaimableRequests({
           <ClaimableRequestCard
             key={request.requestId}
             request={request}
-            vaultAddress={vaultAddress}
-            onClaimSuccess={onClaimSuccess}
-            isProcessing={processingId === request.requestId}
-            setProcessing={setProcessingId}
+            isBusy={isBusy}
+            isProcessing={activeRequestId === request.requestId && isBusy}
+            onClaim={claim}
+            successTx={feedbackRequestId === request.requestId ? successTx : null}
+            visibleError={feedbackRequestId === request.requestId ? feedbackError : null}
           />
         ))}
       </div>

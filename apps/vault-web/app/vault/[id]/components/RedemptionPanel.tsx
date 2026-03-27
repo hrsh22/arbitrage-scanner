@@ -3,36 +3,42 @@ import { Card, CardContent, CardHeader, CardTitle } from "@workspace/ui/componen
 import { Clock, CheckCircle2, Wallet } from "lucide-react";
 import type { VaultInstance, Cycle, RedemptionRequest } from "../../../../src/types";
 import { getCyclePresentation } from "../../../../src/lib/cyclePresentation";
+import { AuthGatedState } from "../../../../components/async-state";
+import { useAuthSession } from "../../../../src/lib/hooks";
 import { RequestForm } from "./RequestForm";
 import { PendingRequests } from "./PendingRequests";
 import { ClaimableRequests } from "./ClaimableRequests";
 import { WithdrawalInfoDialog } from "./WithdrawalInfoDialog";
 
 interface RedemptionPanelProps {
+  vaultId: number;
   vault: VaultInstance;
   cycleInfo?: Cycle | null;
   pendingRequests: RedemptionRequest[];
   claimableRequests: RedemptionRequest[];
   isLoading: boolean;
-  onRequestCreated: () => void;
-  onClaimSuccess: () => void;
   userShares: bigint;
   estimatedExitValueUsd?: number | null;
 }
 
 export function RedemptionPanel({
+  vaultId,
   vault,
   cycleInfo,
   pendingRequests,
   claimableRequests,
   isLoading,
-  onRequestCreated,
-  onClaimSuccess,
   userShares,
   estimatedExitValueUsd,
 }: RedemptionPanelProps) {
+  const { walletConnected, sessionAuthenticated, sessionKnown } = useAuthSession();
   const hasPending = pendingRequests.length > 0;
   const hasClaimable = claimableRequests.length > 0;
+
+  const showProtectedSections = walletConnected && sessionAuthenticated;
+  const sessionChecking = walletConnected && !sessionKnown;
+  const sessionUnauthenticated = walletConnected && sessionKnown && !sessionAuthenticated;
+
   const cyclePresentation = getCyclePresentation(cycleInfo?.batchState);
   const executionMode =
     vault.type === "custom"
@@ -81,7 +87,11 @@ export function RedemptionPanel({
             <p className="mt-1 text-sm font-medium text-white">{cyclePresentation.label}</p>
           </div>
           {isQueuedMode && (
-            <WithdrawalInfoDialog isQueuedMode={true} triggerLabel="How this works" triggerClassName="inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-[4px] bg-[#121212] px-3 py-1.5 text-xs font-semibold text-slate-300 ring-1 ring-inset ring-[#212121] transition-all hover:bg-[#212121] hover:text-white" />
+            <WithdrawalInfoDialog
+              isQueuedMode={true}
+              triggerLabel="How this works"
+              triggerClassName="inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-[4px] bg-[#121212] px-3 py-1.5 text-xs font-semibold text-slate-300 ring-1 ring-inset ring-[#212121] transition-all hover:bg-[#212121] hover:text-white"
+            />
           )}
         </div>
 
@@ -92,50 +102,57 @@ export function RedemptionPanel({
               New withdrawal
             </div>
             <RequestForm
+              vaultId={vaultId}
               vault={vault}
               cycleInfo={cycleInfo}
               userShares={userShares}
               isLoading={isLoading}
               existingRequest={pendingRequests[0] ?? null}
               estimatedExitValueUsd={estimatedExitValueUsd}
-              onSuccess={() => {
-                onRequestCreated();
-              }}
             />
           </div>
 
-          {hasPending && (
+          {(showProtectedSections || sessionChecking) && (hasPending || isLoading) && (
             <div className="rounded-2xl border border-white/10 bg-slate-950/35 p-4">
               <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-slate-500">
                 <Clock className="h-3.5 w-3.5" />
                 In progress
-                <span className="inline-flex items-center justify-center rounded-full bg-amber-400/20 px-1.5 py-0 text-[10px] font-medium text-amber-100">
-                  {pendingRequests.length}
-                </span>
+                {hasPending && (
+                  <span className="inline-flex items-center justify-center rounded-full bg-amber-400/20 px-1.5 py-0 text-[10px] font-medium text-amber-100">
+                    {pendingRequests.length}
+                  </span>
+                )}
               </div>
-              <PendingRequests
-                requests={pendingRequests}
-                cycleInfo={cycleInfo}
-                isLoading={isLoading}
-              />
+              {showProtectedSections ? (
+                <PendingRequests requests={pendingRequests} isLoading={isLoading} />
+              ) : (
+                <p className="text-xs leading-6 text-slate-400">Checking session…</p>
+              )}
             </div>
           )}
 
-          {hasClaimable && (
+          {(showProtectedSections || sessionChecking) && (hasClaimable || isLoading) && (
             <div className="rounded-2xl border border-white/10 bg-slate-950/35 p-4">
               <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-slate-500">
                 <CheckCircle2 className="h-3.5 w-3.5" />
                 Ready to claim
-                <span className="inline-flex items-center justify-center rounded-full bg-emerald-400/20 px-1.5 py-0 text-[10px] font-medium text-emerald-100">
-                  {claimableRequests.length}
-                </span>
+                {hasClaimable && (
+                  <span className="inline-flex items-center justify-center rounded-full bg-emerald-400/20 px-1.5 py-0 text-[10px] font-medium text-emerald-100">
+                    {claimableRequests.length}
+                  </span>
+                )}
               </div>
-              <ClaimableRequests
-                requests={claimableRequests}
-                isLoading={isLoading}
-                onClaimSuccess={onClaimSuccess}
-                vaultAddress={vault.config.vaultAddress}
-              />
+              {showProtectedSections ? (
+                <ClaimableRequests
+                  vaultId={vaultId}
+                  requests={claimableRequests}
+                  isLoading={isLoading}
+                  vaultAddress={vault.config.vaultAddress}
+                  vaultType={vault.type}
+                />
+              ) : (
+                <p className="text-xs leading-6 text-slate-400">Checking session…</p>
+              )}
             </div>
           )}
         </div>

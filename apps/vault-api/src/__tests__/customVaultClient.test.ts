@@ -163,6 +163,41 @@ describe("CustomVaultClient (FlatBookVaultV2)", () => {
     expect(result).toEqual({ success: true, txHash: "0xbegin" });
   });
 
+  it("waits for processRedeems confirmation before processDeposits", async () => {
+    const writeOrder: string[] = [];
+    const writeContract = vi
+      .fn()
+      .mockImplementation(async ({ functionName }: { functionName: string }) => {
+        writeOrder.push(functionName);
+        return functionName === "processRedeems" ? ("0xredeem" as Hex) : ("0xdeposit" as Hex);
+      });
+
+    mockWaitForTransactionReceipt.mockImplementation(async ({ hash }: { hash: Hex }) => {
+      expect(hash).toBe("0xredeem");
+      expect(writeOrder).toEqual(["processRedeems"]);
+      return { status: "success" };
+    });
+
+    const walletClient = {
+      writeContract,
+      chain: { id: 137 },
+      account: { address: CONTROLLER },
+    } as unknown as WalletClient;
+
+    const result = await client.settleBatch(walletClient, 7n);
+
+    expect(writeContract).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ functionName: "processRedeems", args: [1000n] }),
+    );
+    expect(mockWaitForTransactionReceipt).toHaveBeenCalledWith({ hash: "0xredeem" });
+    expect(writeContract).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ functionName: "processDeposits", args: [1000n] }),
+    );
+    expect(result).toEqual({ success: true, txHash: "0xdeposit" });
+  });
+
   it("returns synthetic controller request id when pending or claimable redeem exists", async () => {
     mockReadContract
       .mockResolvedValueOnce(5n)

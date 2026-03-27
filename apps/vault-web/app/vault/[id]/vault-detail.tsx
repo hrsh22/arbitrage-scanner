@@ -3,9 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { useParams } from "next/navigation";
 import { formatUnits, parseUnits } from "viem";
-import { useAppKitAccount } from "@reown/appkit/react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -49,14 +47,9 @@ import {
 import {
   preflightWithdrawal,
   useCycleStatus,
-  useDepositQueue,
-  usePreviewDeposit,
   usePreviewRedeem,
-  useQueueDeposit,
   useRequests,
-  useUsdcAllowance,
-  useUsdcApprove,
-  useVaultDeposit,
+  useVaultDepositFlow,
   useVaultEvents,
   useVaultInstances,
   useVaultNavHistory,
@@ -66,18 +59,17 @@ import {
   useVaultStatus,
   useVaultTradingAnalytics,
   useUserVaultHistory,
-  useWalletBalance,
+  useAuthSession,
   useWithdrawalQueue,
-  invalidateVaultQueries,
+  invalidatePublicVaultDetailQueries,
+  invalidateUserVaultDetailQueries,
+  useTransientState,
 } from "../../../src/lib/hooks";
 import {
-  fetchAuthMe,
-  fetchCurrentCycleStatus,
   postCancelWithdrawalRequest,
   postRecordClaimActivity,
   postCompleteWithdrawalRequest,
   postPrepareWithdrawalRequest,
-  postRecordDepositActivity,
   postVaultNavUpdate,
   postWithdrawalRequest,
 } from "../../../src/lib/api";
@@ -86,62 +78,18 @@ import { getNetworkDisplayInfo } from "../../../src/lib/network";
 import type {
   Cycle,
   RedemptionRequest,
-  VaultActivityFeedItem,
   VaultInstance,
   VaultPositionHistoryResponse,
   VaultStatusResponse,
 } from "../../../src/types";
 import { RedemptionPanel } from "./components";
 import { AssetLogoStack, type AssetType } from "../../../components/asset-logo";
+import { buildVaultDetailReadModel, type ActivityItem } from "./vaultDetailReadModel";
 
 declare global {
   interface Window {
     __E2E_EFFECTIVE_CONNECTED__?: boolean;
   }
-}
-
-interface ActivityItem {
-  id: string;
-  title: string;
-  detail: string;
-  timestamp: string | null;
-  tone: "neutral" | "good" | "warning";
-}
-
-function formatActivityAmount(value?: string, suffix = "USDC.e"): string | null {
-  if (!value) {
-    return null;
-  }
-
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    return null;
-  }
-
-  return `${formatCurrency(parsed)} ${suffix}`;
-}
-
-function mapFeedItemsToTimeline(items: VaultActivityFeedItem[]): ActivityItem[] {
-  return items.map((item) => ({
-    id: item.id,
-    title: item.title,
-    detail: [
-      item.detail,
-      formatActivityAmount(item.amounts?.assets),
-      formatActivityAmount(item.amounts?.shares, "shares"),
-    ]
-      .filter(Boolean)
-      .join(" · "),
-    timestamp: item.occurredAt,
-    tone:
-      item.type.includes("claim") ||
-      item.type.includes("completed") ||
-      item.type.includes("processed")
-        ? "good"
-        : item.type.includes("cancel") || item.type.includes("blocked")
-          ? "warning"
-          : "neutral",
-  }));
 }
 
 function formatCurrency(value: number, maximumFractionDigits = 2): string {
@@ -265,26 +213,6 @@ function getDepositActionLabel(vault: VaultInstance, cycle: Cycle | null): strin
   return "Open";
 }
 
-function getHeroStateLabel(vault: VaultInstance, cycle: Cycle | null): string {
-  if (!vault.enabled || cycle?.executionMode === "blocked") {
-    return "Paused";
-  }
-
-  if (
-    cycle?.batchState === "processing" ||
-    cycle?.batchState === "flattening" ||
-    cycle?.batchState === "settling"
-  ) {
-    return "Trading";
-  }
-
-  if (vault.type === "custom" && cycle?.executionMode === "queued") {
-    return "Accepting deposits";
-  }
-
-  return "Open";
-}
-
 function getHeroSentence(vault: VaultInstance): string {
   return `${vault.profile.strategyLabel} strategy with ${vault.profile.riskLevel} risk, running on Polymarket.`;
 }
@@ -310,46 +238,7 @@ function getRiskSummary(vault: VaultInstance, cycle: Cycle | null): string {
   return `${toTitleCase(vault.profile.riskLevel)} risk strategy. ${getLiquidityLabel(vault, cycle)}. No principal protection.`;
 }
 
-const MEANINGFUL_ACTIVITY_TYPES = new Set([
-  "cycle_opened",
-  "cycle_reopened",
-  "vault_reopened",
-  "vault_paused",
-  "book_closed",
-  "close_book",
-  "processing_started",
-  "begin_processing",
-  "process_deposits_chunk",
-  "deposit_queued",
-  "deposit_queue_processed",
-  "process_redeems_chunk",
-  "withdraw_ready",
-  "withdraw_settled",
-  "claim_window_opened",
-  "strategy_update_posted",
-  "mandate_changed",
-  "fee_changed",
-  "fee_change",
-  "processing_completed",
-  "finalize_processing",
-]);
-
 const ACTIVITY_PAGE_SIZE = 10;
-
-function isMeaningfulActivity(item: VaultActivityFeedItem): boolean {
-  const normalizedType = item.type.toLowerCase();
-  if (normalizedType.includes("nav") || normalizedType.includes("capital")) {
-    return false;
-  }
-
-  if (MEANINGFUL_ACTIVITY_TYPES.has(normalizedType)) {
-    return true;
-  }
-
-  return /deposit batch processed|withdrawal processed|claim window opened|strategy update|mandate|fee change|vault paused|vault reopened/i.test(
-    `${item.title} ${item.detail}`,
-  );
-}
 
 function getWithdrawActionLabel(args: {
   isBlockedMode: boolean;
@@ -850,19 +739,15 @@ function AddressField({
   balance?: string;
   logoSrc?: string;
 }) {
-  const [copied, setCopied] = useState(false);
+  const {
+    value: copied,
+    activate: copyAddress,
+    deactivate: resetCopied,
+  } = useTransientState({ durationMs: 1500 });
 
   useEffect(() => {
-    if (!copied) {
-      return;
-    }
-
-    const timeout = window.setTimeout(() => {
-      setCopied(false);
-    }, 1500);
-
-    return () => window.clearTimeout(timeout);
-  }, [copied]);
+    resetCopied();
+  }, [address, resetCopied]);
 
   return (
     <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4">
@@ -877,7 +762,7 @@ function AddressField({
               type="button"
               onClick={() => {
                 void navigator.clipboard.writeText(address);
-                setCopied(true);
+                copyAddress();
               }}
               className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] uppercase tracking-[0.18em] text-slate-300 transition-colors hover:border-cyan-300/30 hover:text-white"
             >
@@ -898,7 +783,7 @@ function AddressField({
             className="mt-3 font-mono text-sm text-white cursor-pointer hover:text-cyan-200 transition-colors"
             onClick={() => {
               void navigator.clipboard.writeText(address);
-              setCopied(true);
+              copyAddress();
             }}
           >
             {formatAddress(address)}
@@ -1226,19 +1111,6 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
   );
 }
 
-function getDisplayedTvl(
-  snapshot: {
-    totalAssets: number;
-    trackedTotalAssets?: number;
-  } | null,
-): number | null {
-  if (!snapshot) {
-    return null;
-  }
-
-  return snapshot.trackedTotalAssets ?? snapshot.totalAssets;
-}
-
 function TxFeedback({ message, error }: { message: string | null; error: string | null }) {
   if (!message && !error) {
     return null;
@@ -1263,8 +1135,8 @@ function DepositRail({
   cycle,
   nav,
   onSuccess,
-  refetchCycleStatus,
   walletConnected,
+  sessionKnown,
   sessionAuthenticated,
   userAuthorized,
   vaultId,
@@ -1273,228 +1145,54 @@ function DepositRail({
   cycle: Cycle | null;
   nav: VaultStatusResponse["nav"] | null;
   onSuccess: () => void;
-  refetchCycleStatus: () => Promise<unknown>;
   walletConnected: boolean;
+  sessionKnown: boolean;
   sessionAuthenticated: boolean;
   userAuthorized: boolean;
   vaultId: number;
 }) {
   const isCustomVault = vault.type === "custom";
-  const { formatted, isLoading: balanceLoading, address } = useWalletBalance();
-  const [amount, setAmount] = useState("");
-  const [message, setMessage] = useState<string | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [navSyncPending, setNavSyncPending] = useState(false);
-  const [depositPreflightPending, setDepositPreflightPending] = useState(false);
-
-  const parsedAmount = getParsedUnits(amount, 6);
-  const meetsMinDeposit = Number.parseFloat(amount || "0") >= vault.profile.minDeposit;
-  const isValidAmount = parsedAmount !== undefined && parsedAmount > 0n && meetsMinDeposit;
-  const customQueueWindowOpen =
-    isCustomVault && cycle?.executionMode === "queued" && cycle.batchState === "closed";
-  const customQueuePendingClose =
-    isCustomVault && cycle?.executionMode === "queued" && cycle.batchState !== "closed";
-  const cycleStateUnavailable = isCustomVault && !cycle;
-
-  const { shares: previewShares } = usePreviewDeposit(
-    vault.config.vaultAddress,
+  const {
+    amount,
+    setAmount,
+    handleMaxAmount,
+    handleApprove,
+    handleDeposit,
     parsedAmount,
-    !isCustomVault,
-  );
-  const { allowance, refetch: refetchAllowance } = useUsdcAllowance(
-    address,
-    vault.config.vaultAddress,
-  );
-  const {
-    approve,
-    isPending: approvePending,
-    isConfirming: approveConfirming,
-    isConfirmed: approveConfirmed,
-    error: approveError,
-    reset: resetApprove,
-  } = useUsdcApprove();
-  const {
-    deposit,
-    isPending: depositPending,
-    isConfirming: depositConfirming,
-    isConfirmed: depositConfirmed,
-    hash: depositHash,
-    error: depositError,
-    reset: resetDeposit,
-  } = useVaultDeposit();
-  const {
-    queueDeposit,
-    isPending: queueDepositPending,
-    isConfirming: queueDepositConfirming,
-    isConfirmed: queueDepositConfirmed,
-    hash: queueDepositHash,
-    error: queueDepositError,
-    reset: resetQueueDeposit,
-  } = useQueueDeposit();
-  const {
-    queueStatus,
+    previewShares,
+    meetsMinDeposit,
+    isValidAmount,
+    walletAddress,
+    walletBalanceFormatted,
+    walletBalanceLoading,
+    needsApproval,
+    actionPending,
+    navSyncPending,
+    depositPreflightPending,
+    approvePending,
+    approveConfirming,
+    depositPending,
+    depositConfirming,
+    queueDepositPending,
+    queueDepositConfirming,
+    message,
+    errorMessage,
+    customQueueWindowOpen,
+    customQueuePendingClose,
+    cycleStateUnavailable,
     hasQueuedDeposit,
     queuedFormatted,
     queuedSharesFormatted,
     depositCreatedAt,
     estimateBasis,
-    refetch: refetchDepositQueue,
-    isLoading: depositQueueLoading,
-  } = useDepositQueue(vaultId, userAuthorized);
-
-  const needsApproval = isValidAmount ? allowance < parsedAmount : false;
-  const actionPending =
-    approvePending ||
-    approveConfirming ||
-    depositPending ||
-    depositConfirming ||
-    queueDepositPending ||
-    queueDepositConfirming ||
-    navSyncPending ||
-    depositPreflightPending;
-  const [submittedDepositAmount, setSubmittedDepositAmount] = useState<string | null>(null);
-  const [recordedDepositHash, setRecordedDepositHash] = useState<string | null>(null);
-
-  function clearDepositFeedback() {
-    setErrorMessage(null);
-    setMessage(null);
-  }
-
-  useEffect(() => {
-    if (approveConfirmed) {
-      void refetchAllowance();
-      setErrorMessage(null);
-      setMessage("Approval confirmed. You can deposit now.");
-    }
-  }, [approveConfirmed, refetchAllowance]);
-
-  useEffect(() => {
-    if (depositConfirmed || queueDepositConfirmed) {
-      const confirmedHash = queueDepositConfirmed ? queueDepositHash : depositHash;
-      if (userAuthorized && confirmedHash && recordedDepositHash !== confirmedHash) {
-        void postRecordDepositActivity(vaultId, {
-          txHash: confirmedHash,
-          assets: submittedDepositAmount ?? undefined,
-          mode: queueDepositConfirmed ? "queued" : "minted",
-        }).catch(() => undefined);
-        setRecordedDepositHash(confirmedHash);
-      }
-
-      setAmount("");
-      setErrorMessage(null);
-      setMessage(
-        queueDepositConfirmed ? "Deposit queued — it will process shortly." : "Deposit confirmed!",
-      );
-      resetApprove();
-      resetDeposit();
-      resetQueueDeposit();
-      void refetchAllowance();
-      onSuccess();
-    }
-  }, [
-    depositConfirmed,
-    depositHash,
-    onSuccess,
-    queueDepositConfirmed,
-    queueDepositHash,
-    recordedDepositHash,
-    refetchAllowance,
-    resetApprove,
-    resetDeposit,
-    resetQueueDeposit,
-    submittedDepositAmount,
-    userAuthorized,
+    depositQueueLoading,
+  } = useVaultDepositFlow({
+    vault,
     vaultId,
-  ]);
-
-  useEffect(() => {
-    if (approveError || depositError || queueDepositError) {
-      setErrorMessage(
-        approveError?.message ?? depositError?.message ?? queueDepositError?.message ?? null,
-      );
-      setMessage(null);
-    }
-  }, [approveError, depositError, queueDepositError]);
-
-  async function ensureFreshNav() {
-    setNavSyncPending(true);
-    clearDepositFeedback();
-
-    try {
-      await postVaultNavUpdate();
-      return true;
-    } catch (error) {
-      setErrorMessage("Price refresh failed. Please try again.");
-      return false;
-    } finally {
-      setNavSyncPending(false);
-    }
-  }
-
-  async function handleDeposit() {
-    if (!parsedAmount || !address || actionPending || cycle?.executionMode === "blocked") {
-      return;
-    }
-
-    setDepositPreflightPending(true);
-    clearDepositFeedback();
-    resetDeposit();
-    resetQueueDeposit();
-
-    try {
-      const latestCycleResponse = await fetchCurrentCycleStatus(vaultId, true).catch(() => null);
-      const latestCycle = latestCycleResponse?.cycle;
-
-      if (isCustomVault) {
-        if (!latestCycle) {
-          setErrorMessage("Could not verify vault status. Please try again in a moment.");
-          return;
-        }
-
-        if (latestCycle?.executionMode === "queued" && latestCycle?.batchState === "closed") {
-          setSubmittedDepositAmount(amount);
-          queueDeposit(vault.config.vaultAddress as `0x${string}`, parsedAmount);
-          return;
-        }
-
-        if (latestCycle?.executionMode === "queued") {
-          setErrorMessage("Deposits are temporarily queued. Please try again shortly.");
-          return;
-        }
-
-        if (latestCycle?.executionMode === "instant" && latestCycle.telemetryFresh === true) {
-          const refreshed = await ensureFreshNav();
-          if (!refreshed) {
-            return;
-          }
-          setSubmittedDepositAmount(amount);
-          deposit(
-            vault.config.vaultAddress as `0x${string}`,
-            parsedAmount,
-            address as `0x${string}`,
-          );
-          return;
-        }
-
-        if (latestCycle?.executionMode === "blocked") {
-          return;
-        }
-
-        setErrorMessage("Still loading. Please wait a moment and try again.");
-        return;
-      }
-
-      const refreshed = await ensureFreshNav();
-      if (!refreshed) {
-        return;
-      }
-
-      setSubmittedDepositAmount(amount);
-      deposit(vault.config.vaultAddress as `0x${string}`, parsedAmount, address as `0x${string}`);
-    } finally {
-      setDepositPreflightPending(false);
-    }
-  }
+    cycle,
+    userAuthorized,
+    onSuccess,
+  });
 
   return (
     <div className="space-y-2">
@@ -1508,12 +1206,16 @@ function DepositRail({
             Wallet balance
           </span>
           <span className="text-sm font-medium text-white">
-            {balanceLoading ? "Loading..." : `${formatted} USDC.e`}
+            {walletBalanceLoading ? "Loading..." : `${walletBalanceFormatted} USDC.e`}
           </span>
         </div>
       </div>
 
-      {!walletConnected && <p className="text-[11px] text-slate-400">Connect wallet to deposit.</p>}
+      {!walletConnected && (
+        <p className="text-[11px] text-slate-400" data-testid="vault-deposit-connect-prompt">
+          Connect wallet to deposit.
+        </p>
+      )}
 
       <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-2.5">
         <div className="mb-2 flex items-center justify-between">
@@ -1526,10 +1228,7 @@ function DepositRail({
           </label>
           <button
             type="button"
-            onClick={() => {
-              setAmount(formatted);
-              clearDepositFeedback();
-            }}
+            onClick={handleMaxAmount}
             className="text-[10px] font-medium uppercase tracking-[0.18em] text-cyan-200 transition-colors hover:text-white"
           >
             Max
@@ -1542,13 +1241,7 @@ function DepositRail({
           min="0"
           placeholder="0.00"
           value={amount}
-          onChange={(event) => {
-            setAmount(event.target.value);
-            clearDepositFeedback();
-            resetApprove();
-            resetDeposit();
-            resetQueueDeposit();
-          }}
+          onChange={(event) => setAmount(event.target.value)}
           disabled={actionPending}
           className="h-10 rounded-[2px] border border-[#212121] bg-transparent px-3 font-mono text-sm text-white placeholder:text-slate-500"
         />
@@ -1579,10 +1272,6 @@ function DepositRail({
 
       {depositQueueLoading && <Skeleton className="h-16 w-full bg-white/10" />}
 
-      {walletConnected && !sessionAuthenticated && (
-        <p className="text-xs leading-6 text-amber-200/90">Sign in to see your deposit status.</p>
-      )}
-
       {(customQueuePendingClose || cycleStateUnavailable) && (
         <p className="text-xs leading-6 text-amber-200/90">
           {cycleStateUnavailable
@@ -1600,17 +1289,19 @@ function DepositRail({
       {needsApproval ? (
         <Button
           type="button"
-          onClick={() => {
-            if (parsedAmount) {
-              clearDepositFeedback();
-              resetApprove();
-              approve(vault.config.vaultAddress as `0x${string}`, parsedAmount);
-            }
-          }}
-          disabled={!walletConnected || !address || !isValidAmount || actionPending}
+          onClick={handleApprove}
+          disabled={
+            !walletConnected || !walletAddress || !userAuthorized || !isValidAmount || actionPending
+          }
           className="h-12 w-full rounded-[10px] bg-white text-black hover:bg-white/90"
         >
-          {approvePending || approveConfirming ? "Approving..." : "Approve USDC.e"}
+          {approvePending || approveConfirming
+            ? "Approving..."
+            : walletConnected && !sessionKnown
+              ? "Checking session..."
+              : !userAuthorized
+                ? "Sign in to approve"
+                : "Approve USDC.e"}
         </Button>
       ) : (
         <Button
@@ -1620,7 +1311,8 @@ function DepositRail({
           }}
           disabled={
             !walletConnected ||
-            !address ||
+            !walletAddress ||
+            !userAuthorized ||
             !isValidAmount ||
             actionPending ||
             cycle?.executionMode === "blocked" ||
@@ -1634,15 +1326,19 @@ function DepositRail({
               ? customQueueWindowOpen
                 ? "Queuing..."
                 : "Depositing..."
-              : cycleStateUnavailable
-                ? "Loading cycle state"
-                : customQueuePendingClose
-                  ? "Checking status..."
-                  : customQueueWindowOpen
-                    ? "Join next cycle"
-                    : cycle?.executionMode === "blocked"
-                      ? "Deposit blocked"
-                      : "Deposit"}
+              : walletConnected && !sessionKnown
+                ? "Checking session..."
+                : !userAuthorized
+                  ? "Sign in to deposit"
+                  : cycleStateUnavailable
+                    ? "Loading cycle state"
+                    : customQueuePendingClose
+                      ? "Checking status..."
+                      : customQueueWindowOpen
+                        ? "Join next cycle"
+                        : cycle?.executionMode === "blocked"
+                          ? "Deposit blocked"
+                          : "Deposit"}
         </Button>
       )}
 
@@ -1658,6 +1354,7 @@ function WithdrawRail({
   navSharePrice,
   onSuccess,
   walletConnected,
+  sessionKnown,
   walletAddress,
   userAuthorized,
   customPendingRequests,
@@ -1669,6 +1366,7 @@ function WithdrawRail({
   navSharePrice: number | null;
   onSuccess: () => void;
   walletConnected: boolean;
+  sessionKnown: boolean;
   walletAddress: string | undefined;
   userAuthorized: boolean;
   customPendingRequests: RedemptionRequest[];
@@ -2149,6 +1847,7 @@ function WithdrawRail({
 
   const requestDisabled =
     !effectiveAddress ||
+    !sessionKnown ||
     !userAuthorized ||
     !isValidAmount ||
     parsedShares > effectiveShares ||
@@ -2199,12 +1898,6 @@ function WithdrawRail({
           tooltip="Estimated value based on current share price."
         />
       </div>
-
-      {effectiveConnectedUI && !userAuthorized && !usingE2eConnectedSeam && !isCustomVault && (
-        <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] px-4 py-3 text-sm text-slate-300">
-          Sign in to request a withdrawal.
-        </div>
-      )}
 
       <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4">
         <div className="mb-3 flex items-center justify-between">
@@ -2268,18 +1961,16 @@ function WithdrawRail({
       >
         {queuePending
           ? "Submitting..."
-          : !userAuthorized
-            ? "Sign in to request"
-            : navSyncPending
-              ? "Refreshing NAV..."
-              : isBlockedMode
-                ? "Withdrawal blocked"
-                : "Request withdrawal"}
+          : walletConnected && !sessionKnown
+            ? "Checking session..."
+            : !userAuthorized
+              ? "Sign in to request"
+              : navSyncPending
+                ? "Refreshing NAV..."
+                : isBlockedMode
+                  ? "Withdrawal blocked"
+                  : "Request withdrawal"}
       </Button>
-
-      {walletConnected && !userAuthorized && (
-        <p className="text-xs leading-6 text-amber-200/90">Sign in to withdraw.</p>
-      )}
 
       {queueActiveRequest && (
         <div className="space-y-3 rounded-[24px] border border-amber-400/20 bg-amber-400/10 p-4 text-amber-50">
@@ -2389,7 +2080,7 @@ function WithdrawRail({
 
 function VaultNotFound() {
   return (
-    <main className="flex-1 px-4 py-10 sm:px-6 lg:px-10 lg:py-12">
+    <main className="flex-1 px-4 py-10 sm:px-6 lg:px-10 lg:py-12" data-testid="vault-not-found">
       <div className="mx-auto max-w-4xl rounded-[2px] border border-[#212121] bg-[#121212] p-10 text-center shadow-none">
         <p className="text-sm uppercase tracking-[0.24em] text-slate-500">Vault</p>
         <h1 className="mt-4 text-4xl font-semibold tracking-tight text-white">Vault not found</h1>
@@ -2404,12 +2095,19 @@ function VaultNotFound() {
   );
 }
 
-export default function VaultDetailPage() {
+interface VaultDetailPageProps {
+  routeVaultId: number;
+  bootstrapVault: VaultInstance | null;
+  bootstrapResolved: boolean;
+}
+
+export default function VaultDetailPage({
+  routeVaultId,
+  bootstrapVault,
+  bootstrapResolved,
+}: VaultDetailPageProps) {
   const queryClient = useQueryClient();
   const [e2eConnectedSeam, setE2eConnectedSeam] = useState(false);
-  const [sessionAuthenticated, setSessionAuthenticated] = useState(false);
-  const [vaultActivityOffset, setVaultActivityOffset] = useState(0);
-  const [userActivityOffset, setUserActivityOffset] = useState(0);
   const [tradesOffset, setTradesOffset] = useState(0);
 
   useEffect(() => {
@@ -2425,54 +2123,32 @@ export default function VaultDetailPage() {
     }
   }, [e2eConnectedSeam]);
 
-  const params = useParams();
-  const { address, isConnected } = useAppKitAccount();
-  const routeVaultId = Number.parseInt(params.id as string, 10);
-  const walletConnected = Boolean(isConnected);
-
-  useEffect(() => {
-    setVaultActivityOffset(0);
-    setUserActivityOffset(0);
-  }, [routeVaultId]);
-
-  useEffect(() => {
-    setUserActivityOffset(0);
-  }, [address, walletConnected, sessionAuthenticated]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    if (!walletConnected || !address) {
-      setSessionAuthenticated(false);
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    void (async () => {
-      try {
-        const result = await fetchAuthMe();
-        if (!cancelled) {
-          const matchesWallet =
-            !result.address || result.address.toLowerCase() === address?.toLowerCase();
-          setSessionAuthenticated(result.authenticated === true && matchesWallet);
-        }
-      } catch {
-        if (!cancelled) {
-          setSessionAuthenticated(false);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [address, walletConnected]);
+  const { address, walletConnected, sessionAuthenticated, sessionKnown } = useAuthSession();
+  const routeVaultIdInvalid = !Number.isInteger(routeVaultId) || routeVaultId <= 0;
+  const [vaultActivityPagination, setVaultActivityPagination] = useState({
+    routeVaultId,
+    offset: 0,
+  });
+  const userActivityScope = `${routeVaultId}:${address?.toLowerCase() ?? "anonymous"}:${walletConnected ? "connected" : "disconnected"}:${sessionAuthenticated ? "authenticated" : "guest"}`;
+  const [userActivityPagination, setUserActivityPagination] = useState({
+    scope: userActivityScope,
+    offset: 0,
+  });
+  const vaultActivityOffset =
+    vaultActivityPagination.routeVaultId === routeVaultId ? vaultActivityPagination.offset : 0;
+  const userActivityOffset =
+    userActivityPagination.scope === userActivityScope ? userActivityPagination.offset : 0;
 
   const userAuthorized = walletConnected && Boolean(address) && sessionAuthenticated;
 
-  const { data: instancesData, isLoading: instancesLoading } = useVaultInstances();
-  const vault = instancesData?.instances.find((instance) => instance.id === routeVaultId);
+  const { data: instancesData } = useVaultInstances();
+  const queriedVault = instancesData?.instances.find((instance) => instance.id === routeVaultId);
+  const vault = queriedVault ?? bootstrapVault ?? undefined;
+  const hasClientInstances = Array.isArray(instancesData?.instances);
+  const shouldRenderNotFound =
+    routeVaultIdInvalid ||
+    (bootstrapResolved && bootstrapVault === null && !queriedVault) ||
+    (hasClientInstances && !queriedVault);
   const { data: status, isLoading: statusLoading, error: statusError } = useVaultStatus(vault?.id);
   const {
     data: navHistoryData,
@@ -2484,12 +2160,7 @@ export default function VaultDetailPage() {
     isLoading: positionHistoryLoading,
     error: positionHistoryError,
   } = useVaultPositionHistory(vault?.id);
-  const {
-    cycle,
-    isLoading: cycleLoading,
-    error: cycleError,
-    refetch: refetchCycleStatus,
-  } = useCycleStatus(vault?.id);
+  const { cycle, isLoading: cycleLoading, error: cycleError } = useCycleStatus(vault?.id);
   const {
     pendingRequests,
     claimableRequests,
@@ -2510,6 +2181,7 @@ export default function VaultDetailPage() {
     data: userHistoryData,
     isLoading: userHistoryLoading,
     error: userHistoryError,
+    isUnauthorized: userHistoryUnauthorized,
   } = useUserVaultHistory(
     vault?.id,
     userAuthorized,
@@ -2531,7 +2203,11 @@ export default function VaultDetailPage() {
     );
 
   const refreshAll = async () => {
-    await Promise.all([invalidateVaultQueries(queryClient, vault?.id), refetchNavHistory()]);
+    await Promise.all([
+      invalidatePublicVaultDetailQueries(queryClient, vault?.id),
+      invalidateUserVaultDetailQueries(queryClient, vault?.id),
+      refetchNavHistory(),
+    ]);
   };
 
   const navChartSnapshots = navHistoryData?.snapshots ?? [];
@@ -2539,94 +2215,47 @@ export default function VaultDetailPage() {
     () => deriveVaultPerformanceStats(navChartSnapshots),
     [navChartSnapshots],
   );
-  const freshestNavSnapshot = useMemo(() => {
-    if (vault?.type === "custom" && status?.nav) {
-      return status.nav;
-    }
-
-    const statusUpdatedAt = status?.nav.lastUpdated
-      ? new Date(status.nav.lastUpdated).getTime()
-      : 0;
-    const historyLatest = (navHistoryData?.snapshots ?? []).reduce<{
-      timestamp: number;
-      sharePrice: number;
-      totalAssets: number;
-    } | null>((latest, snapshot) => {
-      const snapshotTime = new Date(snapshot.timestamp).getTime();
-      const candidate = {
-        timestamp: snapshotTime,
-        sharePrice: Number(snapshot.sharePrice),
-        totalAssets: Number(snapshot.totalAssets),
-      };
-      return !latest || candidate.timestamp > latest.timestamp ? candidate : latest;
-    }, null);
-
-    if (historyLatest && historyLatest.timestamp > statusUpdatedAt) {
-      return {
-        sharePrice: historyLatest.sharePrice,
-        totalAssets: historyLatest.totalAssets,
-        lastUpdated: new Date(historyLatest.timestamp).toISOString(),
-      };
-    }
-
-    return status?.nav ?? null;
-  }, [navHistoryData?.snapshots, status?.nav, vault?.type]);
-
   const networkInfo = getNetworkDisplayInfo(VAULT_NETWORK);
-  const tags = vault
-    ? [
-        vault.profile.strategyLabel,
-        getHeroStateLabel(vault, cycle),
-        `${toTitleCase(vault.profile.riskLevel)} risk`,
-      ]
-    : [];
-
-  const vaultActivity = useMemo(
-    () => mapFeedItemsToTimeline((vaultEventsData?.items ?? []).filter(isMeaningfulActivity)),
-    [vaultEventsData?.items],
-  );
-
-  const userActivity = useMemo(
-    () => mapFeedItemsToTimeline(userHistoryData?.items ?? []),
-    [userHistoryData?.items],
+  const { freshestNavSnapshot, tags, heroMetrics, vaultActivity, userActivity } = useMemo(
+    () =>
+      buildVaultDetailReadModel({
+        vault,
+        cycle,
+        statusNav: status?.nav,
+        navHistorySnapshots: navChartSnapshots,
+        performance,
+        vaultEventItems: vaultEventsData?.items ?? [],
+        userActivityItems: userHistoryData?.items ?? [],
+        formatPercent,
+        formatSharePrice,
+        formatDate,
+        formatCompactCurrency,
+        formatCurrency,
+      }),
+    [
+      vault,
+      cycle,
+      status?.nav,
+      navChartSnapshots,
+      performance,
+      vaultEventsData?.items,
+      userHistoryData?.items,
+    ],
   );
 
   const vaultActivityHasMore = vaultEventsData?.pagination?.hasMore ?? false;
   const userActivityHasMore = userHistoryData?.pagination?.hasMore ?? false;
 
-  useEffect(() => {
-    if (vaultEventsLoading || vaultEventsError || vaultActivityOffset === 0) {
-      return;
-    }
-
-    if (vaultActivity.length === 0) {
-      setVaultActivityOffset((previous) => Math.max(previous - ACTIVITY_PAGE_SIZE, 0));
-    }
-  }, [vaultActivity.length, vaultActivityOffset, vaultEventsError, vaultEventsLoading]);
-
-  useEffect(() => {
-    if (!userAuthorized || userHistoryLoading || userHistoryError || userActivityOffset === 0) {
-      return;
-    }
-
-    if (userActivity.length === 0) {
-      setUserActivityOffset((previous) => Math.max(previous - ACTIVITY_PAGE_SIZE, 0));
-    }
-  }, [
-    userActivity.length,
-    userActivityOffset,
-    userAuthorized,
-    userHistoryError,
-    userHistoryLoading,
-  ]);
-
-  if (!vault && !instancesLoading) {
+  if (shouldRenderNotFound) {
     return <VaultNotFound />;
   }
 
   if (!vault) {
     return (
-      <main className="flex-1 px-4 py-10 sm:px-6 lg:px-10 lg:py-12">
+      <main
+        className="flex-1 px-4 py-10 sm:px-6 lg:px-10 lg:py-12"
+        data-testid="vault-detail-loading"
+      >
         <div className="mx-auto max-w-6xl space-y-6">
           <Skeleton className="h-10 w-40 bg-white/10" />
           <Skeleton className="h-[220px] w-full rounded-[2px] bg-[#212121]" />
@@ -2635,31 +2264,6 @@ export default function VaultDetailPage() {
       </main>
     );
   }
-
-  const heroMetrics = [
-    {
-      label: "APY",
-      value: formatPercent(performance.apy),
-      hint: performance.apy !== null ? "Based on past performance." : "Not enough history yet.",
-      tooltip: "Estimated annual return based on vault performance.",
-    },
-    {
-      label: "NAV",
-      value: freshestNavSnapshot ? formatSharePrice(freshestNavSnapshot.sharePrice) : "--",
-      hint: freshestNavSnapshot?.lastUpdated
-        ? `Updated ${formatDate(freshestNavSnapshot.lastUpdated)}`
-        : "Waiting for first update.",
-      tooltip: "Current price per share.",
-    },
-    {
-      label: "TVL",
-      value: freshestNavSnapshot
-        ? formatCompactCurrency(getDisplayedTvl(freshestNavSnapshot) ?? 0)
-        : "--",
-      hint: freshestNavSnapshot ? "Total value in this vault." : "Waiting for first update.",
-      tooltip: "Total value held in this vault.",
-    },
-  ];
 
   return (
     <main className="vault-pane-scroll flex-1 min-h-0 overflow-y-auto px-4 py-8 sm:px-6 lg:overflow-hidden lg:px-10 lg:py-6">
@@ -2948,12 +2552,18 @@ export default function VaultDetailPage() {
                   </TabsList>
 
                   <TabsContent value="user" className="space-y-3">
-                    {userAuthorized ? (
+                    {!sessionKnown ? (
+                      <Skeleton className="h-40 w-full rounded-[22px] bg-white/10" />
+                    ) : userAuthorized ? (
                       userHistoryLoading ? (
                         <Skeleton className="h-40 w-full rounded-[22px] bg-white/10" />
                       ) : userHistoryError ? (
                         <div className="rounded-[22px] border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-rose-100">
                           {userHistoryError}
+                        </div>
+                      ) : userHistoryUnauthorized ? (
+                        <div className="rounded-[22px] border border-amber-400/20 bg-amber-400/10 p-5 text-sm text-amber-50">
+                          Your account history is temporarily unavailable.
                         </div>
                       ) : (
                         <div className="space-y-3">
@@ -2969,20 +2579,33 @@ export default function VaultDetailPage() {
                             hasMore={userActivityHasMore}
                             isLoading={userHistoryLoading}
                             onPrevious={() => {
-                              setUserActivityOffset((previous) =>
-                                Math.max(previous - ACTIVITY_PAGE_SIZE, 0),
-                              );
+                              setUserActivityPagination((previous) => ({
+                                scope: userActivityScope,
+                                offset:
+                                  previous.scope === userActivityScope
+                                    ? Math.max(previous.offset - ACTIVITY_PAGE_SIZE, 0)
+                                    : 0,
+                              }));
                             }}
                             onNext={() => {
                               if (userActivityHasMore) {
-                                setUserActivityOffset((previous) => previous + ACTIVITY_PAGE_SIZE);
+                                setUserActivityPagination((previous) => ({
+                                  scope: userActivityScope,
+                                  offset:
+                                    previous.scope === userActivityScope
+                                      ? previous.offset + ACTIVITY_PAGE_SIZE
+                                      : ACTIVITY_PAGE_SIZE,
+                                }));
                               }
                             }}
                           />
                         </div>
                       )
                     ) : (
-                      <div className="rounded-[22px] border border-white/10 bg-slate-950/30 p-5 text-sm text-slate-400">
+                      <div
+                        className="rounded-[22px] border border-white/10 bg-slate-950/30 p-5 text-sm text-slate-400"
+                        data-testid="vault-history-auth-prompt"
+                      >
                         Sign in to view your deposit, withdrawal, and claim history.
                       </div>
                     )}
@@ -3009,13 +2632,23 @@ export default function VaultDetailPage() {
                           hasMore={vaultActivityHasMore}
                           isLoading={vaultEventsLoading}
                           onPrevious={() => {
-                            setVaultActivityOffset((previous) =>
-                              Math.max(previous - ACTIVITY_PAGE_SIZE, 0),
-                            );
+                            setVaultActivityPagination((previous) => ({
+                              routeVaultId,
+                              offset:
+                                previous.routeVaultId === routeVaultId
+                                  ? Math.max(previous.offset - ACTIVITY_PAGE_SIZE, 0)
+                                  : 0,
+                            }));
                           }}
                           onNext={() => {
                             if (vaultActivityHasMore) {
-                              setVaultActivityOffset((previous) => previous + ACTIVITY_PAGE_SIZE);
+                              setVaultActivityPagination((previous) => ({
+                                routeVaultId,
+                                offset:
+                                  previous.routeVaultId === routeVaultId
+                                    ? previous.offset + ACTIVITY_PAGE_SIZE
+                                    : ACTIVITY_PAGE_SIZE,
+                              }));
                             }
                           }}
                         />
@@ -3084,18 +2717,13 @@ export default function VaultDetailPage() {
                   description="Manage your withdrawal requests and claim USDC.e."
                 >
                   <RedemptionPanel
+                    vaultId={vault.id}
                     vault={vault}
                     cycleInfo={cycle}
                     pendingRequests={pendingRequests}
                     claimableRequests={claimableRequests}
                     isLoading={requestsLoading || cycleLoading}
                     estimatedExitValueUsd={freshestNavSnapshot?.sharePrice ?? null}
-                    onRequestCreated={() => {
-                      void refreshAll();
-                    }}
-                    onClaimSuccess={() => {
-                      void refreshAll();
-                    }}
                     userShares={redemptionUserShares}
                   />
                 </SectionShell>
@@ -3141,13 +2769,13 @@ export default function VaultDetailPage() {
                     cycle={cycle}
                     nav={status?.nav ?? null}
                     walletConnected={walletConnected}
+                    sessionKnown={sessionKnown}
                     sessionAuthenticated={sessionAuthenticated}
                     userAuthorized={userAuthorized}
                     vaultId={vault.id}
                     onSuccess={() => {
                       void refreshAll();
                     }}
-                    refetchCycleStatus={refetchCycleStatus}
                   />
                 </TabsContent>
 
@@ -3165,6 +2793,7 @@ export default function VaultDetailPage() {
                         cycle={cycle}
                         navSharePrice={freshestNavSnapshot?.sharePrice ?? null}
                         walletConnected={walletConnected}
+                        sessionKnown={sessionKnown}
                         walletAddress={address}
                         userAuthorized={userAuthorized}
                         customPendingRequests={pendingRequests}
@@ -3175,18 +2804,13 @@ export default function VaultDetailPage() {
                       />
                     ) : (
                       <RedemptionPanel
+                        vaultId={vault.id}
                         vault={vault}
                         cycleInfo={cycle}
                         pendingRequests={pendingRequests}
                         claimableRequests={claimableRequests}
                         isLoading={requestsLoading || cycleLoading}
                         estimatedExitValueUsd={freshestNavSnapshot?.sharePrice ?? null}
-                        onRequestCreated={() => {
-                          void refreshAll();
-                        }}
-                        onClaimSuccess={() => {
-                          void refreshAll();
-                        }}
                         userShares={redemptionUserShares}
                       />
                     )

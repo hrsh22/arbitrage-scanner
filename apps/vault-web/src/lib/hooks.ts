@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
-import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { encodeFunctionData, formatUnits, getAddress, toHex } from "viem";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { encodeFunctionData, formatUnits, getAddress, parseUnits, toHex } from "viem";
 import type { Address } from "viem";
 import { useReadContract, useWaitForTransactionReceipt } from "wagmi";
 import { useAppKitAccount, useAppKitProvider } from "@reown/appkit/react";
@@ -14,185 +14,75 @@ import {
   ERC20_BALANCE_ABI,
 } from "../constants";
 import {
-  fetchVaultInstances,
-  fetchVaultStatus,
+  fetchCurrentCycleStatus,
   fetchVaultPositions,
   fetchVaultPositionHistory,
-  fetchVaultNavHistory,
   fetchVaultAllocations,
-  fetchVaultEvents,
-  fetchVaultTradingAnalytics,
   fetchWithdrawalQueue,
   postWithdrawalPreflight,
   // Batch/Cycle API functions
   postRedemptionRequest,
   postClaimRedemption,
-  fetchCurrentCycleStatus,
-  fetchCycleHistory,
-  fetchCycleStatus,
-  fetchUserRedemptions,
   // Closed-book batch lifecycle API
   fetchDepositQueue,
   fetchTrancheStatus,
   fetchCarryEligibility,
-  fetchUserVaultHistory,
+  postRecordDepositActivity,
+  postVaultNavUpdate,
 } from "./api";
 import type {
-  VaultInstancesResponse,
-  VaultStatusResponse,
+  Cycle,
   VaultPositionsResponse,
   VaultPositionHistoryResponse,
-  VaultNavHistoryResponse,
   VaultAllocationsResponse,
-  VaultEventsResponse,
-  VaultTradingAnalyticsResponse,
   WithdrawalQueueResponse,
   WithdrawalPreflightResponse,
   // Batch/Cycle types
   RedemptionRequestCreateResponse,
   ClaimRedemptionResponse,
-  CycleStatusResponse,
-  CycleHistoryItem,
-  CycleHistoryResponse,
-  UserRedemptionsResponse,
-  Cycle,
-  RedemptionRequest,
-  UserVaultHistoryResponse,
+  VaultInstance,
 } from "../types.js";
+import {
+  DEFAULT_POLL_INTERVAL_MS,
+  getErrorMessage,
+  getLastRefresh,
+  getUserScope,
+  isUnauthorizedError,
+  type AsyncState,
+} from "./hooks/shared";
+import { useAuthSession } from "./hooks/authSession";
+import { vaultQueryKeys } from "./hooks/queryKeys";
+import { invalidateVaultQueries } from "./hooks/invalidation";
+export {
+  invalidatePublicVaultDetailQueries,
+  invalidateUserVaultDetailQueries,
+  invalidateVaultDetailQueries,
+  invalidateVaultQueries,
+} from "./hooks/invalidation";
+export {
+  useVaultInstances,
+  useVaultStatus,
+  useCycleStatus,
+  useDiscoverVaultCards,
+  type UseCycleStatusResult,
+  type DiscoverVaultCardData,
+} from "./hooks/discover";
+export { useAuthSession, type UseAuthSessionResult } from "./hooks/authSession";
+export {
+  useVaultNavHistory,
+  useVaultTradingAnalytics,
+  useVaultEvents,
+  useUserVaultHistory,
+  useRequests,
+  useCycleHistory,
+  type VaultEventsQueryOptions,
+  type UseRequestsResult,
+  type UseCycleHistoryResult,
+} from "./hooks/vaultDetailRead";
+export { useTransientState } from "./hooks/transientState";
+export { vaultQueryKeys };
 
-interface AsyncState<T> {
-  data: T | null;
-  isLoading: boolean;
-  error: string | null;
-  lastRefresh: Date | null;
-  refetch: () => Promise<T | null>;
-}
-
-const DEFAULT_POLL_INTERVAL_MS = 30_000;
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function getErrorMessage(error: unknown): string | null {
-  if (!error) {
-    return null;
-  }
-
-  return error instanceof Error ? error.message : "Unknown error";
-}
-
-function isUnauthorizedError(error: unknown): boolean {
-  const message = getErrorMessage(error);
-  if (!message) {
-    return false;
-  }
-
-  return (
-    message.includes("401") || message.includes("unauthorized") || message.includes("Unauthorized")
-  );
-}
-
-function getLastRefresh(dataUpdatedAt: number, hasData: boolean): Date | null {
-  if (!hasData || dataUpdatedAt <= 0) {
-    return null;
-  }
-
-  return new Date(dataUpdatedAt);
-}
-
-function getVaultScope(vaultId?: number): number | "default" {
-  return vaultId ?? "default";
-}
-
-function getUserScope(isAuthenticated: boolean, address?: string): string {
-  if (!isAuthenticated || !address) {
-    return "anonymous";
-  }
-
-  return address.toLowerCase();
-}
-
-export const vaultQueryKeys = {
-  scope: (vaultId?: number) => ["vault", getVaultScope(vaultId)] as const,
-  status: (vaultId?: number) => [...vaultQueryKeys.scope(vaultId), "status"] as const,
-  tradingAnalytics: (vaultId?: number) =>
-    [...vaultQueryKeys.scope(vaultId), "trading-analytics"] as const,
-  events: (vaultId?: number) => [...vaultQueryKeys.scope(vaultId), "events"] as const,
-  history: (vaultId: number | undefined, userScope: string) =>
-    [...vaultQueryKeys.scope(vaultId), "history", userScope] as const,
-  navHistory: (vaultId?: number, limit?: number) =>
-    [...vaultQueryKeys.scope(vaultId), "nav-history", limit ?? "all"] as const,
-  cycleStatus: (vaultId?: number, cycleId?: number) =>
-    [...vaultQueryKeys.scope(vaultId), "cycle", cycleId ?? "current"] as const,
-  requests: (vaultId: number | undefined, userScope: string) =>
-    [...vaultQueryKeys.scope(vaultId), "requests", userScope] as const,
-  depositQueue: (vaultId: number | undefined, userScope: string) =>
-    [...vaultQueryKeys.scope(vaultId), "deposit-queue", userScope] as const,
-  trancheStatus: (vaultId?: number, cycleId?: number, userScope = "global") =>
-    [...vaultQueryKeys.scope(vaultId), "tranche-status", cycleId ?? "current", userScope] as const,
-  carryEligibility: (vaultId?: number, requestId?: string, userScope = "global") =>
-    [...vaultQueryKeys.scope(vaultId), "carry-eligibility", requestId ?? "all", userScope] as const,
-};
-
-export interface VaultEventsQueryOptions {
-  refetchIntervalMs?: number;
-  refetchIntervalInBackgroundMs?: number | false;
-  offset?: number;
-}
-
-export async function invalidateVaultQueries(
-  queryClient: QueryClient,
-  vaultId?: number,
-): Promise<void> {
-  if (vaultId === undefined) {
-    return;
-  }
-
-  await queryClient.invalidateQueries({
-    queryKey: vaultQueryKeys.scope(vaultId),
-  });
-}
-
-function normalizeRedemptionRequest(request: RedemptionRequest): RedemptionRequest {
-  let normalizedStatus = request.status;
-  if (String(request.status) === "ready" || String(request.status) === "settled") {
-    normalizedStatus = "claimable";
-  }
-
-  const targetCycle =
-    request.targetCycle ??
-    request.batchId ??
-    (request as RedemptionRequest & { cycleId?: number }).cycleId ??
-    0;
-  const targetCycleEndTime = request.targetCycleEndTime ?? request.createdAt;
-
-  const ownerAddress =
-    request.ownerAddress ?? (request as RedemptionRequest & { owner?: string }).owner ?? "";
-  const controllerAddress =
-    request.controllerAddress ??
-    (request as RedemptionRequest & { controller?: string }).controller ??
-    ownerAddress;
-  const operatorAddress =
-    request.operatorAddress ??
-    (request as RedemptionRequest & { operator?: string | null }).operator ??
-    null;
-
-  return {
-    ...request,
-    id: request.id || request.requestId,
-    status: normalizedStatus,
-    targetCycle,
-    targetCycleEndTime,
-    claimableAssets: request.claimableAssets ?? null,
-    claimableAssetsFormatted: request.claimableAssetsFormatted ?? null,
-    claimedAt: request.claimedAt ?? null,
-    cancelledAt: request.cancelledAt ?? null,
-    proRataApplied: request.proRataApplied ?? false,
-    proRataPercentage: request.proRataPercentage ?? null,
-    ownerAddress,
-    controllerAddress,
-    operatorAddress,
-    lifecycleError: request.lifecycleError ?? null,
-  };
-}
 
 interface Eip1193Provider {
   request(args: { method: string; params?: readonly unknown[] | object }): Promise<unknown>;
@@ -359,32 +249,6 @@ function usePolledFetch<T>(fetcher: () => Promise<T>, intervalMs = 30_000): Asyn
   return { data, isLoading, error, lastRefresh, refetch };
 }
 
-export function useVaultStatus(vaultId?: number): AsyncState<VaultStatusResponse> {
-  const query = useQuery({
-    queryKey: vaultQueryKeys.status(vaultId),
-    queryFn: () => fetchVaultStatus(vaultId!),
-    enabled: vaultId !== undefined,
-    refetchInterval: DEFAULT_POLL_INTERVAL_MS,
-  });
-
-  const refetch = useCallback(async (): Promise<VaultStatusResponse | null> => {
-    const result = await query.refetch();
-    return result.data ?? null;
-  }, [query]);
-
-  return {
-    data: query.data ?? null,
-    isLoading: vaultId !== undefined ? query.isLoading : false,
-    error: getErrorMessage(query.error),
-    lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
-    refetch,
-  };
-}
-
-export function useVaultInstances(): AsyncState<VaultInstancesResponse> {
-  return usePolledFetch(fetchVaultInstances, 60_000);
-}
-
 export function useVaultPositions(vaultId?: number): AsyncState<VaultPositionsResponse> {
   const fetcher = useCallback(async () => {
     if (vaultId === undefined) throw new Error("WAIT_FOR_VAULT_ID");
@@ -400,36 +264,21 @@ export function useVaultPositions(vaultId?: number): AsyncState<VaultPositionsRe
 export function useVaultPositionHistory(
   vaultId?: number,
 ): AsyncState<VaultPositionHistoryResponse> {
-  const fetcher = useCallback(async () => {
-    if (vaultId === undefined) throw new Error("WAIT_FOR_VAULT_ID");
-    return fetchVaultPositionHistory(vaultId);
-  }, [vaultId]);
-  const result = usePolledFetch(fetcher);
-  if (result.error === "WAIT_FOR_VAULT_ID") {
-    return { ...result, error: null, isLoading: true };
-  }
-  return result;
-}
-
-export function useVaultNavHistory(
-  limit?: number,
-  vaultId?: number,
-): AsyncState<VaultNavHistoryResponse> {
   const query = useQuery({
-    queryKey: vaultQueryKeys.navHistory(vaultId, limit),
-    queryFn: () => fetchVaultNavHistory(limit, vaultId!),
+    queryKey: vaultQueryKeys.positionHistory(vaultId),
+    queryFn: () => fetchVaultPositionHistory(vaultId!),
     enabled: vaultId !== undefined,
     refetchInterval: DEFAULT_POLL_INTERVAL_MS,
   });
 
-  const refetch = useCallback(async (): Promise<VaultNavHistoryResponse | null> => {
+  const refetch = useCallback(async (): Promise<VaultPositionHistoryResponse | null> => {
     const result = await query.refetch();
     return result.data ?? null;
   }, [query]);
 
   return {
     data: query.data ?? null,
-    isLoading: vaultId !== undefined ? query.isLoading : false,
+    isLoading: vaultId !== undefined ? query.isLoading : true,
     error: getErrorMessage(query.error),
     lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
     refetch,
@@ -441,107 +290,30 @@ export function useVaultAllocations(limit?: number): AsyncState<VaultAllocations
   return usePolledFetch(fetcher);
 }
 
-export function useVaultTradingAnalytics(
-  vaultId?: number,
-): AsyncState<VaultTradingAnalyticsResponse> {
-  const query = useQuery({
-    queryKey: vaultQueryKeys.tradingAnalytics(vaultId),
-    queryFn: () => fetchVaultTradingAnalytics(vaultId!),
-    enabled: vaultId !== undefined,
-    refetchInterval: DEFAULT_POLL_INTERVAL_MS,
-  });
-
-  const refetch = useCallback(async (): Promise<VaultTradingAnalyticsResponse | null> => {
-    const result = await query.refetch();
-    return result.data ?? null;
-  }, [query]);
-
-  return {
-    data: query.data ?? null,
-    isLoading: vaultId !== undefined ? query.isLoading : false,
-    error: getErrorMessage(query.error),
-    lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
-    refetch,
-  };
-}
-
-export function useVaultEvents(
-  vaultId?: number,
-  limit = 50,
-  options?: VaultEventsQueryOptions,
-): AsyncState<VaultEventsResponse> {
-  const visibleInterval = options?.refetchIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-  const hiddenInterval = options?.refetchIntervalInBackgroundMs ?? 60_000;
-  const offset = options?.offset ?? 0;
-
-  const query = useQuery({
-    queryKey: [...vaultQueryKeys.events(vaultId), limit, offset],
-    queryFn: () => fetchVaultEvents(vaultId!, limit, offset),
-    enabled: vaultId !== undefined,
-    refetchInterval: () => {
-      const isHidden = typeof document !== "undefined" && document.visibilityState !== "visible";
-      if (!isHidden) {
-        return visibleInterval;
-      }
-
-      return hiddenInterval;
-    },
-    refetchIntervalInBackground: hiddenInterval !== false,
-    refetchOnWindowFocus: true,
-  });
-
-  const refetch = useCallback(async (): Promise<VaultEventsResponse | null> => {
-    const result = await query.refetch();
-    return result.data ?? null;
-  }, [query]);
-
-  return {
-    data: query.data ?? null,
-    isLoading: vaultId !== undefined ? query.isLoading : false,
-    error: getErrorMessage(query.error),
-    lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
-    refetch,
-  };
-}
-
-export function useUserVaultHistory(
-  vaultId: number | undefined,
-  isAuthenticated: boolean,
-  address?: string,
-  limit = 100,
-  offset = 0,
-): AsyncState<UserVaultHistoryResponse> {
-  const userScope = getUserScope(isAuthenticated, address);
-  const query = useQuery({
-    queryKey: [...vaultQueryKeys.history(vaultId, userScope), limit, offset],
-    queryFn: () => fetchUserVaultHistory(vaultId!, limit, offset),
-    enabled: vaultId !== undefined && isAuthenticated,
-    refetchInterval: DEFAULT_POLL_INTERVAL_MS,
-    retry: (failureCount, error) => {
-      if (isUnauthorizedError(error)) {
-        return false;
-      }
-      return failureCount < 2;
-    },
-  });
-
-  const refetch = useCallback(async (): Promise<UserVaultHistoryResponse | null> => {
-    const result = await query.refetch();
-    return result.data ?? null;
-  }, [query]);
-
-  return {
-    data: query.data ?? null,
-    isLoading: vaultId !== undefined && isAuthenticated ? query.isLoading : false,
-    error: getErrorMessage(query.error),
-    lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
-    refetch,
-  };
-}
-
 export function useWithdrawalQueue(vaultAddress?: string): AsyncState<WithdrawalQueueResponse> {
-  const fetcher = useCallback(() => fetchWithdrawalQueue(vaultAddress), [vaultAddress]);
-  return usePolledFetch(fetcher, 15_000);
+  const { address, sessionAuthenticated, walletConnected } = useAuthSession();
+  const userScope = getUserScope(sessionAuthenticated, address);
+  const query = useQuery({
+    queryKey: vaultQueryKeys.withdrawalQueue(vaultAddress, userScope),
+    queryFn: () => fetchWithdrawalQueue(vaultAddress),
+    enabled: Boolean(vaultAddress && walletConnected && sessionAuthenticated),
+    refetchInterval: 15_000,
+  });
+
+  const refetch = useCallback(async (): Promise<WithdrawalQueueResponse | null> => {
+    const result = await query.refetch();
+    return result.data ?? null;
+  }, [query]);
+
+  return {
+    data: query.data ?? null,
+    isLoading: Boolean(vaultAddress && walletConnected && sessionAuthenticated)
+      ? query.isLoading
+      : false,
+    error: isUnauthorizedError(query.error) ? null : getErrorMessage(query.error),
+    lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
+    refetch,
+  };
 }
 
 interface WalletBalanceResult {
@@ -1059,6 +831,396 @@ export function useQueueDeposit(): QueueDepositResult {
   };
 }
 
+interface UseVaultDepositFlowParams {
+  vault: VaultInstance;
+  vaultId: number;
+  cycle: Cycle | null;
+  userAuthorized: boolean;
+  onSuccess: () => Promise<void> | void;
+}
+
+export interface UseVaultDepositFlowResult {
+  amount: string;
+  setAmount: (value: string) => void;
+  clearFeedback: () => void;
+  handleMaxAmount: () => void;
+  handleApprove: () => void;
+  handleDeposit: () => Promise<void>;
+  parsedAmount: bigint | undefined;
+  previewShares: bigint | undefined;
+  meetsMinDeposit: boolean;
+  isValidAmount: boolean;
+  walletAddress: string | undefined;
+  walletBalanceFormatted: string;
+  walletBalanceLoading: boolean;
+  needsApproval: boolean;
+  actionPending: boolean;
+  navSyncPending: boolean;
+  depositPreflightPending: boolean;
+  approvePending: boolean;
+  approveConfirming: boolean;
+  depositPending: boolean;
+  depositConfirming: boolean;
+  queueDepositPending: boolean;
+  queueDepositConfirming: boolean;
+  message: string | null;
+  errorMessage: string | null;
+  customQueueWindowOpen: boolean;
+  customQueuePendingClose: boolean;
+  cycleStateUnavailable: boolean;
+  queueStatus: "idle" | "queued" | "processed" | null;
+  hasQueuedDeposit: boolean;
+  queuedFormatted: string;
+  queuedSharesFormatted: string;
+  depositCreatedAt: string | null;
+  estimateBasis: string | null;
+  depositQueueLoading: boolean;
+}
+
+function parseTokenUnits(value: string, decimals: number): bigint | undefined {
+  if (!value.trim()) {
+    return undefined;
+  }
+
+  try {
+    return parseUnits(value, decimals);
+  } catch {
+    return undefined;
+  }
+}
+
+export function useVaultDepositFlow({
+  vault,
+  vaultId,
+  cycle,
+  userAuthorized,
+  onSuccess,
+}: UseVaultDepositFlowParams): UseVaultDepositFlowResult {
+  const isCustomVault = vault.type === "custom";
+  const { formatted, isLoading: balanceLoading, address } = useWalletBalance();
+  const [amount, setAmountState] = useState("");
+  const [message, setMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [navSyncPending, setNavSyncPending] = useState(false);
+  const [depositPreflightPending, setDepositPreflightPending] = useState(false);
+  const [submittedDepositAmount, setSubmittedDepositAmount] = useState<string | null>(null);
+  const [recordedDepositHash, setRecordedDepositHash] = useState<string | null>(null);
+
+  const parsedAmount = parseTokenUnits(amount, 6);
+  const meetsMinDeposit = Number.parseFloat(amount || "0") >= vault.profile.minDeposit;
+  const isValidAmount = parsedAmount !== undefined && parsedAmount > 0n && meetsMinDeposit;
+  const customQueueWindowOpen =
+    isCustomVault && cycle?.executionMode === "queued" && cycle.batchState === "closed";
+  const customQueuePendingClose =
+    isCustomVault && cycle?.executionMode === "queued" && cycle.batchState !== "closed";
+  const cycleStateUnavailable = isCustomVault && !cycle;
+
+  const { shares: previewShares } = usePreviewDeposit(
+    vault.config.vaultAddress,
+    parsedAmount,
+    !isCustomVault,
+  );
+  const { allowance, refetch: refetchAllowance } = useUsdcAllowance(
+    address,
+    vault.config.vaultAddress,
+  );
+  const {
+    approve,
+    isPending: approvePending,
+    isConfirming: approveConfirming,
+    isConfirmed: approveConfirmed,
+    error: approveError,
+    reset: resetApprove,
+  } = useUsdcApprove();
+  const {
+    deposit,
+    isPending: depositPending,
+    isConfirming: depositConfirming,
+    isConfirmed: depositConfirmed,
+    hash: depositHash,
+    error: depositError,
+    reset: resetDeposit,
+  } = useVaultDeposit();
+  const {
+    queueDeposit,
+    isPending: queueDepositPending,
+    isConfirming: queueDepositConfirming,
+    isConfirmed: queueDepositConfirmed,
+    hash: queueDepositHash,
+    error: queueDepositError,
+    reset: resetQueueDeposit,
+  } = useQueueDeposit();
+  const {
+    queueStatus,
+    hasQueuedDeposit,
+    queuedFormatted,
+    queuedSharesFormatted,
+    depositCreatedAt,
+    estimateBasis,
+    isLoading: depositQueueLoading,
+  } = useDepositQueue(vaultId, userAuthorized);
+
+  const needsApproval = isValidAmount ? allowance < parsedAmount : false;
+  const actionPending =
+    approvePending ||
+    approveConfirming ||
+    depositPending ||
+    depositConfirming ||
+    queueDepositPending ||
+    queueDepositConfirming ||
+    navSyncPending ||
+    depositPreflightPending;
+
+  const clearFeedback = useCallback(() => {
+    setErrorMessage(null);
+    setMessage(null);
+  }, []);
+
+  const resetFlowState = useCallback(() => {
+    resetApprove();
+    resetDeposit();
+    resetQueueDeposit();
+  }, [resetApprove, resetDeposit, resetQueueDeposit]);
+
+  const setAmount = useCallback(
+    (value: string) => {
+      setAmountState(value);
+      clearFeedback();
+      resetFlowState();
+    },
+    [clearFeedback, resetFlowState],
+  );
+
+  const handleMaxAmount = useCallback(() => {
+    setAmountState(formatted);
+    clearFeedback();
+  }, [clearFeedback, formatted]);
+
+  useEffect(() => {
+    if (!approveConfirmed) {
+      return;
+    }
+
+    void refetchAllowance();
+    setErrorMessage(null);
+    setMessage("Approval confirmed. You can deposit now.");
+  }, [approveConfirmed, refetchAllowance]);
+
+  useEffect(() => {
+    if (!depositConfirmed && !queueDepositConfirmed) {
+      return;
+    }
+
+    const confirmedHash = queueDepositConfirmed ? queueDepositHash : depositHash;
+    if (!confirmedHash) {
+      return;
+    }
+
+    let cancelled = false;
+
+    void (async () => {
+      if (userAuthorized && recordedDepositHash !== confirmedHash) {
+        await postRecordDepositActivity(vaultId, {
+          txHash: confirmedHash,
+          assets: submittedDepositAmount ?? undefined,
+          mode: queueDepositConfirmed ? "queued" : "minted",
+        }).catch(() => undefined);
+
+        if (cancelled) {
+          return;
+        }
+
+        setRecordedDepositHash(confirmedHash);
+      }
+
+      setAmountState("");
+      setErrorMessage(null);
+      setMessage(
+        queueDepositConfirmed ? "Deposit queued — it will process shortly." : "Deposit confirmed!",
+      );
+      resetFlowState();
+      await refetchAllowance().catch(() => undefined);
+
+      if (cancelled) {
+        return;
+      }
+
+      await Promise.resolve(onSuccess()).catch(() => undefined);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    depositConfirmed,
+    depositHash,
+    onSuccess,
+    queueDepositConfirmed,
+    queueDepositHash,
+    recordedDepositHash,
+    refetchAllowance,
+    resetFlowState,
+    submittedDepositAmount,
+    userAuthorized,
+    vaultId,
+  ]);
+
+  useEffect(() => {
+    if (!approveError && !depositError && !queueDepositError) {
+      return;
+    }
+
+    setErrorMessage(
+      approveError?.message ?? depositError?.message ?? queueDepositError?.message ?? null,
+    );
+    setMessage(null);
+  }, [approveError, depositError, queueDepositError]);
+
+  const ensureFreshNav = useCallback(async () => {
+    setNavSyncPending(true);
+    clearFeedback();
+
+    try {
+      await postVaultNavUpdate();
+      return true;
+    } catch {
+      setErrorMessage("Price refresh failed. Please try again.");
+      return false;
+    } finally {
+      setNavSyncPending(false);
+    }
+  }, [clearFeedback]);
+
+  const handleApprove = useCallback(() => {
+    if (!parsedAmount) {
+      return;
+    }
+
+    clearFeedback();
+    resetApprove();
+    approve(vault.config.vaultAddress as `0x${string}`, parsedAmount);
+  }, [approve, clearFeedback, parsedAmount, resetApprove, vault.config.vaultAddress]);
+
+  const handleDeposit = useCallback(async () => {
+    if (!parsedAmount || !address || actionPending || cycle?.executionMode === "blocked") {
+      return;
+    }
+
+    setDepositPreflightPending(true);
+    clearFeedback();
+    resetDeposit();
+    resetQueueDeposit();
+
+    try {
+      const latestCycleResponse = await fetchCurrentCycleStatus(vaultId, true).catch(() => null);
+      const latestCycle = latestCycleResponse?.cycle;
+
+      if (isCustomVault) {
+        if (!latestCycle) {
+          setErrorMessage("Could not verify vault status. Please try again in a moment.");
+          return;
+        }
+
+        if (latestCycle.executionMode === "queued" && latestCycle.batchState === "closed") {
+          setSubmittedDepositAmount(amount);
+          queueDeposit(vault.config.vaultAddress as `0x${string}`, parsedAmount);
+          return;
+        }
+
+        if (latestCycle.executionMode === "queued") {
+          setErrorMessage("Deposits are temporarily queued. Please try again shortly.");
+          return;
+        }
+
+        if (latestCycle.executionMode === "instant" && latestCycle.telemetryFresh === true) {
+          const refreshed = await ensureFreshNav();
+          if (!refreshed) {
+            return;
+          }
+
+          setSubmittedDepositAmount(amount);
+          deposit(
+            vault.config.vaultAddress as `0x${string}`,
+            parsedAmount,
+            address as `0x${string}`,
+          );
+          return;
+        }
+
+        if (latestCycle.executionMode === "blocked") {
+          return;
+        }
+
+        setErrorMessage("Still loading. Please wait a moment and try again.");
+        return;
+      }
+
+      const refreshed = await ensureFreshNav();
+      if (!refreshed) {
+        return;
+      }
+
+      setSubmittedDepositAmount(amount);
+      deposit(vault.config.vaultAddress as `0x${string}`, parsedAmount, address as `0x${string}`);
+    } finally {
+      setDepositPreflightPending(false);
+    }
+  }, [
+    actionPending,
+    address,
+    amount,
+    clearFeedback,
+    cycle?.executionMode,
+    deposit,
+    ensureFreshNav,
+    isCustomVault,
+    parsedAmount,
+    queueDeposit,
+    resetDeposit,
+    resetQueueDeposit,
+    vault.config.vaultAddress,
+    vaultId,
+  ]);
+
+  return {
+    amount,
+    setAmount,
+    clearFeedback,
+    handleMaxAmount,
+    handleApprove,
+    handleDeposit,
+    parsedAmount,
+    previewShares,
+    meetsMinDeposit,
+    isValidAmount,
+    walletAddress: address,
+    walletBalanceFormatted: formatted,
+    walletBalanceLoading: balanceLoading,
+    needsApproval,
+    actionPending,
+    navSyncPending,
+    depositPreflightPending,
+    approvePending,
+    approveConfirming,
+    depositPending,
+    depositConfirming,
+    queueDepositPending,
+    queueDepositConfirming,
+    message,
+    errorMessage,
+    customQueueWindowOpen,
+    customQueuePendingClose,
+    cycleStateUnavailable,
+    queueStatus,
+    hasQueuedDeposit,
+    queuedFormatted,
+    queuedSharesFormatted,
+    depositCreatedAt,
+    estimateBasis,
+    depositQueueLoading,
+  };
+}
+
 export function useCustomVaultRequestRedeem(): CustomVaultRequestRedeemResult {
   const { write, hash, isPending, error, reset } = useEip155WriteState();
   const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
@@ -1214,172 +1376,6 @@ export function useRequestRedeem(): UseRequestRedeemResult {
     isLoading,
     error,
     reset,
-  };
-}
-
-export interface UseRequestsResult {
-  pendingRequests: RedemptionRequest[];
-  claimableRequests: RedemptionRequest[];
-  totalPendingShares: string;
-  totalClaimableShares: string;
-  estimatedAssetsPendingFormatted: string;
-  estimatedAssetsClaimableFormatted: string;
-  isLoading: boolean;
-  error: string | null;
-  lastRefresh: Date | null;
-  refetch: () => Promise<void>;
-}
-export function useRequests(vaultId?: number, isAuthenticated = false): UseRequestsResult {
-  const { address } = useAppKitAccount();
-  const userScope = getUserScope(isAuthenticated, address);
-  const query = useQuery({
-    queryKey: vaultQueryKeys.requests(vaultId, userScope),
-    queryFn: async () => {
-      const result = await fetchUserRedemptions(vaultId!);
-      const pendingRequests = result.pendingRequests.map(normalizeRedemptionRequest);
-      const claimableRequests = result.claimableRequests.map(normalizeRedemptionRequest);
-
-      return {
-        ...result,
-        pendingRequests,
-        claimableRequests,
-        requests: result.requests?.map(normalizeRedemptionRequest) ?? [
-          ...pendingRequests,
-          ...claimableRequests,
-        ],
-      } satisfies UserRedemptionsResponse;
-    },
-    enabled: vaultId !== undefined && isAuthenticated && Boolean(address),
-    refetchInterval: DEFAULT_POLL_INTERVAL_MS,
-  });
-
-  const refetch = useCallback(async (): Promise<void> => {
-    await query.refetch();
-  }, [query]);
-
-  return {
-    pendingRequests: query.data?.pendingRequests ?? [],
-    claimableRequests: query.data?.claimableRequests ?? [],
-    totalPendingShares: query.data?.totalPendingShares ?? "0",
-    totalClaimableShares: query.data?.totalClaimableShares ?? "0",
-    estimatedAssetsPendingFormatted: query.data?.estimatedAssetsPendingFormatted ?? "0.00",
-    estimatedAssetsClaimableFormatted: query.data?.estimatedAssetsClaimableFormatted ?? "0.00",
-    isLoading: vaultId !== undefined && isAuthenticated ? query.isLoading : false,
-    error: isUnauthorizedError(query.error) ? null : getErrorMessage(query.error),
-    lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
-    refetch,
-  };
-}
-
-export interface UseCycleStatusResult {
-  cycle: Cycle | null;
-  isActive: boolean;
-  timeRemainingFormatted: string;
-  canSettle: boolean | undefined;
-  batchState:
-    | "open"
-    | "processing"
-    | "processed"
-    | "cutoff"
-    | "flattening"
-    | "settling"
-    | "settled"
-    | "closed"
-    | "reopen"
-    | null;
-  isLoading: boolean;
-  error: string | null;
-  lastRefresh: Date | null;
-  refetch: () => Promise<CycleStatusResponse | null>;
-  riskState?: string | null;
-  executionMode?: string | null;
-  telemetryFresh?: boolean | null;
-  liquidityMode?: string | null;
-  reopenReady?: boolean | null;
-  openPositionCount?: number | null;
-}
-
-export interface UseCycleHistoryResult {
-  currentCycleId: number | null;
-  cycles: CycleHistoryItem[];
-  isLoading: boolean;
-  error: string | null;
-  lastRefresh: Date | null;
-  refetch: () => Promise<void>;
-}
-
-export function useCycleStatus(vaultId?: number, cycleId?: number): UseCycleStatusResult {
-  const query = useQuery({
-    queryKey: vaultQueryKeys.cycleStatus(vaultId, cycleId),
-    queryFn: () =>
-      cycleId !== undefined
-        ? fetchCycleStatus(vaultId!, cycleId)
-        : fetchCurrentCycleStatus(vaultId!, true),
-    enabled: vaultId !== undefined,
-    refetchInterval: DEFAULT_POLL_INTERVAL_MS,
-  });
-
-  const refetch = useCallback(async (): Promise<CycleStatusResponse | null> => {
-    const result = await query.refetch();
-    return result.data ?? null;
-  }, [query]);
-
-  return {
-    cycle: query.data?.cycle ?? null,
-    isActive: query.data?.cycle?.isActive ?? false,
-    timeRemainingFormatted: query.data?.cycle?.timeRemainingFormatted ?? "0s",
-    canSettle: query.data?.canSettle,
-    batchState: query.data?.cycle?.batchState ?? null,
-    isLoading: vaultId !== undefined ? query.isLoading : false,
-    error: getErrorMessage(query.error),
-    lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
-    refetch,
-    riskState: query.data?.cycle?.riskState ?? null,
-    executionMode: query.data?.cycle?.executionMode ?? null,
-    telemetryFresh: query.data?.cycle?.telemetryFresh ?? null,
-    liquidityMode: query.data?.cycle?.liquidityMode ?? null,
-    reopenReady: query.data?.cycle?.reopenReady ?? null,
-    openPositionCount: query.data?.cycle?.openPositionCount ?? null,
-  };
-}
-
-export function useCycleHistory(vaultId?: number, limit = 6): UseCycleHistoryResult {
-  const [data, setData] = useState<CycleHistoryResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
-
-  const refetch = useCallback(async () => {
-    if (vaultId === undefined) {
-      setIsLoading(false);
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const result = await fetchCycleHistory(vaultId, limit);
-      setData(result);
-      setLastRefresh(new Date());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch cycle history");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [vaultId, limit]);
-
-  useEffect(() => {
-    void refetch();
-  }, [refetch]);
-
-  return {
-    currentCycleId: data?.currentCycleId ?? null,
-    cycles: data?.cycles ?? [],
-    isLoading,
-    error,
-    lastRefresh,
-    refetch,
   };
 }
 

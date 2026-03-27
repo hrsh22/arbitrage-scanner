@@ -5,8 +5,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@workspace/ui/componen
 import { Badge } from "@workspace/ui/components/badge";
 import { Skeleton } from "@workspace/ui/components/skeleton";
 import { ArrowUpRight } from "lucide-react";
-import { useCycleStatus, useVaultInstances, useVaultStatus } from "../src/lib/hooks";
+import { useDiscoverVaultCards, useVaultInstances } from "../src/lib/hooks";
 import { AssetBadge, AssetLogoStack, type AssetType } from "../components/asset-logo";
+import { EmptyState, ErrorState } from "../components/async-state";
 import type { VaultInstance, VaultRiskLevel } from "../src/types";
 
 function formatCompactCurrency(value: number): string {
@@ -56,14 +57,32 @@ function RiskBadge({ level }: { level: VaultRiskLevel }) {
   );
 }
 
-function VaultCard({ vault }: { vault: VaultInstance }) {
+function VaultCard({
+  vault,
+  status,
+  isLoading,
+  executionMode,
+  telemetryFresh,
+}: {
+  vault: VaultInstance;
+  status: {
+    nav: {
+      trackedTotalAssets?: number;
+      totalAssets: number;
+      deployedCostBasis: number;
+      redeemableCostBasis?: number;
+      sharePrice: number;
+    };
+  } | null;
+  isLoading: boolean;
+  executionMode: string | null;
+  telemetryFresh: boolean | null;
+}) {
   const router = useRouter();
-  const { data, isLoading } = useVaultStatus(vault.id);
-  const { executionMode, telemetryFresh } = useCycleStatus(vault.id);
 
-  const tvl = data?.nav?.trackedTotalAssets ?? data?.nav?.totalAssets ?? 0;
+  const tvl = status?.nav?.trackedTotalAssets ?? status?.nav?.totalAssets ?? 0;
   const deployedCapital =
-    (data?.nav?.deployedCostBasis ?? 0) + (data?.nav?.redeemableCostBasis ?? 0);
+    (status?.nav?.deployedCostBasis ?? 0) + (status?.nav?.redeemableCostBasis ?? 0);
 
   const hasTradingMetadata = Boolean(
     vault.profile.tradingMetadata?.assets?.length ||
@@ -76,6 +95,7 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
     <div
       role="link"
       tabIndex={0}
+      data-testid={`discover-vault-card-${vault.id}`}
       onClick={() => router.push(vaultHref)}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -159,7 +179,7 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
             <div className="flex flex-col gap-1">
               <span className="text-[11px] uppercase tracking-[0.18em] text-slate-400">NAV</span>
               <span className="text-lg font-semibold text-white">
-                {isLoading ? "--" : `$${data?.nav.sharePrice.toFixed(4) ?? "--"}`}
+                {isLoading ? "--" : `$${status?.nav.sharePrice.toFixed(4) ?? "--"}`}
               </span>
             </div>
 
@@ -195,6 +215,7 @@ function VaultCard({ vault }: { vault: VaultInstance }) {
 export default function VaultsPageClient() {
   const { data, isLoading, error } = useVaultInstances();
   const instances = data?.instances ?? [];
+  const discoverCards = useDiscoverVaultCards(instances);
 
   return (
     <main className="vault-pane-scroll flex-1 min-h-0 overflow-y-auto px-4 py-8 sm:px-6 sm:py-10 lg:px-10 lg:py-12">
@@ -220,28 +241,29 @@ export default function VaultsPageClient() {
           </div>
         </div>
 
-        {error && (
-          <Card className="border-rose-400/25 bg-rose-400/10 text-rose-100">
-            <CardContent className="py-4 text-sm">{error}</CardContent>
-          </Card>
-        )}
+        {error && <ErrorState description={error} className="text-left items-start" />}
 
         {isLoading ? (
-          <div className="grid gap-6 md:grid-cols-2">
+          <div className="grid gap-6 md:grid-cols-2" data-testid="discover-vaults-loading">
             <Skeleton className="h-[420px] w-full rounded-[28px] bg-white/10" />
             <Skeleton className="h-[420px] w-full rounded-[28px] bg-white/10" />
           </div>
         ) : instances.length === 0 ? (
-          <Card className="rounded-[2px] border-[#212121] bg-[#121212]">
-            <CardContent className="py-10 text-center text-sm text-[#828B8D]">
-              No vaults are available right now.
-            </CardContent>
-          </Card>
+          <EmptyState variant="card" title="No vaults are available right now." />
         ) : (
           <div className="grid gap-6 md:grid-cols-2">
-            {instances.map((vault: VaultInstance) => (
-              <VaultCard key={vault.id} vault={vault} />
-            ))}
+            {discoverCards.map(
+              ({ vault, status, isLoading: vaultIsLoading, executionMode, telemetryFresh }) => (
+                <VaultCard
+                  key={vault.id}
+                  vault={vault}
+                  status={status}
+                  isLoading={vaultIsLoading}
+                  executionMode={executionMode}
+                  telemetryFresh={telemetryFresh}
+                />
+              ),
+            )}
           </div>
         )}
       </div>

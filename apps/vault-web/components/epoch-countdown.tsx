@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Card, CardContent } from "@workspace/ui/components/card";
 import { Skeleton } from "@workspace/ui/components/skeleton";
 
@@ -131,42 +131,24 @@ export function EpochCountdown({
   className = "",
 }: EpochCountdownProps) {
   const [timeLeft, setTimeLeft] = useState<TimeLeft>(() => calculateTimeLeft(targetTime));
-  const [serverOffset, setServerOffset] = useState<number>(0);
+  const completedRef = useRef(false);
 
-  // Sync timer every second
   useEffect(() => {
-    // Initial calculation
     setTimeLeft(calculateTimeLeft(targetTime));
+    completedRef.current = false;
 
-    // Update every second
     const interval = setInterval(() => {
       const newTimeLeft = calculateTimeLeft(targetTime);
       setTimeLeft(newTimeLeft);
 
-      if (newTimeLeft.isComplete) {
+      if (newTimeLeft.isComplete && !completedRef.current) {
+        completedRef.current = true;
         onComplete?.();
       }
     }, 1000);
 
     return () => clearInterval(interval);
   }, [targetTime, onComplete]);
-
-  // Periodic sync with server time (every 30 seconds)
-  useEffect(() => {
-    const syncInterval = setInterval(() => {
-      // In a real implementation, this would fetch server time
-      // For now, we use the browser time as baseline
-      const now = Date.now();
-      // Server time sync would adjust serverOffset here
-      // setServerOffset(serverTime - now);
-    }, 30000);
-
-    return () => clearInterval(syncInterval);
-  }, []);
-
-  // Adjust target time by server offset
-  const adjustedTargetTime =
-    typeof targetTime === "number" ? targetTime - serverOffset : targetTime;
 
   if (isLoading) {
     return (
@@ -209,7 +191,7 @@ export function EpochCountdown({
             Next Settlement
           </p>
           <p className="text-[10px] text-muted-foreground">
-            {formatTargetTime(adjustedTargetTime, timezone)}
+            {formatTargetTime(targetTime, timezone)}
           </p>
         </div>
 

@@ -50,23 +50,148 @@ const buildQuery = (params: Record<string, string | number | undefined>) => {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Helper for fetch with credentials
-const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
+interface ApiRequestErrorDetails {
+  url: string;
+  method: string;
+  status: number;
+  statusText: string;
+  body?: unknown;
+}
+
+export class ApiRequestError extends Error {
+  readonly url: string;
+  readonly method: string;
+  readonly status: number;
+  readonly statusText: string;
+  readonly body?: unknown;
+
+  constructor({ url, method, status, statusText, body }: ApiRequestErrorDetails) {
+    super(formatApiRequestErrorMessage(status, statusText, body));
+    this.name = "ApiRequestError";
+    this.url = url;
+    this.method = method;
+    this.status = status;
+    this.statusText = statusText;
+    this.body = body;
+  }
+}
+
+const JSON_CONTENT_TYPE_RE = /[/+]json(?:;|$)/i;
+
+const buildRequestHeaders = (headers?: HeadersInit, body?: BodyInit | null) => {
+  const mergedHeaders = new Headers(headers);
+
+  if (!mergedHeaders.has("Accept")) {
+    mergedHeaders.set("Accept", "application/json");
+  }
+
+  if (body != null && !mergedHeaders.has("Content-Type")) {
+    mergedHeaders.set("Content-Type", "application/json");
+  }
+
+  return mergedHeaders;
+};
+
+const isJsonBody = (contentType: string | null, text: string) => {
+  if (contentType && JSON_CONTENT_TYPE_RE.test(contentType)) {
+    return true;
+  }
+
+  const trimmed = text.trim();
+  return (
+    trimmed.startsWith("{") ||
+    trimmed.startsWith("[") ||
+    trimmed.startsWith('"') ||
+    trimmed === "null" ||
+    trimmed === "true" ||
+    trimmed === "false" ||
+    /^-?\d/.test(trimmed)
+  );
+};
+
+const parseResponseBody = async (response: Response): Promise<unknown> => {
+  if (response.status === 204 || response.status === 205) {
+    return undefined;
+  }
+
+  const text = await response.text();
+
+  if (text.trim().length === 0) {
+    return undefined;
+  }
+
+  const contentType = response.headers.get("content-type");
+  if (isJsonBody(contentType, text)) {
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      return text;
+    }
+  }
+
+  return text;
+};
+
+const extractErrorMessage = (body: unknown): string | null => {
+  if (typeof body === "string") {
+    const trimmed = body.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  if (!body || typeof body !== "object") {
+    return null;
+  }
+
+  const record = body as Record<string, unknown>;
+  for (const key of ["error", "message", "detail", "reason"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+
+  return null;
+};
+
+const formatApiRequestErrorMessage = (status: number, statusText: string, body?: unknown) => {
+  const statusLabel = status === 401 ? "Unauthorized" : statusText || "Request failed";
+  const bodyMessage = extractErrorMessage(body);
+  const prefix = `${status} ${statusLabel}`;
+
+  return bodyMessage && bodyMessage !== statusLabel ? `${prefix}: ${bodyMessage}` : prefix;
+};
+
+const fetchWithAuth = async <T>(url: string, options: RequestInit = {}): Promise<T> => {
   const response = await fetch(url, {
     ...options,
     credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
+    headers: buildRequestHeaders(options.headers, options.body),
   });
 
+  const body = await parseResponseBody(response);
+
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: "Unknown error" }));
-    throw new Error(error.error || `HTTP ${response.status}`);
+    throw new ApiRequestError({
+      url,
+      method: options.method ?? "GET",
+      status: response.status,
+      statusText: response.statusText,
+      body,
+    });
   }
 
-  return response.json();
+  return body as T;
+};
+
+export const isUnauthorizedApiError = (error: unknown): boolean => {
+  if (error instanceof ApiRequestError) {
+    return error.status === 401;
+  }
+
+  const message = error instanceof Error ? error.message : "";
+  return (
+    message.includes("401") || message.includes("unauthorized") || message.includes("Unauthorized")
+  );
 };
 
 // ============================================

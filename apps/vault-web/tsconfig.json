@@ -12,6 +12,6 @@
       }
     ]
   },
-  "include": ["next-env.d.ts", "next.config.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules", "e2e", "playwright.config.ts"]
+  "include": ["next-env.d.ts", "next.config.ts", "**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules", "e2e", "playwright.config.ts", ".next"]
 }

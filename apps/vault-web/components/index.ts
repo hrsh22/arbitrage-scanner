@@ -1,12 +1,3 @@
-export { EpochCountdown } from "./epoch-countdown";
-export type { EpochCountdownProps } from "./epoch-countdown";
-
-export { SettlementStatus } from "./settlement-status";
-export type {
-  SettlementStatusProps,
-  SettlementStatusType,
-  SettlementBlocker,
-} from "./settlement-status";
-
-export { AssetLogo, AssetBadge, AssetLogoStack } from "./asset-logo";
-export type { AssetLogoProps, AssetType } from "./asset-logo";
+// Barrel files are avoided to prevent bundle coupling and hydration regressions.
+// Import directly from the component files instead.
+// See: https://vercel.com/blog/how-we-optimized-package-imports-in-next-js

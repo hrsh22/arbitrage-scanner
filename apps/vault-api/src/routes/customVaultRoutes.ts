@@ -219,9 +219,9 @@ function buildWithdrawalHistoryItem(
 ): ActivityFeedItem {
   const map: Record<string, { type: string; title: string; detail: string; occurredAt: Date }> = {
     pending: {
-      type: "withdraw_requested",
-      title: "Withdrawal requested",
-      detail: "Your withdrawal request was submitted.",
+      type: "withdraw_queued",
+      title: "Withdrawal queued",
+      detail: "Your withdrawal request entered the queue for processing.",
       occurredAt: request.requestedAt,
     },
     ready: {
@@ -249,9 +249,9 @@ function buildWithdrawalHistoryItem(
       occurredAt: request.updatedAt,
     },
     open: {
-      type: "withdraw_requested",
-      title: "Withdrawal requested",
-      detail: "Your withdrawal request is open.",
+      type: "withdraw_queued",
+      title: "Withdrawal queued",
+      detail: "Your withdrawal request is queued for processing.",
       occurredAt: request.requestedAt,
     },
     cutoff: {
@@ -317,9 +317,9 @@ function buildEpochRequestHistoryItem(
     { type: string; title: string; detail: string; occurredAt: Date }
   > = {
     pending: {
-      type: "withdraw_requested",
-      title: "Withdrawal requested",
-      detail: "Your withdrawal request was submitted.",
+      type: "withdraw_queued",
+      title: "Withdrawal queued",
+      detail: "Your withdrawal request entered the queue for processing.",
       occurredAt: request.createdAt,
     },
     frozen: {
@@ -379,9 +379,9 @@ function buildProviderRedemptionHistoryItem(request: ProviderRedemptionRequest):
     { type: string; title: string; detail: string; occurredAt: Date }
   > = {
     pending: {
-      type: "withdraw_requested",
-      title: "Withdrawal requested",
-      detail: "Your withdrawal request was submitted.",
+      type: "withdraw_queued",
+      title: "Withdrawal queued",
+      detail: "Your withdrawal request entered the queue for settlement.",
       occurredAt: request.createdAt,
     },
     frozen: {
@@ -1459,8 +1459,8 @@ export function buildCustomVaultRouter(): Router {
         vaultId,
         vaultAddress: provider.config.vaultAddress,
         userAddress,
-        eventType: "withdraw_requested",
-        title: "Withdrawal requested",
+        eventType: "withdraw_queued",
+        title: "Withdrawal queued",
         detail: "Your withdrawal request entered the queue and will be processed by the worker.",
         cycleId: result.batchId ?? undefined,
         requestId: result.requestId,

@@ -998,6 +998,15 @@ export class CustomVaultClient {
     const redeemResult = await this.write(walletClient, "processRedeems", [step]);
     if (!redeemResult.success) return redeemResult;
 
+    const redeemConfirm = await this.waitForTransaction(redeemResult.txHash!);
+    if (!redeemConfirm.success) {
+      return {
+        success: false,
+        txHash: redeemResult.txHash,
+        error: redeemConfirm.error,
+      };
+    }
+
     const depositResult = await this.write(walletClient, "processDeposits", [step]);
     if (!depositResult.success) return depositResult;
 

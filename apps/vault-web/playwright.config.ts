@@ -1,7 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const runFullSuite = process.env.PLAYWRIGHT_FULL_SUITE === "1";
+
 export default defineConfig({
   testDir: "./e2e",
+  testMatch: runFullSuite ? /.*\.spec\.ts/ : /route-regression\.spec\.ts/,
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
@@ -23,7 +26,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "pnpm dev",
+    command: "pnpm dev:e2e",
     url: "http://localhost:3000",
     reuseExistingServer: !process.env.CI,
     timeout: 120000,
