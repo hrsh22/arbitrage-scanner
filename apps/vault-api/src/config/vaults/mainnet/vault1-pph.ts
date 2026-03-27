@@ -5,6 +5,17 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function requireEnv(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`Missing required env var ${name}`);
+  }
+  return value;
+}
+
+const VAULT_1_VAULT_ADDRESS = requireEnv("VAULT_1_VAULT_ADDRESS");
+const VAULT_1_SAFE_ADDRESS = requireEnv("VAULT_1_SAFE_ADDRESS");
+
 const config: VaultInstanceConfig = {
   id: 1,
   slug: "sisyphus-vault",
@@ -35,8 +46,8 @@ const config: VaultInstanceConfig = {
 
   vaultContractType: "flatBookVaultV2" as const,
 
-  vaultAddress: "0xfE5F6D149148aD5F31f6868152698E19A0F73a58",
-  safeAddress: "0xc8447F7d4dF6d717684fC9A3d242ee7713F43927",
+  vaultAddress: VAULT_1_VAULT_ADDRESS,
+  safeAddress: VAULT_1_SAFE_ADDRESS,
   allocatorNavSignerKeyEnv: "VAULT_1_ALLOCATOR_NAV_KEY",
   safeOperatorKeyEnv: "VAULT_1_SAFE_OPERATOR_KEY",
   tradingSignerKeyEnv: "VAULT_1_TRADING_SIGNER_KEY",

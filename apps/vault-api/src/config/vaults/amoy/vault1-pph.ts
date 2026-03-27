@@ -1,5 +1,16 @@
 import type { VaultInstanceConfig } from "../../types.js";
 
+function requireEnv(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`Missing required env var ${name}`);
+  }
+  return value;
+}
+
+const AMOY_VAULT_1_VAULT_ADDRESS = requireEnv("AMOY_VAULT_1_VAULT_ADDRESS");
+const AMOY_VAULT_1_SAFE_ADDRESS = requireEnv("AMOY_VAULT_1_SAFE_ADDRESS");
+
 /**
  * Amoy Testnet Vault Configuration
  *
@@ -34,8 +45,8 @@ const config: VaultInstanceConfig = {
 
   vaultContractType: "flatBookVaultV2" as const,
 
-  vaultAddress: "0x62646C39547c004a922D928DCe247Cae11F7d2d2",
-  safeAddress: "0x5991fd6Ecc5634C4de497b47Eb0Aa0065fffb214",
+  vaultAddress: AMOY_VAULT_1_VAULT_ADDRESS,
+  safeAddress: AMOY_VAULT_1_SAFE_ADDRESS,
 
   allocatorNavSignerKeyEnv: "AMOY_VAULT_1_ALLOCATOR_NAV_KEY",
   safeOperatorKeyEnv: "AMOY_VAULT_1_SAFE_OPERATOR_KEY",
