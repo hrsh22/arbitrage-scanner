@@ -146,6 +146,9 @@ function getHeroStateLabel(vault: VaultInstance, cycle: Cycle | null): string {
   }
 
   if (vault.type === "custom" && cycle?.executionMode === "queued") {
+    if (cycle.batchState !== "closed") {
+      return "Processing";
+    }
     return "Accepting deposits";
   }
 
