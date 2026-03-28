@@ -27,6 +27,7 @@ import {
   type OpenPosition,
 } from "./positionFetcher.js";
 import { priceService as defaultPriceService, PriceService } from "./priceService.js";
+import { DEFAULT_FLATNESS_DUST_THRESHOLD_USDC } from "./flatnessDetector.js";
 import { getVaultProvider } from "./vaultProviderFactory.js";
 import type { IVaultProvider } from "./vaultProvider.js";
 import { vaultTradingAnalyticsService } from "./vaultTradingAnalyticsService.js";
@@ -724,7 +725,37 @@ export class NavOracleService {
     let positionsWithPrices = 0;
     let positionsWithoutPrices = 0;
 
-    for (const position of openPositions) {
+    const actionableOpenPositions = openPositions.filter(
+      (position) => position.size > DEFAULT_FLATNESS_DUST_THRESHOLD_USDC,
+    );
+    const actionableRedeemablePositions = redeemablePositions.filter(
+      (position) => position.size > DEFAULT_FLATNESS_DUST_THRESHOLD_USDC,
+    );
+
+    const ignoredOpenDustValue = openPositions
+      .filter((position) => position.size <= DEFAULT_FLATNESS_DUST_THRESHOLD_USDC)
+      .reduce((sum, position) => sum + position.costBasis, 0);
+    const ignoredRedeemableDustValue = redeemablePositions
+      .filter((position) => position.size <= DEFAULT_FLATNESS_DUST_THRESHOLD_USDC)
+      .reduce(
+        (sum, position) =>
+          sum +
+          (typeof position.currentValue === "number" && Number.isFinite(position.currentValue)
+            ? position.currentValue
+            : position.size),
+        0,
+      );
+
+    if (ignoredOpenDustValue > 0 || ignoredRedeemableDustValue > 0) {
+      logger.info("NavOracleService: Excluding dust Polymarket balances from pricing NAV", {
+        vaultId: this.vaultId,
+        dustThresholdUsdc: DEFAULT_FLATNESS_DUST_THRESHOLD_USDC,
+        ignoredOpenDustValue,
+        ignoredRedeemableDustValue,
+      });
+    }
+
+    for (const position of actionableOpenPositions) {
       const quantity = position.size;
       const costBasis = position.costBasis;
       const bidPrice = bidPrices.get(position.tokenId) ?? 0;
@@ -760,7 +791,7 @@ export class NavOracleService {
       }
     }
 
-    for (const position of redeemablePositions) {
+    for (const position of actionableRedeemablePositions) {
       redeemableCostBasis += position.costBasis;
       redeemableMarketValue +=
         typeof position.currentValue === "number" && Number.isFinite(position.currentValue)
@@ -845,7 +876,7 @@ export class NavOracleService {
       sharePrice,
       positionsWithPrices,
       positionsWithoutPrices,
-      redeemablePositions: redeemablePositions.length,
+      redeemablePositions: actionableRedeemablePositions.length,
       vaultUsdc,
       safeUsdc,
       queuedAssets,

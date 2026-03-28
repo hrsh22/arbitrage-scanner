@@ -64,8 +64,10 @@ export interface FlatnessDetectorConfig {
 // Constants
 // ============================================================================
 
+export const DEFAULT_FLATNESS_DUST_THRESHOLD_USDC = 0.01;
+
 const DEFAULT_CONFIG: FlatnessDetectorConfig = {
-  dustThresholdUsdc: 0.01, // $0.01 USDC equivalent
+  dustThresholdUsdc: DEFAULT_FLATNESS_DUST_THRESHOLD_USDC, // $0.01 USDC equivalent
   verboseLogging: true,
 };
 
