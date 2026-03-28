@@ -848,8 +848,30 @@ export class NavOracleService {
         : 0n;
     const pricingSupply = Number(formatUnits(pricingSupplyRaw, USDC_DECIMALS));
     const pendingRedeemShareCount = Number(formatUnits(totalPendingRedeemSharesRaw, USDC_DECIMALS));
+    const grossTotalAssetsUnits = decimalToUsdcUnits(grossTotalAssets);
+    const reservedRedemptionUnits = decimalToUsdcUnits(reservedRedemptionAssets);
+    const effectiveReservedRedemptionUnits =
+      reservedRedemptionUnits < grossTotalAssetsUnits
+        ? reservedRedemptionUnits
+        : grossTotalAssetsUnits;
+    const effectiveReservedRedemptionAssets = Number(
+      formatUnits(effectiveReservedRedemptionUnits, USDC_DECIMALS),
+    );
+
+    if (
+      totalPendingRedeemSharesRaw > 0n &&
+      effectiveReservedRedemptionUnits < reservedRedemptionUnits
+    ) {
+      logger.warn("NavOracleService: Capping pending redemption valuation to realizable assets", {
+        vaultId: this.vaultId,
+        reservedRedemptionAssets,
+        realizableAssets: effectiveReservedRedemptionAssets,
+        shortfall: reservedRedemptionAssets - effectiveReservedRedemptionAssets,
+      });
+    }
+
     const reservedRedemptionSharePrice =
-      pendingRedeemShareCount > 0 ? reservedRedemptionAssets / pendingRedeemShareCount : 0;
+      pendingRedeemShareCount > 0 ? effectiveReservedRedemptionAssets / pendingRedeemShareCount : 0;
     const sharePrice =
       pricingSupply > 0
         ? totalAssets / pricingSupply
@@ -857,12 +879,11 @@ export class NavOracleService {
           ? reservedRedemptionSharePrice
           : 1.0;
     const totalAssetsUnits = decimalToUsdcUnits(totalAssets);
-    const reservedRedemptionUnits = decimalToUsdcUnits(reservedRedemptionAssets);
     const navUnits =
       pricingSupplyRaw > 0n
         ? (totalAssetsUnits * NAV_SCALE) / pricingSupplyRaw
         : totalPendingRedeemSharesRaw > 0n
-          ? (reservedRedemptionUnits * NAV_SCALE) / totalPendingRedeemSharesRaw
+          ? (effectiveReservedRedemptionUnits * NAV_SCALE) / totalPendingRedeemSharesRaw
           : NAV_SCALE;
 
     return {
