@@ -326,26 +326,34 @@ interface WalletBalanceResult {
 
 export function useWalletBalance(): WalletBalanceResult {
   const { address, isConnected } = useAppKitAccount();
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
+
+  const effectiveAddress = hydrated ? address : undefined;
+  const effectiveIsConnected = hydrated ? isConnected : false;
 
   const { data: balance, isLoading } = useReadContract({
     address: USDC_E_ADDRESS,
     abi: ERC20_BALANCE_ABI,
     functionName: "balanceOf",
-    args: address ? [address as `0x${string}`] : undefined,
+    args: effectiveAddress ? [effectiveAddress as `0x${string}`] : undefined,
     query: {
-      enabled: isConnected && !!address,
+      enabled: effectiveIsConnected && !!effectiveAddress,
       refetchInterval: 15_000,
     },
   });
 
-  const formatted = balance !== undefined ? (Number(balance) / 1e6).toFixed(2) : "0.00";
+  const formatted = hydrated && balance !== undefined ? (Number(balance) / 1e6).toFixed(2) : "0.00";
 
   return {
     balance,
     formatted,
-    isLoading: isLoading && isConnected,
-    isConnected,
-    address,
+    isLoading: hydrated && isLoading && effectiveIsConnected,
+    isConnected: effectiveIsConnected,
+    address: effectiveAddress,
   };
 }
 

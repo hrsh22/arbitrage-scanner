@@ -44,6 +44,7 @@ import {
   deriveVaultPerformanceStats,
   type DerivedVaultPerformanceStats,
 } from "../../../src/lib/performance";
+import { resolveVaultFromRouteSegment } from "../../../src/lib/vaultRouting";
 import {
   preflightWithdrawal,
   useCycleStatus,
@@ -2096,12 +2097,14 @@ function VaultNotFound() {
 }
 
 interface VaultDetailPageProps {
+  routeSegment: string;
   routeVaultId: number;
   bootstrapVault: VaultInstance | null;
   bootstrapResolved: boolean;
 }
 
 export default function VaultDetailPage({
+  routeSegment,
   routeVaultId,
   bootstrapVault,
   bootstrapResolved,
@@ -2142,11 +2145,15 @@ export default function VaultDetailPage({
   const userAuthorized = walletConnected && Boolean(address) && sessionAuthenticated;
 
   const { data: instancesData } = useVaultInstances();
-  const queriedVault = instancesData?.instances.find((instance) => instance.id === routeVaultId);
+  const queriedVault = instancesData?.instances
+    ? routeVaultId > 0
+      ? instancesData.instances.find((instance) => instance.id === routeVaultId)
+      : resolveVaultFromRouteSegment(routeSegment, instancesData.instances)
+    : undefined;
   const vault = queriedVault ?? bootstrapVault ?? undefined;
   const hasClientInstances = Array.isArray(instancesData?.instances);
   const shouldRenderNotFound =
-    routeVaultIdInvalid ||
+    (routeVaultIdInvalid && hasClientInstances && !queriedVault) ||
     (bootstrapResolved && bootstrapVault === null && !queriedVault) ||
     (hasClientInstances && !queriedVault);
   const { data: status, isLoading: statusLoading, error: statusError } = useVaultStatus(vault?.id);

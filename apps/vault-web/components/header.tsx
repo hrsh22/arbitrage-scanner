@@ -6,7 +6,7 @@ import dynamic from "next/dynamic";
 
 const HeaderAuth = dynamic(() => import("./header-auth").then((mod) => mod.HeaderAuth), {
   ssr: false, // Wait for client side to prevent hydration mismatches with wallet state
-  loading: () => <div className="h-9 w-[120px] animate-pulse rounded-[10px] bg-white/5" />
+  loading: () => <div className="h-9 w-[120px] animate-pulse rounded-[10px] bg-white/5" />,
 });
 
 interface HeaderProps {

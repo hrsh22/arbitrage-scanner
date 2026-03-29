@@ -19,9 +19,10 @@ test.describe("App-local route regression coverage", () => {
   test("vault detail shows disconnected deposit and auth-gated withdraw states", async ({
     page,
   }) => {
-    await page.goto("/vault/1?e2eConnected=1", { waitUntil: "domcontentloaded" });
+    await page.goto("/vault/alpha?e2eConnected=1", { waitUntil: "domcontentloaded" });
 
     await expect(page.getByText("Alpha Vault", { exact: true })).toBeVisible();
+    await expect(page).toHaveTitle("Alpha | Polymarket Vault");
     await expect(
       page.getByText("Sign in to view your deposit, withdrawal, and claim history.", {
         exact: true,
@@ -33,9 +34,14 @@ test.describe("App-local route regression coverage", () => {
     await expect(
       page.getByText("Connect your wallet to start an exit request.", { exact: true }).first(),
     ).toBeVisible();
-    await expect(
-      page.getByText("Connect your wallet to view and manage this area.", { exact: true }).first(),
-    ).toBeVisible();
+    await expect(page.getByText("Wallet disconnected", { exact: true }).first()).toBeVisible();
+  });
+
+  test("numeric vault routes redirect to the canonical slug URL", async ({ page }) => {
+    await page.goto("/vault/1?e2eConnected=1", { waitUntil: "domcontentloaded" });
+
+    await expect(page).toHaveURL(/\/vault\/alpha\?e2eConnected=1$/);
+    await expect(page).toHaveTitle("Alpha | Polymarket Vault");
   });
 
   test("vault detail renders not found for a missing numeric id", async ({ page }) => {

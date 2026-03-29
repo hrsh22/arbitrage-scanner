@@ -1,26 +1,45 @@
 import type { Metadata } from "next";
+import { permanentRedirect } from "next/navigation";
 
+import { API_BASE_URL } from "../../../src/constants";
 import type { VaultInstance, VaultInstancesResponse } from "../../../src/types";
+import {
+  getVaultHref,
+  getVaultPageTitle,
+  getVaultRouteSegment,
+  resolveVaultFromRouteSegment,
+} from "../../../src/lib/vaultRouting";
 import VaultDetailPage from "./vault-detail";
 
 interface VaultInstancesStaticResponse {
-  instances?: Array<{ id: number }>;
+  instances?: VaultInstance[];
 }
 
-function parseRouteVaultId(id: string): number | null {
-  if (!/^\d+$/.test(id)) {
-    return null;
+function buildSearchParamsString(
+  searchParams: Record<string, string | string[] | undefined>,
+): string {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(searchParams)) {
+    if (typeof value === "string") {
+      params.set(key, value);
+      continue;
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        params.append(key, item);
+      }
+    }
   }
 
-  const parsed = Number.parseInt(id, 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  const serialized = params.toString();
+  return serialized ? `?${serialized}` : "";
 }
 
 async function fetchVaultInstancesForBootstrap(): Promise<VaultInstance[] | null> {
-  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8081";
-
   try {
-    const response = await fetch(`${apiBaseUrl}/vault/instances`, { cache: "no-store" });
+    const response = await fetch(`${API_BASE_URL}/vault/instances`, { cache: "no-store" });
     if (!response.ok) {
       return null;
     }
@@ -38,19 +57,20 @@ export async function generateMetadata({
   params: Promise<{ id: string }>;
 }): Promise<Metadata> {
   const { id } = await params;
+  const vaults = await fetchVaultInstancesForBootstrap();
+  const matchedVault = vaults ? resolveVaultFromRouteSegment(id, vaults) : null;
 
   return {
-    title: `Vault ${id} | Polymarket Vault`,
-    description:
-      "Review the mandate, action panel, performance, operator context, and meaningful updates for this vault.",
+    title: matchedVault
+      ? `${getVaultPageTitle(matchedVault)} | Polymarket Vault`
+      : "Polymarket Vault",
+    description: "Vaults Executing Prediction Market Strategies.",
   };
 }
 
 export async function generateStaticParams() {
-  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8081";
-
   try {
-    const response = await fetch(`${apiBaseUrl}/vault/instances`);
+    const response = await fetch(`${API_BASE_URL}/vault/instances`);
     if (!response.ok) {
       return [{ id: "1" }];
     }
@@ -62,25 +82,37 @@ export async function generateStaticParams() {
       return [{ id: "1" }];
     }
 
-    return instances.map((vault) => ({ id: String(vault.id) }));
+    return instances.map((vault) => ({ id: getVaultHref(vault).replace("/vault/", "") }));
   } catch {
     return [{ id: "1" }];
   }
 }
 
-export default async function Page({ params }: { params: Promise<{ id: string }> }) {
+export default async function Page({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const { id } = await params;
-  const routeVaultId = parseRouteVaultId(id);
+  const resolvedSearchParams = await searchParams;
+  const bootstrapInstances = await fetchVaultInstancesForBootstrap();
+  const bootstrapVault = bootstrapInstances
+    ? resolveVaultFromRouteSegment(id, bootstrapInstances)
+    : null;
 
-  if (routeVaultId === null) {
-    return <VaultDetailPage routeVaultId={-1} bootstrapResolved bootstrapVault={null} />;
+  if (bootstrapVault && id !== getVaultRouteSegment(bootstrapVault)) {
+    permanentRedirect(
+      `${getVaultHref(bootstrapVault)}${buildSearchParamsString(resolvedSearchParams)}`,
+    );
   }
 
-  const bootstrapInstances = await fetchVaultInstancesForBootstrap();
-  const bootstrapVault = bootstrapInstances?.find((vault) => vault.id === routeVaultId) ?? null;
+  const routeVaultId = bootstrapVault?.id ?? -1;
 
   return (
     <VaultDetailPage
+      routeSegment={id}
       routeVaultId={routeVaultId}
       bootstrapResolved={bootstrapInstances !== null}
       bootstrapVault={bootstrapVault}

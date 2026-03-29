@@ -1,9 +1,12 @@
 import Link from "next/link";
 import { Badge } from "@workspace/ui/components/badge";
 import { ArrowRight } from "lucide-react";
+import { getVaultHref } from "@/src/lib/vaultRouting";
 
 const showcaseVaults = [
   {
+    id: 1,
+    slug: "sisyphus-vault",
     name: "Sisyphus Vault",
     category: "Vault",
     manager: "Sisyphus Agent",
@@ -35,7 +38,7 @@ export function ShowcaseSection() {
 
         <div className="flex justify-center">
           {showcaseVaults.map((vault) => (
-            <Link key={vault.name} href="/vault/1" className="block w-full max-w-md">
+            <Link key={vault.name} href={getVaultHref(vault)} className="block w-full max-w-md">
               <div className="group relative overflow-hidden rounded-[24px] border border-white/10 bg-white/[0.04] p-6 backdrop-blur-md transition-all hover:-translate-y-1 hover:bg-white/[0.06]">
                 <div className="mb-8 flex items-start justify-between">
                   <Badge

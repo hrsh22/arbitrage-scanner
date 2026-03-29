@@ -6,6 +6,7 @@ import { Badge } from "@workspace/ui/components/badge";
 import { Skeleton } from "@workspace/ui/components/skeleton";
 import { ArrowUpRight } from "lucide-react";
 import { useDiscoverVaultCards, useVaultInstances } from "../src/lib/hooks";
+import { getVaultHref } from "../src/lib/vaultRouting";
 import { AssetBadge, AssetLogoStack, type AssetType } from "../components/asset-logo";
 import { EmptyState, ErrorState } from "../components/async-state";
 import type { VaultInstance, VaultRiskLevel } from "../src/types";
@@ -89,7 +90,7 @@ function VaultCard({
     vault.profile.tradingMetadata?.platforms?.length,
   );
   const showAweCredit = vault.profile.tradingMetadata?.assets?.includes("btc");
-  const vaultHref = `/vault/${vault.id}`;
+  const vaultHref = getVaultHref(vault);
 
   return (
     <div

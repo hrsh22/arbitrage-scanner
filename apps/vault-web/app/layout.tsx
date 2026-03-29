@@ -22,6 +22,11 @@ export const metadata: Metadata = {
   description:
     "Dark-mode vault dashboard for cycle-based deposits, exits, and settlement tracking.",
   keywords: ["vault", "polymarket", "dashboard", "settlement", "polygon"],
+  icons: {
+    icon: "/logo/vault-platform.svg",
+    shortcut: "/logo/vault-platform.svg",
+    apple: "/logo/vault-platform.svg",
+  },
 };
 
 export default function RootLayout({
