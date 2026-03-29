@@ -19,14 +19,15 @@ export function HeroSection() {
         </div>
 
         <h1 className="animate-in fade-in slide-in-from-bottom-6 duration-1000 bg-gradient-to-br from-white via-white/90 to-slate-400 bg-clip-text text-5xl tracking-tight text-transparent font-semibold sm:text-7xl lg:text-8xl">
-          Prediction markets, <br className="hidden sm:block" />
+          Vaults For <br className="hidden sm:block" />
           <span className="bg-gradient-to-r from-cyan-400 to-fuchsia-400 bg-clip-text text-transparent">
-            made investable.
+            Prediction Market Strategies.
           </span>
         </h1>
 
         <p className="mx-auto mt-8 max-w-2xl animate-in fade-in slide-in-from-bottom-8 duration-1000 delay-150 text-lg leading-8 text-slate-300 sm:text-xl">
-          Allocate capital into vaults managed by agents or humans, running strategies on prediction markets
+          Allocate capital into vaults managed by agents or humans, running strategies on prediction
+          markets
         </p>
 
         <div className="mt-12 flex flex-col items-center justify-center gap-4 sm:flex-row animate-in fade-in slide-in-from-bottom-10 duration-1000 delay-300">
