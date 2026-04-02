@@ -27,6 +27,7 @@ import { navCalculator } from "../services/navCalculator.js";
 import { createNavOracle } from "../services/navOracle.js";
 import { positionFetcher } from "../services/positionFetcher.js";
 import { vaultTradingAnalyticsService } from "../services/vaultTradingAnalyticsService.js";
+import { getExternalTradingAnalytics } from "../services/externalTradingAnalytics.js";
 import { createNetworkTransport } from "../rpcTransport.js";
 import { getNetworkConfigFromEnv } from "../config/network.js";
 import { pendingTxRegistry } from "../services/pendingTxRegistry.js";
@@ -772,7 +773,7 @@ export function buildVaultRouter(): Router {
         return;
       }
 
-      const analytics = await vaultTradingAnalyticsService.syncForVault(config.vaultAddress);
+      const analytics = await getExternalTradingAnalytics(config);
 
       res.json({
         vaultId: config.id,

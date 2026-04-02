@@ -2329,6 +2329,16 @@ export function buildCustomVaultRouter(): Router {
         0,
       );
       const hasCanonicalEvents = canonicalHead.length > 0;
+      let ephemeralSeedRows: Array<{
+        vaultId: number;
+        vaultAddress: string;
+        cycleId: number;
+        eventType: string;
+        title: string;
+        detail: string;
+        occurredAt: Date;
+        status: string;
+      }> = [];
 
       const latestCanonicalOccurredAt = canonicalHead[0]?.occurredAt ?? null;
 
@@ -2353,10 +2363,7 @@ export function buildCustomVaultRouter(): Router {
               vaultAddress,
             });
           }
-
-          for (const seedRow of seedRows) {
-            await activityEventRepository.appendVaultLifecycleEvent(seedRow);
-          }
+          ephemeralSeedRows = seedRows;
         } else {
           const batchStatus = await provider.getBatchStatus(Number(currentBatchId));
           const incrementalRows = deriveIncrementalLifecycleEventsFromUserActivity({
@@ -2385,11 +2392,27 @@ export function buildCustomVaultRouter(): Router {
         limit + 1,
         offset,
       );
-      const canonicalMode = hasCanonicalEvents || canonicalEventsAfterSeed.length > 0;
+      const canonicalMode =
+        hasCanonicalEvents || canonicalEventsAfterSeed.length > 0 || ephemeralSeedRows.length > 0;
 
       if (canonicalMode) {
-        const hasMore = canonicalEventsAfterSeed.length > limit;
-        const pagedItems = canonicalEventsAfterSeed.slice(0, limit).map(mapCanonicalVaultEvent);
+        const pagedItems =
+          canonicalEventsAfterSeed.length > 0
+            ? canonicalEventsAfterSeed.slice(0, limit).map(mapCanonicalVaultEvent)
+            : ephemeralSeedRows.slice(0, limit).map((row) => ({
+                id: `${row.eventType}:${row.cycleId}:${row.occurredAt.toISOString()}`,
+                type: row.eventType,
+                scope: "vault" as const,
+                title: row.title,
+                detail: row.detail,
+                occurredAt: row.occurredAt.toISOString(),
+                cycleId: row.cycleId,
+                status: row.status,
+              }));
+        const hasMore =
+          canonicalEventsAfterSeed.length > 0
+            ? canonicalEventsAfterSeed.length > limit
+            : ephemeralSeedRows.length > limit;
         res.json({
           success: true,
           vaultId,
