@@ -416,6 +416,32 @@ Never build custom-vault UX from assumptions copied from:
 
 Always verify against `FlatBookVaultV2.sol` first.
 
+### 10.4 USDC.e To pUSD Migration Mode
+
+Polymarket's CLOB V2 migration moves trading collateral from USDC.e to pUSD, but the deployed
+`FlatBookVaultV2` asset is immutable. The current USDC.e vault therefore uses an app-level migration
+mode before any pUSD vault rollout.
+
+Migration-mode rules:
+
+- disable new deposits into the current USDC.e vault in API and UI
+- keep withdrawals, redemption claims, queue status, NAV/status, history, and activity reads visible
+- do not treat this as a contract-level deposit freeze; direct on-chain deposits remain possible until a new contract-level path exists
+- block deposit postflight/activity writes while migration deposits are disabled, so the app cannot create fresh deposit activity during the pause
+- keep the legacy `/vault/migration-status` endpoint returning its compatibility response; use `/vault/migration-status/active` for active migration metadata
+
+Frontend behavior:
+
+- show migration messaging on the vault detail page
+- disable amount entry, max, approve, queue-deposit, and instant-deposit actions
+- keep withdraw/claim tabs and user activity accessible
+
+Backend behavior:
+
+- expose migration metadata on vault status/instances/custom-info responses
+- return `423` for app/API deposit attempts and deposit-activity writes when `depositsDisabled` is true
+- preserve all read routes and withdrawal/claim routes unless a separate risk control explicitly requires otherwise
+
 ---
 
 ## 11) Checklist For Future Agents
@@ -431,7 +457,8 @@ Before changing vault code, verify all of the following:
 - [ ] If I changed deposit or withdrawal queue UI, does it match the actual on-chain claim/mint path rather than a legacy DB-only flow?
 - [ ] If I changed chart data, did I keep live preview points out of worker-history performance charts?
 - [ ] If I changed worker-driven queue processing, did I preserve canonical user activity events for completion states?
+- [ ] If migration mode is enabled, did I block new deposit writes while preserving withdrawals, claims, queue status, NAV/history, and activity reads?
 
 ---
 
-_Last updated: March 2026 - FlatBookVaultV2 queue semantics, liability-adjusted NAV vs gross TVL, worker-only chart history, and worker-driven activity updates documented._
+_Last updated: April 2026 - USDC.e to pUSD migration mode, FlatBookVaultV2 queue semantics, liability-adjusted NAV vs gross TVL, worker-only chart history, and worker-driven activity updates documented._

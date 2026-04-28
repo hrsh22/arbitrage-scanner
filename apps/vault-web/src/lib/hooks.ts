@@ -844,6 +844,8 @@ interface UseVaultDepositFlowParams {
   vaultId: number;
   cycle: Cycle | null;
   userAuthorized: boolean;
+  depositsDisabled?: boolean;
+  depositDisabledReason?: string;
   onSuccess: () => Promise<void> | void;
 }
 
@@ -863,6 +865,8 @@ export interface UseVaultDepositFlowResult {
   walletBalanceLoading: boolean;
   needsApproval: boolean;
   actionPending: boolean;
+  depositsDisabled: boolean;
+  depositDisabledReason: string | null;
   navSyncPending: boolean;
   depositPreflightPending: boolean;
   approvePending: boolean;
@@ -902,6 +906,8 @@ export function useVaultDepositFlow({
   vaultId,
   cycle,
   userAuthorized,
+  depositsDisabled = false,
+  depositDisabledReason,
   onSuccess,
 }: UseVaultDepositFlowParams): UseVaultDepositFlowResult {
   const isCustomVault = vault.type === "custom";
@@ -916,7 +922,8 @@ export function useVaultDepositFlow({
 
   const parsedAmount = parseTokenUnits(amount, 6);
   const meetsMinDeposit = Number.parseFloat(amount || "0") >= vault.profile.minDeposit;
-  const isValidAmount = parsedAmount !== undefined && parsedAmount > 0n && meetsMinDeposit;
+  const isValidAmount =
+    !depositsDisabled && parsedAmount !== undefined && parsedAmount > 0n && meetsMinDeposit;
   const customQueueWindowOpen =
     isCustomVault && cycle?.executionMode === "queued" && cycle.batchState === "closed";
   const customQueuePendingClose =
@@ -1100,6 +1107,11 @@ export function useVaultDepositFlow({
   }, [clearFeedback]);
 
   const handleApprove = useCallback(() => {
+    if (depositsDisabled) {
+      setErrorMessage(depositDisabledReason ?? "Deposits are currently paused.");
+      return;
+    }
+
     if (!parsedAmount) {
       return;
     }
@@ -1107,9 +1119,22 @@ export function useVaultDepositFlow({
     clearFeedback();
     resetApprove();
     approve(vault.config.vaultAddress as `0x${string}`, parsedAmount);
-  }, [approve, clearFeedback, parsedAmount, resetApprove, vault.config.vaultAddress]);
+  }, [
+    approve,
+    clearFeedback,
+    depositDisabledReason,
+    depositsDisabled,
+    parsedAmount,
+    resetApprove,
+    vault.config.vaultAddress,
+  ]);
 
   const handleDeposit = useCallback(async () => {
+    if (depositsDisabled) {
+      setErrorMessage(depositDisabledReason ?? "Deposits are currently paused.");
+      return;
+    }
+
     if (!parsedAmount || !address || actionPending || cycle?.executionMode === "blocked") {
       return;
     }
@@ -1180,6 +1205,8 @@ export function useVaultDepositFlow({
     clearFeedback,
     cycle?.executionMode,
     deposit,
+    depositDisabledReason,
+    depositsDisabled,
     ensureFreshNav,
     isCustomVault,
     parsedAmount,
@@ -1206,6 +1233,8 @@ export function useVaultDepositFlow({
     walletBalanceLoading: balanceLoading,
     needsApproval,
     actionPending,
+    depositsDisabled,
+    depositDisabledReason: depositDisabledReason ?? null,
     navSyncPending,
     depositPreflightPending,
     approvePending,

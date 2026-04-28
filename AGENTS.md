@@ -33,8 +33,8 @@ For all vault-related work, read `VAULT_KNOWLEDGE.md` first.
 Vault-specific rules that are easy to get wrong:
 
 - The active custom vault flow uses `FlatBookVaultV2` semantics, not `ClosedBookBatchVault` and not `EpochTrancheVault`.
-- Processed queued deposits are not auto-minted into ERC20 shares; they become controller-level claimable deposit receipts and must later be converted with the claim-style `deposit(..., controller)` or `mint(..., controller)` flow.
-- Custom-vault NAV/share pricing must exclude queued deposits, processed-but-unclaimed deposit liabilities, and redemption liabilities. Never price custom vaults from raw `totalAssets / totalSupply` when a liability-adjusted source exists.
+- In the active `FlatBookVaultV2` contract version, processed queued deposits auto-mint ERC20 shares during `processDeposits()`; do not show a manual processed-deposit claim step for new deposits.
+- Custom-vault NAV/share pricing must exclude queued deposits and redemption liabilities. Never price custom vaults from raw `totalAssets / totalSupply` when a liability-adjusted source exists.
 - Address normalization matters in vault DB projections. Use case-insensitive/normalized address handling for vault and user address lookups.
 
 ### Key Components
@@ -282,6 +282,7 @@ curl http://localhost:8080/bot/status
 
 | Date       | Change                                                                                              | Files Affected                                                                                                                                                                                            |
 | ---------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-04-28 | Added vault migration mode to pause new USDC.e deposits while preserving withdrawals/claims/activity | `apps/vault-api/src/config/*`, `apps/vault-api/src/routes/*`, `apps/vault-api/src/services/vaultProvider.ts`, `apps/vault-web/*`                                                                          |
 | 2026-03-23 | Fixed FlatBookVaultV2 processed-deposit flow, liability-aware NAV, and claim UX/documentation       | `apps/vault-api/src/services/navOracle.ts`, `apps/vault-api/src/routes/customVaultRoutes.ts`, `apps/vault-api/src/services/customVaultProvider.ts`, `apps/vault-web/*`, `VAULT_KNOWLEDGE.md`, `AGENTS.md` |
 | 2026-03-12 | Hardened closed-book lifecycle: permissionless state-gated maintenance, no route-driven progression | `contracts/src/ClosedBookBatchVault.sol`, `contracts/test/ClosedBookBatchVault.t.sol`, `apps/vault-api/src/routes/*`, `apps/vault-api/src/services/customVaultProvider.ts`                                |
 | 2026-01-01 | Refactored bot config into modular structure with strict validation                                 | `bot/config/*`, removed `bot/botConfigs.ts`                                                                                                                                                               |

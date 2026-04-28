@@ -22,9 +22,14 @@ function formatCompactCurrency(value: number): string {
 
 function getDepositStatusLabel(
   enabled: boolean,
+  depositsDisabled?: boolean,
   executionMode?: string | null,
   telemetryFresh?: boolean | null,
 ): string {
+  if (depositsDisabled) {
+    return "Migration Mode";
+  }
+
   if (!enabled) {
     return "Deposits Paused";
   }
@@ -74,6 +79,7 @@ function VaultCard({
       redeemableCostBasis?: number;
       sharePrice: number;
     };
+    migration?: VaultInstance["migration"];
   } | null;
   isLoading: boolean;
   executionMode: string | null;
@@ -160,7 +166,12 @@ function VaultCard({
                   variant="secondary"
                   className="border border-white/10 bg-white/6 text-slate-200"
                 >
-                  {getDepositStatusLabel(vault.enabled, executionMode, telemetryFresh)}
+                  {getDepositStatusLabel(
+                    vault.enabled,
+                    status?.migration?.depositsDisabled ?? vault.migration?.depositsDisabled,
+                    executionMode,
+                    telemetryFresh,
+                  )}
                 </Badge>
                 {showAweCredit ? (
                   <Badge

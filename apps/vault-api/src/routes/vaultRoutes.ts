@@ -500,6 +500,10 @@ function createResolutionCheckerForConfig(config: VaultInstanceConfig): Resoluti
   return new ResolutionCheckerService(positionRepository, navOracle, safeWallet, config);
 }
 
+function getVaultMigration(config: VaultInstanceConfig) {
+  return config.migration ?? null;
+}
+
 async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> {
   let lifecycle: any;
   try {
@@ -688,6 +692,7 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> 
     committedExposureRatio,
     totalCostBasis: deployedCostBasis + redeemableCostBasis,
     mode: getEffectiveMode(config),
+    migration: getVaultMigration(config),
     capState,
     riskState: lifecycle?.riskState ?? "unknown",
     executionMode: lifecycle?.executionMode ?? "blocked",
@@ -720,6 +725,7 @@ export function buildVaultRouter(): Router {
         type: config.type,
         profile: getVaultProfile(config),
         mode: getEffectiveMode(config),
+        migration: getVaultMigration(config),
         config: {
           vaultAddress: config.vaultAddress,
           safeAddress: config.safeAddress,
@@ -1135,6 +1141,19 @@ export function buildVaultRouter(): Router {
       const config = getPrimaryVaultConfig();
       const mode = getEffectiveMode(config);
       logger.info("Vault API: Deposit requested", { amount, mode, vaultId: config.id });
+
+      if (config.migration?.depositsDisabled) {
+        res.status(423).json({
+          success: false,
+          mode,
+          amount,
+          vaultId: config.id,
+          migration: getVaultMigration(config),
+          error: "Deposits are paused for vault migration.",
+          message: config.migration.message,
+        });
+        return;
+      }
 
       if (mode !== "live") {
         res.json({
@@ -2367,6 +2386,7 @@ export function buildVaultRouter(): Router {
         enabled: config.enabled,
         profile: getVaultProfile(config),
         mode: payload.mode,
+        migration: getVaultMigration(config),
         nav: payload.nav,
         health,
         positionCount: payload.positionCount,
@@ -2542,12 +2562,30 @@ export function buildVaultRouter(): Router {
     }
   });
 
-  // Migration status endpoint removed - fresh rollout has no migration
-  // GET /vault/migration-status returns 410 Gone for backward compatibility
+  router.get("/migration-status/active", async (_req, res) => {
+    const configs = getAllVaultConfigs();
+    const migrations = configs
+      .filter((config) => config.migration?.enabled)
+      .map((config) => ({
+        vaultId: config.id,
+        vaultSlug: getVaultSlug(config),
+        vaultName: config.name,
+        migration: getVaultMigration(config),
+      }));
+
+    res.json({
+      success: true,
+      active: migrations.length > 0,
+      migrations,
+    });
+  });
+
+  // Legacy endpoint kept as 410 for backward compatibility with the fresh-rollout contract.
+  // Use GET /vault/migration-status/active for the current pUSD migration-mode state.
   router.get("/migration-status", async (_req, res) => {
     res.status(410).json({
-      error: "Migration is not available in fresh rollout.",
-      message: "Fresh vault deployment - no migration needed.",
+      error: "Migration status moved.",
+      message: "Use /vault/migration-status/active for active vault migration mode.",
     });
   });
 

@@ -190,7 +190,15 @@ function getFeeLabel(vault: VaultInstance): string {
   return `${vault.profile.fees.management}% management / ${vault.profile.fees.performance}% performance`;
 }
 
-function getDepositActionLabel(vault: VaultInstance, cycle: Cycle | null): string {
+function getDepositActionLabel(
+  vault: VaultInstance,
+  cycle: Cycle | null,
+  migration: VaultStatusResponse["migration"] | null,
+): string {
+  if (migration?.depositsDisabled ?? vault.migration?.depositsDisabled) {
+    return "Migration mode";
+  }
+
   if (!vault.enabled || cycle?.executionMode === "blocked") {
     return "Paused";
   }
@@ -1135,6 +1143,7 @@ function DepositRail({
   vault,
   cycle,
   nav,
+  migration,
   onSuccess,
   walletConnected,
   sessionKnown,
@@ -1145,6 +1154,7 @@ function DepositRail({
   vault: VaultInstance;
   cycle: Cycle | null;
   nav: VaultStatusResponse["nav"] | null;
+  migration: VaultStatusResponse["migration"] | null;
   onSuccess: () => void;
   walletConnected: boolean;
   sessionKnown: boolean;
@@ -1153,6 +1163,8 @@ function DepositRail({
   vaultId: number;
 }) {
   const isCustomVault = vault.type === "custom";
+  const depositsDisabled = migration?.depositsDisabled ?? vault.migration?.depositsDisabled ?? false;
+  const depositDisabledReason = migration?.message ?? vault.migration?.message;
   const {
     amount,
     setAmount,
@@ -1192,13 +1204,15 @@ function DepositRail({
     vaultId,
     cycle,
     userAuthorized,
+    depositsDisabled,
+    depositDisabledReason,
     onSuccess,
   });
 
   return (
     <div className="space-y-2">
       <div className="space-y-2">
-        <RailStat label="Status" value={getDepositActionLabel(vault, cycle)} />
+        <RailStat label="Status" value={getDepositActionLabel(vault, cycle, migration)} />
         <RailStat label="NAV" value={nav ? formatSharePrice(nav.sharePrice) : "--"} />
         <RailStat label="Min deposit" value={formatCurrency(vault.profile.minDeposit)} />
         <div className="flex items-center justify-between gap-3 rounded-[2px] border border-[#212121] bg-[#0A0A0A] px-4 py-3">
@@ -1218,6 +1232,19 @@ function DepositRail({
         </p>
       )}
 
+      {depositsDisabled && (
+        <div className="rounded-[10px] border border-amber-400/20 bg-amber-400/10 p-3 text-amber-50">
+          <p className="flex items-center gap-2 text-sm font-medium">
+            <AlertCircle className="h-4 w-4 text-amber-200" />
+            {migration?.title ?? vault.migration?.title ?? "Deposits paused"}
+          </p>
+          <p className="mt-1 text-xs leading-6 text-amber-50/90">
+            {depositDisabledReason ??
+              "New deposits are paused, but withdrawals, claims, queue status, and activity remain available."}
+          </p>
+        </div>
+      )}
+
       <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-2.5">
         <div className="mb-2 flex items-center justify-between">
           <label
@@ -1230,7 +1257,8 @@ function DepositRail({
           <button
             type="button"
             onClick={handleMaxAmount}
-            className="text-[10px] font-medium uppercase tracking-[0.18em] text-cyan-200 transition-colors hover:text-white"
+            disabled={depositsDisabled}
+            className="text-[10px] font-medium uppercase tracking-[0.18em] text-cyan-200 transition-colors hover:text-white disabled:cursor-not-allowed disabled:text-slate-600"
           >
             Max
           </button>
@@ -1243,7 +1271,7 @@ function DepositRail({
           placeholder="0.00"
           value={amount}
           onChange={(event) => setAmount(event.target.value)}
-          disabled={actionPending}
+          disabled={actionPending || depositsDisabled}
           className="h-10 rounded-[2px] border border-[#212121] bg-transparent px-3 font-mono text-sm text-white placeholder:text-slate-500"
         />
       </div>
@@ -1292,7 +1320,12 @@ function DepositRail({
           type="button"
           onClick={handleApprove}
           disabled={
-            !walletConnected || !walletAddress || !userAuthorized || !isValidAmount || actionPending
+            !walletConnected ||
+            !walletAddress ||
+            !userAuthorized ||
+            !isValidAmount ||
+            actionPending ||
+            depositsDisabled
           }
           className="h-12 w-full rounded-[10px] bg-white text-black hover:bg-white/90"
         >
@@ -1302,7 +1335,9 @@ function DepositRail({
               ? "Checking session..."
               : !userAuthorized
                 ? "Sign in to approve"
-                : "Approve USDC.e"}
+                : depositsDisabled
+                  ? "Deposits paused"
+                  : "Approve USDC.e"}
         </Button>
       ) : (
         <Button
@@ -1316,6 +1351,7 @@ function DepositRail({
             !userAuthorized ||
             !isValidAmount ||
             actionPending ||
+            depositsDisabled ||
             cycle?.executionMode === "blocked" ||
             cycleStateUnavailable
           }
@@ -1333,7 +1369,9 @@ function DepositRail({
                   ? "Sign in to deposit"
                   : cycleStateUnavailable
                     ? "Loading cycle state"
-                    : customQueuePendingClose
+                    : depositsDisabled
+                      ? "Deposits paused"
+                      : customQueuePendingClose
                       ? "Checking status..."
                       : customQueueWindowOpen
                         ? "Join next cycle"
@@ -2223,6 +2261,7 @@ export default function VaultDetailPage({
     [navChartSnapshots],
   );
   const networkInfo = getNetworkDisplayInfo(VAULT_NETWORK);
+  const migration = status?.migration ?? vault?.migration ?? null;
   const { freshestNavSnapshot, tags, heroMetrics, vaultActivity, userActivity } = useMemo(
     () =>
       buildVaultDetailReadModel({
@@ -2307,6 +2346,20 @@ export default function VaultDetailPage({
                       but Polymarket trading is disabled.
                       {!SUPPORTS_POLYMARKET_TRADING &&
                         " Position and trading features remain read-only on testnet."}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {migration?.enabled && (
+              <div className="rounded-[24px] border border-amber-400/20 bg-amber-400/10 p-4 text-amber-50">
+                <div className="flex items-start gap-3">
+                  <AlertCircle className="mt-0.5 h-5 w-5 text-amber-200" />
+                  <div>
+                    <h3 className="text-sm font-medium text-amber-100">{migration.title}</h3>
+                    <p className="mt-1 text-sm leading-7 text-amber-50/85">
+                      {migration.message}
                     </p>
                   </div>
                 </div>
@@ -2775,6 +2828,7 @@ export default function VaultDetailPage({
                     vault={vault}
                     cycle={cycle}
                     nav={status?.nav ?? null}
+                    migration={migration}
                     walletConnected={walletConnected}
                     sessionKnown={sessionKnown}
                     sessionAuthenticated={sessionAuthenticated}

@@ -42,6 +42,7 @@ import { parseUnits, formatUnits } from "viem";
 import { and, desc, eq } from "drizzle-orm";
 import { logger } from "../logger.js";
 import { requireAuth } from "../middleware/auth.js";
+import { getVaultConfig } from "../config/index.js";
 import {
   epochRequests,
   flatBookCycles,
@@ -1519,6 +1520,19 @@ export function buildCustomVaultRouter(): Router {
         return;
       }
 
+      const migration = getVaultConfig(vaultId)?.migration ?? null;
+      if (migration?.depositsDisabled) {
+        res.status(423).json({
+          success: false,
+          vaultId,
+          migration,
+          error: "Deposit activity recording is paused for vault migration.",
+          message:
+            "New deposit activity cannot be recorded while this USDC.e vault is in migration mode. Withdrawals, claims, queue status, and activity reads remain available.",
+        });
+        return;
+      }
+
       const userAddress = req.session!.address as Address;
       const txHash = typeof req.body?.txHash === "string" ? req.body.txHash : undefined;
       const assets = typeof req.body?.assets === "string" ? req.body.assets : undefined;
@@ -2713,6 +2727,8 @@ export function buildCustomVaultRouter(): Router {
         Promise.resolve(provider.getCapabilities()),
       ]);
 
+      const migration = getVaultConfig(vaultId)?.migration ?? null;
+
       res.json({
         success: true,
         vault: {
@@ -2738,7 +2754,12 @@ export function buildCustomVaultRouter(): Router {
           navLastUpdated: vaultInfo.navLastUpdated.toISOString(),
           navIsStale: vaultInfo.navIsStale,
         },
-        capabilities,
+        migration,
+        capabilities: {
+          ...capabilities,
+          depositsDisabled: migration?.depositsDisabled ?? false,
+          depositDisabledReason: migration?.depositsDisabled ? migration.message : undefined,
+        },
       });
     } catch (error) {
       logger.error("CustomVault API: Failed to get vault info", {
