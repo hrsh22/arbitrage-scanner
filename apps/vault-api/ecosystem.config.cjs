@@ -35,7 +35,7 @@ module.exports = {
       script: "pnpm",
       args: "cron:sync-vault-analytics",
       cron_restart: "7-59/10 * * * *",
-      autorestart: true,
+      autorestart: false,
       watch: false,
       env: {
         NODE_ENV: "production",
