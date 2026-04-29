@@ -433,6 +433,15 @@ async function bootReadyQueueHarness(): Promise<ReadyQueueHarness> {
     };
   });
 
+  vi.doMock("../repositories/activityEventRepository.js", () => ({
+    activityEventRepository: {
+      appendVaultLifecycleEvent: vi.fn().mockResolvedValue(undefined),
+      appendUserVaultActivityEvent: vi.fn().mockResolvedValue(undefined),
+      listVaultUserActivityEvents: vi.fn().mockResolvedValue([]),
+      listVaultLifecycleEvents: vi.fn().mockResolvedValue([]),
+    },
+  }));
+
   vi.doMock("../services/vaultProviderFactory.js", () => ({
     getVaultProvider: vi.fn(() => ({
       providerType: "custom",
