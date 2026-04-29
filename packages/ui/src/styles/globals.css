@@ -155,9 +155,36 @@
   body {
     @apply bg-background text-foreground;
   }
+
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  [role="button"][aria-disabled="true"] {
+    cursor: not-allowed;
+  }
 }
 
 @layer utilities {
+  .safe-area-pt {
+    padding-top: env(safe-area-inset-top);
+  }
+
+  .safe-area-pb {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
   .vault-pane-scroll {
     scrollbar-width: thin;
     scrollbar-color: rgba(103, 232, 249, 0.38) rgba(15, 23, 42, 0.18);

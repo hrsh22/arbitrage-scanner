@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@workspace/ui/components/card";
 import { Badge } from "@workspace/ui/components/badge";
 import { Skeleton } from "@workspace/ui/components/skeleton";
@@ -9,6 +9,7 @@ import { useDiscoverVaultCards, useVaultInstances } from "../src/lib/hooks";
 import { getVaultHref } from "../src/lib/vaultRouting";
 import { AssetBadge, AssetLogoStack, type AssetType } from "../components/asset-logo";
 import { EmptyState, ErrorState } from "../components/async-state";
+import { USER_COLLATERAL_SYMBOL } from "../src/constants";
 import type { VaultInstance, VaultRiskLevel } from "../src/types";
 
 function formatCompactCurrency(value: number): string {
@@ -63,6 +64,14 @@ function RiskBadge({ level }: { level: VaultRiskLevel }) {
   );
 }
 
+function VaultMetricValue({ isLoading, value }: { isLoading: boolean; value: string }) {
+  if (isLoading) {
+    return <Skeleton className="mt-1 h-6 w-20 rounded-[2px] bg-white/10" />;
+  }
+
+  return <span className="text-lg font-semibold text-white">{value}</span>;
+}
+
 function VaultCard({
   vault,
   status,
@@ -85,8 +94,6 @@ function VaultCard({
   executionMode: string | null;
   telemetryFresh: boolean | null;
 }) {
-  const router = useRouter();
-
   const tvl = status?.nav?.trackedTotalAssets ?? status?.nav?.totalAssets ?? 0;
   const deployedCapital =
     (status?.nav?.deployedCostBasis ?? 0) + (status?.nav?.redeemableCostBasis ?? 0);
@@ -99,26 +106,18 @@ function VaultCard({
   const vaultHref = getVaultHref(vault);
 
   return (
-    <div
-      role="link"
-      tabIndex={0}
+    <Link
+      href={vaultHref}
       data-testid={`discover-vault-card-${vault.id}`}
-      onClick={() => router.push(vaultHref)}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          router.push(vaultHref);
-        }
-      }}
-      className="group block h-full cursor-pointer focus:outline-none"
+      className="group block h-full rounded-[2px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
     >
       <Card className="relative h-full overflow-hidden rounded-[2px] border border-[#212121] bg-[#121212] shadow-none transition-all duration-300 hover:scale-[1.02] hover:border-[#656565] hover:bg-[#1A1A1A]">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(236,102,0,0.10),_transparent_28%),radial-gradient(circle_at_88%_18%,_rgba(137,145,130,0.12),_transparent_18%)] opacity-80" />
-        <CardHeader className="relative space-y-4 pb-3">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_12%_8%,_rgba(217,70,239,0.07),_transparent_18%),radial-gradient(circle_at_88%_16%,_rgba(34,211,238,0.06),_transparent_16%)] opacity-80" />
+        <CardHeader className="relative space-y-4 px-4 pb-3 sm:px-6">
           <div className="flex items-start justify-between gap-3">
             <div className="flex flex-col gap-3">
               <div className="flex flex-wrap items-center gap-2">
-                <AssetBadge asset="usdc" size="sm" variant="default" />
+                <AssetBadge asset="usdc" size="sm" variant="default" label={USER_COLLATERAL_SYMBOL} />
                 <Badge className="w-fit border border-white/10 bg-white/8 text-[10px] uppercase tracking-[0.22em] text-slate-300">
                   {vault.type === "custom" ? "Vault" : vault.type}
                 </Badge>
@@ -187,28 +186,25 @@ function VaultCard({
         </CardHeader>
 
         <CardContent className="relative space-y-5">
-          <div className="grid grid-cols-3 gap-3 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4">
+          <div className="grid grid-cols-2 gap-2 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-3 sm:grid-cols-3 sm:gap-3 sm:p-4">
             <div className="flex flex-col gap-1">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-slate-400">NAV</span>
-              <span className="text-lg font-semibold text-white">
-                {isLoading ? "--" : `$${status?.nav.sharePrice.toFixed(4) ?? "--"}`}
-              </span>
+              <span className="text-[10px] uppercase tracking-[0.12em] text-slate-400 sm:text-[11px] sm:tracking-[0.18em]">NAV</span>
+              <VaultMetricValue
+                isLoading={isLoading}
+                value={status ? `$${status.nav.sharePrice.toFixed(4)}` : "--"}
+              />
             </div>
 
             <div className="flex flex-col gap-1">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-slate-400">TVL</span>
-              <span className="text-lg font-semibold text-white">
-                {isLoading ? "--" : formatCompactCurrency(tvl)}
-              </span>
+              <span className="text-[10px] uppercase tracking-[0.12em] text-slate-400 sm:text-[11px] sm:tracking-[0.18em]">TVL</span>
+              <VaultMetricValue isLoading={isLoading} value={formatCompactCurrency(tvl)} />
             </div>
 
             <div className="flex flex-col gap-1">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-slate-400">
+              <span className="text-[10px] uppercase tracking-[0.12em] text-slate-400 sm:text-[11px] sm:tracking-[0.18em]">
                 Capital deployed
               </span>
-              <span className="text-lg font-semibold text-white">
-                {isLoading ? "--" : formatCompactCurrency(deployedCapital)}
-              </span>
+              <VaultMetricValue isLoading={isLoading} value={formatCompactCurrency(deployedCapital)} />
             </div>
           </div>
 
@@ -220,7 +216,7 @@ function VaultCard({
           </div>
         </CardContent>
       </Card>
-    </div>
+    </Link>
   );
 }
 
@@ -230,10 +226,10 @@ export default function VaultsPageClient() {
   const discoverCards = useDiscoverVaultCards(instances);
 
   return (
-    <main className="vault-pane-scroll flex-1 min-h-0 overflow-y-auto px-4 py-8 sm:px-6 sm:py-10 lg:px-10 lg:py-12">
-      <div className="mx-auto max-w-6xl space-y-10">
-        <section className="relative overflow-hidden rounded-[2px] border border-[#212121] bg-[#121212] px-6 py-8 shadow-none sm:px-8 lg:px-10">
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(137,145,130,0.16),_transparent_34%),radial-gradient(circle_at_85%_15%,_rgba(236,102,0,0.14),_transparent_18%)]" />
+    <main className="vault-pane-scroll min-h-0 flex-1 overflow-y-auto px-3 py-6 sm:px-6 sm:py-10 lg:px-10 lg:py-12">
+      <div className="mx-auto max-w-6xl space-y-8 sm:space-y-10">
+        <section className="relative overflow-hidden rounded-[2px] border border-[#212121] bg-[#121212] px-4 py-6 shadow-none sm:px-8 sm:py-8 lg:px-10">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_12%_10%,_rgba(217,70,239,0.07),_transparent_18%),radial-gradient(circle_at_86%_14%,_rgba(34,211,238,0.06),_transparent_16%)]" />
           <div className="relative space-y-3 animate-in fade-in-0 slide-in-from-bottom-4 duration-700">
             <h1 className="max-w-3xl text-4xl font-semibold tracking-tight text-white sm:text-5xl">
               Discover vaults
@@ -257,8 +253,8 @@ export default function VaultsPageClient() {
 
         {isLoading ? (
           <div className="grid gap-6 md:grid-cols-2" data-testid="discover-vaults-loading">
-            <Skeleton className="h-[420px] w-full rounded-[28px] bg-white/10" />
-            <Skeleton className="h-[420px] w-full rounded-[28px] bg-white/10" />
+            <Skeleton className="h-[420px] w-full rounded-[2px] bg-white/10" />
+            <Skeleton className="h-[420px] w-full rounded-[2px] bg-white/10" />
           </div>
         ) : instances.length === 0 ? (
           <EmptyState variant="card" title="No vaults are available right now." />

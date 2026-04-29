@@ -1,5 +1,11 @@
 import type { VaultNavHistoryItem } from "../types";
 
+export interface VaultPerformancePoint {
+  timestamp: string;
+  value: number;
+  totalAssets: number;
+}
+
 export interface DerivedVaultPerformanceStats {
   apy: number | null;
   sinceInception: number | null;
@@ -10,13 +16,20 @@ export interface DerivedVaultPerformanceStats {
   daysCovered: number;
   first: number | null;
   latest: number | null;
-  points: Array<{ timestamp: string; value: number; totalAssets: number }>;
+  points: VaultPerformancePoint[];
+}
+
+export interface VaultChartSeriesOptions {
+  maxPoints: number;
+  rangeDays?: number;
+  smooth?: boolean;
 }
 
 const MIN_MEANINGFUL_TOTAL_ASSETS = 1;
 const MIN_APY_DAYS = 1; // Require at least 1 day to avoid wild extrapolations
+const DAY_MS = 24 * 60 * 60 * 1000;
 
-function normalizeNavPoints(snapshots: VaultNavHistoryItem[]) {
+function normalizeNavPoints(snapshots: VaultNavHistoryItem[]): VaultPerformancePoint[] {
   const rawPoints = [...snapshots]
     .map((snapshot) => ({
       timestamp: snapshot.timestamp,
@@ -38,11 +51,7 @@ function normalizeNavPoints(snapshots: VaultNavHistoryItem[]) {
   return meaningfulPoints.length >= 2 ? meaningfulPoints : rawPoints;
 }
 
-export function deriveVaultPerformanceStats(
-  snapshots: VaultNavHistoryItem[],
-): DerivedVaultPerformanceStats {
-  const points = normalizeNavPoints(snapshots);
-
+function deriveStatsFromPoints(points: VaultPerformancePoint[]): DerivedVaultPerformanceStats {
   if (points.length === 0) {
     return {
       apy: null,
@@ -123,4 +132,118 @@ export function deriveVaultPerformanceStats(
     latest,
     points,
   };
+}
+
+function filterPointsByRange(
+  points: VaultPerformancePoint[],
+  rangeDays: number | undefined,
+): VaultPerformancePoint[] {
+  if (rangeDays === undefined || points.length < 2) {
+    return points;
+  }
+
+  const latestTimestamp = new Date(points[points.length - 1]?.timestamp ?? Date.now()).getTime();
+  const cutoff = latestTimestamp - rangeDays * DAY_MS;
+  const filtered = points.filter((point) => new Date(point.timestamp).getTime() >= cutoff);
+
+  if (filtered.length >= 2) {
+    return filtered;
+  }
+
+  return points.slice(-Math.min(points.length, 2));
+}
+
+function downsampleEvenly(
+  points: VaultPerformancePoint[],
+  maxPoints: number,
+): VaultPerformancePoint[] {
+  if (points.length <= maxPoints || maxPoints < 2) {
+    return points;
+  }
+
+  const step = (points.length - 1) / (maxPoints - 1);
+  return Array.from({ length: maxPoints }, (_, index) => points[Math.round(index * step)]).filter(
+    (point): point is VaultPerformancePoint => point !== undefined,
+  );
+}
+
+function smoothIntoTimeBuckets(
+  points: VaultPerformancePoint[],
+  maxPoints: number,
+): VaultPerformancePoint[] {
+  if (points.length <= maxPoints || maxPoints < 4) {
+    return downsampleEvenly(points, maxPoints);
+  }
+
+  const firstPoint = points[0];
+  const lastPoint = points[points.length - 1];
+  if (!firstPoint || !lastPoint) {
+    return points;
+  }
+
+  const interiorPoints = points.slice(1, -1);
+  const bucketCount = Math.max(maxPoints - 2, 1);
+  const firstTimestamp = new Date(firstPoint.timestamp).getTime();
+  const lastTimestamp = new Date(lastPoint.timestamp).getTime();
+  const bucketMs = Math.max((lastTimestamp - firstTimestamp) / bucketCount, 1);
+
+  const buckets = new Map<
+    number,
+    {
+      timestamp: number;
+      valueTotal: number;
+      assetsTotal: number;
+      count: number;
+    }
+  >();
+
+  for (const point of interiorPoints) {
+    const timestamp = new Date(point.timestamp).getTime();
+    const bucketIndex = Math.min(
+      bucketCount - 1,
+      Math.max(0, Math.floor((timestamp - firstTimestamp) / bucketMs)),
+    );
+    const bucket = buckets.get(bucketIndex);
+
+    if (!bucket) {
+      buckets.set(bucketIndex, {
+        timestamp,
+        valueTotal: point.value,
+        assetsTotal: point.totalAssets,
+        count: 1,
+      });
+      continue;
+    }
+
+    bucket.timestamp = timestamp;
+    bucket.valueTotal += point.value;
+    bucket.assetsTotal += point.totalAssets;
+    bucket.count += 1;
+  }
+
+  const smoothed = [...buckets.values()].map((bucket) => ({
+    timestamp: new Date(bucket.timestamp).toISOString(),
+    value: bucket.valueTotal / bucket.count,
+    totalAssets: bucket.assetsTotal / bucket.count,
+  }));
+
+  return [firstPoint, ...smoothed, lastPoint];
+}
+
+export function deriveVaultPerformanceStats(
+  snapshots: VaultNavHistoryItem[],
+): DerivedVaultPerformanceStats {
+  return deriveStatsFromPoints(normalizeNavPoints(snapshots));
+}
+
+export function deriveVaultChartStats(
+  snapshots: VaultNavHistoryItem[],
+  options: VaultChartSeriesOptions,
+): DerivedVaultPerformanceStats {
+  const points = filterPointsByRange(normalizeNavPoints(snapshots), options.rangeDays);
+  const chartPoints = options.smooth
+    ? smoothIntoTimeBuckets(points, options.maxPoints)
+    : downsampleEvenly(points, options.maxPoints);
+
+  return deriveStatsFromPoints(chartPoints);
 }

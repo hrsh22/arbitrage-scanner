@@ -1,9 +1,5 @@
 import { test, expect } from "@playwright/test";
 import path from "path";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 /**
  * Task 17: Epoch Timeline Component Evidence Capture
@@ -31,12 +27,13 @@ test.describe("Task 17 Evidence Capture", () => {
     await page.waitForLoadState("networkidle");
 
     // Capture the timeline update section
-    const timelineSection = await page.locator("#demo-timeline-update");
+    const timelineSection = page.locator("#demo-timeline-update");
     await timelineSection.scrollIntoViewIfNeeded();
+    const timelineClip = (await timelineSection.boundingBox()) ?? undefined;
 
     await page.screenshot({
       path: path.join(evidenceDir, "task-17-timeline-update.png"),
-      clip: await timelineSection.boundingBox(),
+      clip: timelineClip,
     });
 
     // Verify screenshot was created
@@ -52,12 +49,13 @@ test.describe("Task 17 Evidence Capture", () => {
     await page.waitForLoadState("networkidle");
 
     // Capture the timeout warning section
-    const warningSection = await page.locator("#demo-timeout-warning");
+    const warningSection = page.locator("#demo-timeout-warning");
     await warningSection.scrollIntoViewIfNeeded();
+    const warningClip = (await warningSection.boundingBox()) ?? undefined;
 
     await page.screenshot({
       path: path.join(evidenceDir, "task-17-timeout-warning.png"),
-      clip: await warningSection.boundingBox(),
+      clip: warningClip,
     });
 
     // Verify screenshot was created
@@ -72,11 +70,11 @@ test.describe("Task 17 Evidence Capture", () => {
     await page.waitForLoadState("networkidle");
 
     // Take two screenshots 2 seconds apart to verify visual updates
-    const firstScreenshot = await page.screenshot({ encoding: "base64" });
+    const firstScreenshot = await page.screenshot();
 
     await page.waitForTimeout(2000);
 
-    const secondScreenshot = await page.screenshot({ encoding: "base64" });
+    const secondScreenshot = await page.screenshot();
 
     // Screenshots should be different (timers may have updated visual state)
     // Note: In the static HTML demo, they might be identical, but in the real React

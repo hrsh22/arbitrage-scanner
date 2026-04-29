@@ -1,19 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { formatUnits, parseUnits } from "viem";
+import { formatUnits } from "viem";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
-  ArrowDown,
   ArrowLeft,
   Dot,
   Wallet,
   User,
-  Coins,
-  TrendingUp,
   Building2,
   ChevronDown,
   ChevronUp,
@@ -36,68 +33,181 @@ import {
   DialogTrigger,
 } from "@workspace/ui/components/dialog";
 import { Input } from "@workspace/ui/components/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@workspace/ui/components/select";
 import { Skeleton } from "@workspace/ui/components/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@workspace/ui/components/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@workspace/ui/components/tooltip";
 import { cn } from "@workspace/ui/lib/utils";
 import {
+  deriveVaultChartStats,
   deriveVaultPerformanceStats,
   type DerivedVaultPerformanceStats,
 } from "../../../src/lib/performance";
 import { resolveVaultFromRouteSegment } from "../../../src/lib/vaultRouting";
 import {
-  preflightWithdrawal,
   useCycleStatus,
-  usePreviewRedeem,
   useRequests,
   useVaultDepositFlow,
   useVaultEvents,
   useVaultInstances,
   useVaultNavHistory,
   useVaultPositionHistory,
-  useVaultRedeem,
   useVaultShares,
   useVaultStatus,
   useVaultTradingAnalytics,
   useUserVaultHistory,
   useAuthSession,
-  useWithdrawalQueue,
   invalidatePublicVaultDetailQueries,
   invalidateUserVaultDetailQueries,
   useTransientState,
 } from "../../../src/lib/hooks";
 import {
-  postCancelWithdrawalRequest,
-  postRecordClaimActivity,
-  postCompleteWithdrawalRequest,
-  postPrepareWithdrawalRequest,
-  postVaultNavUpdate,
-  postWithdrawalRequest,
-} from "../../../src/lib/api";
-import {
-  COLLATERAL_DECIMALS,
   COLLATERAL_SYMBOL,
   SUPPORTS_POLYMARKET_TRADING,
-  USER_COLLATERAL_DECIMALS,
   USER_COLLATERAL_SYMBOL,
   VAULT_NETWORK,
 } from "../../../src/constants";
-import { getNetworkDisplayInfo } from "../../../src/lib/network";
+import { getNetworkDisplayInfo, type NetworkDisplayInfo } from "../../../src/lib/network";
 import type {
   Cycle,
-  RedemptionRequest,
-  WithdrawalRequest,
   VaultInstance,
   VaultPositionHistoryResponse,
   VaultStatusResponse,
+  VaultTradingAnalytics,
 } from "../../../src/types";
 import { RedemptionPanel } from "./components";
 import { AssetLogoStack, type AssetType } from "../../../components/asset-logo";
-import { buildVaultDetailReadModel, type ActivityItem } from "./vaultDetailReadModel";
+import { buildVaultDetailReadModel, type ActivityItem, type HeroMetric } from "./vaultDetailReadModel";
 
 declare global {
   interface Window {
     __E2E_EFFECTIVE_CONNECTED__?: boolean;
+  }
+}
+
+interface DepositSuccessResult {
+  amount?: number;
+  mode: "queued" | "minted";
+}
+
+interface OptimisticDepositState {
+  amount: number;
+  mode: DepositSuccessResult["mode"];
+  createdAt: number;
+}
+
+interface VaultActivityPaginationState {
+  routeVaultId: number;
+  offset: number;
+}
+
+interface UserActivityPaginationState {
+  scope: string;
+  offset: number;
+}
+
+interface VaultDetailUiState {
+  e2eConnectedSeam: boolean;
+  tradesOffset: number;
+  optimisticDeposit: OptimisticDepositState | null;
+  vaultActivityPagination: VaultActivityPaginationState;
+  userActivityPagination: UserActivityPaginationState;
+}
+
+type VaultDetailUiAction =
+  | { type: "set-e2e-connected-seam"; value: boolean }
+  | { type: "set-optimistic-deposit"; value: OptimisticDepositState | null }
+  | { type: "previous-trades-page" }
+  | { type: "next-trades-page" }
+  | { type: "previous-vault-activity-page"; routeVaultId: number }
+  | { type: "next-vault-activity-page"; routeVaultId: number }
+  | { type: "previous-user-activity-page"; scope: string }
+  | { type: "next-user-activity-page"; scope: string };
+
+function createVaultDetailUiState(routeVaultId: number, userActivityScope: string): VaultDetailUiState {
+  return {
+    e2eConnectedSeam: false,
+    tradesOffset: 0,
+    optimisticDeposit: null,
+    vaultActivityPagination: {
+      routeVaultId,
+      offset: 0,
+    },
+    userActivityPagination: {
+      scope: userActivityScope,
+      offset: 0,
+    },
+  };
+}
+
+function vaultDetailUiReducer(
+  state: VaultDetailUiState,
+  action: VaultDetailUiAction,
+): VaultDetailUiState {
+  switch (action.type) {
+    case "set-e2e-connected-seam":
+      return { ...state, e2eConnectedSeam: action.value };
+    case "set-optimistic-deposit":
+      return { ...state, optimisticDeposit: action.value };
+    case "previous-trades-page":
+      return {
+        ...state,
+        tradesOffset: Math.max(state.tradesOffset - ACTIVITY_PAGE_SIZE, 0),
+      };
+    case "next-trades-page":
+      return { ...state, tradesOffset: state.tradesOffset + ACTIVITY_PAGE_SIZE };
+    case "previous-vault-activity-page":
+      return {
+        ...state,
+        vaultActivityPagination: {
+          routeVaultId: action.routeVaultId,
+          offset:
+            state.vaultActivityPagination.routeVaultId === action.routeVaultId
+              ? Math.max(state.vaultActivityPagination.offset - ACTIVITY_PAGE_SIZE, 0)
+              : 0,
+        },
+      };
+    case "next-vault-activity-page":
+      return {
+        ...state,
+        vaultActivityPagination: {
+          routeVaultId: action.routeVaultId,
+          offset:
+            state.vaultActivityPagination.routeVaultId === action.routeVaultId
+              ? state.vaultActivityPagination.offset + ACTIVITY_PAGE_SIZE
+              : ACTIVITY_PAGE_SIZE,
+        },
+      };
+    case "previous-user-activity-page":
+      return {
+        ...state,
+        userActivityPagination: {
+          scope: action.scope,
+          offset:
+            state.userActivityPagination.scope === action.scope
+              ? Math.max(state.userActivityPagination.offset - ACTIVITY_PAGE_SIZE, 0)
+              : 0,
+        },
+      };
+    case "next-user-activity-page":
+      return {
+        ...state,
+        userActivityPagination: {
+          scope: action.scope,
+          offset:
+            state.userActivityPagination.scope === action.scope
+              ? state.userActivityPagination.offset + ACTIVITY_PAGE_SIZE
+              : ACTIVITY_PAGE_SIZE,
+        },
+      };
+    default:
+      return state;
   }
 }
 
@@ -152,34 +262,6 @@ function formatDate(iso: string | null | undefined): string {
     hour: "numeric",
     minute: "2-digit",
   });
-}
-
-function truncateId(value: string, length = 10): string {
-  if (value.length <= length) {
-    return value;
-  }
-
-  return `${value.slice(0, length)}...`;
-}
-
-function getParsedUnits(value: string, decimals: number): bigint | undefined {
-  if (!value.trim()) {
-    return undefined;
-  }
-
-  try {
-    return parseUnits(value, decimals);
-  } catch {
-    return undefined;
-  }
-}
-
-function getRequestPayoutUnits(
-  request: WithdrawalRequest & { claimableAssets?: string | null },
-  decimals: number,
-): bigint | undefined {
-  const value = request.claimableAssets ?? request.assetsEstimated;
-  return value ? getParsedUnits(value, decimals) : undefined;
 }
 
 function toTitleCase(value: string): string {
@@ -265,24 +347,71 @@ function getRiskSummary(vault: VaultInstance, cycle: Cycle | null): string {
 
 const ACTIVITY_PAGE_SIZE = 10;
 
-function getWithdrawActionLabel(args: {
-  isBlockedMode: boolean;
-  hasQueuedRequest: boolean;
-  hasClaimReady: boolean;
-}): string {
-  if (args.isBlockedMode) {
-    return "Paused";
-  }
+const NAV_CHART_RANGES = [
+  {
+    value: "1M",
+    label: "1M",
+    rangeDays: 30,
+    maxPoints: 80,
+    smooth: false,
+    description: "Last 30 days",
+  },
+  {
+    value: "3M",
+    label: "3M",
+    rangeDays: 90,
+    maxPoints: 96,
+    smooth: false,
+    description: "Last 3 months",
+  },
+  {
+    value: "6M",
+    label: "6M",
+    rangeDays: 183,
+    maxPoints: 120,
+    smooth: true,
+    description: "Last 6 months",
+  },
+  {
+    value: "1Y",
+    label: "1Y",
+    rangeDays: 365,
+    maxPoints: 140,
+    smooth: true,
+    description: "Last year",
+  },
+  {
+    value: "ALL",
+    label: "All",
+    rangeDays: undefined,
+    maxPoints: 160,
+    smooth: true,
+    description: "All history",
+  },
+] as const;
 
-  if (args.hasClaimReady) {
-    return "Claim ready";
-  }
+type NavChartRange = (typeof NAV_CHART_RANGES)[number]["value"];
 
-  if (args.hasQueuedRequest) {
-    return "Queued";
-  }
+type ActivityTab = "user" | "vault" | "trades";
+type PositionActionTab = "deposit" | "withdraw";
 
-  return "Open";
+const ACTIVITY_TAB_OPTIONS = [
+  { value: "user", label: "Your activity" },
+  { value: "vault", label: "Vault activity" },
+  { value: "trades", label: "Trades" },
+] as const satisfies Array<{ value: ActivityTab; label: string }>;
+
+function getNavChartRangeConfig(range: NavChartRange) {
+  return NAV_CHART_RANGES.find((option) => option.value === range) ?? NAV_CHART_RANGES[0];
+}
+
+function getVaultTradingAssets(vault: VaultInstance): AssetType[] {
+  return [
+    ...(vault.profile.tradingMetadata?.assets || []),
+    ...(vault.profile.tradingMetadata?.platforms || []),
+  ].filter((asset): asset is AssetType =>
+    ["usdc", "btc", "gnosis-safe", "polymarket"].includes(asset),
+  );
 }
 
 function InfoTooltip({ label, content }: { label: string; content: string }) {
@@ -292,14 +421,14 @@ function InfoTooltip({ label, content }: { label: string; content: string }) {
         <button
           type="button"
           aria-label={label}
-          className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-white/10 bg-white/5 text-slate-400 transition-colors hover:border-cyan-300/30 hover:text-white"
+          className="inline-flex h-5 w-5 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-white/5 hover:text-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
         >
-          <AlertCircle className="h-3.5 w-3.5" />
+          <AlertCircle className="h-3 w-3" />
         </button>
       </TooltipTrigger>
       <TooltipContent
         sideOffset={8}
-        className="max-w-xs rounded-xl bg-slate-950 px-3 py-2 text-slate-100 shadow-2xl"
+        className="max-w-xs rounded-[2px] border-white/10 bg-slate-950 px-3 py-2 text-slate-100 shadow-2xl"
       >
         {content}
       </TooltipContent>
@@ -323,7 +452,7 @@ function SectionShell({
   return (
     <Card
       id={id}
-      className="overflow-hidden rounded-[2px] border border-[#212121] bg-[#121212] shadow-none"
+      className="min-w-0 overflow-hidden rounded-[2px] border border-[#212121] bg-[#121212] shadow-none"
     >
       <CardHeader className="border-b border-white/10 pb-5">
         {eyebrow ? (
@@ -400,12 +529,48 @@ function PerformanceTile({
 function NavChart({
   stats,
   isLoading,
+  selectedRange,
+  onRangeChange,
 }: {
   stats: DerivedVaultPerformanceStats;
   isLoading: boolean;
+  selectedRange: NavChartRange;
+  onRangeChange: (range: NavChartRange) => void;
 }) {
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const rangeConfig = getNavChartRangeConfig(selectedRange);
+  const chartGeometry = useMemo(() => {
+    const width = 880;
+    const height = 220;
+    let min = stats.minPointValue ?? stats.points[0]?.value ?? 0;
+    let max = stats.maxPointValue ?? stats.points[0]?.value ?? 0;
+
+    if (min === max) {
+      const padding = min === 0 ? 0.01 : min * 0.01;
+      min -= padding;
+      max += padding;
+    }
+
+    const range = Math.max(max - min, 0.000001);
+    const coordinates = stats.points.map((point, index) => {
+      const x = (index / Math.max(stats.points.length - 1, 1)) * width;
+      const y = height - ((point.value - min) / range) * height;
+      return { ...point, x, y };
+    });
+
+    const line = coordinates.map((point) => `${point.x},${point.y}`).join(" ");
+
+    return {
+      width,
+      height,
+      coordinates,
+      line,
+      area: `0,${height} ${line} ${width},${height}`,
+    };
+  }, [stats.maxPointValue, stats.minPointValue, stats.points]);
+
   if (isLoading) {
-    return <Skeleton className="h-[280px] w-full rounded-[26px] bg-white/10" />;
+    return <Skeleton className="h-[320px] w-full rounded-[2px] bg-white/10" />;
   }
 
   if (stats.points.length < 2) {
@@ -416,25 +581,18 @@ function NavChart({
     );
   }
 
-  const width = 880;
-  const height = 220;
-  let min = stats.minPointValue ?? stats.points[0]?.value ?? 0;
-  let max = stats.maxPointValue ?? stats.points[0]?.value ?? 0;
-  if (min === max) {
-    const padding = min === 0 ? 0.01 : min * 0.01;
-    min -= padding;
-    max += padding;
-  }
-  const range = Math.max(max - min, 0.000001);
+  const { width, height, coordinates, line, area } = chartGeometry;
 
-  const coordinates = stats.points.map((point, index) => {
-    const x = (index / Math.max(stats.points.length - 1, 1)) * width;
-    const y = height - ((point.value - min) / range) * height;
-    return { x, y };
-  });
+  const hoveredPoint = hoveredIndex !== null ? coordinates[hoveredIndex] : null;
 
-  const line = coordinates.map((point) => `${point.x},${point.y}`).join(" ");
-  const area = `0,${height} ${line} ${width},${height}`;
+  const selectNearestPoint = (clientX: number, bounds: DOMRect) => {
+    const relativeX = ((clientX - bounds.left) / Math.max(bounds.width, 1)) * width;
+    const nearestIndex = Math.min(
+      coordinates.length - 1,
+      Math.max(0, Math.round((relativeX / width) * Math.max(coordinates.length - 1, 0))),
+    );
+    setHoveredIndex(nearestIndex);
+  };
 
   return (
     <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-5">
@@ -445,28 +603,124 @@ function NavChart({
             {stats.latest !== null ? formatSharePrice(stats.latest) : "--"}
           </p>
         </div>
-        <div className="grid gap-3 text-xs text-slate-400 sm:grid-cols-2">
-          <div>Start: {stats.first !== null ? formatSharePrice(stats.first) : "--"}</div>
-          <div>
-            Latest snapshot: {formatDate(stats.points[stats.points.length - 1]?.timestamp ?? null)}
+        <div className="flex flex-col gap-3 sm:items-end">
+          <div
+            className="inline-flex w-fit rounded-[2px] border border-[#212121] bg-[#121212] p-1"
+            aria-label="NAV chart time range"
+          >
+            {NAV_CHART_RANGES.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => {
+                  setHoveredIndex(null);
+                  onRangeChange(option.value);
+                }}
+                className={cn(
+                  "rounded-[2px] px-2.5 py-1.5 text-[11px] font-medium uppercase tracking-[0.12em] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50",
+                  selectedRange === option.value
+                    ? "bg-cyan-300/12 text-cyan-100 ring-1 ring-inset ring-cyan-300/20"
+                    : "text-slate-500 hover:bg-white/5 hover:text-slate-200",
+                )}
+                aria-pressed={selectedRange === option.value}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <div className="grid gap-2 text-xs text-slate-400 sm:grid-cols-2 sm:text-right">
+            <div>Start: {stats.first !== null ? formatSharePrice(stats.first) : "--"}</div>
+            <div>
+              Latest snapshot: {formatDate(stats.points[stats.points.length - 1]?.timestamp ?? null)}
+            </div>
+            <div className="sm:col-span-2 text-slate-500">
+              {rangeConfig.description}
+              {rangeConfig.smooth ? " · smoothed" : ""}
+            </div>
           </div>
         </div>
       </div>
 
-      <svg viewBox={`0 0 ${width} ${height}`} className="h-56 w-full" preserveAspectRatio="none">
-        <defs>
-          <linearGradient id="vault-line" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%" stopColor="rgba(103,232,249,0.95)" />
-            <stop offset="100%" stopColor="rgba(250,204,21,0.95)" />
-          </linearGradient>
-          <linearGradient id="vault-area" x1="0%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" stopColor="rgba(103,232,249,0.28)" />
-            <stop offset="100%" stopColor="rgba(103,232,249,0.01)" />
-          </linearGradient>
-        </defs>
-        <polyline fill="url(#vault-area)" stroke="none" points={area} />
-        <polyline fill="none" stroke="url(#vault-line)" strokeWidth="3" points={line} />
-      </svg>
+      <div className="relative">
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          className="h-56 w-full touch-none"
+          preserveAspectRatio="none"
+          role="img"
+          aria-label="NAV performance chart"
+          tabIndex={0}
+          onPointerMove={(event) =>
+            selectNearestPoint(event.clientX, event.currentTarget.getBoundingClientRect())
+          }
+          onPointerLeave={() => setHoveredIndex(null)}
+          onFocus={() => setHoveredIndex(coordinates.length - 1)}
+          onBlur={() => setHoveredIndex(null)}
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+              return;
+            }
+
+            event.preventDefault();
+            setHoveredIndex((current) => {
+              const fallback = event.key === "ArrowLeft" ? coordinates.length - 1 : 0;
+              const next = current ?? fallback;
+              return event.key === "ArrowLeft"
+                ? Math.max(0, next - 1)
+                : Math.min(coordinates.length - 1, next + 1);
+            });
+          }}
+        >
+          <defs>
+            <linearGradient id="vault-line" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor="rgba(103,232,249,0.95)" />
+              <stop offset="100%" stopColor="rgba(125,211,252,0.95)" />
+            </linearGradient>
+            <linearGradient id="vault-area" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stopColor="rgba(103,232,249,0.28)" />
+              <stop offset="100%" stopColor="rgba(103,232,249,0.01)" />
+            </linearGradient>
+          </defs>
+          <polyline fill="url(#vault-area)" stroke="none" points={area} />
+          <polyline fill="none" stroke="url(#vault-line)" strokeWidth="3" points={line} />
+          {hoveredPoint ? (
+            <g>
+              <line
+                x1={hoveredPoint.x}
+                x2={hoveredPoint.x}
+                y1={0}
+                y2={height}
+                stroke="rgba(148,163,184,0.38)"
+                strokeDasharray="5 5"
+                vectorEffect="non-scaling-stroke"
+              />
+              <circle
+                cx={hoveredPoint.x}
+                cy={hoveredPoint.y}
+                r="6"
+                fill="#0A0A0A"
+                stroke="rgba(125,211,252,0.95)"
+                strokeWidth="3"
+                vectorEffect="non-scaling-stroke"
+              />
+            </g>
+          ) : null}
+        </svg>
+        {hoveredPoint ? (
+          <div
+            className="pointer-events-none absolute top-3 w-max min-w-0 max-w-[calc(100vw-3rem)] rounded-[2px] border border-white/10 bg-[#121212]/95 px-3 py-2 text-xs shadow-2xl shadow-black/40 backdrop-blur"
+            style={{
+              left: `${Math.min(Math.max((hoveredPoint.x / width) * 100, 8), 92)}%`,
+              transform: (hoveredPoint.x / width) > 0.75 ? "translateX(-100%)" : "translateX(-8%)",
+            }}
+          >
+            <p className="font-medium text-white">{formatSharePrice(hoveredPoint.value)}</p>
+            <p className="mt-1 text-slate-400">{formatDate(hoveredPoint.timestamp)}</p>
+            <p className="mt-1 text-slate-500">
+              Assets {formatCompactCurrency(hoveredPoint.totalAssets)}
+            </p>
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -530,7 +784,6 @@ function ActivityTimeline({
 
 function ActivityPaginationControls({
   offset,
-  pageSize,
   currentCount,
   hasMore,
   isLoading,
@@ -538,7 +791,6 @@ function ActivityPaginationControls({
   onNext,
 }: {
   offset: number;
-  pageSize: number;
   currentCount: number;
   hasMore: boolean;
   isLoading: boolean;
@@ -596,7 +848,7 @@ function TradesList({
 
   return (
     <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] overflow-hidden">
-      {positions.map((pos, i) => {
+      {positions.map((pos) => {
         const isClosed = pos.status === "closed";
         const pnl = pos.realizedPnl ?? pos.cashPnl ?? 0;
         const isWin = pnl >= 0;
@@ -604,7 +856,7 @@ function TradesList({
 
         return (
           <div
-            key={`${pos.tokenId}-${pos.status}-${i}`}
+            key={`${pos.tokenId}-${pos.conditionId}-${pos.outcome}-${pos.endDate}`}
             className="group flex flex-col gap-3 border-b border-[#212121] p-4 transition-colors hover:bg-[#121212] last:border-b-0 sm:flex-row sm:items-center sm:justify-between"
           >
             <div className="flex flex-1 flex-col min-w-0 pr-4">
@@ -645,7 +897,7 @@ function TradesList({
               </Tooltip>
             </div>
 
-            <div className="grid grid-cols-3 gap-4 sm:flex sm:shrink-0 sm:items-center sm:gap-8">
+            <div className="flex flex-wrap gap-4 sm:shrink-0 sm:flex-nowrap sm:items-center sm:gap-8">
               <div className="flex flex-col text-left sm:text-right">
                 <span className="text-[10px] uppercase tracking-wider text-slate-500">
                   Invested
@@ -669,7 +921,7 @@ function TradesList({
                   {Number.isFinite(pos.avgPrice) ? `$${pos.avgPrice.toFixed(2)}` : "--"}
                 </span>
               </div>
-              <div className="flex flex-col text-right">
+              <div className="flex flex-col text-left sm:text-right">
                 {!isClosed ? (
                   <>
                     <span className="text-[10px] uppercase tracking-wider text-slate-500">
@@ -788,7 +1040,7 @@ function AddressField({
                 void navigator.clipboard.writeText(address);
                 copyAddress();
               }}
-              className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] uppercase tracking-[0.18em] text-slate-300 transition-colors hover:border-cyan-300/30 hover:text-white"
+              className="rounded-[2px] border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] uppercase tracking-[0.18em] text-slate-300 transition-colors hover:border-cyan-300/30 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
             >
               {copied ? "Copied" : "Copy"}
             </button>
@@ -803,15 +1055,16 @@ function AddressField({
       </div>
       <Tooltip>
         <TooltipTrigger asChild>
-          <p
-            className="mt-3 font-mono text-sm text-white cursor-pointer hover:text-cyan-200 transition-colors"
+          <button
+            type="button"
+            className="mt-3 block min-h-8 rounded-[2px] py-1 text-left font-mono text-sm text-white transition-colors hover:text-cyan-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
             onClick={() => {
               void navigator.clipboard.writeText(address);
               copyAddress();
             }}
           >
             {formatAddress(address)}
-          </p>
+          </button>
         </TooltipTrigger>
         <TooltipContent
           sideOffset={8}
@@ -822,7 +1075,7 @@ function AddressField({
       </Tooltip>
 
       {balance !== undefined && (
-        <div className="mt-4 flex items-center justify-between border-t border-[#212121] pt-3">
+        <div className="mt-4 flex flex-col items-start gap-1 border-t border-[#212121] pt-3 sm:flex-row sm:items-center sm:justify-between">
           <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
             {balanceLabel}
           </span>
@@ -841,9 +1094,9 @@ function TechnicalDetailsDialog({
   status: VaultStatusResponse | null;
 }) {
   const tradingWalletCollateral = status
-    ? (status.nav.safeCollateral ?? status.nav.safeUsdc) + (status.nav.redeemableMarketValue ?? 0)
+    ? (status.nav.safeCollateral ?? 0) + (status.nav.redeemableMarketValue ?? 0)
     : null;
-  const vaultCollateral = status ? (status.nav.vaultCollateral ?? status.nav.vaultUsdc) : null;
+  const vaultCollateral = status ? (status.nav.vaultCollateral ?? 0) : null;
 
   return (
     <Dialog>
@@ -959,7 +1212,7 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
       <DialogTrigger asChild>
         <button
           type="button"
-          className="mt-2 inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-[4px] bg-[#121212] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-300 ring-1 ring-inset ring-[#212121] transition-all hover:bg-[#212121] hover:text-white"
+          className="inline-flex shrink-0 self-start items-center justify-center gap-1.5 whitespace-nowrap rounded-[2px] bg-[#121212] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-300 ring-1 ring-inset ring-[#212121] transition-all hover:bg-[#212121] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
         >
           <AlertCircle className="h-3.5 w-3.5" />
           <span>How Vaults Work</span>
@@ -1069,7 +1322,7 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
             </div>
           </div>
 
-          <div className="p-8 lg:p-12">
+          <div className="p-4 sm:p-8 lg:p-12">
             <h2 className="mb-10 text-xl font-medium tracking-tight text-white lg:text-3xl">
               How Vaults Work
             </h2>
@@ -1084,8 +1337,9 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
                     Deposit and receive shares
                   </h3>
                   <p className="mt-2 text-sm leading-relaxed text-[#828B8D]">
-                    Your {USER_COLLATERAL_SYMBOL} deposit is converted atomically into vault collateral and mints vault shares, giving you
-                    proportional exposure to the vault's pooled strategy and returns.
+                    Your {USER_COLLATERAL_SYMBOL} deposit is converted atomically into vault
+                    collateral and mints vault shares, giving you proportional exposure to the
+                    vault&apos;s pooled strategy and returns.
                   </p>
                 </div>
               </div>
@@ -1163,7 +1417,6 @@ function DepositRail({
   onSuccess,
   walletConnected,
   sessionKnown,
-  sessionAuthenticated,
   userAuthorized,
   vaultId,
 }: {
@@ -1171,10 +1424,9 @@ function DepositRail({
   cycle: Cycle | null;
   nav: VaultStatusResponse["nav"] | null;
   migration: VaultStatusResponse["migration"] | null;
-  onSuccess: () => void;
+  onSuccess: (result?: DepositSuccessResult) => void;
   walletConnected: boolean;
   sessionKnown: boolean;
-  sessionAuthenticated: boolean;
   userAuthorized: boolean;
   vaultId: number;
 }) {
@@ -1275,7 +1527,7 @@ function DepositRail({
             type="button"
             onClick={handleMaxAmount}
             disabled={depositsDisabled}
-            className="text-[10px] font-medium uppercase tracking-[0.18em] text-cyan-200 transition-colors hover:text-white disabled:cursor-not-allowed disabled:text-slate-600"
+            className="-mr-3 rounded-[2px] px-3 py-2 text-[10px] font-medium uppercase tracking-[0.18em] text-cyan-200 transition-colors hover:bg-white/5 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50 disabled:cursor-not-allowed disabled:text-slate-600"
           >
             Max
           </button>
@@ -1404,772 +1656,651 @@ function DepositRail({
   );
 }
 
-function WithdrawRail({
+/* unused legacy WithdrawRail removed */
+
+function VaultOverviewSection({
   vault,
-  vaultId,
-  cycle,
-  navSharePrice,
-  onSuccess,
-  walletConnected,
-  sessionKnown,
-  walletAddress,
-  userAuthorized,
-  customPendingRequests,
-  customClaimableRequests,
+  tags,
+  displayedHeroMetrics,
+  optimisticDeposit,
 }: {
   vault: VaultInstance;
-  vaultId: number;
-  cycle: Cycle | null;
-  navSharePrice: number | null;
-  onSuccess: () => void;
-  walletConnected: boolean;
-  sessionKnown: boolean;
-  walletAddress: string | undefined;
-  userAuthorized: boolean;
-  customPendingRequests: RedemptionRequest[];
-  customClaimableRequests: RedemptionRequest[];
+  tags: string[];
+  displayedHeroMetrics: HeroMetric[];
+  optimisticDeposit: OptimisticDepositState | null;
 }) {
-  const e2eOverride =
-    typeof window !== "undefined" ? window.__E2E_EFFECTIVE_CONNECTED__ : undefined;
-  const effectiveConnectedUI = typeof e2eOverride === "boolean" ? e2eOverride : walletConnected;
-  const usingE2eConnectedSeam = effectiveConnectedUI && !walletConnected;
-  const effectiveAddress: `0x${string}` | undefined = walletAddress
-    ? (walletAddress as `0x${string}`)
-    : undefined;
-  const [amount, setAmount] = useState("");
-  const [message, setMessage] = useState<string | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [queuePending, setQueuePending] = useState(false);
-  const [claimingRequestId, setClaimingRequestId] = useState<string | null>(null);
-  const [claimSubmissionInFlight, setClaimSubmissionInFlight] = useState(false);
-  const [claimingCustomRequestId, setClaimingCustomRequestId] = useState<string | null>(null);
-  const [claimingCustomSnapshot, setClaimingCustomSnapshot] = useState<{
-    requestId: string;
-    shares: string;
-    assets?: string;
-  } | null>(null);
-  const [navSyncPending, setNavSyncPending] = useState(false);
-  const [claimPreflightPending, setClaimPreflightPending] = useState(false);
-
-  const parsedShares = getParsedUnits(amount, 6);
-  const isValidAmount = parsedShares !== undefined && parsedShares > 0n;
-  const isCustomVault = vault.type === "custom";
-  const claimDisplaySymbol = isCustomVault ? USER_COLLATERAL_SYMBOL : COLLATERAL_SYMBOL;
-  const claimDisplayDecimals = isCustomVault
-    ? USER_COLLATERAL_DECIMALS
-    : COLLATERAL_DECIMALS;
-  const currentExecutionMode = cycle?.executionMode ?? undefined;
-  const isBlockedMode = isCustomVault && currentExecutionMode === "blocked";
-  const requiresFreshNavBeforeRequest = !isCustomVault || currentExecutionMode === "instant";
-  const requiresClientPreviewForRequest = !isCustomVault || currentExecutionMode === "instant";
-
-  const {
-    shares,
-    formatted: formattedShares,
-    refetch: refetchShares,
-  } = useVaultShares(vault.config.vaultAddress, walletAddress, vault.type === "custom" ? 6 : 18);
-  const effectiveShares = shares;
-  const effectiveFormattedShares = formattedShares;
-  const { assets: previewAssets, refetch: refetchPreviewAssets } = usePreviewRedeem(
-    vault.config.vaultAddress,
-    parsedShares,
-    isCustomVault,
-  );
-  const effectivePreviewAssets = previewAssets;
-  const {
-    data: queueData,
-    isLoading: queueLoading,
-    refetch: refetchQueue,
-  } = useWithdrawalQueue(vault.config.vaultAddress);
-  const { redeem, claimUSDCe, isPending, isConfirming, isConfirmed, hash, error, reset } =
-    useVaultRedeem();
-
-  const rawQueueActiveRequest =
-    queueData?.requests.find(
-      (request) => request.status === "pending" || request.status === "ready",
-    ) ?? null;
-  const customClaimableRequest = customClaimableRequests[0] ?? null;
-  const customPendingRequest = customPendingRequests[0] ?? null;
-  const queueActiveRequest = rawQueueActiveRequest;
-  const readyQueueRequest = queueActiveRequest?.status === "ready" ? queueActiveRequest : null;
-  const readyLockedEstimatedAssets = readyQueueRequest
-    ? Number.parseFloat(
-        (readyQueueRequest as { assetsEstimated?: string; claimableAssets?: string | null })
-          .assetsEstimated ??
-          (readyQueueRequest as { claimableAssets?: string | null }).claimableAssets ??
-          "0",
-      )
-    : Number.NaN;
-  const readyRequestShares = readyQueueRequest
-    ? getParsedUnits(readyQueueRequest.shares, 6)
-    : undefined;
-  const { assets: readyPreviewAssets, refetch: refetchReadyPreviewAssets } = usePreviewRedeem(
-    vault.config.vaultAddress,
-    readyRequestShares,
-    isCustomVault,
-  );
-
-  const readyLiveEstimatedAssets =
-    readyQueueRequest && readyPreviewAssets !== undefined
-      ? Number(formatUnits(readyPreviewAssets, 6))
-      : Number.NaN;
-  const displayedEstimatedAssets = readyQueueRequest
-    ? isCustomVault
-      ? readyLockedEstimatedAssets
-      : Number.isFinite(readyLiveEstimatedAssets)
-        ? readyLiveEstimatedAssets
-        : readyLockedEstimatedAssets
-    : queueActiveRequest
-      ? Number.parseFloat(
-          (queueActiveRequest as { assetsEstimated?: string; claimableAssets?: string | null })
-            .assetsEstimated ??
-            (queueActiveRequest as { claimableAssets?: string | null }).claimableAssets ??
-            "0",
-        )
-      : customClaimableRequest?.claimableAssetsFormatted
-        ? Number.parseFloat(customClaimableRequest.claimableAssetsFormatted)
-        : isCustomVault && parsedShares !== undefined && navSharePrice !== null
-          ? Number(formatUnits(parsedShares, 6)) * navSharePrice
-          : effectivePreviewAssets !== undefined
-            ? Number(formatUnits(effectivePreviewAssets, 6))
-            : 0;
-  const hasBlockingRequest = Boolean(
-    queueActiveRequest || customClaimableRequest || customPendingRequest,
-  );
-  const withdrawActionLabel = getWithdrawActionLabel({
-    isBlockedMode,
-    hasQueuedRequest: Boolean(queueActiveRequest || customPendingRequest),
-    hasClaimReady: Boolean(readyQueueRequest || customClaimableRequest),
-  });
-
-  useEffect(() => {
-    if (!effectiveConnectedUI) {
-      setErrorMessage(null);
-      setMessage(null);
-      setClaimingRequestId(null);
-      setClaimSubmissionInFlight(false);
-      setClaimPreflightPending(false);
-    }
-  }, [effectiveConnectedUI]);
-
-  useEffect(() => {
-    if (!isConfirmed || !hash || !claimingRequestId) {
-      return;
-    }
-
-    let cancelled = false;
-
-    void (async () => {
-      try {
-        const result = await postCompleteWithdrawalRequest(claimingRequestId, hash);
-        if (cancelled) {
-          return;
-        }
-
-        setMessage(result.message);
-        setErrorMessage(null);
-        setClaimingRequestId(null);
-        setClaimSubmissionInFlight(false);
-        setAmount("");
-        reset();
-        await Promise.all([refetchQueue(), refetchShares(), refetchReadyPreviewAssets()]);
-        onSuccess();
-      } catch (error) {
-        if (cancelled) {
-          return;
-        }
-
-        setErrorMessage(
-          `Withdrawal sent (${truncateId(hash, 12)}) but queue update failed: ${
-            error instanceof Error ? error.message : "Unknown error"
-          }`,
-        );
-        setClaimingRequestId(null);
-        setClaimSubmissionInFlight(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    claimingRequestId,
-    hash,
-    isConfirmed,
-    onSuccess,
-    refetchQueue,
-    refetchReadyPreviewAssets,
-    refetchShares,
-    reset,
-  ]);
-
-  useEffect(() => {
-    if (!isConfirmed || !hash || !claimingCustomRequestId || !claimingCustomSnapshot) {
-      return;
-    }
-
-    let cancelled = false;
-
-    void (async () => {
-      try {
-        await postRecordClaimActivity(vaultId, {
-          txHash: hash,
-          requestId: claimingCustomSnapshot.requestId,
-          shares: claimingCustomSnapshot.shares,
-          assets: claimingCustomSnapshot.assets,
-        });
-
-        if (cancelled) {
-          return;
-        }
-
-        setMessage("Withdrawal claim submitted.");
-        setErrorMessage(null);
-      } catch (recordError) {
-        if (cancelled) {
-          return;
-        }
-
-        setMessage("Withdrawal claim submitted.");
-        setErrorMessage(
-          `Claim succeeded (${truncateId(hash, 12)}) but activity sync failed: ${
-            recordError instanceof Error ? recordError.message : "Unknown error"
-          }`,
-        );
-      } finally {
-        if (!cancelled) {
-          setClaimSubmissionInFlight(false);
-          setClaimingCustomRequestId(null);
-          setClaimingCustomSnapshot(null);
-          setAmount("");
-          reset();
-          void Promise.all([refetchShares(), refetchQueue(), onSuccess()]);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    claimingCustomRequestId,
-    claimingCustomSnapshot,
-    hash,
-    isConfirmed,
-    onSuccess,
-    refetchQueue,
-    refetchShares,
-    reset,
-    vaultId,
-  ]);
-
-  useEffect(() => {
-    if (error && claimingRequestId) {
-      const normalized = error.message.toLowerCase();
-      if (
-        normalized.includes("rejected") ||
-        normalized.includes("denied") ||
-        normalized.includes("4001") ||
-        normalized.includes("user")
-      ) {
-        setErrorMessage("Transaction cancelled. You can try again.");
-      } else {
-        setErrorMessage(error.message);
-      }
-      setClaimingRequestId(null);
-      setClaimSubmissionInFlight(false);
-      setClaimPreflightPending(false);
-    }
-  }, [claimingRequestId, error]);
-
-  useEffect(() => {
-    if (!error || !claimingCustomRequestId) {
-      return;
-    }
-
-    setErrorMessage(error.message);
-    setMessage(null);
-    setClaimingCustomRequestId(null);
-    setClaimingCustomSnapshot(null);
-  }, [claimingCustomRequestId, error]);
-
-  async function ensureFreshNav() {
-    if (usingE2eConnectedSeam) {
-      return true;
-    }
-
-    setNavSyncPending(true);
-    setErrorMessage(null);
-
-    try {
-      await postVaultNavUpdate();
-      return true;
-    } catch (error) {
-      setErrorMessage("Price refresh failed. Please try again.");
-      return false;
-    } finally {
-      setNavSyncPending(false);
-    }
-  }
-
-  async function handleRequestWithdrawal() {
-    if (!parsedShares || parsedShares > effectiveShares || isBlockedMode || queuePending) {
-      return;
-    }
-
-    setQueuePending(true);
-    setErrorMessage(null);
-    setMessage(null);
-    reset();
-
-    try {
-      let previewForRequest: bigint | undefined;
-
-      if (requiresFreshNavBeforeRequest) {
-        const refreshed = await ensureFreshNav();
-        if (!refreshed) {
-          return;
-        }
-      }
-
-      if (requiresClientPreviewForRequest) {
-        const latestPreview = await refetchPreviewAssets();
-        if (latestPreview === undefined || latestPreview <= 0n) {
-          setErrorMessage(
-            "Unable to estimate redeemable assets. Please try again in a few seconds.",
-          );
-          return;
-        }
-        previewForRequest = latestPreview;
-      }
-
-      const result = await postWithdrawalRequest(
-        formatUnits(parsedShares, 6),
-        previewForRequest !== undefined ? formatUnits(previewForRequest, 6) : undefined,
-        vaultId,
-      );
-      setMessage(result.message);
-      setAmount("");
-      await Promise.all([refetchQueue(), refetchShares()]);
-      onSuccess();
-    } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : "Failed to queue withdrawal request",
-      );
-    } finally {
-      setQueuePending(false);
-    }
-  }
-
-  async function handleClaimReadyWithdrawal() {
-    if (
-      !readyQueueRequest ||
-      !effectiveAddress ||
-      !userAuthorized ||
-      claimSubmissionInFlight ||
-      claimPreflightPending ||
-      isPending ||
-      isConfirming
-    ) {
-      return;
-    }
-
-    setClaimPreflightPending(true);
-    reset();
-    setClaimingRequestId(null);
-    setErrorMessage(null);
-    setMessage(null);
-
-    try {
-      if (!isCustomVault) {
-        const refreshed = await ensureFreshNav();
-        if (!refreshed) {
-          return;
-        }
-      }
-
-      let requestToClaim = readyQueueRequest;
-
-      try {
-        if (isCustomVault) {
-          const preflight = await preflightWithdrawal(readyQueueRequest.requestId);
-          if (!preflight.ready) {
-            setErrorMessage(preflight.error ?? "Not ready yet. Please try again shortly.");
-            return;
-          }
-          requestToClaim = preflight.request ?? readyQueueRequest;
-        } else {
-          const prepared = await postPrepareWithdrawalRequest(readyQueueRequest.requestId);
-          requestToClaim = prepared.request ?? readyQueueRequest;
-        }
-
-        await Promise.all([refetchQueue(), refetchShares(), refetchReadyPreviewAssets()]);
-
-        if (requestToClaim.status !== "ready") {
-          setMessage("Your withdrawal is being processed. Please wait.");
-          return;
-        }
-      } catch (error) {
-        setErrorMessage(
-          error instanceof Error
-            ? error.message
-            : "Failed to prepare withdrawal claim. Please retry.",
-        );
-        return;
-      }
-
-      let requestShares: bigint;
-      try {
-        requestShares = parseUnits(requestToClaim.shares, 6);
-      } catch {
-        setErrorMessage("Something went wrong. Please contact support.");
-        return;
-      }
-
-      setClaimingRequestId(requestToClaim.requestId);
-      setClaimSubmissionInFlight(true);
-
-      if (isCustomVault) {
-        const minUserAssetsOut = getRequestPayoutUnits(requestToClaim, USER_COLLATERAL_DECIMALS);
-        if (minUserAssetsOut === undefined || minUserAssetsOut === 0n) {
-          setClaimingRequestId(null);
-          setClaimSubmissionInFlight(false);
-          setErrorMessage("Claim payout data is still loading. Please refresh and try again.");
-          return;
-        }
-
-        claimUSDCe(
-          vault.config.vaultAddress as `0x${string}`,
-          requestShares,
-          effectiveAddress,
-          effectiveAddress,
-          minUserAssetsOut,
-        );
-      } else {
-        redeem(
-          vault.config.vaultAddress as `0x${string}`,
-          requestShares,
-          effectiveAddress,
-          effectiveAddress,
-        );
-      }
-    } finally {
-      setClaimPreflightPending(false);
-    }
-  }
-
-  function handleClaimCustomRequest() {
-    if (
-      !customClaimableRequest ||
-      !effectiveAddress ||
-      claimSubmissionInFlight ||
-      isPending ||
-      isConfirming
-    ) {
-      return;
-    }
-
-    setClaimSubmissionInFlight(true);
-    setClaimingCustomRequestId(customClaimableRequest.requestId);
-    setClaimingCustomSnapshot({
-      requestId: customClaimableRequest.requestId,
-      shares: customClaimableRequest.sharesFormatted,
-      assets: customClaimableRequest.claimableAssetsFormatted ?? undefined,
-    });
-    setErrorMessage(null);
-    setMessage(null);
-    reset();
-
-    try {
-      const owner = (customClaimableRequest.ownerAddress ||
-        customClaimableRequest.controllerAddress ||
-        effectiveAddress) as `0x${string}`;
-      const shares = parseUnits(customClaimableRequest.sharesFormatted, 6);
-
-      if (isCustomVault) {
-        if (!customClaimableRequest.claimableAssetsFormatted) {
-          throw new Error("Claim payout data is still loading. Please refresh and try again.");
-        }
-
-        const claimableAssets = parseUnits(
-          customClaimableRequest.claimableAssetsFormatted,
-          USER_COLLATERAL_DECIMALS,
-        );
-        if (claimableAssets === 0n) {
-          throw new Error("Claim payout data is still loading. Please refresh and try again.");
-        }
-
-        claimUSDCe(vault.config.vaultAddress as `0x${string}`, shares, effectiveAddress, owner, claimableAssets);
-      } else {
-        redeem(vault.config.vaultAddress as `0x${string}`, shares, effectiveAddress, owner);
-      }
-    } catch (claimError) {
-      setClaimingCustomRequestId(null);
-      setClaimingCustomSnapshot(null);
-      setClaimSubmissionInFlight(false);
-      setErrorMessage(
-        claimError instanceof Error ? claimError.message : "Failed to claim withdrawal.",
-      );
-    }
-  }
-
-  async function handleCancelWithdrawalRequest() {
-    if (!queueActiveRequest || queuePending) {
-      return;
-    }
-
-    setQueuePending(true);
-    setErrorMessage(null);
-    setMessage(null);
-
-    try {
-      const result = await postCancelWithdrawalRequest(queueActiveRequest.requestId);
-      setMessage(result.message);
-      setAmount("");
-      setClaimingRequestId(null);
-      reset();
-      await Promise.all([refetchQueue(), refetchShares(), refetchReadyPreviewAssets()]);
-      onSuccess();
-    } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : "Failed to cancel withdrawal request",
-      );
-    } finally {
-      setQueuePending(false);
-    }
-  }
-
-  const requestDisabled =
-    !effectiveAddress ||
-    !sessionKnown ||
-    !userAuthorized ||
-    !isValidAmount ||
-    parsedShares > effectiveShares ||
-    queuePending ||
-    navSyncPending ||
-    isPending ||
-    isConfirming ||
-    hasBlockingRequest ||
-    (requiresClientPreviewForRequest &&
-      (effectivePreviewAssets === undefined || effectivePreviewAssets <= 0n));
-
-  const claimDisabled =
-    !userAuthorized ||
-    !readyQueueRequest ||
-    !effectiveAddress ||
-    queuePending ||
-    navSyncPending ||
-    claimSubmissionInFlight ||
-    claimPreflightPending ||
-    isPending ||
-    isConfirming;
-  const customClaimDisabled =
-    !userAuthorized ||
-    !customClaimableRequest ||
-    !effectiveAddress ||
-    queuePending ||
-    claimSubmissionInFlight ||
-    isPending ||
-    isConfirming;
-
-  function clearWithdrawalFeedback() {
-    setErrorMessage(null);
-    setMessage(null);
-  }
+  const validAssets = getVaultTradingAssets(vault);
 
   return (
-    <div className="space-y-4">
-      <div className="grid gap-3">
-        <RailStat label="Status" value={withdrawActionLabel} />
-        <RailStat
-          label="Your shares"
-          value={`${Number(effectiveFormattedShares).toFixed(6)} shares`}
-          tooltip="Your share balance in this vault."
-        />
-        <RailStat
-          label="Est. value"
-          value={formatCurrency(displayedEstimatedAssets || 0)}
-          tooltip="Estimated value based on current share price."
-        />
-      </div>
+    <section className="relative overflow-hidden rounded-[2px] border border-[#212121] bg-[#121212] px-6 py-7 shadow-none sm:px-8 lg:px-10 lg:py-9">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_12%_10%,_rgba(217,70,239,0.07),_transparent_18%),radial-gradient(circle_at_86%_16%,_rgba(34,211,238,0.06),_transparent_16%)]" />
+      <div className="relative grid gap-8">
+        <div className="min-w-0 space-y-5">
+          <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Vault</p>
 
-      <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <label htmlFor="vault-withdraw-amount" className="text-sm text-slate-300">
-            Amount
-          </label>
-          <button
-            type="button"
-            onClick={() => {
-              setAmount(effectiveFormattedShares);
-              clearWithdrawalFeedback();
-              reset();
-            }}
-            disabled={queuePending || isPending || isConfirming || hasBlockingRequest}
-            className="text-xs font-medium uppercase tracking-[0.18em] text-cyan-200 transition-colors hover:text-white disabled:opacity-40"
-          >
-            Max
-          </button>
-        </div>
-        <Input
-          id="vault-withdraw-amount"
-          type="number"
-          step="0.000001"
-          min="0"
-          placeholder="0.00"
-          value={amount}
-          onChange={(event) => {
-            setAmount(event.target.value);
-            clearWithdrawalFeedback();
-            reset();
-          }}
-          disabled={queuePending || isPending || isConfirming || hasBlockingRequest}
-          className="h-14 rounded-[2px] border-[#212121] bg-transparent px-4 font-mono text-lg text-white placeholder:text-slate-500"
-        />
-      </div>
+          <div className="space-y-3">
+            <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <h1 className="min-w-0 max-w-3xl break-words text-4xl font-semibold tracking-[-0.04em] text-white sm:text-5xl">
+                {vault.name}
+              </h1>
+              <HowVaultWorksDialog vault={vault} />
+            </div>
+            <p className="max-w-3xl text-base leading-8 text-slate-300 sm:text-lg">
+              {getHeroSentence(vault)}
+            </p>
+          </div>
 
-      <div className="flex items-center gap-2 text-xs text-slate-400">
-        <span>How claims work</span>
-        <InfoTooltip
-          label="How it works"
-          content={`After your withdrawal is processed, your ${claimDisplaySymbol} will be available to claim through the vault's conversion helper.`}
-        />
-      </div>
-
-      {!hasBlockingRequest &&
-        effectivePreviewAssets !== undefined &&
-        parsedShares &&
-        parsedShares > 0n && (
-          <p className="text-xs text-slate-400">
-            Estimated {claimDisplaySymbol} out:{" "}
-            {Number(formatUnits(effectivePreviewAssets, claimDisplayDecimals)).toFixed(2)}
-          </p>
-        )}
-
-      <Button
-        type="button"
-        onClick={() => {
-          void handleRequestWithdrawal();
-        }}
-        disabled={isBlockedMode || requestDisabled}
-        className="h-12 w-full rounded-[10px] bg-white text-black hover:bg-white/90"
-      >
-        {queuePending
-          ? "Submitting..."
-          : walletConnected && !sessionKnown
-            ? "Checking session..."
-            : !userAuthorized
-              ? "Sign in to request"
-              : navSyncPending
-                ? "Refreshing NAV..."
-                : isBlockedMode
-                  ? "Withdrawal blocked"
-                  : "Request withdrawal"}
-      </Button>
-
-      {queueActiveRequest && (
-        <div className="space-y-3 rounded-[24px] border border-amber-400/20 bg-amber-400/10 p-4 text-amber-50">
-          <p className="text-sm font-medium">
-            {readyQueueRequest
-              ? isCustomVault
-                ? "Your withdrawal is ready"
-                : "Claim is ready"
-              : `Withdrawal request is queued`}
-          </p>
-          <p className="text-xs leading-6 text-amber-50/90">
-            {readyQueueRequest
-              ? isCustomVault
-                ? `Your withdrawal has been processed. Claim your ${claimDisplaySymbol} below.`
-                : `Settlement is complete. Sign the claim transaction to receive ${claimDisplaySymbol}.`
-              : "Your withdrawal request is queued. You can leave it or cancel it before claiming."}
-          </p>
-          <p className="text-xs leading-6 text-amber-50/90">
-            {readyQueueRequest && isCustomVault ? "Locked payout" : "Estimated payout"}:{" "}
-            {formatCurrency(displayedEstimatedAssets || 0)}
-          </p>
-          <p className="text-xs leading-6 text-amber-50/90">
-            Requested: {formatDate(queueActiveRequest.requestedAt)}
-          </p>
-
-          <div className="grid gap-2 sm:grid-cols-2">
-            {readyQueueRequest && (
-              <Button
-                type="button"
-                onClick={() => {
-                  void handleClaimReadyWithdrawal();
-                }}
-                disabled={claimDisabled}
-                className="h-11 rounded-[10px] bg-white text-black hover:bg-white/90"
-              >
-                {claimSubmissionInFlight || claimPreflightPending || isPending || isConfirming
-                  ? "Claiming..."
-                  : "Claim withdrawal"}
-              </Button>
-            )}
-            {!readyQueueRequest && (
-              <Button
-                type="button"
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/6 px-3 py-1 text-xs text-slate-200">
+              <Image src="/logo/usdc-logo.svg" alt={USER_COLLATERAL_SYMBOL} width={14} height={14} />
+              {USER_COLLATERAL_SYMBOL}
+            </span>
+            {validAssets.length > 0 ? (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/6 px-3 py-1 text-xs text-slate-200">
+                <AssetLogoStack assets={validAssets} size="xs" />
+                <span>{vault.profile.tradingMetadata?.assets?.[0]?.toUpperCase()} Markets</span>
+              </span>
+            ) : null}
+            {tags.map((tag) => (
+              <Badge
+                key={tag}
                 variant="outline"
-                onClick={() => {
-                  void handleCancelWithdrawalRequest();
-                }}
-                disabled={queuePending || isPending || isConfirming}
-                className="h-11 rounded-[10px] border-[#656565]/40 bg-transparent text-white hover:bg-[#212121]"
+                className="rounded-full border-white/10 bg-white/6 px-3 py-1 text-xs text-slate-200"
               >
-                Cancel request
-              </Button>
+                {tag}
+              </Badge>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-3">
+          {displayedHeroMetrics.map((metric) => (
+            <SummaryMetric
+              key={metric.label}
+              label={metric.label}
+              value={metric.value}
+              hint={metric.hint}
+              tooltip={metric.tooltip}
+            />
+          ))}
+        </div>
+        {optimisticDeposit ? (
+          <div className="rounded-[2px] border border-emerald-400/20 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-50">
+            {optimisticDeposit.mode === "queued"
+              ? `${formatCurrency(optimisticDeposit.amount)} deposit queued. It will appear in TVL after processing mints shares.`
+              : `${formatCurrency(optimisticDeposit.amount)} deposit confirmed. Dashboard values are refreshing now.`}
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function VaultPerformanceSection({
+  performance,
+  chartPerformance,
+  isLoading,
+  tradingAnalytics,
+  selectedRange,
+  onRangeChange,
+}: {
+  performance: DerivedVaultPerformanceStats;
+  chartPerformance: DerivedVaultPerformanceStats;
+  isLoading: boolean;
+  tradingAnalytics?: VaultTradingAnalytics;
+  selectedRange: NavChartRange;
+  onRangeChange: (range: NavChartRange) => void;
+}) {
+  return (
+    <SectionShell title="Performance">
+      <div className="space-y-5">
+        <NavChart
+          stats={chartPerformance}
+          isLoading={isLoading}
+          selectedRange={selectedRange}
+          onRangeChange={onRangeChange}
+        />
+        <div className="grid gap-3 md:grid-cols-4">
+          <PerformanceTile
+            label="Since inception"
+            value={formatPercent(performance.sinceInception)}
+            tone={
+              performance.sinceInception !== null && performance.sinceInception >= 0
+                ? "good"
+                : "warning"
+            }
+            tooltip="Total return since the vault launched."
+          />
+          <PerformanceTile
+            label="30D return"
+            value={formatPercent(performance.thirtyDay)}
+            tone={performance.thirtyDay !== null && performance.thirtyDay >= 0 ? "good" : "warning"}
+            tooltip="Return over the past 30 days."
+          />
+          <PerformanceTile
+            label="Max drawdown"
+            value={formatPercent(performance.maxDrawdown)}
+            tone="warning"
+            tooltip="Largest decline from peak value."
+          />
+          <PerformanceTile
+            label="Win rate"
+            value={tradingAnalytics ? `${(tradingAnalytics.winRate * 100).toFixed(1)}%` : "--"}
+            tone="neutral"
+            tooltip={
+              tradingAnalytics
+                ? `Based on ${tradingAnalytics.positionCount} settled positions.`
+                : "Percentage of winning trades."
+            }
+          />
+        </div>
+      </div>
+    </SectionShell>
+  );
+}
+
+function VaultStrategySection({ vault, status }: { vault: VaultInstance; status: VaultStatusResponse | null }) {
+  const validAssets = getVaultTradingAssets(vault);
+  const assetLabel = vault.profile.tradingMetadata?.assets?.[0]?.toUpperCase() || "";
+  const platform = vault.profile.tradingMetadata?.platforms?.[0];
+  const platformLabel = platform ? platform.charAt(0).toUpperCase() + platform.slice(1) : "";
+
+  return (
+    <SectionShell title="Strategy">
+      <div className="space-y-5">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <KeyInfoItem label="Managed by" value={getManagementLabel(vault)} />
+          <KeyInfoItem label="Focus" value={vault.profile.strategyLabel} />
+          {validAssets.length > 0 ? (
+            <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-3">
+              <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Trading on</p>
+              <div className="mt-1.5 flex items-center gap-2">
+                <AssetLogoStack assets={validAssets} size="sm" />
+                <p className="text-sm font-medium text-white">
+                  {assetLabel} on {platformLabel}
+                </p>
+              </div>
+            </div>
+          ) : null}
+        </div>
+        <TechnicalDetailsDialog vault={vault} status={status} />
+      </div>
+    </SectionShell>
+  );
+}
+
+function VaultRiskTermsSection({ vault, cycle }: { vault: VaultInstance; cycle: Cycle | null }) {
+  return (
+    <SectionShell title="Risk & Terms">
+      <div className="grid gap-4 md:grid-cols-3">
+        <SummaryMetric
+          label="Risk score"
+          value={getRiskScore(vault.profile.riskLevel)}
+          hint={`${toTitleCase(vault.profile.riskLevel)} risk mandate.`}
+          tooltip="Overall risk level of this vault."
+        />
+        <SummaryMetric
+          label="Liquidity"
+          value={getLiquidityLabel(vault, cycle)}
+          hint="How you can withdraw."
+          tooltip="Withdrawal availability for this vault."
+        />
+        <SummaryMetric
+          label="Fees"
+          value={getFeeLabel(vault)}
+          hint="Management and performance fee."
+          tooltip="Fees charged by this vault."
+        />
+      </div>
+      <div className="mt-5 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-5 text-sm leading-7 text-slate-400">
+        {getRiskSummary(vault, cycle)}
+      </div>
+    </SectionShell>
+  );
+}
+
+function VaultActivitySection({
+  activeTab,
+  onActiveTabChange,
+  sessionKnown,
+  userAuthorized,
+  userActivity,
+  userActivityOffset,
+  userActivityHasMore,
+  userHistoryLoading,
+  userHistoryError,
+  userHistoryUnauthorized,
+  vaultActivity,
+  vaultActivityOffset,
+  vaultActivityHasMore,
+  vaultEventsLoading,
+  vaultEventsError,
+  positions,
+  positionHistoryLoading,
+  positionHistoryError,
+  tradesOffset,
+  dispatchUiState,
+  routeVaultId,
+  userActivityScope,
+  activityLastRefresh,
+  openPositionCount,
+}: {
+  activeTab: ActivityTab;
+  onActiveTabChange: (value: ActivityTab) => void;
+  sessionKnown: boolean;
+  userAuthorized: boolean;
+  userActivity: ActivityItem[];
+  userActivityOffset: number;
+  userActivityHasMore: boolean;
+  userHistoryLoading: boolean;
+  userHistoryError: string | null;
+  userHistoryUnauthorized: boolean;
+  vaultActivity: ActivityItem[];
+  vaultActivityOffset: number;
+  vaultActivityHasMore: boolean;
+  vaultEventsLoading: boolean;
+  vaultEventsError: string | null;
+  positions: VaultPositionHistoryResponse["positions"] | undefined;
+  positionHistoryLoading: boolean;
+  positionHistoryError: string | null;
+  tradesOffset: number;
+  dispatchUiState: React.Dispatch<VaultDetailUiAction>;
+  routeVaultId: number;
+  userActivityScope: string;
+  activityLastRefresh: Date | null;
+  openPositionCount?: number;
+}) {
+  const visibleTrades = positions?.slice(tradesOffset, tradesOffset + ACTIVITY_PAGE_SIZE) || [];
+  const hasMoreTrades = tradesOffset + ACTIVITY_PAGE_SIZE < (positions?.length || 0);
+
+  return (
+    <SectionShell title="Activity">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
+        <div className="flex flex-wrap items-center gap-2">
+          <span>Recent updates</span>
+          <Badge
+            variant="outline"
+            className="rounded-full border-white/10 bg-white/6 px-3 py-1 text-[11px] text-slate-200"
+          >
+            {openPositionCount ?? "--"} open positions
+          </Badge>
+        </div>
+        <span>
+          Updated {activityLastRefresh ? formatDate(activityLastRefresh.toISOString()) : "--"}
+        </span>
+      </div>
+
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => onActiveTabChange(value as ActivityTab)}
+        className="space-y-3"
+      >
+        <div className="block sm:hidden">
+          <span className="mb-2 block text-[10px] uppercase tracking-[0.18em] text-slate-500">
+            Activity view
+          </span>
+          <Select
+            value={activeTab}
+            onValueChange={(value) => onActiveTabChange(value as ActivityTab)}
+          >
+            <SelectTrigger
+              aria-label="Activity view"
+              className="h-11 w-full rounded-[2px] border-[#212121] bg-[#0A0A0A] px-3 text-sm font-medium text-white shadow-none focus:ring-cyan-300/20 [&>svg]:text-slate-500"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent
+              position="popper"
+              className="rounded-[2px] border-[#212121] bg-[#0A0A0A] text-white shadow-2xl shadow-black/40"
+            >
+              {ACTIVITY_TAB_OPTIONS.map((option) => (
+                <SelectItem
+                  key={option.value}
+                  value={option.value}
+                  className="rounded-[2px] text-slate-300 focus:bg-[#212121] focus:text-white data-[state=checked]:text-cyan-100"
+                >
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <TabsList className="hidden h-auto w-full rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-1 sm:grid sm:grid-cols-3">
+          {ACTIVITY_TAB_OPTIONS.map((option) => (
+            <TabsTrigger
+              key={option.value}
+              value={option.value}
+              className="rounded-[2px] px-3 py-2 text-sm text-slate-400 hover:text-white data-[state=active]:border-b data-[state=active]:border-[#656565]/40 data-[state=active]:bg-[#212121] data-[state=active]:text-white"
+            >
+              {option.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+
+        <TabsContent value="user" className="space-y-3">
+          {!sessionKnown ? (
+            <Skeleton className="h-40 w-full rounded-[2px] bg-white/10" />
+          ) : userAuthorized ? (
+            userHistoryLoading ? (
+              <Skeleton className="h-40 w-full rounded-[2px] bg-white/10" />
+            ) : userHistoryError ? (
+              <div className="rounded-[2px] border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-rose-100">
+                {userHistoryError}
+              </div>
+            ) : userHistoryUnauthorized ? (
+              <div className="rounded-[2px] border border-amber-400/20 bg-amber-400/10 p-5 text-sm text-amber-50">
+                Your account history is temporarily unavailable.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <ActivityTimeline items={userActivity} emptyState="No account activity yet." pageSize={ACTIVITY_PAGE_SIZE} />
+                <ActivityPaginationControls
+                  offset={userActivityOffset}
+                  currentCount={userActivity.length}
+                  hasMore={userActivityHasMore}
+                  isLoading={userHistoryLoading}
+                  onPrevious={() => dispatchUiState({ type: "previous-user-activity-page", scope: userActivityScope })}
+                  onNext={() => {
+                    if (userActivityHasMore) {
+                      dispatchUiState({ type: "next-user-activity-page", scope: userActivityScope });
+                    }
+                  }}
+                />
+              </div>
+            )
+          ) : (
+            <div
+              className="rounded-[2px] border border-white/10 bg-slate-950/30 p-5 text-sm text-slate-400"
+              data-testid="vault-history-auth-prompt"
+            >
+              Sign in to view your deposit, withdrawal, and claim history.
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="vault" className="space-y-3">
+          {vaultEventsLoading ? (
+            <Skeleton className="h-40 w-full rounded-[2px] bg-white/10" />
+          ) : vaultEventsError ? (
+            <div className="rounded-[2px] border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-rose-100">
+              {vaultEventsError}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <ActivityTimeline items={vaultActivity} emptyState="No meaningful vault updates yet." pageSize={ACTIVITY_PAGE_SIZE} />
+              <ActivityPaginationControls
+                offset={vaultActivityOffset}
+                currentCount={vaultActivity.length}
+                hasMore={vaultActivityHasMore}
+                isLoading={vaultEventsLoading}
+                onPrevious={() => dispatchUiState({ type: "previous-vault-activity-page", routeVaultId })}
+                onNext={() => {
+                  if (vaultActivityHasMore) {
+                    dispatchUiState({ type: "next-vault-activity-page", routeVaultId });
+                  }
+                }}
+              />
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="trades" className="space-y-3">
+          {positionHistoryLoading ? (
+            <Skeleton className="h-40 w-full rounded-[2px] bg-white/10" />
+          ) : positionHistoryError ? (
+            <div className="rounded-[2px] border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-rose-100">
+              {positionHistoryError}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <TradesList positions={visibleTrades} emptyState="No trades yet." pageSize={ACTIVITY_PAGE_SIZE} />
+              <ActivityPaginationControls
+                offset={tradesOffset}
+                currentCount={visibleTrades.length}
+                hasMore={hasMoreTrades}
+                isLoading={positionHistoryLoading}
+                onPrevious={() => dispatchUiState({ type: "previous-trades-page" })}
+                onNext={() => {
+                  if (hasMoreTrades) {
+                    dispatchUiState({ type: "next-trades-page" });
+                  }
+                }}
+              />
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
+    </SectionShell>
+  );
+}
+
+function VaultPositionSidebar({
+  className,
+  activeTab,
+  onActiveTabChange,
+  vault,
+  cycle,
+  nav,
+  migration,
+  walletConnected,
+  sessionKnown,
+  userAuthorized,
+  handleDepositSuccess,
+  pendingRequests,
+  claimableRequests,
+  requestsLoading,
+  cycleLoading,
+  redemptionUserShares,
+  estimatedExitValueUsd,
+}: {
+  className?: string;
+  activeTab: PositionActionTab;
+  onActiveTabChange: (value: PositionActionTab) => void;
+  vault: VaultInstance;
+  cycle: Cycle | null;
+  nav: VaultStatusResponse["nav"] | null;
+  migration: VaultStatusResponse["migration"] | null;
+  walletConnected: boolean;
+  sessionKnown: boolean;
+  userAuthorized: boolean;
+  handleDepositSuccess: (result?: DepositSuccessResult) => void;
+  pendingRequests: Parameters<typeof RedemptionPanel>[0]["pendingRequests"];
+  claimableRequests: Parameters<typeof RedemptionPanel>[0]["claimableRequests"];
+  requestsLoading: boolean;
+  cycleLoading: boolean;
+  redemptionUserShares: bigint;
+  estimatedExitValueUsd: number | null;
+}) {
+  return (
+    <aside className={cn("min-w-0 lg:min-h-0 lg:border-l lg:border-white/10 lg:pl-6", className)} id="manage-position">
+      <section className="vault-pane-scroll space-y-4 lg:h-full lg:overflow-y-auto">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.2em] text-slate-500">Manage position</p>
+            <h2 className="mt-1 text-lg font-semibold tracking-tight text-white">Deposit or withdraw</h2>
+          </div>
+          <div className="rounded-full border border-cyan-300/15 bg-cyan-300/10 p-1.5 text-cyan-200">
+            <Wallet className="h-3.5 w-3.5" />
+          </div>
+        </div>
+
+        <Tabs
+          value={activeTab}
+          onValueChange={(value) => onActiveTabChange(value as PositionActionTab)}
+          className="space-y-3"
+        >
+          <TabsList className="grid h-auto w-full grid-cols-2 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-0.5">
+            <TabsTrigger value="deposit" className="rounded-[2px] py-1.5 text-sm text-slate-400 hover:text-white data-[state=active]:border data-[state=active]:border-[#656565]/40 data-[state=active]:bg-[#212121] data-[state=active]:text-white">
+              Deposit
+            </TabsTrigger>
+            <TabsTrigger value="withdraw" className="rounded-[2px] py-1.5 text-sm text-slate-400 hover:text-white data-[state=active]:border data-[state=active]:border-[#656565]/40 data-[state=active]:bg-[#212121] data-[state=active]:text-white">
+              Withdraw
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="deposit">
+            <DepositRail
+              vault={vault}
+              cycle={cycle}
+              nav={nav}
+              migration={migration}
+              walletConnected={walletConnected}
+              sessionKnown={sessionKnown}
+              userAuthorized={userAuthorized}
+              vaultId={vault.id}
+              onSuccess={handleDepositSuccess}
+            />
+          </TabsContent>
+
+          <TabsContent value="withdraw">
+            {vault.type === "custom" ? (
+              <RedemptionPanel
+                vaultId={vault.id}
+                vault={vault}
+                cycleInfo={cycle}
+                pendingRequests={pendingRequests}
+                claimableRequests={claimableRequests}
+                isLoading={requestsLoading || cycleLoading}
+                estimatedExitValueUsd={estimatedExitValueUsd}
+                userShares={redemptionUserShares}
+              />
+            ) : (
+              <div className="space-y-4 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4 text-sm leading-7 text-slate-300">
+                <div>For this vault, use the Withdraw section below.</div>
+                <Button asChild className="w-full rounded-[2px] bg-white text-slate-950 hover:bg-slate-100">
+                  <a href="#exit-queue">Go to Withdraw</a>
+                </Button>
+              </div>
             )}
+          </TabsContent>
+        </Tabs>
+      </section>
+    </aside>
+  );
+}
+
+function VaultPageChrome({
+  networkInfo,
+  migration,
+  statusError,
+  cycleError,
+  onRefresh,
+}: {
+  networkInfo: NetworkDisplayInfo;
+  migration: VaultStatusResponse["migration"] | null;
+  statusError: string | null;
+  cycleError: string | null;
+  onRefresh: () => void;
+}) {
+  return (
+    <>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Link
+          href="/discover"
+          className="inline-flex items-center gap-2 text-sm text-slate-400 transition-colors hover:text-white"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back to vaults
+        </Link>
+        {!networkInfo.isTestnet ? (
+          <Badge
+            variant="outline"
+            className="gap-2 border-white/10 bg-white/5 px-3 py-1.5 text-xs uppercase tracking-[0.2em] text-emerald-200"
+          >
+            <Dot className="h-5 w-5" />
+            {networkInfo.name}
+          </Badge>
+        ) : null}
+      </div>
+
+      {VAULT_NETWORK === "amoy" && (
+        <div className="rounded-[2px] border border-amber-400/20 bg-amber-400/10 p-4 text-amber-50">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="mt-0.5 h-5 w-5 text-amber-200" />
+            <div>
+              <h3 className="text-sm font-medium text-amber-100">Testnet mode: Amoy</h3>
+              <p className="mt-1 text-sm leading-7 text-amber-50/85">
+                You are connected to Polygon Amoy Testnet. Vault testing is supported here, but
+                Polymarket trading is disabled.
+                {!SUPPORTS_POLYMARKET_TRADING &&
+                  " Position and trading features remain read-only on testnet."}
+              </p>
+            </div>
           </div>
         </div>
       )}
 
-      {!readyQueueRequest && customClaimableRequest && (
-        <div className="space-y-3 rounded-[24px] border border-emerald-400/20 bg-emerald-400/10 p-4 text-emerald-50">
-          <p className="text-sm font-medium">
-            {customClaimableRequest.requestKind === "controller_claimable"
-              ? "Claimable balance is ready"
-              : "Claim is ready"}
-          </p>
-          <p className="text-xs leading-6 text-emerald-50/90">
-            {customClaimableRequest.requestKind === "controller_claimable"
-              ? "Your withdrawal is ready to claim."
-              : "Your withdrawal has been settled. Claim it below."}
-          </p>
-          <p className="text-xs leading-6 text-emerald-50/90">
-            Claimable now:{" "}
-            {formatCurrency(Number(customClaimableRequest.claimableAssetsFormatted ?? "0"))}
-          </p>
-          {customClaimableRequest.requestKind !== "controller_claimable" && (
-            <p className="text-xs leading-6 text-emerald-50/90">
-              Requested: {formatDate(customClaimableRequest.createdAt)}
-            </p>
-          )}
-          <Button
-            type="button"
-            onClick={handleClaimCustomRequest}
-            disabled={customClaimDisabled || !customClaimableRequest.claimableAssetsFormatted}
-            className="h-11 rounded-[10px] bg-white text-black hover:bg-white/90"
-          >
-            {isPending || isConfirming ? "Claiming..." : "Claim withdrawal"}
-          </Button>
+      {migration?.enabled && (
+        <div className="rounded-[2px] border border-amber-400/20 bg-amber-400/10 p-4 text-amber-50">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="mt-0.5 h-5 w-5 text-amber-200" />
+            <div>
+              <h3 className="text-sm font-medium text-amber-100">{migration.title}</h3>
+              <p className="mt-1 text-sm leading-7 text-amber-50/85">{migration.message}</p>
+            </div>
+          </div>
         </div>
       )}
 
-      {!queueActiveRequest && !customClaimableRequest && customPendingRequest && (
-        <div className="space-y-3 rounded-[24px] border border-amber-400/20 bg-amber-400/10 p-4 text-amber-50">
-          <p className="text-sm font-medium">Withdrawal is queued</p>
-          <p className="text-xs leading-6 text-amber-50/90">
-            You have a pending withdrawal that is being processed.
-          </p>
-          <p className="text-xs leading-6 text-amber-50/90">
-            Requested: {formatDate(customPendingRequest.createdAt)}
-          </p>
-        </div>
+      {(statusError || cycleError) && (
+        <Card className="rounded-[2px] border-rose-400/20 bg-rose-400/10 text-rose-50 shadow-none">
+          <CardContent className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm">{statusError ?? cycleError}</p>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onRefresh}
+              className="border-white/15 bg-white/5 text-white hover:bg-white/10"
+            >
+              Retry
+            </Button>
+          </CardContent>
+        </Card>
       )}
+    </>
+  );
+}
 
-      {queueLoading && <Skeleton className="h-5 w-40 bg-white/10" />}
-      <TxFeedback message={message} error={errorMessage} />
-    </div>
+function LegacyWithdrawSection({
+  vault,
+  cycle,
+  pendingRequests,
+  claimableRequests,
+  isLoading,
+  estimatedExitValueUsd,
+  userShares,
+}: {
+  vault: VaultInstance;
+  cycle: Cycle | null;
+  pendingRequests: Parameters<typeof RedemptionPanel>[0]["pendingRequests"];
+  claimableRequests: Parameters<typeof RedemptionPanel>[0]["claimableRequests"];
+  isLoading: boolean;
+  estimatedExitValueUsd: number | null;
+  userShares: bigint;
+}) {
+  if (vault.type === "custom") {
+    return null;
+  }
+
+  return (
+    <SectionShell
+      id="exit-queue"
+      eyebrow="Withdrawals"
+      title="Withdraw"
+      description={`Manage your withdrawal requests and claim ${USER_COLLATERAL_SYMBOL}.`}
+    >
+      <RedemptionPanel
+        vaultId={vault.id}
+        vault={vault}
+        cycleInfo={cycle}
+        pendingRequests={pendingRequests}
+        claimableRequests={claimableRequests}
+        isLoading={isLoading}
+        estimatedExitValueUsd={estimatedExitValueUsd}
+        userShares={userShares}
+      />
+    </SectionShell>
   );
 }
 
@@ -2190,6 +2321,95 @@ function VaultNotFound() {
   );
 }
 
+function VaultDetailLoading() {
+  return (
+    <main
+      className="flex-1 px-4 py-10 sm:px-6 lg:px-10 lg:py-12"
+      data-testid="vault-detail-loading"
+    >
+      <div className="mx-auto max-w-6xl space-y-6">
+        <Skeleton className="h-10 w-40 bg-white/10" />
+        <Skeleton className="h-[220px] w-full rounded-[2px] bg-[#212121]" />
+        <Skeleton className="h-[540px] w-full rounded-[2px] bg-[#212121]" />
+      </div>
+    </main>
+  );
+}
+
+function useE2eConnectedSeam(
+  dispatchUiState: React.Dispatch<VaultDetailUiAction>,
+  e2eConnectedSeam: boolean,
+) {
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const value = new URL(window.location.href).searchParams.get("e2eConnected");
+      dispatchUiState({ type: "set-e2e-connected-seam", value: value === "1" });
+    }
+  }, [dispatchUiState]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.__E2E_EFFECTIVE_CONNECTED__ = e2eConnectedSeam;
+    }
+  }, [e2eConnectedSeam]);
+}
+
+function useOptimisticDepositExpiry(
+  optimisticDeposit: OptimisticDepositState | null,
+  dispatchUiState: React.Dispatch<VaultDetailUiAction>,
+) {
+  useEffect(() => {
+    if (!optimisticDeposit) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      dispatchUiState({ type: "set-optimistic-deposit", value: null });
+    }, 30_000);
+
+    return () => window.clearTimeout(timeout);
+  }, [dispatchUiState, optimisticDeposit]);
+}
+
+function buildDisplayedHeroMetrics({
+  heroMetrics,
+  optimisticDeposit,
+  freshestNavSnapshot,
+}: {
+  heroMetrics: HeroMetric[];
+  optimisticDeposit: OptimisticDepositState | null;
+  freshestNavSnapshot: { trackedTotalAssets?: number; totalAssets: number } | null;
+}): HeroMetric[] {
+  if (!optimisticDeposit) {
+    return heroMetrics;
+  }
+
+  return heroMetrics.map((metric) => {
+    if (metric.label !== "TVL") {
+      return metric;
+    }
+
+    if (optimisticDeposit.mode === "queued") {
+      return {
+        ...metric,
+        hint: `${formatCurrency(optimisticDeposit.amount)} queued — syncing deposit status.`,
+        tooltip: "Queued deposits are shown separately until the vault processes them into shares.",
+      };
+    }
+
+    const currentTvl = freshestNavSnapshot?.trackedTotalAssets ?? freshestNavSnapshot?.totalAssets;
+    const optimisticTvl =
+      currentTvl !== undefined ? currentTvl + optimisticDeposit.amount : optimisticDeposit.amount;
+
+    return {
+      ...metric,
+      value: formatCompactCurrency(optimisticTvl),
+      hint: `Includes ${formatCurrency(optimisticDeposit.amount)} just deposited.`,
+      tooltip: "Showing an optimistic TVL while the latest vault snapshot syncs.",
+    };
+  });
+}
+
 interface VaultDetailPageProps {
   routeSegment: string;
   routeVaultId: number;
@@ -2204,33 +2424,24 @@ export default function VaultDetailPage({
   bootstrapResolved,
 }: VaultDetailPageProps) {
   const queryClient = useQueryClient();
-  const [e2eConnectedSeam, setE2eConnectedSeam] = useState(false);
-  const [tradesOffset, setTradesOffset] = useState(0);
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const value = new URL(window.location.href).searchParams.get("e2eConnected");
-      setE2eConnectedSeam(value === "1");
-    }
-  }, []);
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      window.__E2E_EFFECTIVE_CONNECTED__ = e2eConnectedSeam;
-    }
-  }, [e2eConnectedSeam]);
-
   const { address, walletConnected, sessionAuthenticated, sessionKnown } = useAuthSession();
-  const routeVaultIdInvalid = !Number.isInteger(routeVaultId) || routeVaultId <= 0;
-  const [vaultActivityPagination, setVaultActivityPagination] = useState({
-    routeVaultId,
-    offset: 0,
-  });
+  const [activityTab, setActivityTab] = useState<ActivityTab>("user");
+  const [positionActionTab, setPositionActionTab] = useState<PositionActionTab>("deposit");
+  const [navChartRange, setNavChartRange] = useState<NavChartRange>("1M");
   const userActivityScope = `${routeVaultId}:${address?.toLowerCase() ?? "anonymous"}:${walletConnected ? "connected" : "disconnected"}:${sessionAuthenticated ? "authenticated" : "guest"}`;
-  const [userActivityPagination, setUserActivityPagination] = useState({
-    scope: userActivityScope,
-    offset: 0,
-  });
+  const [uiState, dispatchUiState] = useReducer(vaultDetailUiReducer, undefined, () =>
+    createVaultDetailUiState(routeVaultId, userActivityScope),
+  );
+  const {
+    e2eConnectedSeam,
+    tradesOffset,
+    optimisticDeposit,
+    vaultActivityPagination,
+    userActivityPagination,
+  } = uiState;
+  useE2eConnectedSeam(dispatchUiState, e2eConnectedSeam);
+
+  const routeVaultIdInvalid = !Number.isInteger(routeVaultId) || routeVaultId <= 0;
   const vaultActivityOffset =
     vaultActivityPagination.routeVaultId === routeVaultId ? vaultActivityPagination.offset : 0;
   const userActivityOffset =
@@ -2238,7 +2449,11 @@ export default function VaultDetailPage({
 
   const userAuthorized = walletConnected && Boolean(address) && sessionAuthenticated;
 
-  const { data: instancesData } = useVaultInstances();
+  const shouldFetchClientInstances = !bootstrapResolved;
+  const { data: instancesData } = useVaultInstances({
+    enabled: shouldFetchClientInstances,
+    refetchIntervalMs: false,
+  });
   const queriedVault = instancesData?.instances
     ? routeVaultId > 0
       ? instancesData.instances.find((instance) => instance.id === routeVaultId)
@@ -2250,29 +2465,34 @@ export default function VaultDetailPage({
     (routeVaultIdInvalid && hasClientInstances && !queriedVault) ||
     (bootstrapResolved && bootstrapVault === null && !queriedVault) ||
     (hasClientInstances && !queriedVault);
+  const effectiveVaultId = vault?.id;
+  const shouldLoadUserActivity = activityTab === "user";
+  const shouldLoadVaultActivity = activityTab === "vault";
+  const shouldLoadTrades = activityTab === "trades";
+  const shouldLoadWithdrawData = vault?.type !== "custom" || positionActionTab === "withdraw";
   const { data: status, isLoading: statusLoading, error: statusError } = useVaultStatus(vault?.id);
   const {
     data: navHistoryData,
     isLoading: navHistoryLoading,
-    refetch: refetchNavHistory,
-  } = useVaultNavHistory(undefined, vault?.id);
+  } = useVaultNavHistory(undefined, effectiveVaultId);
   const {
     data: positionHistoryData,
     isLoading: positionHistoryLoading,
     error: positionHistoryError,
-  } = useVaultPositionHistory(vault?.id);
+    lastRefresh: positionHistoryLastRefresh,
+  } = useVaultPositionHistory(shouldLoadTrades ? effectiveVaultId : undefined);
   const { cycle, isLoading: cycleLoading, error: cycleError } = useCycleStatus(vault?.id);
   const {
     pendingRequests,
     claimableRequests,
     isLoading: requestsLoading,
-  } = useRequests(vault?.id, userAuthorized);
+  } = useRequests(shouldLoadWithdrawData ? effectiveVaultId : undefined, userAuthorized);
   const {
     data: vaultEventsData,
     isLoading: vaultEventsLoading,
     error: vaultEventsError,
     lastRefresh: vaultEventsLastRefresh,
-  } = useVaultEvents(vault?.id, ACTIVITY_PAGE_SIZE, {
+  } = useVaultEvents(shouldLoadVaultActivity ? effectiveVaultId : undefined, ACTIVITY_PAGE_SIZE, {
     offset: vaultActivityOffset,
   });
   const { data: tradingAnalyticsData } = useVaultTradingAnalytics(vault?.id);
@@ -2281,30 +2501,60 @@ export default function VaultDetailPage({
     isLoading: userHistoryLoading,
     error: userHistoryError,
     isUnauthorized: userHistoryUnauthorized,
+    lastRefresh: userHistoryLastRefresh,
   } = useUserVaultHistory(
-    vault?.id,
+    shouldLoadUserActivity ? effectiveVaultId : undefined,
     userAuthorized,
     address,
     ACTIVITY_PAGE_SIZE,
     userActivityOffset,
   );
   const { shares: redemptionUserShares } = useVaultShares(
-    vault?.config.vaultAddress,
-    address,
+    shouldLoadWithdrawData ? vault?.config.vaultAddress : undefined,
+    shouldLoadWithdrawData ? address : undefined,
     vault?.type === "custom" ? 6 : 18,
   );
-  const refreshAll = async () => {
+  const refreshAll = useCallback(async () => {
     await Promise.all([
       invalidatePublicVaultDetailQueries(queryClient, vault?.id),
       invalidateUserVaultDetailQueries(queryClient, vault?.id),
-      refetchNavHistory(),
     ]);
-  };
+  }, [queryClient, vault?.id]);
 
-  const navChartSnapshots = useMemo(() => navHistoryData?.snapshots ?? [], [navHistoryData?.snapshots]);
+  const handleDepositSuccess = useCallback(
+    (result?: DepositSuccessResult) => {
+      if (result?.amount !== undefined && Number.isFinite(result.amount) && result.amount > 0) {
+        dispatchUiState({
+          type: "set-optimistic-deposit",
+          value: {
+            amount: result.amount,
+            mode: result.mode,
+            createdAt: Date.now(),
+          },
+        });
+      }
+
+      void refreshAll();
+    },
+    [refreshAll],
+  );
+
+  useOptimisticDepositExpiry(optimisticDeposit, dispatchUiState);
+
+  const navHistorySnapshots = useMemo(() => navHistoryData?.snapshots ?? [], [navHistoryData?.snapshots]);
+  const navChartRangeConfig = getNavChartRangeConfig(navChartRange);
   const performance = useMemo(
-    () => deriveVaultPerformanceStats(navChartSnapshots),
-    [navChartSnapshots],
+    () => deriveVaultPerformanceStats(navHistorySnapshots),
+    [navHistorySnapshots],
+  );
+  const chartPerformance = useMemo(
+    () =>
+      deriveVaultChartStats(navHistorySnapshots, {
+        maxPoints: navChartRangeConfig.maxPoints,
+        rangeDays: navChartRangeConfig.rangeDays,
+        smooth: navChartRangeConfig.smooth,
+      }),
+    [navHistorySnapshots, navChartRangeConfig.maxPoints, navChartRangeConfig.rangeDays, navChartRangeConfig.smooth],
   );
   const networkInfo = getNetworkDisplayInfo(VAULT_NETWORK);
   const migration = status?.migration ?? vault?.migration ?? null;
@@ -2314,7 +2564,7 @@ export default function VaultDetailPage({
         vault,
         cycle,
         statusNav: status?.nav,
-        navHistorySnapshots: navChartSnapshots,
+        navHistorySnapshots,
         performance,
         vaultEventItems: vaultEventsData?.items ?? [],
         userActivityItems: userHistoryData?.items ?? [],
@@ -2328,596 +2578,132 @@ export default function VaultDetailPage({
       vault,
       cycle,
       status?.nav,
-      navChartSnapshots,
+      navHistorySnapshots,
       performance,
       vaultEventsData?.items,
       userHistoryData?.items,
     ],
   );
 
+  const displayedHeroMetrics = useMemo(() => {
+    return buildDisplayedHeroMetrics({
+      heroMetrics,
+      optimisticDeposit,
+      freshestNavSnapshot,
+    });
+  }, [freshestNavSnapshot, heroMetrics, optimisticDeposit]);
+
   const vaultActivityHasMore = vaultEventsData?.pagination?.hasMore ?? false;
   const userActivityHasMore = userHistoryData?.pagination?.hasMore ?? false;
+  const activityLastRefresh =
+    activityTab === "trades"
+      ? positionHistoryLastRefresh
+      : activityTab === "user"
+        ? userHistoryLastRefresh
+        : vaultEventsLastRefresh;
 
   if (shouldRenderNotFound) {
     return <VaultNotFound />;
   }
 
   if (!vault) {
-    return (
-      <main
-        className="flex-1 px-4 py-10 sm:px-6 lg:px-10 lg:py-12"
-        data-testid="vault-detail-loading"
-      >
-        <div className="mx-auto max-w-6xl space-y-6">
-          <Skeleton className="h-10 w-40 bg-white/10" />
-          <Skeleton className="h-[220px] w-full rounded-[2px] bg-[#212121]" />
-          <Skeleton className="h-[540px] w-full rounded-[2px] bg-[#212121]" />
-        </div>
-      </main>
-    );
+    return <VaultDetailLoading />;
   }
 
   return (
-    <main className="vault-pane-scroll flex-1 min-h-0 overflow-y-auto px-4 py-8 sm:px-6 lg:overflow-hidden lg:px-10 lg:py-6">
-      <div className="mx-auto max-w-7xl lg:h-full lg:min-h-0">
-        <div className="grid gap-x-8 gap-y-6 lg:h-full lg:grid-cols-[minmax(0,1fr)_380px] lg:gap-y-0">
-          <div className="vault-pane-scroll space-y-6 lg:min-h-0 lg:overflow-y-auto lg:pr-3">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <Link
-                href="/discover"
-                className="inline-flex items-center gap-2 text-sm text-slate-400 transition-colors hover:text-white"
-              >
-                <ArrowLeft className="h-4 w-4" />
-                Back to vaults
-              </Link>
-              {!networkInfo.isTestnet ? (
-                <Badge
-                  variant="outline"
-                  className="gap-2 border-white/10 bg-white/5 px-3 py-1.5 text-xs uppercase tracking-[0.2em] text-emerald-200"
-                >
-                  <Dot className="h-5 w-5" />
-                  {networkInfo.name}
-                </Badge>
-              ) : null}
-            </div>
+    <main className="vault-pane-scroll min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-3 py-6 sm:px-6 lg:overflow-hidden lg:px-10 lg:py-6">
+      <div className="mx-auto min-w-0 max-w-7xl lg:h-full lg:min-h-0">
+        <div className="grid min-w-0 grid-cols-1 gap-6 lg:h-full lg:grid-cols-[minmax(0,1fr)_380px] lg:grid-rows-[auto_minmax(0,1fr)] lg:gap-x-8 lg:gap-y-6">
+          <div className="min-w-0 space-y-6 lg:col-start-1 lg:row-start-1">
+            <VaultPageChrome
+              networkInfo={networkInfo}
+              migration={migration}
+              statusError={statusError}
+              cycleError={cycleError}
+              onRefresh={() => {
+                void refreshAll();
+              }}
+            />
 
-            {VAULT_NETWORK === "amoy" && (
-              <div className="rounded-[24px] border border-amber-400/20 bg-amber-400/10 p-4 text-amber-50">
-                <div className="flex items-start gap-3">
-                  <AlertCircle className="mt-0.5 h-5 w-5 text-amber-200" />
-                  <div>
-                    <h3 className="text-sm font-medium text-amber-100">Testnet mode: Amoy</h3>
-                    <p className="mt-1 text-sm leading-7 text-amber-50/85">
-                      You are connected to Polygon Amoy Testnet. Vault testing is supported here,
-                      but Polymarket trading is disabled.
-                      {!SUPPORTS_POLYMARKET_TRADING &&
-                        " Position and trading features remain read-only on testnet."}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {migration?.enabled && (
-              <div className="rounded-[24px] border border-amber-400/20 bg-amber-400/10 p-4 text-amber-50">
-                <div className="flex items-start gap-3">
-                  <AlertCircle className="mt-0.5 h-5 w-5 text-amber-200" />
-                  <div>
-                    <h3 className="text-sm font-medium text-amber-100">{migration.title}</h3>
-                    <p className="mt-1 text-sm leading-7 text-amber-50/85">
-                      {migration.message}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div className="space-y-8">
-              {(statusError || cycleError) && (
-                <Card className="rounded-[24px] border-rose-400/20 bg-rose-400/10 text-rose-50 backdrop-blur-xl">
-                  <CardContent className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
-                    <p className="text-sm">{statusError ?? cycleError}</p>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        void refreshAll();
-                      }}
-                      className="border-white/15 bg-white/5 text-white hover:bg-white/10"
-                    >
-                      Retry
-                    </Button>
-                  </CardContent>
-                </Card>
-              )}
-
-              <section className="relative overflow-hidden rounded-[2px] border border-[#212121] bg-[#121212] px-6 py-7 shadow-none sm:px-8 lg:px-10 lg:py-9">
-                <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(137,145,130,0.16),_transparent_32%),radial-gradient(circle_at_85%_18%,_rgba(236,102,0,0.15),_transparent_18%)]" />
-                <div className="relative grid gap-8">
-                  <div className="space-y-5">
-                    <div className="flex flex-wrap items-center gap-3">
-                      <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">
-                        Vault
-                      </p>
-                      <HowVaultWorksDialog vault={vault} />
-                    </div>
-
-                    <div className="space-y-3">
-                      <h1 className="max-w-3xl text-4xl font-semibold tracking-[-0.04em] text-white sm:text-5xl">
-                        {vault.name}
-                      </h1>
-                      <p className="max-w-3xl text-base leading-8 text-slate-300 sm:text-lg">
-                        {getHeroSentence(vault)}
-                      </p>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/6 px-3 py-1 text-xs text-slate-200">
-                        <Image
-                          src="/logo/usdc-logo.svg"
-                          alt={USER_COLLATERAL_SYMBOL}
-                          width={14}
-                          height={14}
-                        />
-                        {USER_COLLATERAL_SYMBOL}
-                      </span>
-                      {(() => {
-                        const validAssets: AssetType[] = [
-                          ...(vault.profile.tradingMetadata?.assets || []),
-                          ...(vault.profile.tradingMetadata?.platforms || []),
-                        ].filter((asset): asset is AssetType =>
-                          ["usdc", "btc", "gnosis-safe", "polymarket"].includes(asset),
-                        );
-
-                        if (validAssets.length === 0) return null;
-
-                        return (
-                          <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/6 px-3 py-1 text-xs text-slate-200">
-                            <AssetLogoStack assets={validAssets} size="xs" />
-                            <span>
-                              {vault.profile.tradingMetadata?.assets?.[0]?.toUpperCase()} Markets
-                            </span>
-                          </span>
-                        );
-                      })()}
-                      {tags.map((tag) => (
-                        <Badge
-                          key={tag}
-                          variant="outline"
-                          className="rounded-full border-white/10 bg-white/6 px-3 py-1 text-xs text-slate-200"
-                        >
-                          {tag}
-                        </Badge>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    {heroMetrics.map((metric) => (
-                      <SummaryMetric
-                        key={metric.label}
-                        label={metric.label}
-                        value={metric.value}
-                        hint={metric.hint}
-                        tooltip={metric.tooltip}
-                      />
-                    ))}
-                  </div>
-                </div>
-              </section>
-
-              <SectionShell title="Performance">
-                <div className="space-y-5">
-                  <NavChart stats={performance} isLoading={navHistoryLoading || statusLoading} />
-                  <div className="grid gap-3 md:grid-cols-4">
-                    <PerformanceTile
-                      label="Since inception"
-                      value={formatPercent(performance.sinceInception)}
-                      tone={
-                        performance.sinceInception !== null && performance.sinceInception >= 0
-                          ? "good"
-                          : "warning"
-                      }
-                      tooltip="Total return since the vault launched."
-                    />
-                    <PerformanceTile
-                      label="30D return"
-                      value={formatPercent(performance.thirtyDay)}
-                      tone={
-                        performance.thirtyDay !== null && performance.thirtyDay >= 0
-                          ? "good"
-                          : "warning"
-                      }
-                      tooltip="Return over the past 30 days."
-                    />
-                    <PerformanceTile
-                      label="Max drawdown"
-                      value={formatPercent(performance.maxDrawdown)}
-                      tone="warning"
-                      tooltip="Largest decline from peak value."
-                    />
-                    <PerformanceTile
-                      label="Win rate"
-                      value={
-                        tradingAnalyticsData?.analytics
-                          ? `${(tradingAnalyticsData.analytics.winRate * 100).toFixed(1)}%`
-                          : "--"
-                      }
-                      tone="neutral"
-                      tooltip={
-                        tradingAnalyticsData?.analytics
-                          ? `Based on ${tradingAnalyticsData.analytics.positionCount} settled positions.`
-                          : "Percentage of winning trades."
-                      }
-                    />
-                  </div>
-                </div>
-              </SectionShell>
-
-              <SectionShell title="Strategy">
-                <div className="space-y-5">
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    <KeyInfoItem label="Managed by" value={getManagementLabel(vault)} />
-                    <KeyInfoItem label="Focus" value={vault.profile.strategyLabel} />
-                    {(() => {
-                      const validAssets: AssetType[] = [
-                        ...(vault.profile.tradingMetadata?.assets || []),
-                        ...(vault.profile.tradingMetadata?.platforms || []),
-                      ].filter((asset): asset is AssetType =>
-                        ["usdc", "btc", "gnosis-safe", "polymarket"].includes(asset),
-                      );
-
-                      if (validAssets.length === 0) return null;
-
-                      const assetLabel =
-                        vault.profile.tradingMetadata?.assets?.[0]?.toUpperCase() || "";
-                      const platformLabel = vault.profile.tradingMetadata?.platforms?.[0]
-                        ? vault.profile.tradingMetadata.platforms[0].charAt(0).toUpperCase() +
-                          vault.profile.tradingMetadata.platforms[0].slice(1)
-                        : "";
-
-                      return (
-                        <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-3">
-                          <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
-                            Trading on
-                          </p>
-                          <div className="mt-1.5 flex items-center gap-2">
-                            <AssetLogoStack assets={validAssets} size="sm" />
-                            <p className="text-sm font-medium text-white">
-                              {assetLabel} on {platformLabel}
-                            </p>
-                          </div>
-                        </div>
-                      );
-                    })()}
-                  </div>
-                  <TechnicalDetailsDialog vault={vault} status={status} />
-                </div>
-              </SectionShell>
-
-              <SectionShell title="Risk & Terms">
-                <div className="grid gap-4 md:grid-cols-3">
-                  <SummaryMetric
-                    label="Risk score"
-                    value={getRiskScore(vault.profile.riskLevel)}
-                    hint={`${toTitleCase(vault.profile.riskLevel)} risk mandate.`}
-                    tooltip="Overall risk level of this vault."
-                  />
-                  <SummaryMetric
-                    label="Liquidity"
-                    value={getLiquidityLabel(vault, cycle)}
-                    hint="How you can withdraw."
-                    tooltip="Withdrawal availability for this vault."
-                  />
-                  <SummaryMetric
-                    label="Fees"
-                    value={getFeeLabel(vault)}
-                    hint="Management and performance fee."
-                    tooltip="Fees charged by this vault."
-                  />
-                </div>
-                <div className="mt-5 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-5 text-sm leading-7 text-slate-400">
-                  {getRiskSummary(vault, cycle)}
-                </div>
-              </SectionShell>
-
-              <SectionShell title="Activity">
-                <div className="mb-4 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span>Recent updates</span>
-                    <Badge
-                      variant="outline"
-                      className="rounded-full border-white/10 bg-white/6 px-3 py-1 text-[11px] text-slate-200"
-                    >
-                      {cycle?.openPositionCount ?? "--"} open positions
-                    </Badge>
-                  </div>
-                  <span>
-                    Updated{" "}
-                    {vaultEventsLastRefresh
-                      ? formatDate(vaultEventsLastRefresh.toISOString())
-                      : "--"}
-                  </span>
-                </div>
-
-                <Tabs defaultValue="user" className="space-y-3">
-                  <TabsList className="grid h-auto w-full grid-cols-3 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-1">
-                    <TabsTrigger
-                      value="user"
-                      className="rounded-[2px] py-1.5 text-sm text-slate-400 hover:text-white data-[state=active]:border-b data-[state=active]:border-[#656565]/40 data-[state=active]:bg-[#212121] data-[state=active]:text-white"
-                    >
-                      Your activity
-                    </TabsTrigger>
-                    <TabsTrigger
-                      value="vault"
-                      className="rounded-[2px] py-1.5 text-sm text-slate-400 hover:text-white data-[state=active]:border-b data-[state=active]:border-[#656565]/40 data-[state=active]:bg-[#212121] data-[state=active]:text-white"
-                    >
-                      Vault activity
-                    </TabsTrigger>
-                    <TabsTrigger
-                      value="trades"
-                      className="rounded-[2px] py-1.5 text-sm text-slate-400 hover:text-white data-[state=active]:border-b data-[state=active]:border-[#656565]/40 data-[state=active]:bg-[#212121] data-[state=active]:text-white"
-                    >
-                      Trades
-                    </TabsTrigger>
-                  </TabsList>
-
-                  <TabsContent value="user" className="space-y-3">
-                    {!sessionKnown ? (
-                      <Skeleton className="h-40 w-full rounded-[22px] bg-white/10" />
-                    ) : userAuthorized ? (
-                      userHistoryLoading ? (
-                        <Skeleton className="h-40 w-full rounded-[22px] bg-white/10" />
-                      ) : userHistoryError ? (
-                        <div className="rounded-[22px] border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-rose-100">
-                          {userHistoryError}
-                        </div>
-                      ) : userHistoryUnauthorized ? (
-                        <div className="rounded-[22px] border border-amber-400/20 bg-amber-400/10 p-5 text-sm text-amber-50">
-                          Your account history is temporarily unavailable.
-                        </div>
-                      ) : (
-                        <div className="space-y-3">
-                          <ActivityTimeline
-                            items={userActivity}
-                            emptyState="No account activity yet."
-                            pageSize={ACTIVITY_PAGE_SIZE}
-                          />
-                          <ActivityPaginationControls
-                            offset={userActivityOffset}
-                            pageSize={ACTIVITY_PAGE_SIZE}
-                            currentCount={userActivity.length}
-                            hasMore={userActivityHasMore}
-                            isLoading={userHistoryLoading}
-                            onPrevious={() => {
-                              setUserActivityPagination((previous) => ({
-                                scope: userActivityScope,
-                                offset:
-                                  previous.scope === userActivityScope
-                                    ? Math.max(previous.offset - ACTIVITY_PAGE_SIZE, 0)
-                                    : 0,
-                              }));
-                            }}
-                            onNext={() => {
-                              if (userActivityHasMore) {
-                                setUserActivityPagination((previous) => ({
-                                  scope: userActivityScope,
-                                  offset:
-                                    previous.scope === userActivityScope
-                                      ? previous.offset + ACTIVITY_PAGE_SIZE
-                                      : ACTIVITY_PAGE_SIZE,
-                                }));
-                              }
-                            }}
-                          />
-                        </div>
-                      )
-                    ) : (
-                      <div
-                        className="rounded-[22px] border border-white/10 bg-slate-950/30 p-5 text-sm text-slate-400"
-                        data-testid="vault-history-auth-prompt"
-                      >
-                        Sign in to view your deposit, withdrawal, and claim history.
-                      </div>
-                    )}
-                  </TabsContent>
-
-                  <TabsContent value="vault" className="space-y-3">
-                    {vaultEventsLoading ? (
-                      <Skeleton className="h-40 w-full rounded-[22px] bg-white/10" />
-                    ) : vaultEventsError ? (
-                      <div className="rounded-[22px] border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-rose-100">
-                        {vaultEventsError}
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        <ActivityTimeline
-                          items={vaultActivity}
-                          emptyState="No meaningful vault updates yet."
-                          pageSize={ACTIVITY_PAGE_SIZE}
-                        />
-                        <ActivityPaginationControls
-                          offset={vaultActivityOffset}
-                          pageSize={ACTIVITY_PAGE_SIZE}
-                          currentCount={vaultActivity.length}
-                          hasMore={vaultActivityHasMore}
-                          isLoading={vaultEventsLoading}
-                          onPrevious={() => {
-                            setVaultActivityPagination((previous) => ({
-                              routeVaultId,
-                              offset:
-                                previous.routeVaultId === routeVaultId
-                                  ? Math.max(previous.offset - ACTIVITY_PAGE_SIZE, 0)
-                                  : 0,
-                            }));
-                          }}
-                          onNext={() => {
-                            if (vaultActivityHasMore) {
-                              setVaultActivityPagination((previous) => ({
-                                routeVaultId,
-                                offset:
-                                  previous.routeVaultId === routeVaultId
-                                    ? previous.offset + ACTIVITY_PAGE_SIZE
-                                    : ACTIVITY_PAGE_SIZE,
-                              }));
-                            }
-                          }}
-                        />
-                      </div>
-                    )}
-                  </TabsContent>
-
-                  <TabsContent value="trades" className="space-y-3">
-                    {positionHistoryLoading ? (
-                      <Skeleton className="h-40 w-full rounded-[22px] bg-white/10" />
-                    ) : positionHistoryError ? (
-                      <div className="rounded-[22px] border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-rose-100">
-                        {positionHistoryError}
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        <TradesList
-                          positions={
-                            positionHistoryData?.positions?.slice(
-                              tradesOffset,
-                              tradesOffset + ACTIVITY_PAGE_SIZE,
-                            ) || []
-                          }
-                          emptyState="No trades yet."
-                          pageSize={ACTIVITY_PAGE_SIZE}
-                        />
-                        <ActivityPaginationControls
-                          offset={tradesOffset}
-                          pageSize={ACTIVITY_PAGE_SIZE}
-                          currentCount={
-                            positionHistoryData?.positions?.slice(
-                              tradesOffset,
-                              tradesOffset + ACTIVITY_PAGE_SIZE,
-                            )?.length || 0
-                          }
-                          hasMore={
-                            tradesOffset + ACTIVITY_PAGE_SIZE <
-                            (positionHistoryData?.positions?.length || 0)
-                          }
-                          isLoading={positionHistoryLoading}
-                          onPrevious={() => {
-                            setTradesOffset((previous) =>
-                              Math.max(previous - ACTIVITY_PAGE_SIZE, 0),
-                            );
-                          }}
-                          onNext={() => {
-                            if (
-                              tradesOffset + ACTIVITY_PAGE_SIZE <
-                              (positionHistoryData?.positions?.length || 0)
-                            ) {
-                              setTradesOffset((previous) => previous + ACTIVITY_PAGE_SIZE);
-                            }
-                          }}
-                        />
-                      </div>
-                    )}
-                  </TabsContent>
-                </Tabs>
-              </SectionShell>
-
-              {vault.type !== "custom" && (
-                <SectionShell
-                  id="exit-queue"
-                  eyebrow="Withdrawals"
-                  title="Withdraw"
-        description={`Manage your withdrawal requests and claim ${USER_COLLATERAL_SYMBOL}.`}
-                >
-                  <RedemptionPanel
-                    vaultId={vault.id}
-                    vault={vault}
-                    cycleInfo={cycle}
-                    pendingRequests={pendingRequests}
-                    claimableRequests={claimableRequests}
-                    isLoading={requestsLoading || cycleLoading}
-                    estimatedExitValueUsd={freshestNavSnapshot?.sharePrice ?? null}
-                    userShares={redemptionUserShares}
-                  />
-                </SectionShell>
-              )}
-            </div>
+            <VaultOverviewSection
+              vault={vault}
+              tags={tags}
+              displayedHeroMetrics={displayedHeroMetrics}
+              optimisticDeposit={optimisticDeposit}
+            />
           </div>
 
-          <aside className="lg:col-start-2 lg:row-start-1 lg:min-h-0 lg:border-l lg:border-white/10 lg:pl-6">
-            <section className="vault-pane-scroll space-y-4 lg:h-full lg:overflow-y-auto">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.2em] text-slate-500">
-                    Manage position
-                  </p>
-                  <h2 className="mt-1 text-lg font-semibold tracking-tight text-white">
-                    Deposit or withdraw
-                  </h2>
-                </div>
-                <div className="rounded-full border border-cyan-300/15 bg-cyan-300/10 p-1.5 text-cyan-200">
-                  <Wallet className="h-3.5 w-3.5" />
-                </div>
-              </div>
+          <VaultPositionSidebar
+            className="lg:col-start-2 lg:row-span-2 lg:row-start-1"
+            activeTab={positionActionTab}
+            onActiveTabChange={setPositionActionTab}
+            vault={vault}
+            cycle={cycle}
+            nav={status?.nav ?? null}
+            migration={migration}
+            walletConnected={walletConnected}
+            sessionKnown={sessionKnown}
+            userAuthorized={userAuthorized}
+            handleDepositSuccess={handleDepositSuccess}
+            pendingRequests={pendingRequests}
+            claimableRequests={claimableRequests}
+            requestsLoading={requestsLoading}
+            cycleLoading={cycleLoading}
+            redemptionUserShares={redemptionUserShares}
+            estimatedExitValueUsd={freshestNavSnapshot?.sharePrice ?? null}
+          />
 
-              <Tabs defaultValue="deposit" className="space-y-3">
-                <TabsList className="grid h-auto w-full grid-cols-2 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-0.5">
-                  <TabsTrigger
-                    value="deposit"
-                    className="rounded-[2px] py-1.5 text-sm text-slate-400 hover:text-white data-[state=active]:border data-[state=active]:border-[#656565]/40 data-[state=active]:bg-[#212121] data-[state=active]:text-white"
-                  >
-                    Deposit
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="withdraw"
-                    className="rounded-[2px] py-1.5 text-sm text-slate-400 hover:text-white data-[state=active]:border data-[state=active]:border-[#656565]/40 data-[state=active]:bg-[#212121] data-[state=active]:text-white"
-                  >
-                    Withdraw
-                  </TabsTrigger>
-                </TabsList>
+          <div className="min-w-0 space-y-8 lg:col-start-1 lg:row-start-2 lg:min-h-0 lg:overflow-y-auto lg:pr-3">
+            <VaultPerformanceSection
+              performance={performance}
+              chartPerformance={chartPerformance}
+              isLoading={navHistoryLoading || statusLoading}
+              tradingAnalytics={tradingAnalyticsData?.analytics}
+              selectedRange={navChartRange}
+              onRangeChange={setNavChartRange}
+            />
 
-                <TabsContent value="deposit">
-                  <DepositRail
-                    vault={vault}
-                    cycle={cycle}
-                    nav={status?.nav ?? null}
-                    migration={migration}
-                    walletConnected={walletConnected}
-                    sessionKnown={sessionKnown}
-                    sessionAuthenticated={sessionAuthenticated}
-                    userAuthorized={userAuthorized}
-                    vaultId={vault.id}
-                    onSuccess={() => {
-                      void refreshAll();
-                    }}
-                  />
-                </TabsContent>
+            <VaultStrategySection vault={vault} status={status ?? null} />
 
-                <TabsContent value="withdraw">
-                  {vault.type === "custom" ? (
-                    <RedemptionPanel
-                      vaultId={vault.id}
-                      vault={vault}
-                      cycleInfo={cycle}
-                      pendingRequests={pendingRequests}
-                      claimableRequests={claimableRequests}
-                      isLoading={requestsLoading || cycleLoading}
-                      estimatedExitValueUsd={freshestNavSnapshot?.sharePrice ?? null}
-                      userShares={redemptionUserShares}
-                    />
-                  ) : (
-                    <div className="space-y-4 rounded-[24px] border border-white/10 bg-slate-950/35 p-4 text-sm leading-7 text-slate-300">
-                      <div>For this vault, use the Withdraw section below.</div>
-                      <Button
-                        asChild
-                        className="w-full rounded-full bg-white text-slate-950 hover:bg-slate-100"
-                      >
-                        <a href="#exit-queue">Go to Withdraw</a>
-                      </Button>
-                    </div>
-                  )}
-                </TabsContent>
-              </Tabs>
-            </section>
-          </aside>
+            <VaultRiskTermsSection vault={vault} cycle={cycle} />
+
+            <VaultActivitySection
+              activeTab={activityTab}
+              onActiveTabChange={setActivityTab}
+              sessionKnown={sessionKnown}
+              userAuthorized={userAuthorized}
+              userActivity={userActivity}
+              userActivityOffset={userActivityOffset}
+              userActivityHasMore={userActivityHasMore}
+              userHistoryLoading={userHistoryLoading}
+              userHistoryError={userHistoryError}
+              userHistoryUnauthorized={userHistoryUnauthorized}
+              vaultActivity={vaultActivity}
+              vaultActivityOffset={vaultActivityOffset}
+              vaultActivityHasMore={vaultActivityHasMore}
+              vaultEventsLoading={vaultEventsLoading}
+              vaultEventsError={vaultEventsError}
+              positions={positionHistoryData?.positions}
+              positionHistoryLoading={positionHistoryLoading}
+              positionHistoryError={positionHistoryError}
+              tradesOffset={tradesOffset}
+              dispatchUiState={dispatchUiState}
+              routeVaultId={routeVaultId}
+              userActivityScope={userActivityScope}
+              activityLastRefresh={activityLastRefresh}
+              openPositionCount={cycle?.openPositionCount}
+            />
+
+            <LegacyWithdrawSection
+              vault={vault}
+              cycle={cycle}
+              pendingRequests={pendingRequests}
+              claimableRequests={claimableRequests}
+              isLoading={requestsLoading || cycleLoading}
+              estimatedExitValueUsd={freshestNavSnapshot?.sharePrice ?? null}
+              userShares={redemptionUserShares}
+            />
+          </div>
         </div>
       </div>
     </main>

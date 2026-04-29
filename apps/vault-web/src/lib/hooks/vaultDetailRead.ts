@@ -44,6 +44,7 @@ export function useVaultNavHistory(
     queryFn: () => fetchVaultNavHistory(limit, vaultId!),
     enabled: vaultId !== undefined,
     refetchInterval: DEFAULT_POLL_INTERVAL_MS,
+    refetchOnWindowFocus: true,
   });
 
   const refetch = useCallback(async (): Promise<VaultNavHistoryResponse | null> => {
@@ -68,6 +69,7 @@ export function useVaultTradingAnalytics(
     queryFn: () => fetchVaultTradingAnalytics(vaultId!),
     enabled: vaultId !== undefined,
     refetchInterval: DEFAULT_POLL_INTERVAL_MS,
+    refetchOnWindowFocus: true,
   });
 
   const refetch = useCallback(async (): Promise<VaultTradingAnalyticsResponse | null> => {
@@ -136,6 +138,7 @@ export function useUserVaultHistory(
     queryFn: () => fetchUserVaultHistory(vaultId!, limit, offset),
     enabled: vaultId !== undefined && isAuthenticated,
     refetchInterval: DEFAULT_POLL_INTERVAL_MS,
+    refetchOnWindowFocus: true,
     retry: (failureCount, error) => {
       if (isUnauthorizedError(error)) {
         return false;
@@ -237,6 +240,7 @@ export function useRequests(vaultId?: number, isAuthenticated = false): UseReque
     },
     enabled: vaultId !== undefined && isAuthenticated && Boolean(address),
     refetchInterval: DEFAULT_POLL_INTERVAL_MS,
+    refetchOnWindowFocus: true,
   });
 
   const refetch = useCallback(async (): Promise<void> => {

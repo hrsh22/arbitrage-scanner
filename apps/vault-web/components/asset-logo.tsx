@@ -16,8 +16,8 @@ export interface AssetLogoProps {
 const ASSET_CONFIG: Record<AssetType, { src: string; alt: string; defaultLabel: string }> = {
   usdc: {
     src: "/logo/usdc-logo.svg",
-    alt: "pUSD",
-    defaultLabel: "pUSD",
+    alt: "USDC",
+    defaultLabel: "USDC",
   },
   btc: {
     src: "/logo/btc-logo.svg",
@@ -84,11 +84,13 @@ export function AssetBadge({
   size = "sm",
   className,
   variant = "default",
+  label,
 }: {
   asset: AssetType;
   size?: "xs" | "sm" | "md";
   className?: string;
   variant?: "default" | "outline" | "ghost";
+  label?: string;
 }) {
   const config = ASSET_CONFIG[asset];
   const dimension = SIZE_MAP[size];
@@ -114,7 +116,7 @@ export function AssetBadge({
         height={dimension}
         className="shrink-0"
       />
-      <span>{config.defaultLabel}</span>
+      <span>{label ?? config.defaultLabel}</span>
     </span>
   );
 }

@@ -24,10 +24,10 @@ function formatDateTime(iso: string): string {
 function PendingRequestCard({ request }: { request: RedemptionRequest }) {
   return (
     <div
-      className="space-y-3 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4"
+      className="space-y-3 rounded-[2px] border border-amber-400/20 bg-amber-400/10 p-4"
       data-testid={`pending-request-${request.requestId}`}
     >
-      <div className="flex items-start justify-between">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex items-center gap-2">
           <Hash className="h-4 w-4 text-amber-200" aria-hidden="true" />
           <span className="text-sm font-mono font-medium text-amber-50" data-testid="request-id">
@@ -68,8 +68,8 @@ export function PendingRequests({ requests, isLoading }: PendingRequestsProps) {
   if (isLoading) {
     return (
       <div className="space-y-4" data-testid="pending-requests-loading">
-        <Skeleton className="h-32 w-full rounded-2xl bg-white/10" />
-        <Skeleton className="h-32 w-full rounded-2xl bg-white/10" />
+        <Skeleton className="h-32 w-full rounded-[2px] bg-white/10" />
+        <Skeleton className="h-32 w-full rounded-[2px] bg-white/10" />
       </div>
     );
   }

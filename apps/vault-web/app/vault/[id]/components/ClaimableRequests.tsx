@@ -34,6 +34,7 @@ interface ClaimableRequestCardProps {
   request: RedemptionRequest;
   isBusy: boolean;
   isProcessing: boolean;
+  isClaimedLocally: boolean;
   onClaim: (request: RedemptionRequest) => void;
   successTx: string | null;
   visibleError: string | null;
@@ -44,20 +45,21 @@ function ClaimableRequestCard({
   request,
   isBusy,
   isProcessing,
+  isClaimedLocally,
   onClaim,
   successTx,
   visibleError,
   displaySymbol,
 }: ClaimableRequestCardProps) {
   const claimableNow = Number(request.claimableAssetsFormatted) || 0;
-  const canClaim = request.status === "claimable" && claimableNow > 0;
+  const canClaim = request.status === "claimable" && claimableNow > 0 && !isClaimedLocally;
 
   return (
     <div
-      className="space-y-3 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4"
+      className="space-y-3 rounded-[2px] border border-emerald-400/20 bg-emerald-400/10 p-4"
       data-testid={`claimable-request-${request.requestId}`}
     >
-      <div className="flex items-start justify-between">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex items-center gap-2">
           <Hash className="h-4 w-4 text-emerald-200" aria-hidden="true" />
           <span className="text-sm font-mono font-medium text-emerald-50">Withdrawal</span>
@@ -65,7 +67,7 @@ function ClaimableRequestCard({
             variant="outline"
             className="border-emerald-400/25 bg-emerald-400/15 text-[10px] text-emerald-100"
           >
-            {request.status === "claimed" ? "Claimed" : "Ready to claim"}
+            {request.status === "claimed" || isClaimedLocally ? "Claimed" : "Ready to claim"}
           </Badge>
         </div>
         <span className="text-xs text-emerald-50/70">
@@ -95,7 +97,7 @@ function ClaimableRequestCard({
 
       {/* Settlement indicator */}
       {request.proRataApplied && (
-        <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 p-2">
+        <div className="rounded-[2px] border border-amber-400/20 bg-amber-400/10 p-2">
           <div className="flex items-center gap-2">
             <Percent className="h-3.5 w-3.5 text-amber-200" aria-hidden="true" />
             <span className="text-xs font-medium text-amber-100">Partial withdrawal</span>
@@ -110,10 +112,12 @@ function ClaimableRequestCard({
           </p>
         </div>
       )}
-      {request.status === "claimed" ? (
-        <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-slate-950/35 p-3">
+      {request.status === "claimed" || isClaimedLocally ? (
+        <div className="flex items-center gap-2 rounded-[2px] border border-white/10 bg-slate-950/35 p-3">
           <CheckCircle2 className="h-4 w-4 text-slate-300" aria-hidden="true" />
-          <span className="text-sm text-slate-300">Already claimed</span>
+          <span className="text-sm text-slate-300">
+            {isClaimedLocally ? "Claim confirmed — syncing status" : "Already claimed"}
+          </span>
         </div>
       ) : canClaim ? (
         <div className="space-y-2">
@@ -123,7 +127,7 @@ function ClaimableRequestCard({
               onClaim(request);
             }}
             disabled={isBusy || !canClaim}
-            className="w-full bg-emerald-300 text-slate-950 hover:bg-emerald-200 claim-button"
+            className="w-full rounded-[2px] bg-emerald-300 text-emerald-950 hover:bg-emerald-200 claim-button"
             data-testid="claim-button"
           >
             {isProcessing ? (
@@ -144,21 +148,21 @@ function ClaimableRequestCard({
               href={`${EXPLORER_BASE_URL}/tx/${successTx}`}
               target="_blank"
               rel="noreferrer"
-              className="block text-center text-xs font-mono text-cyan-200 hover:underline"
+              className="block rounded-[2px] text-center text-xs font-mono text-cyan-200 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
             >
               View transaction: {successTx.slice(0, 10)}...{successTx.slice(-4)}
             </a>
           )}
 
           {visibleError && (
-            <div className="rounded-xl border border-rose-400/20 bg-rose-400/10 p-2 text-xs leading-6 text-rose-50/90">
+            <div className="rounded-[2px] border border-rose-400/20 bg-rose-400/10 p-2 text-xs leading-6 text-rose-50/90">
               {visibleError}
             </div>
           )}
         </div>
       ) : (
         <div
-          className="flex items-center gap-2 rounded-xl border border-white/10 bg-slate-950/35 p-3"
+          className="flex items-center gap-2 rounded-[2px] border border-white/10 bg-slate-950/35 p-3"
           data-testid="claim-disabled"
         >
           <Clock className="h-4 w-4 text-slate-400" aria-hidden="true" />
@@ -187,11 +191,14 @@ export function ClaimableRequests({
       vaultType,
     });
 
+  const locallyClaimedRequestId = successTx && feedbackRequestId ? feedbackRequestId : null;
+
   const { totalClaimable, claimedCount, claimableCount } = useMemo(
     () =>
       requests.reduce(
         (summary, request) => {
-          if (request.status === "claimed") {
+          const isClaimedLocally = request.requestId === locallyClaimedRequestId;
+          if (request.status === "claimed" || isClaimedLocally) {
             summary.claimedCount += 1;
             return summary;
           }
@@ -206,7 +213,7 @@ export function ClaimableRequests({
         },
         { totalClaimable: 0, claimedCount: 0, claimableCount: 0 },
       ),
-    [requests],
+    [locallyClaimedRequestId, requests],
   );
 
   if (!isConnected) {
@@ -216,8 +223,8 @@ export function ClaimableRequests({
   if (isLoading) {
     return (
       <div className="space-y-4" data-testid="claimable-requests-loading">
-        <Skeleton className="h-32 w-full rounded-2xl bg-white/10" />
-        <Skeleton className="h-32 w-full rounded-2xl bg-white/10" />
+        <Skeleton className="h-32 w-full rounded-[2px] bg-white/10" />
+        <Skeleton className="h-32 w-full rounded-[2px] bg-white/10" />
       </div>
     );
   }
@@ -258,7 +265,7 @@ export function ClaimableRequests({
                   </Badge>
                 </div>
               </TooltipTrigger>
-              <TooltipContent side="left" className="bg-slate-100 text-slate-900">
+              <TooltipContent side="left" className="border-white/10 bg-slate-950 text-slate-100">
                 Recently claimed — will update shortly.
               </TooltipContent>
             </Tooltip>
@@ -267,7 +274,7 @@ export function ClaimableRequests({
       </div>
 
       {totalClaimable > 0 && (
-        <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4">
+        <div className="rounded-[2px] border border-emerald-400/20 bg-emerald-400/10 p-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Wallet className="h-5 w-5 text-emerald-200" aria-hidden="true" />
@@ -287,6 +294,7 @@ export function ClaimableRequests({
             request={request}
             isBusy={isBusy}
             isProcessing={activeRequestId === request.requestId && isBusy}
+            isClaimedLocally={request.requestId === locallyClaimedRequestId}
             onClaim={claim}
             successTx={feedbackRequestId === request.requestId ? successTx : null}
             visibleError={feedbackRequestId === request.requestId ? feedbackError : null}

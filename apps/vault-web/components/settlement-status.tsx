@@ -38,6 +38,8 @@ export interface SettlementBlocker {
   severity: "warning" | "error" | "info";
 }
 
+const EMPTY_BLOCKERS: SettlementBlocker[] = [];
+
 // ============================================
 // Status Configuration
 // ============================================
@@ -311,7 +313,7 @@ export function SettlementStatus({
   reason,
   estimatedCompletion,
   isLoading = false,
-  blockers = [],
+  blockers = EMPTY_BLOCKERS,
   className = "",
 }: SettlementStatusProps) {
   const config = STATUS_CONFIG[status];
@@ -374,8 +376,11 @@ export function SettlementStatus({
                 <p className="text-xs font-medium text-muted-foreground">
                   Blockers preventing settlement:
                 </p>
-                {blockers.map((blocker, index) => (
-                  <BlockerItem key={index} blocker={blocker} />
+                {blockers.map((blocker) => (
+                  <BlockerItem
+                    key={`${blocker.type}-${blocker.severity}-${blocker.message}`}
+                    blocker={blocker}
+                  />
                 ))}
               </div>
             )}

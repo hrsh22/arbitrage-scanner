@@ -104,7 +104,7 @@ export function WithdrawalInfoDialog({
         </DialogDescription>
 
         <div className="grid lg:grid-cols-[1fr_1.4fr]">
-          <div className="relative border-b border-[#212121] bg-[#0A0A0A] p-8 lg:border-b-0 lg:border-r lg:p-10">
+          <div className="relative border-b border-[#212121] bg-[#0A0A0A] p-4 sm:p-8 lg:border-b-0 lg:border-r lg:p-10">
             <div
               className="pointer-events-none absolute inset-0 opacity-[0.03]"
               style={{
@@ -180,7 +180,7 @@ export function WithdrawalInfoDialog({
             </div>
           </div>
 
-          <div className="p-8 lg:p-12">
+          <div className="p-4 sm:p-8 lg:p-12">
             <h2 className="mb-10 text-xl font-medium tracking-tight text-white lg:text-3xl">
               Withdrawal Process
             </h2>
@@ -237,7 +237,7 @@ export function WithdrawalInfoDialog({
                   <h3 className="text-[15px] font-semibold text-white">Claim your funds</h3>
                   <p className="mt-2 text-sm leading-relaxed text-[#828B8D]">
                     Once your withdrawal is processed, claim your {displaySymbol} to your connected wallet.
-                    You'll see the claimable amount in the redemption panel.
+                    You&apos;ll see the claimable amount in the redemption panel.
                   </p>
                 </div>
               </div>

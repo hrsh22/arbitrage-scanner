@@ -296,6 +296,7 @@ export function useVaultPositionHistory(
     queryFn: () => fetchVaultPositionHistory(vaultId!),
     enabled: vaultId !== undefined,
     refetchInterval: DEFAULT_POLL_INTERVAL_MS,
+    refetchOnWindowFocus: true,
   });
 
   const refetch = useCallback(async (): Promise<VaultPositionHistoryResponse | null> => {
@@ -305,7 +306,7 @@ export function useVaultPositionHistory(
 
   return {
     data: query.data ?? null,
-    isLoading: vaultId !== undefined ? query.isLoading : true,
+    isLoading: vaultId !== undefined ? query.isLoading : false,
     error: getErrorMessage(query.error),
     lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
     refetch,
@@ -334,9 +335,7 @@ export function useWithdrawalQueue(vaultAddress?: string): AsyncState<Withdrawal
 
   return {
     data: query.data ?? null,
-    isLoading: Boolean(vaultAddress && walletConnected && sessionAuthenticated)
-      ? query.isLoading
-      : false,
+    isLoading: vaultAddress && walletConnected && sessionAuthenticated ? query.isLoading : false,
     error: isUnauthorizedError(query.error) ? null : getErrorMessage(query.error),
     lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
     refetch,
@@ -952,7 +951,7 @@ interface UseVaultDepositFlowParams {
   userAuthorized: boolean;
   depositsDisabled?: boolean;
   depositDisabledReason?: string;
-  onSuccess: () => Promise<void> | void;
+  onSuccess: (result?: { amount?: number; mode: "queued" | "minted" }) => Promise<void> | void;
 }
 
 export interface UseVaultDepositFlowResult {
@@ -1167,8 +1166,9 @@ export function useVaultDepositFlow({
 
       setAmountState("");
       setErrorMessage(null);
+      const depositMode = queueDepositConfirmed ? "queued" : "minted";
       setMessage(
-        queueDepositConfirmed ? "Deposit queued — it will process shortly." : "Deposit confirmed!",
+        depositMode === "queued" ? "Deposit queued — it will process shortly." : "Deposit confirmed!",
       );
       resetFlowState();
       await refetchAllowance().catch(() => undefined);
@@ -1177,7 +1177,15 @@ export function useVaultDepositFlow({
         return;
       }
 
-      await Promise.resolve(onSuccess()).catch(() => undefined);
+      const parsedSubmittedAmount = submittedDepositAmount
+        ? Number.parseFloat(submittedDepositAmount)
+        : undefined;
+      await Promise.resolve(
+        onSuccess({
+          amount: Number.isFinite(parsedSubmittedAmount) ? parsedSubmittedAmount : undefined,
+          mode: depositMode,
+        }),
+      ).catch(() => undefined);
     })();
 
     return () => {
@@ -1239,6 +1247,7 @@ export function useVaultDepositFlow({
   }, [
     approve,
     clearFeedback,
+    depositTokenAddress,
     depositDisabledReason,
     depositsDisabled,
     parsedAmount,
@@ -1351,8 +1360,6 @@ export function useVaultDepositFlow({
     cycle?.executionMode,
     deposit,
     depositUSDCe,
-    depositTokenAddress,
-    depositTokenDecimals,
     depositDisabledReason,
     depositsDisabled,
     ensureFreshNav,

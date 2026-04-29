@@ -18,11 +18,11 @@ const showcaseVaults = [
 
 export function ShowcaseSection() {
   return (
-    <section className="relative overflow-hidden border-t border-white/5 bg-slate-950/50 px-4 py-24 sm:px-6">
+    <section className="relative overflow-hidden border-t border-white/5 bg-slate-950/50 px-4 py-16 sm:px-6 sm:py-24">
       <div className="absolute top-0 left-1/2 -translate-x-1/2 h-[500px] w-[1000px] bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.05)_0%,_transparent_70%)] blur-[60px] pointer-events-none" />
 
       <div className="mx-auto max-w-5xl relative z-10">
-        <div className="mb-12 flex flex-col md:flex-row md:items-end justify-between gap-6">
+        <div className="mb-10 flex flex-col justify-between gap-6 sm:mb-12 md:flex-row md:items-end">
           <div>
             <h2 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl mb-4">
               Discover Vaults
@@ -39,8 +39,8 @@ export function ShowcaseSection() {
         <div className="flex justify-center">
           {showcaseVaults.map((vault) => (
             <Link key={vault.name} href={getVaultHref(vault)} className="block w-full max-w-md">
-              <div className="group relative overflow-hidden rounded-[24px] border border-white/10 bg-white/[0.04] p-6 backdrop-blur-md transition-all hover:-translate-y-1 hover:bg-white/[0.06]">
-                <div className="mb-8 flex items-start justify-between">
+              <div className="group relative overflow-hidden rounded-[24px] border border-white/10 bg-white/[0.04] p-5 backdrop-blur-md transition-all hover:-translate-y-1 hover:bg-white/[0.06] sm:p-6">
+                <div className="mb-6 flex items-start justify-between sm:mb-8">
                   <Badge
                     variant="outline"
                     className="border-white/10 bg-white/5 text-[10px] uppercase tracking-widest text-slate-300"
@@ -53,7 +53,7 @@ export function ShowcaseSection() {
                 <p className="text-sm leading-6 text-slate-300">
                   Agent-managed vault focused on {vault.focus}.
                 </p>
-                <div className="mt-6 flex items-center justify-between">
+                <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div className="flex items-center gap-2">
                     <div className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-800 text-[10px] font-bold uppercase text-white">
                       {vault.manager.charAt(0)}

@@ -27,6 +27,7 @@ export function useVaultStatus(vaultId?: number): AsyncState<VaultStatusResponse
     queryFn: () => fetchVaultStatus(vaultId!),
     enabled: vaultId !== undefined,
     refetchInterval: DEFAULT_POLL_INTERVAL_MS,
+    refetchOnWindowFocus: true,
   });
 
   const refetch = useCallback(async (): Promise<VaultStatusResponse | null> => {
@@ -43,11 +44,20 @@ export function useVaultStatus(vaultId?: number): AsyncState<VaultStatusResponse
   };
 }
 
-export function useVaultInstances(): AsyncState<VaultInstancesResponse> {
+export interface VaultInstancesQueryOptions {
+  enabled?: boolean;
+  refetchIntervalMs?: number | false;
+}
+
+export function useVaultInstances(
+  options?: VaultInstancesQueryOptions,
+): AsyncState<VaultInstancesResponse> {
+  const enabled = options?.enabled ?? true;
   const query = useQuery({
     queryKey: vaultQueryKeys.discover.instances(),
     queryFn: fetchVaultInstances,
-    refetchInterval: 60_000,
+    enabled,
+    refetchInterval: options?.refetchIntervalMs ?? 60_000,
   });
 
   const refetch = useCallback(async (): Promise<VaultInstancesResponse | null> => {
@@ -57,7 +67,7 @@ export function useVaultInstances(): AsyncState<VaultInstancesResponse> {
 
   return {
     data: query.data ?? null,
-    isLoading: query.isLoading,
+    isLoading: enabled ? query.isLoading : false,
     error: getErrorMessage(query.error),
     lastRefresh: getLastRefresh(query.dataUpdatedAt, query.data !== undefined),
     refetch,
@@ -142,6 +152,7 @@ export function useCycleStatus(vaultId?: number, cycleId?: number): UseCycleStat
         : fetchCurrentCycleStatus(vaultId!, true),
     enabled: vaultId !== undefined,
     refetchInterval: DEFAULT_POLL_INTERVAL_MS,
+    refetchOnWindowFocus: true,
   });
 
   const refetch = useCallback(async (): Promise<CycleStatusResponse | null> => {

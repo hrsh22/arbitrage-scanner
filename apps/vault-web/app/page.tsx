@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { HeroSection } from "@/components/landing/HeroSection";
 import { ThesisSection } from "@/components/landing/ThesisSection";
 import { TransformationSection } from "@/components/landing/TransformationSection";
@@ -7,6 +8,11 @@ import { AgentCuratorSection } from "@/components/landing/AgentCuratorSection";
 import { InfrastructureTrustSection } from "@/components/landing/InfrastructureTrustSection";
 import { ShowcaseSection } from "@/components/landing/ShowcaseSection";
 import { VisionSection } from "@/components/landing/VisionSection";
+
+export const metadata: Metadata = {
+  title: "Polymarket Vault",
+  description: "Allocate capital into prediction market strategy vaults.",
+};
 
 export default function LandingPage() {
   return (

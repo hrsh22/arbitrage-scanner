@@ -150,10 +150,10 @@ export function HeaderAuth() {
     : "border-emerald-400/25 bg-emerald-400/12 text-emerald-200";
 
   return (
-    <div className="flex items-center gap-2 sm:gap-3">
+    <div className="flex min-w-0 items-center justify-end gap-2 sm:gap-3">
       <Badge
         variant="outline"
-        className={`gap-1.5 font-normal ${networkBadgeClass}`}
+        className={`hidden gap-1.5 font-normal sm:inline-flex ${networkBadgeClass}`}
         title={
           isTestnet ? "Polymarket trading is disabled on testnet" : "Connected to Polygon Mainnet"
         }
@@ -167,8 +167,8 @@ export function HeaderAuth() {
       {error && <span className="animate-pulse text-xs text-rose-300">{error}</span>}
 
       {isAuthenticated ? (
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 rounded-[2px] border border-[#212121] bg-[#121212] px-3 py-2">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <div className="hidden items-center gap-2 rounded-[2px] border border-[#212121] bg-[#121212] px-3 py-2 sm:flex">
             <Badge
               variant="outline"
               className="gap-1.5 border-emerald-400/25 bg-emerald-400/5 font-normal text-emerald-200"
@@ -183,20 +183,21 @@ export function HeaderAuth() {
             variant="ghost"
             size="sm"
             onClick={handleDisconnect}
-            className="rounded-[10px] text-slate-300 hover:bg-[#212121] hover:text-white"
+            className="rounded-[2px] px-2 text-slate-300 hover:bg-[#212121] hover:text-white sm:px-3"
           >
-            Disconnect
+            <span className="sm:hidden">Exit</span>
+            <span className="hidden sm:inline">Disconnect</span>
           </Button>
         </div>
       ) : isCheckingSession ? (
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3">
           <div className="hidden rounded-[2px] border border-[#212121] bg-[#121212] px-3 py-2 sm:block">
             <span className="font-mono text-sm text-[#E4E4E7]">{truncateAddress(address)}</span>
           </div>
           <Button
             disabled
             size="sm"
-            className="min-w-[120px] rounded-[10px] bg-white text-black hover:bg-white"
+            className="min-w-[92px] rounded-[2px] bg-white px-3 text-black hover:bg-white sm:min-w-[120px]"
           >
             <span className="flex items-center gap-2">
               <svg
@@ -226,13 +227,14 @@ export function HeaderAuth() {
             variant="ghost"
             size="sm"
             onClick={handleDisconnect}
-            className="rounded-[10px] text-slate-300 hover:bg-[#212121] hover:text-white"
+            className="rounded-[2px] px-2 text-slate-300 hover:bg-[#212121] hover:text-white sm:px-3"
           >
-            Disconnect
+            <span className="sm:hidden">Exit</span>
+            <span className="hidden sm:inline">Disconnect</span>
           </Button>
         </div>
       ) : walletConnected ? (
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3">
           <div className="hidden rounded-[2px] border border-[#212121] bg-[#121212] px-3 py-2 sm:block">
             <span className="font-mono text-sm text-[#E4E4E7]">{truncateAddress(address)}</span>
           </div>
@@ -240,7 +242,7 @@ export function HeaderAuth() {
             onClick={handleSignIn}
             disabled={isLoading}
             size="sm"
-            className="min-w-[120px] rounded-[10px] bg-white text-black hover:bg-white/90"
+            className="min-w-[88px] rounded-[2px] bg-white px-3 text-black hover:bg-white/90 sm:min-w-[120px]"
           >
             {isLoading ? (
               <span className="flex items-center gap-2">
@@ -274,18 +276,20 @@ export function HeaderAuth() {
             variant="ghost"
             size="sm"
             onClick={handleDisconnect}
-            className="rounded-[10px] text-slate-300 hover:bg-[#212121] hover:text-white"
+            className="rounded-[2px] px-2 text-slate-300 hover:bg-[#212121] hover:text-white sm:px-3"
           >
-            Disconnect
+            <span className="sm:hidden">Exit</span>
+            <span className="hidden sm:inline">Disconnect</span>
           </Button>
         </div>
       ) : (
         <Button
           onClick={() => open()}
           size="sm"
-          className="rounded-[10px] bg-white text-black hover:bg-white/90"
+          className="rounded-[2px] bg-white px-3 text-black hover:bg-white/90 sm:px-4"
         >
-          Connect Wallet
+          <span className="sm:hidden">Connect</span>
+          <span className="hidden sm:inline">Connect Wallet</span>
         </Button>
       )}
     </div>

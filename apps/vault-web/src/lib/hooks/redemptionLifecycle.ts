@@ -313,16 +313,14 @@ export function useRedemptionClaimLifecycle({
           }`,
         );
       } finally {
-        if (cancelled) {
-          return;
+        if (!cancelled) {
+          setActiveRequestId(null);
+          setClaimSnapshot(null);
+          reset();
+          refreshTimeout = window.setTimeout(() => {
+            void invalidateVaultDetailQueries(queryClient, vaultId);
+          }, 2000);
         }
-
-        setActiveRequestId(null);
-        setClaimSnapshot(null);
-        reset();
-        refreshTimeout = window.setTimeout(() => {
-          void invalidateVaultDetailQueries(queryClient, vaultId);
-        }, 2000);
       }
     })();
 

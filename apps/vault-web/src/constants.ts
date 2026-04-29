@@ -101,12 +101,13 @@ export const CUSTOM_VAULT_DEPOSIT_ENDPOINT = `${CUSTOM_VAULT_API_PREFIX}/deposit
 
 // Reown Kit Config
 export const REOWN_PROJECT_ID = process.env.NEXT_PUBLIC_REOWN_PROJECT_ID || "vault-web-project-id";
+const APP_ORIGIN = process.env.NEXT_PUBLIC_APP_ORIGIN || "http://localhost:3000";
 
 export const REOWN_APP_METADATA = {
   name: "Vault Platform",
   description: "Vault trading dashboard",
-  url: "http://localhost:3001",
-  icons: ["http://localhost:3001/icon.png"],
+  url: APP_ORIGIN,
+  icons: [`${APP_ORIGIN}/icon.png`],
 };
 
 // ============================================
