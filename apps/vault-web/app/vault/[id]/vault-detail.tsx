@@ -1093,10 +1093,8 @@ function TechnicalDetailsDialog({
   vault: VaultInstance;
   status: VaultStatusResponse | null;
 }) {
-  const tradingWalletCollateral = status
-    ? (status.nav.safeCollateral ?? 0) + (status.nav.redeemableMarketValue ?? 0)
-    : null;
-  const vaultCollateral = status ? (status.nav.vaultCollateral ?? 0) : null;
+  const tradingWalletCollateral = status ? status.nav.safeUsdc : null;
+  const vaultCollateral = status ? status.nav.vaultUsdc : null;
 
   return (
     <Dialog>
