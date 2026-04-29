@@ -20,6 +20,8 @@ vi.mock("../env.js", () => ({
     VAULT_ADDRESS: "0xVault",
     VAULT_PRIVATE_KEY: "0x0000000000000000000000000000000000000000000000000000000000000001",
     POLYGON_RPC_URL: "https://polygon-rpc.com",
+    POLYGON_RPC_URLS: ["https://polygon-rpc.com"],
+    AMOY_RPC_URLS: ["https://polygon-rpc.com"],
     SAFE_ADDRESS: "0xSafe",
   },
 }));
@@ -92,6 +94,7 @@ import {
   TradingOrchestratorService,
   type OrchestratorTradeRequest,
 } from "../services/tradingOrchestrator.js";
+import type { VaultInstanceConfig } from "../config/types.js";
 
 function makeTradeRequest(
   overrides: Partial<OrchestratorTradeRequest> = {},
@@ -108,12 +111,67 @@ function makeTradeRequest(
   };
 }
 
+function makeVaultConfig(overrides: Partial<VaultInstanceConfig> = {}): VaultInstanceConfig {
+  return {
+    id: 1,
+    name: "test-vault",
+    enabled: true,
+    type: "custom",
+    vaultContractType: "flatBookVaultV2",
+    vaultAddress: "0x" + "3".repeat(40),
+    safeAddress: "0x" + "2".repeat(40),
+    allocatorNavSignerKeyEnv: "ALLOCATOR_KEY",
+    safeOperatorKeyEnv: "SAFE_KEY",
+    tradingSignerKeyEnv: "TRADING_KEY",
+    tradingSignatureType: 2,
+    minOdds: 0.95,
+    maxOdds: 0.995,
+    highOddsThreshold: 0.99,
+    maxHoursGeneral: 24,
+    maxHoursForHighOdds: 6,
+    betSize: 5,
+    dailyBudget: Infinity,
+    maxDailyLoss: Infinity,
+    categoryTimeLimits: {},
+    skipCategories: [],
+    vaultReserveUsdc: 0,
+    minAllocationAmountUsdc: 1,
+    maxDeployedRatio: 0.25,
+    marketFetchMaxEvents: 10,
+    hedging: {
+      enabled: false,
+      dropThresholdPercent: 0,
+      multiplier: 0,
+      spreadTolerance: 0,
+      minPositionAgeMinutes: 0,
+      onlyNearResolution: false,
+      nearResolutionMinutes: 0,
+      skipCategories: [],
+    },
+    navRefreshIntervalMin: 1,
+    reconciliationIntervalMin: 1,
+    tradingScanIntervalMin: 1,
+    resolutionCheckIntervalMin: 1,
+    defaultMode: "simulation",
+    enforceEpochBoundarySafety: true,
+    epochBoundarySafetyBufferMinutes: 0,
+    ...overrides,
+  };
+}
+
 describe("TradingOrchestratorService", () => {
   let orchestrator: TradingOrchestratorService;
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetVaultProvider.mockReset();
+    mockGetVaultProvider.mockReturnValue({
+      getVaultInfo: vi.fn().mockResolvedValue({
+        batchInfo: {
+          currentBatchEnd: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        },
+      }),
+    });
 
     mockGetOpenPositions.mockResolvedValue([]);
     mockGetAdapterInfo.mockResolvedValue({
@@ -153,7 +211,7 @@ describe("TradingOrchestratorService", () => {
     };
 
     orchestrator = new TradingOrchestratorService(
-      undefined,
+      makeVaultConfig(),
       mockTradingClient as any,
       null,
       mockResolvedIdentity,

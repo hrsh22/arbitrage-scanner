@@ -7,7 +7,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@workspace/ui/component
 import { CheckCircle2, Wallet, Hash, Clock, Percent } from "lucide-react";
 import { useAppKitAccount } from "@reown/appkit/react";
 import type { RedemptionRequest, VaultInstance } from "../../../../src/types";
-import { EXPLORER_BASE_URL } from "../../../../src/constants";
+import { COLLATERAL_SYMBOL, EXPLORER_BASE_URL } from "../../../../src/constants";
 import { EmptyState, AuthGatedState } from "../../../../components/async-state";
 import { useRedemptionClaimLifecycle } from "../../../../src/lib/hooks/redemptionLifecycle";
 
@@ -17,6 +17,7 @@ interface ClaimableRequestsProps {
   isLoading: boolean;
   vaultAddress: string;
   vaultType: VaultInstance["type"];
+  displaySymbol?: string;
 }
 
 function formatDateTime(iso: string): string {
@@ -35,6 +36,7 @@ interface ClaimableRequestCardProps {
   onClaim: (request: RedemptionRequest) => void;
   successTx: string | null;
   visibleError: string | null;
+  displaySymbol: string;
 }
 
 function ClaimableRequestCard({
@@ -44,6 +46,7 @@ function ClaimableRequestCard({
   onClaim,
   successTx,
   visibleError,
+  displaySymbol,
 }: ClaimableRequestCardProps) {
   const claimableNow = Number(request.claimableAssetsFormatted) || 0;
   const canClaim = request.status === "claimable" && claimableNow > 0;
@@ -130,7 +133,7 @@ function ClaimableRequestCard({
             ) : (
               <>
                 <Wallet className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
-                Claim ${request.claimableAssetsFormatted || "0.00"}
+                Claim {displaySymbol} ${request.claimableAssetsFormatted || "0.00"}
               </>
             )}
           </Button>
@@ -173,6 +176,7 @@ export function ClaimableRequests({
   isLoading,
   vaultAddress,
   vaultType,
+  displaySymbol = COLLATERAL_SYMBOL,
 }: ClaimableRequestsProps) {
   const { isConnected } = useAppKitAccount();
   const { activeRequestId, feedbackRequestId, feedbackError, successTx, isBusy, claim } =
@@ -219,7 +223,9 @@ export function ClaimableRequests({
   return (
     <div className="space-y-4" data-testid="claimable-requests">
       <div className="flex items-center justify-between text-sm text-slate-400">
-        <span>Claimable now: ${totalClaimable.toFixed(2)}</span>
+        <span>
+          Claimable now: ${totalClaimable.toFixed(2)} {displaySymbol}
+        </span>
         <div className="flex items-center gap-2">
           {claimableCount > 0 && (
             <Badge
@@ -270,6 +276,7 @@ export function ClaimableRequests({
             onClaim={claim}
             successTx={feedbackRequestId === request.requestId ? successTx : null}
             visibleError={feedbackRequestId === request.requestId ? feedbackError : null}
+            displaySymbol={displaySymbol}
           />
         ))}
       </div>

@@ -17,7 +17,7 @@ export interface ResolvedVaultIdentity {
   safeOperatorKey: string; // actual private key from env
   tradingSignerKey?: string; // actual private key from env
   settlerKey?: string; // actual private key from env for settlement operations
-  tradingSignatureType?: 0 | 1 | 2;
+  tradingSignatureType?: 0 | 1 | 2 | 3;
   safeAddress: string;
   vaultAddress: string;
   network?: "mainnet" | "amoy";

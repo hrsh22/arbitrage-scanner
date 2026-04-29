@@ -74,11 +74,19 @@ import {
   postVaultNavUpdate,
   postWithdrawalRequest,
 } from "../../../src/lib/api";
-import { SUPPORTS_POLYMARKET_TRADING, VAULT_NETWORK } from "../../../src/constants";
+import {
+  COLLATERAL_DECIMALS,
+  COLLATERAL_SYMBOL,
+  SUPPORTS_POLYMARKET_TRADING,
+  USER_COLLATERAL_DECIMALS,
+  USER_COLLATERAL_SYMBOL,
+  VAULT_NETWORK,
+} from "../../../src/constants";
 import { getNetworkDisplayInfo } from "../../../src/lib/network";
 import type {
   Cycle,
   RedemptionRequest,
+  WithdrawalRequest,
   VaultInstance,
   VaultPositionHistoryResponse,
   VaultStatusResponse,
@@ -164,6 +172,14 @@ function getParsedUnits(value: string, decimals: number): bigint | undefined {
   } catch {
     return undefined;
   }
+}
+
+function getRequestPayoutUnits(
+  request: WithdrawalRequest & { claimableAssets?: string | null },
+  decimals: number,
+): bigint | undefined {
+  const value = request.claimableAssets ?? request.assetsEstimated;
+  return value ? getParsedUnits(value, decimals) : undefined;
 }
 
 function toTitleCase(value: string): string {
@@ -825,9 +841,10 @@ function TechnicalDetailsDialog({
   vault: VaultInstance;
   status: VaultStatusResponse | null;
 }) {
-  const tradingWalletBalance = status
-    ? status.nav.safeUsdc + (status.nav.redeemableMarketValue ?? 0)
+  const tradingWalletCollateral = status
+    ? (status.nav.safeCollateral ?? status.nav.safeUsdc) + (status.nav.redeemableMarketValue ?? 0)
     : null;
+  const vaultCollateral = status ? (status.nav.vaultCollateral ?? status.nav.vaultUsdc) : null;
 
   return (
     <Dialog>
@@ -853,14 +870,14 @@ function TechnicalDetailsDialog({
             label="Operator safe"
             address={vault.config.safeAddress}
             balanceLabel="Trading Wallet Balance"
-            balance={tradingWalletBalance !== null ? formatCurrency(tradingWalletBalance) : "--"}
+            balance={tradingWalletCollateral !== null ? formatCurrency(tradingWalletCollateral) : "--"}
             logoSrc="/logo/gnosis-safe.svg"
           />
           <AddressField
             label="Vault contract"
             address={vault.config.vaultAddress}
             balanceLabel="Vault Balance"
-            balance={status ? formatCurrency(status.nav.vaultUsdc) : "--"}
+            balance={vaultCollateral !== null ? formatCurrency(vaultCollateral) : "--"}
           />
         </div>
       </DialogContent>
@@ -880,9 +897,9 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
       color: "orange",
     },
     {
-      key: "usdc",
+      key: "collateral",
       logoSrc: "/logo/usdc-logo.svg",
-      label: "USDC.e",
+      label: COLLATERAL_SYMBOL,
       sublabel: "Deposit",
       color: "amber",
     },
@@ -1068,8 +1085,8 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
                     Deposit and receive shares
                   </h3>
                   <p className="mt-2 text-sm leading-relaxed text-[#828B8D]">
-                    Your USDC.e deposit mints vault shares, giving you proportional exposure to the
-                    vault's pooled strategy and returns.
+                    Your {USER_COLLATERAL_SYMBOL} deposit is converted atomically into vault collateral and mints vault shares, giving you
+                    proportional exposure to the vault's pooled strategy and returns.
                   </p>
                 </div>
               </div>
@@ -1099,8 +1116,8 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
                     Withdraw and claim proceeds
                   </h3>
                   <p className="mt-2 text-sm leading-relaxed text-[#828B8D]">
-                    Withdrawal requests enter queue processing, then become claimable as USDC.e once
-                    settlement completes.
+                    Withdrawal requests enter queue processing, then become claimable as{" "}
+                    {USER_COLLATERAL_SYMBOL} by default once settlement completes.
                   </p>
                 </div>
               </div>
@@ -1163,6 +1180,7 @@ function DepositRail({
   vaultId: number;
 }) {
   const isCustomVault = vault.type === "custom";
+  const depositDisplaySymbol = isCustomVault ? USER_COLLATERAL_SYMBOL : COLLATERAL_SYMBOL;
   const depositsDisabled = migration?.depositsDisabled ?? vault.migration?.depositsDisabled ?? false;
   const depositDisabledReason = migration?.message ?? vault.migration?.message;
   const {
@@ -1217,11 +1235,11 @@ function DepositRail({
         <RailStat label="Min deposit" value={formatCurrency(vault.profile.minDeposit)} />
         <div className="flex items-center justify-between gap-3 rounded-[2px] border border-[#212121] bg-[#0A0A0A] px-4 py-3">
           <span className="flex items-center gap-2 text-sm text-slate-400">
-            <Image src="/logo/usdc-logo.svg" alt="USDC.e" width={16} height={16} />
+            <Image src="/logo/usdc-logo.svg" alt={depositDisplaySymbol} width={16} height={16} />
             Wallet balance
           </span>
           <span className="text-sm font-medium text-white">
-            {walletBalanceLoading ? "Loading..." : `${walletBalanceFormatted} USDC.e`}
+            {walletBalanceLoading ? "Loading..." : `${walletBalanceFormatted} ${depositDisplaySymbol}`}
           </span>
         </div>
       </div>
@@ -1251,7 +1269,7 @@ function DepositRail({
             htmlFor="vault-deposit-amount"
             className="flex items-center gap-1.5 text-xs text-slate-400"
           >
-            <Image src="/logo/usdc-logo.svg" alt="USDC.e" width={14} height={14} />
+            <Image src="/logo/usdc-logo.svg" alt={depositDisplaySymbol} width={14} height={14} />
             Amount
           </label>
           <button
@@ -1286,7 +1304,8 @@ function DepositRail({
         <div className="rounded-[10px] border border-amber-400/20 bg-amber-400/10 p-3 text-amber-50">
           <p className="text-sm font-medium">Deposit is queued</p>
           <p className="mt-1 text-xs leading-6 text-amber-50/90">
-            {queuedFormatted} USDC.e is being processed. Estimated shares: {queuedSharesFormatted}.
+            {queuedFormatted} {depositDisplaySymbol} is queued for processing. Shares are minted
+            automatically when processing completes. Estimated shares: {queuedSharesFormatted}.
           </p>
           {estimateBasis && (
             <p className="mt-1 text-xs leading-6 text-amber-50/90">{estimateBasis}</p>
@@ -1337,7 +1356,7 @@ function DepositRail({
                 ? "Sign in to approve"
                 : depositsDisabled
                   ? "Deposits paused"
-                  : "Approve USDC.e"}
+                  : `Approve ${depositDisplaySymbol}`}
         </Button>
       ) : (
         <Button
@@ -1436,6 +1455,10 @@ function WithdrawRail({
   const parsedShares = getParsedUnits(amount, 6);
   const isValidAmount = parsedShares !== undefined && parsedShares > 0n;
   const isCustomVault = vault.type === "custom";
+  const claimDisplaySymbol = isCustomVault ? USER_COLLATERAL_SYMBOL : COLLATERAL_SYMBOL;
+  const claimDisplayDecimals = isCustomVault
+    ? USER_COLLATERAL_DECIMALS
+    : COLLATERAL_DECIMALS;
   const currentExecutionMode = cycle?.executionMode ?? undefined;
   const isBlockedMode = isCustomVault && currentExecutionMode === "blocked";
   const requiresFreshNavBeforeRequest = !isCustomVault || currentExecutionMode === "instant";
@@ -1459,7 +1482,8 @@ function WithdrawRail({
     isLoading: queueLoading,
     refetch: refetchQueue,
   } = useWithdrawalQueue(vault.config.vaultAddress);
-  const { redeem, isPending, isConfirming, isConfirmed, hash, error, reset } = useVaultRedeem();
+  const { redeem, claimUSDCe, isPending, isConfirming, isConfirmed, hash, error, reset } =
+    useVaultRedeem();
 
   const rawQueueActiveRequest =
     queueData?.requests.find(
@@ -1806,12 +1830,30 @@ function WithdrawRail({
       setClaimingRequestId(requestToClaim.requestId);
       setClaimSubmissionInFlight(true);
 
-      redeem(
-        vault.config.vaultAddress as `0x${string}`,
-        requestShares,
-        effectiveAddress,
-        effectiveAddress,
-      );
+      if (isCustomVault) {
+        const minUserAssetsOut = getRequestPayoutUnits(requestToClaim, USER_COLLATERAL_DECIMALS);
+        if (minUserAssetsOut === undefined || minUserAssetsOut === 0n) {
+          setClaimingRequestId(null);
+          setClaimSubmissionInFlight(false);
+          setErrorMessage("Claim payout data is still loading. Please refresh and try again.");
+          return;
+        }
+
+        claimUSDCe(
+          vault.config.vaultAddress as `0x${string}`,
+          requestShares,
+          effectiveAddress,
+          effectiveAddress,
+          minUserAssetsOut,
+        );
+      } else {
+        redeem(
+          vault.config.vaultAddress as `0x${string}`,
+          requestShares,
+          effectiveAddress,
+          effectiveAddress,
+        );
+      }
     } finally {
       setClaimPreflightPending(false);
     }
@@ -1840,14 +1882,28 @@ function WithdrawRail({
     reset();
 
     try {
-      redeem(
-        vault.config.vaultAddress as `0x${string}`,
-        parseUnits(customClaimableRequest.sharesFormatted, 6),
-        effectiveAddress,
-        (customClaimableRequest.ownerAddress ||
-          customClaimableRequest.controllerAddress ||
-          effectiveAddress) as `0x${string}`,
-      );
+      const owner = (customClaimableRequest.ownerAddress ||
+        customClaimableRequest.controllerAddress ||
+        effectiveAddress) as `0x${string}`;
+      const shares = parseUnits(customClaimableRequest.sharesFormatted, 6);
+
+      if (isCustomVault) {
+        if (!customClaimableRequest.claimableAssetsFormatted) {
+          throw new Error("Claim payout data is still loading. Please refresh and try again.");
+        }
+
+        const claimableAssets = parseUnits(
+          customClaimableRequest.claimableAssetsFormatted,
+          USER_COLLATERAL_DECIMALS,
+        );
+        if (claimableAssets === 0n) {
+          throw new Error("Claim payout data is still loading. Please refresh and try again.");
+        }
+
+        claimUSDCe(vault.config.vaultAddress as `0x${string}`, shares, effectiveAddress, owner, claimableAssets);
+      } else {
+        redeem(vault.config.vaultAddress as `0x${string}`, shares, effectiveAddress, owner);
+      }
     } catch (claimError) {
       setClaimingCustomRequestId(null);
       setClaimingCustomSnapshot(null);
@@ -1977,7 +2033,7 @@ function WithdrawRail({
         <span>How claims work</span>
         <InfoTooltip
           label="How it works"
-          content="After your withdrawal is processed, your USDC will be available to claim."
+          content={`After your withdrawal is processed, your ${claimDisplaySymbol} will be available to claim through the vault's conversion helper.`}
         />
       </div>
 
@@ -1986,7 +2042,8 @@ function WithdrawRail({
         parsedShares &&
         parsedShares > 0n && (
           <p className="text-xs text-slate-400">
-            Estimated USDC.e out: {Number(formatUnits(effectivePreviewAssets, 6)).toFixed(2)}
+            Estimated {claimDisplaySymbol} out:{" "}
+            {Number(formatUnits(effectivePreviewAssets, claimDisplayDecimals)).toFixed(2)}
           </p>
         )}
 
@@ -2023,8 +2080,8 @@ function WithdrawRail({
           <p className="text-xs leading-6 text-amber-50/90">
             {readyQueueRequest
               ? isCustomVault
-                ? "Your withdrawal has been processed. Claim your USDC.e below."
-                : "Settlement is complete. Sign the claim transaction to receive USDC.e."
+                ? `Your withdrawal has been processed. Claim your ${claimDisplaySymbol} below.`
+                : `Settlement is complete. Sign the claim transaction to receive ${claimDisplaySymbol}.`
               : "Your withdrawal request is queued. You can leave it or cancel it before claiming."}
           </p>
           <p className="text-xs leading-6 text-amber-50/90">
@@ -2211,8 +2268,6 @@ export default function VaultDetailPage({
     claimableRequests,
     isLoading: requestsLoading,
   } = useRequests(vault?.id, userAuthorized);
-  const { data: legacyWithdrawalQueue, isLoading: legacyWithdrawalQueueLoading } =
-    useWithdrawalQueue(vault?.config.vaultAddress);
   const {
     data: vaultEventsData,
     isLoading: vaultEventsLoading,
@@ -2239,14 +2294,6 @@ export default function VaultDetailPage({
     address,
     vault?.type === "custom" ? 6 : 18,
   );
-  const hasLegacyCustomWithdrawalRequest =
-    vault?.type === "custom" &&
-    Boolean(
-      legacyWithdrawalQueue?.requests.some(
-        (request) => request.status === "pending" || request.status === "ready",
-      ),
-    );
-
   const refreshAll = async () => {
     await Promise.all([
       invalidatePublicVaultDetailQueries(queryClient, vault?.id),
@@ -2407,8 +2454,13 @@ export default function VaultDetailPage({
 
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/6 px-3 py-1 text-xs text-slate-200">
-                        <Image src="/logo/usdc-logo.svg" alt="USDC.e" width={14} height={14} />
-                        USDC.e
+                        <Image
+                          src="/logo/usdc-logo.svg"
+                          alt={USER_COLLATERAL_SYMBOL}
+                          width={14}
+                          height={14}
+                        />
+                        {USER_COLLATERAL_SYMBOL}
                       </span>
                       {(() => {
                         const validAssets: AssetType[] = [
@@ -2774,7 +2826,7 @@ export default function VaultDetailPage({
                   id="exit-queue"
                   eyebrow="Withdrawals"
                   title="Withdraw"
-                  description="Manage your withdrawal requests and claim USDC.e."
+        description={`Manage your withdrawal requests and claim ${USER_COLLATERAL_SYMBOL}.`}
                 >
                   <RedemptionPanel
                     vaultId={vault.id}
@@ -2842,39 +2894,16 @@ export default function VaultDetailPage({
 
                 <TabsContent value="withdraw">
                   {vault.type === "custom" ? (
-                    legacyWithdrawalQueueLoading ? (
-                      <div className="space-y-4 rounded-[24px] border border-white/10 bg-slate-950/35 p-4">
-                        <Skeleton className="h-12 w-full rounded-2xl bg-white/10" />
-                        <Skeleton className="h-40 w-full rounded-2xl bg-white/10" />
-                      </div>
-                    ) : hasLegacyCustomWithdrawalRequest ? (
-                      <WithdrawRail
-                        vault={vault}
-                        vaultId={vault.id}
-                        cycle={cycle}
-                        navSharePrice={freshestNavSnapshot?.sharePrice ?? null}
-                        walletConnected={walletConnected}
-                        sessionKnown={sessionKnown}
-                        walletAddress={address}
-                        userAuthorized={userAuthorized}
-                        customPendingRequests={pendingRequests}
-                        customClaimableRequests={claimableRequests}
-                        onSuccess={() => {
-                          void refreshAll();
-                        }}
-                      />
-                    ) : (
-                      <RedemptionPanel
-                        vaultId={vault.id}
-                        vault={vault}
-                        cycleInfo={cycle}
-                        pendingRequests={pendingRequests}
-                        claimableRequests={claimableRequests}
-                        isLoading={requestsLoading || cycleLoading}
-                        estimatedExitValueUsd={freshestNavSnapshot?.sharePrice ?? null}
-                        userShares={redemptionUserShares}
-                      />
-                    )
+                    <RedemptionPanel
+                      vaultId={vault.id}
+                      vault={vault}
+                      cycleInfo={cycle}
+                      pendingRequests={pendingRequests}
+                      claimableRequests={claimableRequests}
+                      isLoading={requestsLoading || cycleLoading}
+                      estimatedExitValueUsd={freshestNavSnapshot?.sharePrice ?? null}
+                      userShares={redemptionUserShares}
+                    />
                   ) : (
                     <div className="space-y-4 rounded-[24px] border border-white/10 bg-slate-950/35 p-4 text-sm leading-7 text-slate-300">
                       <div>For this vault, use the Withdraw section below.</div>

@@ -95,7 +95,7 @@ export interface VaultInstanceConfig {
   safeOperatorKeyEnv: string;
   tradingSignerKeyEnv?: string;
   settlerKeyEnv?: string;
-  tradingSignatureType?: 0 | 1 | 2;
+  tradingSignatureType?: 0 | 1 | 2 | 3;
 
   /**
    * Trading

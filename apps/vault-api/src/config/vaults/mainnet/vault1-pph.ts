@@ -25,12 +25,12 @@ const config: VaultInstanceConfig = {
   type: "custom",
   network: "mainnet",
   migration: {
-    enabled: true,
+    enabled: false,
     phase: "usdc_e_to_pusd",
-    depositsDisabled: true,
-    title: "Vault migration in progress",
+    depositsDisabled: false,
+    title: "Vault migration complete",
     message:
-      "New deposits are paused while this USDC.e vault is prepared for Polymarket's pUSD migration. Withdrawals, claims, queue status, and activity remain available.",
+      "Deposits are open through the helper-enabled pUSD vault. Users deposit USDC.e while the vault converts to pUSD atomically for Polymarket CLOB V2 trading.",
     startedAt: "2026-04-28T11:00:00.000Z",
     targetAssetSymbol: "pUSD",
     targetAssetAddress: PUSD_ADDRESS,

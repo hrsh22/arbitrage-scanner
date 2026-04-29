@@ -9,7 +9,13 @@ export interface VaultNAV {
   totalAssets: number;
   trackedTotalAssets?: number;
   idleAssets: number;
+  /** Active collateral held by the vault contract. */
+  vaultCollateral?: number;
+  /** Active collateral held by the trading safe. */
+  safeCollateral?: number;
+  /** @deprecated Backend compatibility field; semantically active collateral after pUSD migration. */
   vaultUsdc: number;
+  /** @deprecated Backend compatibility field; semantically active collateral after pUSD migration. */
   safeUsdc: number;
   deployedCostBasis: number;
   redeemableCostBasis?: number;

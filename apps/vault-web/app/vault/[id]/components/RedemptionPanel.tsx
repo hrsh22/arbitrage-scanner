@@ -9,6 +9,7 @@ import { RequestForm } from "./RequestForm";
 import { PendingRequests } from "./PendingRequests";
 import { ClaimableRequests } from "./ClaimableRequests";
 import { WithdrawalInfoDialog } from "./WithdrawalInfoDialog";
+import { COLLATERAL_SYMBOL, USER_COLLATERAL_SYMBOL } from "../../../../src/constants";
 
 interface RedemptionPanelProps {
   vaultId: number;
@@ -34,6 +35,7 @@ export function RedemptionPanel({
   const { walletConnected, sessionAuthenticated, sessionKnown } = useAuthSession();
   const hasPending = pendingRequests.length > 0;
   const hasClaimable = claimableRequests.length > 0;
+  const claimDisplaySymbol = vault.type === "custom" ? USER_COLLATERAL_SYMBOL : COLLATERAL_SYMBOL;
 
   const showProtectedSections = walletConnected && sessionAuthenticated;
   const sessionChecking = walletConnected && !sessionKnown;
@@ -89,6 +91,7 @@ export function RedemptionPanel({
           {isQueuedMode && (
             <WithdrawalInfoDialog
               isQueuedMode={true}
+              displaySymbol={claimDisplaySymbol}
               triggerLabel="How this works"
               triggerClassName="inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-[4px] bg-[#121212] px-3 py-1.5 text-xs font-semibold text-slate-300 ring-1 ring-inset ring-[#212121] transition-all hover:bg-[#212121] hover:text-white"
             />
@@ -149,6 +152,7 @@ export function RedemptionPanel({
                   isLoading={isLoading}
                   vaultAddress={vault.config.vaultAddress}
                   vaultType={vault.type}
+                  displaySymbol={claimDisplaySymbol}
                 />
               ) : (
                 <p className="text-xs leading-6 text-slate-400">Checking session…</p>

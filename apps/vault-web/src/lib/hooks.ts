@@ -7,10 +7,14 @@ import type { Address } from "viem";
 import { useReadContract, useWaitForTransactionReceipt } from "wagmi";
 import { useAppKitAccount, useAppKitProvider } from "@reown/appkit/react";
 import {
-  USDC_E_ADDRESS,
+  COLLATERAL_ADDRESS,
+  COLLATERAL_OFFRAMP_ADDRESS,
+  COLLATERAL_ONRAMP_ADDRESS,
+  COLLATERAL_DECIMALS,
+  USER_COLLATERAL_ADDRESS,
+  USER_COLLATERAL_DECIMALS,
   ERC20_ABI,
   VAULT_ABI,
-  USDC_DECIMALS,
   ERC20_BALANCE_ABI,
 } from "../constants";
 import {
@@ -53,6 +57,19 @@ import {
 import { useAuthSession } from "./hooks/authSession";
 import { vaultQueryKeys } from "./hooks/queryKeys";
 import { invalidateVaultQueries } from "./hooks/invalidation";
+
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const HELPER_MIN_OUT_BPS = 9_950n;
+const BPS_DENOMINATOR = 10_000n;
+
+function hasConfiguredCollateralHelpers(): boolean {
+  return COLLATERAL_ONRAMP_ADDRESS !== ZERO_ADDRESS && COLLATERAL_OFFRAMP_ADDRESS !== ZERO_ADDRESS;
+}
+
+function withHelperSlippageBuffer(amount: bigint): bigint {
+  return (amount * HELPER_MIN_OUT_BPS) / BPS_DENOMINATOR;
+}
+
 export {
   invalidatePublicVaultDetailQueries,
   invalidateUserVaultDetailQueries,
@@ -83,6 +100,16 @@ export { useTransientState } from "./hooks/transientState";
 export { vaultQueryKeys };
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function createIntentId(): `0x${string}` {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return `0x${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function defaultTransactionDeadline(): bigint {
+  return BigInt(Math.floor(Date.now() / 1000) + 15 * 60);
+}
 
 interface Eip1193Provider {
   request(args: { method: string; params?: readonly unknown[] | object }): Promise<unknown>;
@@ -324,7 +351,10 @@ interface WalletBalanceResult {
   address: string | undefined;
 }
 
-export function useWalletBalance(): WalletBalanceResult {
+export function useWalletBalance(
+  tokenAddress: `0x${string}` = USER_COLLATERAL_ADDRESS,
+  tokenDecimals = USER_COLLATERAL_DECIMALS,
+): WalletBalanceResult {
   const { address, isConnected } = useAppKitAccount();
   const [hydrated, setHydrated] = useState(false);
 
@@ -336,7 +366,7 @@ export function useWalletBalance(): WalletBalanceResult {
   const effectiveIsConnected = hydrated ? isConnected : false;
 
   const { data: balance, isLoading } = useReadContract({
-    address: USDC_E_ADDRESS,
+    address: tokenAddress,
     abi: ERC20_BALANCE_ABI,
     functionName: "balanceOf",
     args: effectiveAddress ? [effectiveAddress as `0x${string}`] : undefined,
@@ -346,7 +376,10 @@ export function useWalletBalance(): WalletBalanceResult {
     },
   });
 
-  const formatted = hydrated && balance !== undefined ? (Number(balance) / 1e6).toFixed(2) : "0.00";
+  const formatted =
+    hydrated && balance !== undefined
+      ? Number(formatUnits(balance, tokenDecimals)).toFixed(2)
+      : "0.00";
 
   return {
     balance,
@@ -357,7 +390,7 @@ export function useWalletBalance(): WalletBalanceResult {
   };
 }
 
-interface UsdcAllowanceResult {
+interface CollateralAllowanceResult {
   allowance: bigint;
   refetch: () => Promise<unknown>;
 }
@@ -367,9 +400,13 @@ interface TokenAllowanceResult {
   refetch: () => Promise<unknown>;
 }
 
-export function useUsdcAllowance(owner?: string, spender?: string): UsdcAllowanceResult {
+export function useCollateralAllowance(
+  owner?: string,
+  spender?: string,
+  tokenAddress: `0x${string}` = COLLATERAL_ADDRESS,
+): CollateralAllowanceResult {
   const { data: allowance, refetch } = useReadContract({
-    address: USDC_E_ADDRESS,
+    address: tokenAddress,
     abi: ERC20_ABI,
     functionName: "allowance",
     args: owner && spender ? [owner as `0x${string}`, spender as `0x${string}`] : undefined,
@@ -384,6 +421,9 @@ export function useUsdcAllowance(owner?: string, spender?: string): UsdcAllowanc
     refetch,
   };
 }
+
+/** @deprecated Use useCollateralAllowance for active vault collateral. */
+export const useUsdcAllowance = useCollateralAllowance;
 
 export function useTokenAllowance(
   tokenAddress?: string,
@@ -471,7 +511,7 @@ export function useVaultOnChainStats(vaultAddress?: string): VaultOnChainStatsRe
   return {
     totalAssets: safeTotalAssets,
     totalSupply: safeTotalSupply,
-    formattedTotalAssets: formatUnits(safeTotalAssets, USDC_DECIMALS),
+    formattedTotalAssets: formatUnits(safeTotalAssets, COLLATERAL_DECIMALS),
   };
 }
 
@@ -581,8 +621,8 @@ export async function preflightWithdrawal(requestId: string): Promise<Withdrawal
   return postWithdrawalPreflight(requestId);
 }
 
-interface UsdcApproveResult {
-  approve: (spender: `0x${string}`, amount: bigint) => void;
+interface CollateralApproveResult {
+  approve: (spender: `0x${string}`, amount: bigint, tokenAddress?: `0x${string}`) => void;
   isPending: boolean;
   isConfirming: boolean;
   isConfirmed: boolean;
@@ -601,13 +641,17 @@ interface TokenApproveResult {
   reset: () => void;
 }
 
-export function useUsdcApprove(): UsdcApproveResult {
+export function useCollateralApprove(): CollateralApproveResult {
   const { write, hash, isPending, error, reset } = useEip155WriteState();
   const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
     hash,
   });
 
-  const approve = (spender: `0x${string}`, amount: bigint) => {
+  const approve = (
+    spender: `0x${string}`,
+    amount: bigint,
+    tokenAddress: `0x${string}` = COLLATERAL_ADDRESS,
+  ) => {
     const data = encodeFunctionData({
       abi: ERC20_ABI,
       functionName: "approve",
@@ -615,7 +659,7 @@ export function useUsdcApprove(): UsdcApproveResult {
     });
 
     write({
-      to: USDC_E_ADDRESS as Address,
+      to: tokenAddress as Address,
       data,
     });
   };
@@ -630,6 +674,9 @@ export function useUsdcApprove(): UsdcApproveResult {
     reset,
   };
 }
+
+/** @deprecated Use useCollateralApprove for active vault collateral. */
+export const useUsdcApprove = useCollateralApprove;
 
 export function useTokenApprove(tokenAddress?: string): TokenApproveResult {
   const { write, hash, isPending, error, reset } = useEip155WriteState();
@@ -667,6 +714,12 @@ export function useTokenApprove(tokenAddress?: string): TokenApproveResult {
 
 interface VaultDepositResult {
   deposit: (vaultAddress: `0x${string}`, assets: bigint, onBehalf: `0x${string}`) => void;
+  depositUSDCe: (
+    vaultAddress: `0x${string}`,
+    assets: bigint,
+    receiver: `0x${string}`,
+    minSharesOut: bigint,
+  ) => void;
   isPending: boolean;
   isConfirming: boolean;
   isConfirmed: boolean;
@@ -677,6 +730,13 @@ interface VaultDepositResult {
 
 interface QueueDepositResult {
   queueDeposit: (vaultAddress: `0x${string}`, assets: bigint) => void;
+  queueDepositUSDCe: (
+    vaultAddress: `0x${string}`,
+    assets: bigint,
+    controller: `0x${string}`,
+    owner: `0x${string}`,
+    minVaultAssetsOut: bigint,
+  ) => void;
   isPending: boolean;
   isConfirming: boolean;
   isConfirmed: boolean;
@@ -706,6 +766,13 @@ interface CustomVaultClaimRedeemResult {
     requestId: bigint,
     shares: bigint,
     receiver: `0x${string}`,
+  ) => void;
+  claimUSDCeTx: (
+    vaultAddress: `0x${string}`,
+    shares: bigint,
+    receiver: `0x${string}`,
+    owner: `0x${string}`,
+    minUserAssetsOut: bigint,
   ) => void;
   isPending: boolean;
   isConfirming: boolean;
@@ -748,8 +815,27 @@ export function useVaultDeposit(): VaultDepositResult {
     });
   };
 
+  const depositUSDCe = (
+    vaultAddress: `0x${string}`,
+    assets: bigint,
+    receiver: `0x${string}`,
+    minSharesOut: bigint,
+  ) => {
+    const data = encodeFunctionData({
+      abi: VAULT_ABI,
+      functionName: "depositUSDCe",
+      args: [assets, receiver, minSharesOut, defaultTransactionDeadline(), createIntentId()],
+    });
+
+    write({
+      to: vaultAddress,
+      data,
+    });
+  };
+
   return {
     deposit,
+    depositUSDCe,
     isPending,
     isConfirming,
     isConfirmed,
@@ -828,8 +914,28 @@ export function useQueueDeposit(): QueueDepositResult {
     });
   };
 
+  const queueDepositUSDCe = (
+    vaultAddress: `0x${string}`,
+    assets: bigint,
+    controller: `0x${string}`,
+    owner: `0x${string}`,
+    minVaultAssetsOut: bigint,
+  ) => {
+    const data = encodeFunctionData({
+      abi: VAULT_ABI,
+      functionName: "requestDepositUSDCe",
+      args: [assets, controller, owner, minVaultAssetsOut, defaultTransactionDeadline(), createIntentId()],
+    });
+
+    write({
+      to: vaultAddress,
+      data,
+    });
+  };
+
   return {
     queueDeposit,
+    queueDepositUSDCe,
     isPending,
     isConfirming,
     isConfirmed,
@@ -911,7 +1017,15 @@ export function useVaultDepositFlow({
   onSuccess,
 }: UseVaultDepositFlowParams): UseVaultDepositFlowResult {
   const isCustomVault = vault.type === "custom";
-  const { formatted, isLoading: balanceLoading, address } = useWalletBalance();
+  const useUsdceHelpers = isCustomVault && hasConfiguredCollateralHelpers();
+  const depositTokenAddress = useUsdceHelpers ? USER_COLLATERAL_ADDRESS : COLLATERAL_ADDRESS;
+  const depositTokenDecimals = useUsdceHelpers
+    ? USER_COLLATERAL_DECIMALS
+    : COLLATERAL_DECIMALS;
+  const { formatted, isLoading: balanceLoading, address } = useWalletBalance(
+    depositTokenAddress,
+    depositTokenDecimals,
+  );
   const [amount, setAmountState] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -920,7 +1034,7 @@ export function useVaultDepositFlow({
   const [submittedDepositAmount, setSubmittedDepositAmount] = useState<string | null>(null);
   const [recordedDepositHash, setRecordedDepositHash] = useState<string | null>(null);
 
-  const parsedAmount = parseTokenUnits(amount, 6);
+  const parsedAmount = parseTokenUnits(amount, depositTokenDecimals);
   const meetsMinDeposit = Number.parseFloat(amount || "0") >= vault.profile.minDeposit;
   const isValidAmount =
     !depositsDisabled && parsedAmount !== undefined && parsedAmount > 0n && meetsMinDeposit;
@@ -933,11 +1047,12 @@ export function useVaultDepositFlow({
   const { shares: previewShares } = usePreviewDeposit(
     vault.config.vaultAddress,
     parsedAmount,
-    !isCustomVault,
+    Boolean(parsedAmount && parsedAmount > 0n),
   );
-  const { allowance, refetch: refetchAllowance } = useUsdcAllowance(
+  const { allowance, refetch: refetchAllowance } = useCollateralAllowance(
     address,
     vault.config.vaultAddress,
+    depositTokenAddress,
   );
   const {
     approve,
@@ -946,9 +1061,10 @@ export function useVaultDepositFlow({
     isConfirmed: approveConfirmed,
     error: approveError,
     reset: resetApprove,
-  } = useUsdcApprove();
+  } = useCollateralApprove();
   const {
     deposit,
+    depositUSDCe,
     isPending: depositPending,
     isConfirming: depositConfirming,
     isConfirmed: depositConfirmed,
@@ -958,6 +1074,7 @@ export function useVaultDepositFlow({
   } = useVaultDeposit();
   const {
     queueDeposit,
+    queueDepositUSDCe,
     isPending: queueDepositPending,
     isConfirming: queueDepositConfirming,
     isConfirmed: queueDepositConfirmed,
@@ -1118,7 +1235,7 @@ export function useVaultDepositFlow({
 
     clearFeedback();
     resetApprove();
-    approve(vault.config.vaultAddress as `0x${string}`, parsedAmount);
+    approve(vault.config.vaultAddress as `0x${string}`, parsedAmount, depositTokenAddress);
   }, [
     approve,
     clearFeedback,
@@ -1156,7 +1273,17 @@ export function useVaultDepositFlow({
 
         if (latestCycle.executionMode === "queued" && latestCycle.batchState === "closed") {
           setSubmittedDepositAmount(amount);
-          queueDeposit(vault.config.vaultAddress as `0x${string}`, parsedAmount);
+          if (useUsdceHelpers) {
+            queueDepositUSDCe(
+              vault.config.vaultAddress as `0x${string}`,
+              parsedAmount,
+              address as `0x${string}`,
+              address as `0x${string}`,
+              withHelperSlippageBuffer(parsedAmount),
+            );
+          } else {
+            queueDeposit(vault.config.vaultAddress as `0x${string}`, parsedAmount);
+          }
           return;
         }
 
@@ -1172,11 +1299,18 @@ export function useVaultDepositFlow({
           }
 
           setSubmittedDepositAmount(amount);
-          deposit(
-            vault.config.vaultAddress as `0x${string}`,
-            parsedAmount,
-            address as `0x${string}`,
-          );
+          if (useUsdceHelpers) {
+            const minSharesOut = withHelperSlippageBuffer(previewShares ?? parsedAmount);
+
+            depositUSDCe(
+              vault.config.vaultAddress as `0x${string}`,
+              parsedAmount,
+              address as `0x${string}`,
+              minSharesOut,
+            );
+          } else {
+            deposit(vault.config.vaultAddress as `0x${string}`, parsedAmount, address as `0x${string}`);
+          }
           return;
         }
 
@@ -1194,7 +1328,18 @@ export function useVaultDepositFlow({
       }
 
       setSubmittedDepositAmount(amount);
-      deposit(vault.config.vaultAddress as `0x${string}`, parsedAmount, address as `0x${string}`);
+      if (useUsdceHelpers) {
+        const minSharesOut = withHelperSlippageBuffer(previewShares ?? parsedAmount);
+
+        depositUSDCe(
+          vault.config.vaultAddress as `0x${string}`,
+          parsedAmount,
+          address as `0x${string}`,
+          minSharesOut,
+        );
+      } else {
+        deposit(vault.config.vaultAddress as `0x${string}`, parsedAmount, address as `0x${string}`);
+      }
     } finally {
       setDepositPreflightPending(false);
     }
@@ -1205,14 +1350,20 @@ export function useVaultDepositFlow({
     clearFeedback,
     cycle?.executionMode,
     deposit,
+    depositUSDCe,
+    depositTokenAddress,
+    depositTokenDecimals,
     depositDisabledReason,
     depositsDisabled,
     ensureFreshNav,
     isCustomVault,
     parsedAmount,
+    previewShares,
     queueDeposit,
+    queueDepositUSDCe,
     resetDeposit,
     resetQueueDeposit,
+    useUsdceHelpers,
     vault.config.vaultAddress,
     vaultId,
   ]);
@@ -1303,7 +1454,23 @@ export function useCustomVaultClaimRedeem(): CustomVaultClaimRedeemResult {
     write({ to: vaultAddress, data });
   };
 
-  return { claimRedeemTx, isPending, isConfirming, isConfirmed, hash, error, reset };
+  const claimUSDCeTx = (
+    vaultAddress: `0x${string}`,
+    shares: bigint,
+    receiver: `0x${string}`,
+    owner: `0x${string}`,
+    minUserAssetsOut: bigint,
+  ) => {
+    const data = encodeFunctionData({
+      abi: VAULT_ABI,
+      functionName: "claimUSDCe",
+      args: [shares, receiver, owner, minUserAssetsOut, defaultTransactionDeadline(), createIntentId()],
+    });
+
+    write({ to: vaultAddress, data });
+  };
+
+  return { claimRedeemTx, claimUSDCeTx, isPending, isConfirming, isConfirmed, hash, error, reset };
 }
 
 interface VaultRedeemResult {
@@ -1312,6 +1479,13 @@ interface VaultRedeemResult {
     shares: bigint,
     receiver: `0x${string}`,
     onBehalf: `0x${string}`,
+  ) => void;
+  claimUSDCe: (
+    vaultAddress: `0x${string}`,
+    shares: bigint,
+    receiver: `0x${string}`,
+    owner: `0x${string}`,
+    minUserAssetsOut: bigint,
   ) => void;
   isPending: boolean;
   isConfirming: boolean;
@@ -1345,8 +1519,28 @@ export function useVaultRedeem(): VaultRedeemResult {
     });
   };
 
+  const claimUSDCe = (
+    vaultAddress: `0x${string}`,
+    shares: bigint,
+    receiver: `0x${string}`,
+    owner: `0x${string}`,
+    minUserAssetsOut: bigint,
+  ) => {
+    const data = encodeFunctionData({
+      abi: VAULT_ABI,
+      functionName: "claimUSDCe",
+      args: [shares, receiver, owner, minUserAssetsOut, defaultTransactionDeadline(), createIntentId()],
+    });
+
+    write({
+      to: vaultAddress,
+      data,
+    });
+  };
+
   return {
     redeem,
+    claimUSDCe,
     isPending,
     isConfirming,
     isConfirmed,

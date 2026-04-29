@@ -143,7 +143,7 @@ describe("Custom Vault Routes", () => {
     depositsDisabled: true,
     title: "Vault migration in progress",
     message:
-      "New deposits are paused while this USDC.e vault is prepared for Polymarket's pUSD migration. Withdrawals, claims, queue status, and activity remain available.",
+        "New deposits are paused while this pUSD vault is finalized for Polymarket CLOB V2. Withdrawals, claims, queue status, and activity remain available.",
     startedAt: "2026-04-28T11:00:00.000Z",
     targetAssetSymbol: "pUSD",
     targetAssetAddress: "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
@@ -582,7 +582,7 @@ describe("Custom Vault Routes", () => {
 
     await handler(req, res);
 
-    expect(mockAppendVaultLifecycleEvent).toHaveBeenCalled();
+    expect(mockAppendVaultLifecycleEvent).not.toHaveBeenCalled();
     expect(res.status).not.toHaveBeenCalled();
     expect(res.payload).toMatchObject({
       success: true,
@@ -797,21 +797,13 @@ describe("Custom Vault Routes", () => {
 
     await handler(req, res);
 
-    expect(mockAppendVaultLifecycleEvent).toHaveBeenCalled();
-    expect(mockAppendVaultLifecycleEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        eventType: "cycle_opened",
-        occurredAt: expect.any(Date),
-      }),
+    expect(mockAppendVaultLifecycleEvent).not.toHaveBeenCalled();
+    const cycleOpenedItem = res.payload.items.find(
+      (item: { type: string }) => item.type === "cycle_opened",
     );
-
-    const cycleOpenedCall = mockAppendVaultLifecycleEvent.mock.calls.find(
-      (call) => call[0].eventType === "cycle_opened",
-    );
-    const cycleOpenedOccurredAt = cycleOpenedCall?.[0].occurredAt as Date | undefined;
-    expect(cycleOpenedOccurredAt).toBeDefined();
+    const cycleOpenedOccurredAt = new Date(cycleOpenedItem.occurredAt);
     expect(
-      Math.abs(cycleOpenedOccurredAt!.getTime() - firstUserEvent.getTime()),
+      Math.abs(cycleOpenedOccurredAt.getTime() - firstUserEvent.getTime()),
     ).toBeLessThanOrEqual(5);
   });
 

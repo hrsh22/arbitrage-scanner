@@ -9,6 +9,16 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
+process.env.AMOY_VAULT_1_VAULT_ADDRESS = "0x1234567890123456789012345678901234567890";
+process.env.AMOY_VAULT_1_SAFE_ADDRESS = "0x0987654321098765432109876543210987654321";
+process.env.VAULT_1_ALLOCATOR_NAV_KEY =
+  "0x0000000000000000000000000000000000000000000000000000000000000001";
+process.env.VAULT_1_SAFE_OPERATOR_KEY =
+  "0x0000000000000000000000000000000000000000000000000000000000000002";
+process.env.VAULT_1_TRADING_SIGNER_KEY =
+  "0x0000000000000000000000000000000000000000000000000000000000000003";
+
 import {
   TradingOrchestratorService,
   MAX_FLATTENING_WINDOW_MS,
@@ -30,10 +40,25 @@ vi.mock("../logger.js", () => ({
   },
 }));
 
+vi.mock("../config/index.js", () => ({
+  getAllVaultConfigs: vi.fn(() => []),
+  getVaultConfig: vi.fn(() => null),
+}));
+
+vi.mock("../services/tradingClient.js", () => ({
+  getVaultTradingClient: vi.fn(() => ({
+    isInitialized: vi.fn(() => true),
+    initialize: vi.fn().mockResolvedValue(undefined),
+    createOrder: vi.fn(),
+  })),
+}));
+
 vi.mock("../env.js", () => ({
   env: {
     VAULT_MODE: "simulation",
     POLYGON_RPC_URL: "http://localhost:8545",
+    POLYGON_RPC_URLS: ["http://localhost:8545"],
+    AMOY_RPC_URLS: ["http://localhost:8545"],
     DATABASE_URL: "postgres://localhost/test",
     VAULT_DATABASE_URL: "postgres://localhost/test",
   },

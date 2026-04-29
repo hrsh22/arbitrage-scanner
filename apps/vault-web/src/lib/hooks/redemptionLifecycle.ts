@@ -3,6 +3,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useAppKitAccount } from "@reown/appkit/react";
 import { parseUnits } from "viem";
 import type { RedemptionRequest, VaultInstance } from "../../types";
+import {
+  COLLATERAL_OFFRAMP_ADDRESS,
+  COLLATERAL_ONRAMP_ADDRESS,
+  USER_COLLATERAL_DECIMALS,
+} from "../../constants";
 import { postRecordClaimActivity } from "../api";
 import {
   useCustomVaultRequestRedeem,
@@ -12,6 +17,12 @@ import {
 } from "../hooks";
 import { invalidateVaultDetailQueries } from "./invalidation";
 import { useTransientState } from "./transientState";
+
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+
+function hasConfiguredCollateralHelpers(): boolean {
+  return COLLATERAL_ONRAMP_ADDRESS !== ZERO_ADDRESS && COLLATERAL_OFFRAMP_ADDRESS !== ZERO_ADDRESS;
+}
 
 function normalizeWalletErrorMessage(message: string): string {
   const normalized = message.toLowerCase();
@@ -198,6 +209,7 @@ export function useRedemptionClaimLifecycle({
   const [successTx, setSuccessTx] = useState<string | null>(null);
   const {
     redeem,
+    claimUSDCe,
     hash,
     isPending,
     isConfirming,
@@ -237,12 +249,19 @@ export function useRedemptionClaimLifecycle({
             receiverAddress) as `0x${string}`,
         });
 
-        redeem(
-          vaultAddress as `0x${string}`,
-          parseUnits(request.sharesFormatted, 6),
-          receiverAddress as `0x${string}`,
-          (request.ownerAddress || request.controllerAddress || receiverAddress) as `0x${string}`,
-        );
+        const shares = parseUnits(request.sharesFormatted, 6);
+        const owner = (request.ownerAddress || request.controllerAddress || receiverAddress) as `0x${string}`;
+
+        if (vaultType === "custom" && hasConfiguredCollateralHelpers()) {
+          const claimableAssets = parseUnits(
+            request.claimableAssetsFormatted ?? "0",
+            USER_COLLATERAL_DECIMALS,
+          );
+
+          claimUSDCe(vaultAddress as `0x${string}`, shares, receiverAddress as `0x${string}`, owner, claimableAssets);
+        } else {
+          redeem(vaultAddress as `0x${string}`, shares, receiverAddress as `0x${string}`, owner);
+        }
       } catch (claimError) {
         setActiveRequestId(null);
         setClaimSnapshot(null);
@@ -252,7 +271,7 @@ export function useRedemptionClaimLifecycle({
         );
       }
     },
-    [address, isConnected, redeem, reset, vaultAddress],
+    [address, claimUSDCe, isConnected, redeem, reset, vaultAddress, vaultType],
   );
 
   useEffect(() => {

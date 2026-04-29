@@ -43,12 +43,13 @@ import { SafeWalletService } from "./safeWallet.js";
 import { activityEventRepository } from "../repositories/activityEventRepository.js";
 import { flatBookStateRepository } from "../repositories/flatBookStateRepository.js";
 import { withdrawalRepository } from "../repositories/withdrawalRepository.js";
+import { COLLATERAL_DECIMALS, COLLATERAL_SYMBOL } from "../constants.js";
 
 // Default NAV staleness threshold: 6 hours in seconds
 const DEFAULT_NAV_STALENESS_SECONDS = 21600;
 
-// USDC decimals
-const USDC_DECIMALS = 6;
+// Active collateral decimals (pUSD on Polygon mainnet)
+const USDC_DECIMALS = COLLATERAL_DECIMALS;
 const VAULT_SHARE_DECIMALS = 6;
 const DEPOSIT_QUEUE_BATCH_SIZE = 1000n;
 
@@ -1506,7 +1507,7 @@ export class CustomVaultProvider implements IVaultProvider {
         reservedRedemptionAssets,
         pendingWithdrawalLiability: withdrawalLiability,
         txHash: recallResult.txHash as Hex | undefined,
-        details: `Recalled ${Number(recallAmount) / 10 ** USDC_DECIMALS} USDC from trading wallet to vault.`,
+          details: `Recalled ${Number(recallAmount) / 10 ** USDC_DECIMALS} ${COLLATERAL_SYMBOL} from trading wallet to vault.`,
       };
     }
 
@@ -1561,9 +1562,9 @@ export class CustomVaultProvider implements IVaultProvider {
           pendingWithdrawalLiability: withdrawalLiability,
           txHash: allocationResult.txHash,
           details:
-            `Allocated ${Number(allocationAmount) / 10 ** USDC_DECIMALS} USDC from vault to trading wallet.` +
+            `Allocated ${Number(allocationAmount) / 10 ** USDC_DECIMALS} ${COLLATERAL_SYMBOL} from vault to trading wallet.` +
             (claimableDepositAssets > 0n
-              ? ` Claimable queued deposits reserved: ${Number(claimableDepositAssets) / 10 ** USDC_DECIMALS} USDC.`
+              ? ` Claimable queued deposits reserved: ${Number(claimableDepositAssets) / 10 ** USDC_DECIMALS} ${COLLATERAL_SYMBOL}.`
               : ""),
         };
       }
@@ -1628,7 +1629,7 @@ export class CustomVaultProvider implements IVaultProvider {
         queuedAssets: 0n,
         reservedRedemptionAssets: 0n,
         pendingWithdrawalLiability: requiredVaultBalance,
-        error: "Trading wallet has no available USDC for recall.",
+        error: `Trading wallet has no available ${COLLATERAL_SYMBOL} for recall.`,
         details: "Cannot satisfy instant withdrawal shortfall from trading wallet.",
       };
     }
@@ -1697,7 +1698,7 @@ export class CustomVaultProvider implements IVaultProvider {
       reservedRedemptionAssets: 0n,
       pendingWithdrawalLiability: requiredVaultBalance,
       txHash: recallResult.txHash as Hex | undefined,
-      details: `Recalled ${Number(recallAmount) / 10 ** USDC_DECIMALS} USDC for instant withdrawal preflight.`,
+      details: `Recalled ${Number(recallAmount) / 10 ** USDC_DECIMALS} ${COLLATERAL_SYMBOL} for instant withdrawal preflight.`,
     };
   }
 

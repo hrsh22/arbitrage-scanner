@@ -10,15 +10,18 @@ import {
 } from "@workspace/ui/components/dialog";
 import { Info, FileText, Clock, Wallet, ChevronDown } from "lucide-react";
 import { cn } from "@workspace/ui/lib/utils";
+import { COLLATERAL_SYMBOL } from "../../../../src/constants";
 
 interface WithdrawalInfoDialogProps {
   isQueuedMode: boolean;
+  displaySymbol?: string;
   triggerLabel?: string;
   triggerClassName?: string;
 }
 
 export function WithdrawalInfoDialog({
   isQueuedMode,
+  displaySymbol = COLLATERAL_SYMBOL,
   triggerLabel = "How this works",
   triggerClassName = "",
 }: WithdrawalInfoDialogProps) {
@@ -45,7 +48,7 @@ export function WithdrawalInfoDialog({
       key: "claim",
       icon: Wallet,
       label: "Claim Funds",
-      sublabel: "Receive USDC.e",
+      sublabel: `Receive ${displaySymbol}`,
       color: "emerald",
     },
   ];
@@ -233,7 +236,7 @@ export function WithdrawalInfoDialog({
                 <div>
                   <h3 className="text-[15px] font-semibold text-white">Claim your funds</h3>
                   <p className="mt-2 text-sm leading-relaxed text-[#828B8D]">
-                    Once your withdrawal is processed, claim your USDC.e to your connected wallet.
+                    Once your withdrawal is processed, claim your {displaySymbol} to your connected wallet.
                     You'll see the claimable amount in the redemption panel.
                   </p>
                 </div>

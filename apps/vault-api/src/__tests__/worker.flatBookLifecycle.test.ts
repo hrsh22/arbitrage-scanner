@@ -70,6 +70,7 @@ interface PreflightHarness {
 
 interface ReadyQueueHarness {
   liquidityManager: any;
+  readContract: ReturnType<typeof vi.fn>;
   markReadyIdempotent: ReturnType<typeof vi.fn>;
   updateAssetsEstimated: ReturnType<typeof vi.fn>;
   recallWithdrawalLiquidityOnDemand: ReturnType<typeof vi.fn>;
@@ -471,6 +472,12 @@ async function bootReadyQueueHarness(): Promise<ReadyQueueHarness> {
       supportsPolymarketTrading: false,
       addresses: {
         usdcE: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+        collateral: "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
+        collateralSymbol: "pUSD",
+        collateralDecimals: 18,
+        legacyUsdcE: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+        collateralOnramp: "0x93070a847efEf7F70739046A929D47a521F5B8ee",
+        collateralOfframp: "0x2957922Eb93258b93368531d39fAcCA3B4dC5854",
       },
     })),
     getRpcUrlForNetwork: vi.fn(() => "https://rpc.example"),
@@ -525,6 +532,7 @@ async function bootReadyQueueHarness(): Promise<ReadyQueueHarness> {
 
   return {
     liquidityManager,
+    readContract,
     markReadyIdempotent,
     updateAssetsEstimated,
     recallWithdrawalLiquidityOnDemand,
@@ -935,7 +943,7 @@ describe("worker-owned withdrawal readiness", () => {
           currentBatchStatus: "open",
         },
       },
-      vaultBalance: 5_000_000n,
+      vaultBalance: 5_000_000_000_000_000_000n,
       safeBalance: 0n,
       pendingWithdrawalsCount: 1,
     });
@@ -951,6 +959,7 @@ describe("worker-owned withdrawal readiness", () => {
 
   it("recalls the refreshed delta and marks ready in the same run", async () => {
     const h = await bootReadyQueueHarness();
+    h.readContract.mockResolvedValue(5_000_000_000_000_000_000n);
 
     const result = await h.liquidityManager.markPendingWithdrawalsReady({
       vaultInfo: {
@@ -960,8 +969,8 @@ describe("worker-owned withdrawal readiness", () => {
           currentBatchStatus: "open",
         },
       },
-      vaultBalance: 500_000n,
-      safeBalance: 5_000_000n,
+      vaultBalance: 500_000_000_000_000_000n,
+      safeBalance: 5_000_000_000_000_000_000n,
       pendingWithdrawalsCount: 1,
     });
 
@@ -971,9 +980,9 @@ describe("worker-owned withdrawal readiness", () => {
       expect.objectContaining({ reason: "worker_ready_refresh", source: "worker_queue" }),
     );
     expect(h.recallWithdrawalLiquidityOnDemand).toHaveBeenCalledWith({
-      vaultUsdcBalance: 500_000n,
-      safeUsdcBalance: 5_000_000n,
-      requiredAssets: 1_000_000n,
+      vaultUsdcBalance: 500_000_000_000_000_000n,
+      safeUsdcBalance: 5_000_000_000_000_000_000n,
+      requiredAssets: 1_000_000_000_000_000_000n,
     });
     expect(h.markReadyIdempotent).toHaveBeenCalledWith("wr-1");
     expect(result).toMatchObject({ action: "marked_ready", amount: 1 });

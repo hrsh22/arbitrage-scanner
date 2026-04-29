@@ -6,7 +6,9 @@ import { getAllVaultConfigs, getVaultConfig } from "../config/index.js";
 import { resolveVaultIdentity } from "../config/identityResolver.js";
 import type { VaultInstanceConfig } from "../config/types.js";
 import {
-  USDC_E_ADDRESS,
+  COLLATERAL_ADDRESS,
+  COLLATERAL_DECIMALS,
+  COLLATERAL_SYMBOL,
   CTF_ADDRESS,
   CTF_EXCHANGE_ADDRESS,
   NEGRISK_CTF_EXCHANGE_ADDRESS,
@@ -84,6 +86,10 @@ async function reconcileCustomReadyWithdrawalRequests(
 
   const config = getVaultConfigByAddress(readyRequests[0]!.vaultAddress);
   if (!config || config.type !== "custom") {
+    return requests;
+  }
+
+  if (config.vaultContractType === "flatBookVaultV2") {
     return requests;
   }
 
@@ -287,6 +293,20 @@ const VAULT_REDEEM_ABI = [
     ],
     outputs: [{ name: "assets", type: "uint256" }],
   },
+  {
+    type: "function",
+    name: "claimUSDCe",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "shares", type: "uint256" },
+      { name: "receiver", type: "address" },
+      { name: "owner", type: "address" },
+      { name: "minUserAssetsOut", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+      { name: "intentId", type: "bytes32" },
+    ],
+    outputs: [{ name: "userAssetsOut", type: "uint256" }],
+  },
 ] as const;
 
 const CUSTOM_VAULT_CLAIM_STATE_ABI = [
@@ -382,18 +402,18 @@ async function verifyWithdrawalCompletionTx(params: {
     }
 
     const decoded = decodeFunctionData({ abi: VAULT_REDEEM_ABI, data: tx.input });
-    if (decoded.functionName !== "redeem") {
-      return { valid: false, error: "Claim transaction did not call redeem." };
+    if (decoded.functionName !== "redeem" && decoded.functionName !== "claimUSDCe") {
+      return { valid: false, error: "Claim transaction did not call redeem or claimUSDCe." };
     }
 
-    const [shares, receiver, onBehalf] = decoded.args;
+    const [shares, receiver, owner] = decoded.args;
     const expectedShares = parseUnits(params.shares, VAULT_SHARE_DECIMALS);
 
     if (shares !== expectedShares) {
       return { valid: false, error: "Claim transaction redeemed the wrong share amount." };
     }
 
-    if (getAddress(receiver) !== normalizedUser || getAddress(onBehalf) !== normalizedUser) {
+    if (getAddress(receiver) !== normalizedUser || getAddress(owner) !== normalizedUser) {
       return {
         valid: false,
         error: "Claim transaction receiver does not match the connected wallet.",
@@ -409,7 +429,7 @@ async function verifyWithdrawalCompletionTx(params: {
   }
 }
 
-const USDC_DECIMALS = 6;
+const USDC_DECIMALS = COLLATERAL_DECIMALS;
 const VAULT_SHARE_DECIMALS = 6;
 
 const DEFAULT_VAULT_PROFILE = {
@@ -596,13 +616,13 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> 
     if (config.type !== "custom") {
       const [vaultUsdcRaw, safeUsdcRaw, totalSupplyRaw] = await Promise.all([
         publicClient.readContract({
-          address: USDC_E_ADDRESS as Address,
+          address: COLLATERAL_ADDRESS as Address,
           abi: ERC20_BALANCE_ABI,
           functionName: "balanceOf",
           args: [config.vaultAddress as Address],
         }),
         publicClient.readContract({
-          address: USDC_E_ADDRESS as Address,
+          address: COLLATERAL_ADDRESS as Address,
           abi: ERC20_BALANCE_ABI,
           functionName: "balanceOf",
           args: [config.safeAddress as Address],
@@ -957,8 +977,8 @@ export function buildVaultRouter(): Router {
 
       // Run approvals individually — reinitialize Safe for each tx to avoid nonce cache staleness (GS026)
       const exchanges = [
-        { name: "CTF Exchange", address: CTF_EXCHANGE_ADDRESS },
-        { name: "NegRisk CTF Exchange", address: NEGRISK_CTF_EXCHANGE_ADDRESS },
+        { name: "CTF Exchange V2", address: CTF_EXCHANGE_ADDRESS },
+        { name: "NegRisk CTF Exchange V2", address: NEGRISK_CTF_EXCHANGE_ADDRESS },
         { name: "NegRisk Adapter", address: NEGRISK_ADAPTER_ADDRESS },
       ];
       const results: Array<{ name: string; token: string; result: SafeTxResult }> = [];
@@ -973,9 +993,9 @@ export function buildVaultRouter(): Router {
       for (const exchange of exchanges) {
         approvals.push({
           name: exchange.name,
-          token: "USDC.e",
+          token: COLLATERAL_SYMBOL,
           spender: exchange.address,
-          exec: (s) => s.approveToken(USDC_E_ADDRESS, exchange.address),
+          exec: (s) => s.approveToken(COLLATERAL_ADDRESS, exchange.address),
         });
         approvals.push({
           name: exchange.name,
@@ -997,8 +1017,8 @@ export function buildVaultRouter(): Router {
       for (const approval of approvals) {
         const safe = await createInitializedSafe();
 
-        if (approval.token === "USDC.e" && approval.spender) {
-          const currentAllowance = await safe.getAllowance(USDC_E_ADDRESS, approval.spender);
+        if (approval.token === COLLATERAL_SYMBOL && approval.spender) {
+          const currentAllowance = await safe.getAllowance(COLLATERAL_ADDRESS, approval.spender);
           if (hasSufficientAllowance(currentAllowance, safe)) {
             results.push({
               name: approval.name,
@@ -1019,10 +1039,10 @@ export function buildVaultRouter(): Router {
           result = await approval.exec(retrySafe);
         }
 
-        if (!result.success && approval.token === "USDC.e" && approval.spender) {
+        if (!result.success && approval.token === COLLATERAL_SYMBOL && approval.spender) {
           const verificationSafe = await createInitializedSafe();
           const allowanceAfterFailure = await verificationSafe.getAllowance(
-            USDC_E_ADDRESS,
+            COLLATERAL_ADDRESS,
             approval.spender,
           );
 
@@ -1072,12 +1092,13 @@ export function buildVaultRouter(): Router {
 
       const [safeInfo, balance] = await Promise.all([
         safe.getSafeInfo(),
-        safe.getBalance(USDC_E_ADDRESS),
+        safe.getBalance(COLLATERAL_ADDRESS),
       ]);
 
       res.json({
         safeInfo: { ...safeInfo, chainId: Number(safeInfo.chainId) },
-        usdcBalance: Number(balance) / 1e6,
+        collateralBalance: Number(balance) / 10 ** COLLATERAL_DECIMALS,
+        collateralSymbol: COLLATERAL_SYMBOL,
       });
     } catch (error) {
       logger.error("Vault API: Safe status failed", { error: (error as Error).message });
@@ -1171,7 +1192,7 @@ export function buildVaultRouter(): Router {
         amount,
         vaultId: config.id,
         error:
-          "Direct deposit allocation is disabled for custom vault flow. Transfer USDC to the vault address, then run reconciliation.",
+          `Direct deposit allocation is disabled for custom vault flow. Transfer ${COLLATERAL_SYMBOL} to the vault address, then run reconciliation.`,
       });
     } catch (error) {
       logger.error("Vault API: Deposit failed", { error: (error as Error).message });

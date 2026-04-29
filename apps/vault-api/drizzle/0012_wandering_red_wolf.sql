@@ -1,0 +1,1 @@
+ALTER TABLE "vault_config" ALTER COLUMN "asset" SET DEFAULT 'pUSD';

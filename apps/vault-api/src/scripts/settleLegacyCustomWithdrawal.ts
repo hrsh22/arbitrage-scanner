@@ -111,7 +111,7 @@ async function main(): Promise<void> {
   const vaultAddress = getAddress(vaultConfig.vaultAddress);
   const safeAddress = getAddress(vaultConfig.safeAddress);
   const userAddress = getAddress(request.userAddress);
-  const usdcAddress = getAddress(networkConfig.addresses.usdcE);
+  const usdcAddress = getAddress(networkConfig.addresses.collateral);
 
   const publicClient = createPublicClient({
     chain: networkConfig.chain,
@@ -139,15 +139,19 @@ async function main(): Promise<void> {
   console.log(`Vault:           ${vaultAddress}`);
   console.log(`Trading Safe:    ${safeAddress}`);
   console.log(`Shares:          ${request.shares}`);
-  console.log(`Locked Amount:   ${request.assetsEstimated} USDC.e`);
-  console.log(`Vault balance:   ${formatUnits(vaultUsdcBefore, 6)} USDC.e`);
-  console.log(`Safe balance:    ${formatUnits(safeUsdcBefore, 6)} USDC.e`);
+  console.log(`Locked Amount:   ${request.assetsEstimated} ${networkConfig.addresses.collateralSymbol}`);
+  console.log(
+    `Vault balance:   ${formatUnits(vaultUsdcBefore, networkConfig.addresses.collateralDecimals)} ${networkConfig.addresses.collateralSymbol}`,
+  );
+  console.log(
+    `Safe balance:    ${formatUnits(safeUsdcBefore, networkConfig.addresses.collateralDecimals)} ${networkConfig.addresses.collateralSymbol}`,
+  );
 
   let allocationTxHash: string | undefined;
   if (!options.skipAllocation) {
     if (vaultUsdcBefore < amountUnits) {
       throw new Error(
-        `Vault balance ${formatUnits(vaultUsdcBefore, 6)} is below locked amount ${request.assetsEstimated}`,
+        `Vault balance ${formatUnits(vaultUsdcBefore, networkConfig.addresses.collateralDecimals)} ${networkConfig.addresses.collateralSymbol} is below locked amount ${request.assetsEstimated}`,
       );
     }
 

@@ -36,8 +36,8 @@ interface SimulationConfig {
 }
 
 interface VaultState {
-  vaultBalance: number; // USDC.e in vault
-  safeBalance: number; // USDC.e in safe
+  vaultBalance: number; // collateral in vault
+  safeBalance: number; // collateral in safe
   totalDeployed: number; // Amount deployed via adapter
   pendingWithdrawals: Array<{
     requestId: string;
@@ -128,7 +128,7 @@ class MockLiquidityManager {
 
   private createInitialState(): VaultState {
     return {
-      vaultBalance: 1000, // $1000 USDC.e in vault
+  vaultBalance: 1000, // $1000 collateral in vault
       safeBalance: 0, // $0 in safe initially
       totalDeployed: 0, // Nothing deployed
       pendingWithdrawals: [],
@@ -145,7 +145,7 @@ class MockLiquidityManager {
     return { ...this.state };
   }
 
-  // Step 1: Simulate deposit (adds USDC.e to vault)
+  // Step 1: Simulate deposit (adds collateral to vault)
   async simulateDeposit(amount: number): Promise<StepResult> {
     const startTime = Date.now();
 
@@ -162,7 +162,7 @@ class MockLiquidityManager {
         state: this.getState(),
         action: "deposit",
         amount,
-        details: `Deposited $${amount.toFixed(2)} USDC.e into vault`,
+      details: `Deposited $${amount.toFixed(2)} collateral into vault`,
       };
     } catch (error) {
       return {

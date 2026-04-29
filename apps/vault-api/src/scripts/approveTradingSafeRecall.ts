@@ -106,7 +106,7 @@ async function main(): Promise<void> {
 
   const vaultAddress = getAddress(vaultConfig.vaultAddress);
   const tradingWalletAddress = getAddress(vaultConfig.safeAddress);
-  const usdcAddress = getAddress(networkConfig.addresses.usdcE);
+  const usdcAddress = getAddress(networkConfig.addresses.collateral);
   const safeOperatorKey = getRequiredEnv(vaultConfig.safeOperatorKeyEnv);
   const rpcUrls = getRpcUrlsForNetwork(networkConfig.name);
 
@@ -115,7 +115,7 @@ async function main(): Promise<void> {
   console.log(`Vault ID:       ${vaultConfig.id}`);
   console.log(`Vault:          ${vaultAddress}`);
   console.log(`Trading Wallet: ${tradingWalletAddress}`);
-  console.log(`USDC:           ${usdcAddress}`);
+  console.log(`${networkConfig.addresses.collateralSymbol}:           ${usdcAddress}`);
   console.log(`Amount:         ${options.amount === MAX_UINT256 ? "unlimited" : options.amount}`);
   console.log(`RPCs:           ${rpcUrls.join(", ")}`);
   console.log("");

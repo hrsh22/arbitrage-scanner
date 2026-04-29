@@ -27,7 +27,7 @@ import {
 } from "./tradingClient.js";
 import { createNetworkTransport } from "../rpcTransport.js";
 import { getNetworkConfigFromEnv, getRpcUrlForNetwork } from "../config/network.js";
-import { USDC_E_ADDRESS, SUPPORTS_POLYMARKET_TRADING } from "../constants.js";
+import { COLLATERAL_DECIMALS, SUPPORTS_POLYMARKET_TRADING } from "../constants.js";
 import { getVaultProvider } from "./vaultProviderFactory.js";
 
 // ============================================================================
@@ -71,7 +71,7 @@ const DEFAULT_CONFIG: FlatnessDetectorConfig = {
   verboseLogging: true,
 };
 
-const USDC_DECIMALS = 6;
+const USDC_DECIMALS = COLLATERAL_DECIMALS;
 
 // ============================================================================
 // Flatness Detector Service

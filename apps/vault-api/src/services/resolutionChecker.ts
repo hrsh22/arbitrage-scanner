@@ -10,7 +10,7 @@ import type { VaultInstanceConfig } from "../config/types.js";
 import { env } from "../env.js";
 import { encodeFunctionData, type Address } from "viem";
 
-import { CTF_ADDRESS, SUPPORTS_POLYMARKET_TRADING, USDC_E_ADDRESS } from "../constants.js";
+import { COLLATERAL_ADDRESS, CTF_ADDRESS, SUPPORTS_POLYMARKET_TRADING } from "../constants.js";
 import { logger } from "../logger.js";
 import {
   PositionRepository,
@@ -286,7 +286,7 @@ export class ResolutionCheckerService {
         abi: CTF_REDEEM_ABI,
         functionName: "redeemPositions",
         args: [
-          USDC_E_ADDRESS as Address,
+          COLLATERAL_ADDRESS as Address,
           PARENT_COLLECTION_ID,
           conditionId as `0x${string}`,
           BINARY_INDEX_SETS,
@@ -436,8 +436,9 @@ export class ResolutionCheckerService {
     if (!marketStatus.resolved) return;
 
     const normalizedWinningOutcome = normalizeOutcomeLabel(marketStatus.winningOutcome);
+    const normalizedPositionOutcome = normalizeOutcomeLabel(position.outcome);
     const isWin =
-      normalizedWinningOutcome !== null && position.outcome === normalizedWinningOutcome;
+      normalizedWinningOutcome !== null && normalizedPositionOutcome === normalizedWinningOutcome;
     const costBasis = parseFloat(position.costBasis);
     const quantity = parseFloat(position.quantity);
 

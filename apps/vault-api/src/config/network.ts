@@ -43,16 +43,30 @@ export interface NetworkConfig {
   readonly supportsPolymarketTrading: boolean;
   /** Network-specific contract addresses */
   readonly addresses: {
-    /** USDC.e (USDC from Ethereum, NOT native USDC) */
-    readonly usdcE: string;
+    /** Active Polymarket collateral token for this network */
+    readonly collateral: string;
+    /** Active collateral display symbol */
+    readonly collateralSymbol: string;
+    /** Active collateral decimals */
+    readonly collateralDecimals: number;
+    /** Legacy Polygon USDC.e retained for migration/onramp flows */
+    readonly legacyUsdcE: string;
+    /** Collateral onramp used to convert legacy USDC.e into pUSD */
+    readonly collateralOnramp: string;
+    /** Collateral offramp used to convert pUSD back into legacy USDC.e */
+    readonly collateralOfframp: string;
     /** Conditional Token Framework (CTF) contract */
     readonly ctf: string;
-    /** CTF Exchange for market order execution */
+    /** Active CLOB exchange for market order execution */
     readonly ctfExchange: string;
-    /** NegRisk CTF Exchange for negative risk markets */
+    /** Active negative-risk CLOB exchange */
     readonly negRiskCtfExchange: string;
     /** NegRisk adapter for outcome token conversion */
     readonly negRiskAdapter: string;
+    /** CLOB V2 exchange for market order execution */
+    readonly exchangeV2: string;
+    /** CLOB V2 negative-risk exchange */
+    readonly negRiskExchangeV2: string;
     /** VaultV2 factory for vault creation */
     readonly vaultV2Factory: string;
   };
@@ -71,11 +85,18 @@ const MAINNET_CONFIG: NetworkConfig = {
   defaultRpcUrl: "https://polygon-bor-rpc.publicnode.com",
   supportsPolymarketTrading: true,
   addresses: {
-    usdcE: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+    collateral: "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
+    collateralSymbol: "pUSD",
+    collateralDecimals: 6,
+    legacyUsdcE: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+    collateralOnramp: "0x93070a847efEf7F70739046A929D47a521F5B8ee",
+    collateralOfframp: "0x2957922Eb93258b93368531d39fAcCA3B4dC5854",
     ctf: "0x4d97dcd97ec945f40cf65f87097ace5ea0476045",
-    ctfExchange: "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
-    negRiskCtfExchange: "0xC5d563A36AE78145C45a50134d48A1215220f80a",
+    ctfExchange: "0xE111180000d2663C0091e4f400237545B87B996B",
+    negRiskCtfExchange: "0xe2222d279d744050d28e00520010520000310F59",
     negRiskAdapter: "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296",
+    exchangeV2: "0xE111180000d2663C0091e4f400237545B87B996B",
+    negRiskExchangeV2: "0xe2222d279d744050d28e00520010520000310F59",
     vaultV2Factory: "0xA1D94F746dEfa1928926b84fB2596c06926C0405",
   },
 } as const;
@@ -93,13 +114,20 @@ const AMOY_CONFIG: NetworkConfig = {
   defaultRpcUrl: "https://rpc-amoy.polygon.technology",
   supportsPolymarketTrading: false,
   addresses: {
-    // NOTE: Amoy testnet USDC.e address is set; other contracts use placeholders if not deployed
+    // NOTE: Amoy testnet collateral address is set; other contracts use placeholders if not deployed
     // These are placeholder addresses - update with actual deployed contracts
-    usdcE: "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582",
+    collateral: "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582",
+    collateralSymbol: "USDC",
+    collateralDecimals: 6,
+    legacyUsdcE: "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582",
+    collateralOnramp: "0x0000000000000000000000000000000000000000",
+    collateralOfframp: "0x0000000000000000000000000000000000000000",
     ctf: "0x0000000000000000000000000000000000000000",
     ctfExchange: "0x0000000000000000000000000000000000000000",
     negRiskCtfExchange: "0x0000000000000000000000000000000000000000",
     negRiskAdapter: "0x0000000000000000000000000000000000000000",
+    exchangeV2: "0x0000000000000000000000000000000000000000",
+    negRiskExchangeV2: "0x0000000000000000000000000000000000000000",
     vaultV2Factory: "0x0000000000000000000000000000000000000000",
   },
 } as const;

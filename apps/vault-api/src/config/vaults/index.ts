@@ -234,10 +234,10 @@ function validateConfigs(configs: VaultInstanceConfig[]): void {
 
     if (
       config.tradingSignatureType !== undefined &&
-      ![0, 1, 2].includes(config.tradingSignatureType)
+      ![0, 1, 2, 3].includes(config.tradingSignatureType)
     ) {
       throw new Error(
-        `Vault "${config.name}" (ID: ${config.id}): tradingSignatureType must be 0, 1, or 2, got ${config.tradingSignatureType}`,
+        `Vault "${config.name}" (ID: ${config.id}): tradingSignatureType must be 0, 1, 2, or 3, got ${config.tradingSignatureType}`,
       );
     }
   }

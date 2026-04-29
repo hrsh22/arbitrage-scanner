@@ -16,8 +16,8 @@ export interface AssetLogoProps {
 const ASSET_CONFIG: Record<AssetType, { src: string; alt: string; defaultLabel: string }> = {
   usdc: {
     src: "/logo/usdc-logo.svg",
-    alt: "USDC.e",
-    defaultLabel: "USDC.e",
+    alt: "pUSD",
+    defaultLabel: "pUSD",
   },
   btc: {
     src: "/logo/btc-logo.svg",

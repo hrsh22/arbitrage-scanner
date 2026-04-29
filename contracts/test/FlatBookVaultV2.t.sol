@@ -20,9 +20,58 @@ contract MockTokenV2 is ERC20 {
     }
 }
 
+contract MockCollateralRampV2 {
+    MockTokenV2 internal immutable vaultAsset;
+    MockTokenV2 internal immutable userAsset;
+
+    bool public wrapPaused;
+    bool public unwrapPaused;
+    uint256 public wrapOutputBps = 10_000;
+    uint256 public unwrapOutputBps = 10_000;
+
+    constructor(MockTokenV2 _vaultAsset, MockTokenV2 _userAsset) {
+        vaultAsset = _vaultAsset;
+        userAsset = _userAsset;
+    }
+
+    function setWrapPaused(bool paused) external {
+        wrapPaused = paused;
+    }
+
+    function setUnwrapPaused(bool paused) external {
+        unwrapPaused = paused;
+    }
+
+    function setWrapOutputBps(uint256 bps) external {
+        wrapOutputBps = bps;
+    }
+
+    function setUnwrapOutputBps(uint256 bps) external {
+        unwrapOutputBps = bps;
+    }
+
+    function wrap(address asset, address to, uint256 amount) external {
+        require(!wrapPaused, "WRAP_PAUSED");
+        require(asset == address(userAsset), "BAD_WRAP_ASSET");
+        require(userAsset.transferFrom(msg.sender, address(this), amount), "USER_TRANSFER_FAILED");
+        uint256 output = (amount * wrapOutputBps) / 10_000;
+        require(vaultAsset.transfer(to, output), "VAULT_TRANSFER_FAILED");
+    }
+
+    function unwrap(address asset, address to, uint256 amount) external {
+        require(!unwrapPaused, "UNWRAP_PAUSED");
+        require(asset == address(userAsset), "BAD_UNWRAP_ASSET");
+        require(vaultAsset.transferFrom(msg.sender, address(this), amount), "VAULT_TRANSFER_FROM_FAILED");
+        uint256 output = (amount * unwrapOutputBps) / 10_000;
+        require(userAsset.transfer(to, output), "USER_TRANSFER_FAILED");
+    }
+}
+
 contract FlatBookVaultV2Test is Test {
     FlatBookVaultV2 internal vault;
     MockTokenV2 internal asset;
+    MockTokenV2 internal userAsset;
+    MockCollateralRampV2 internal ramp;
 
     address internal admin = makeAddr("admin");
     address internal bookRunner = makeAddr("bookRunner");
@@ -36,9 +85,14 @@ contract FlatBookVaultV2Test is Test {
 
     function setUp() public {
         vm.startPrank(admin);
-        asset = new MockTokenV2("USD Coin", "USDC", 6);
+        asset = new MockTokenV2("Polymarket USD", "pUSD", 6);
+        userAsset = new MockTokenV2("Bridged USD Coin", "USDC.e", 6);
+        ramp = new MockCollateralRampV2(asset, userAsset);
         vault = new FlatBookVaultV2(
             address(asset),
+            address(userAsset),
+            address(ramp),
+            address(ramp),
             admin,
             bookRunner,
             navUpdater,
@@ -48,6 +102,10 @@ contract FlatBookVaultV2Test is Test {
 
         asset.transfer(user1, 1_000_000 * 1e6);
         asset.transfer(user2, 1_000_000 * 1e6);
+        userAsset.transfer(user1, 1_000_000 * 1e6);
+        userAsset.transfer(user2, 1_000_000 * 1e6);
+        asset.transfer(address(ramp), 10_000_000 * 1e6);
+        userAsset.transfer(address(ramp), 10_000_000 * 1e6);
         vm.stopPrank();
     }
 
@@ -56,6 +114,211 @@ contract FlatBookVaultV2Test is Test {
         assertTrue(vault.supportsInterface(type(IERC7540Deposit).interfaceId));
         assertTrue(vault.supportsInterface(type(IERC7540Redeem).interfaceId));
         assertTrue(vault.supportsInterface(type(IERC7575).interfaceId));
+    }
+
+    function testVaultShareMetadata() public view {
+        assertEq(vault.name(), "Sisyphus Vault Token");
+        assertEq(vault.symbol(), "SVT");
+        assertEq(vault.asset(), address(asset));
+        assertEq(vault.userAsset(), address(userAsset));
+    }
+
+    function testDepositUSDCeWrapsAtomicallyAndMintsShares() public {
+        uint256 assets = 25_000 * 1e6;
+        bytes32 intentId = keccak256("deposit-usdce-open");
+
+        vm.startPrank(user1);
+        userAsset.approve(address(vault), assets);
+        uint256 shares = vault.depositUSDCe(assets, user1, assets, block.timestamp + 1 hours, intentId);
+        vm.stopPrank();
+
+        assertEq(shares, assets);
+        assertEq(vault.balanceOf(user1), assets);
+        assertEq(asset.balanceOf(address(vault)), assets);
+        assertEq(userAsset.balanceOf(address(vault)), 0);
+        assertTrue(vault.consumedIntents(intentId));
+    }
+
+    function testDepositUSDCeRevertsAtomicallyWhenRampPaused() public {
+        uint256 assets = 25_000 * 1e6;
+        uint256 userBalanceBefore = userAsset.balanceOf(user1);
+        uint256 rampBalanceBefore = userAsset.balanceOf(address(ramp));
+        uint256 vaultAssetBefore = asset.balanceOf(address(vault));
+        bytes32 intentId = keccak256("paused-deposit");
+
+        ramp.setWrapPaused(true);
+
+        vm.startPrank(user1);
+        userAsset.approve(address(vault), assets);
+        vm.expectRevert("WRAP_PAUSED");
+        vault.depositUSDCe(assets, user1, assets, block.timestamp + 1 hours, intentId);
+        vm.stopPrank();
+
+        assertEq(userAsset.balanceOf(user1), userBalanceBefore);
+        assertEq(userAsset.balanceOf(address(ramp)), rampBalanceBefore);
+        assertEq(asset.balanceOf(address(vault)), vaultAssetBefore);
+        assertEq(vault.balanceOf(user1), 0);
+        assertEq(userAsset.balanceOf(address(vault)), 0);
+        assertFalse(vault.consumedIntents(intentId));
+    }
+
+    function testDepositUSDCeSlippageRevertsWithoutStrandingFunds() public {
+        uint256 assets = 25_000 * 1e6;
+        bytes32 intentId = keccak256("slippage-deposit");
+        ramp.setWrapOutputBps(9_000);
+
+        vm.startPrank(user1);
+        userAsset.approve(address(vault), assets);
+        vm.expectRevert(abi.encodeWithSelector(FlatBookVaultV2.SlippageExceeded.selector, 22_500 * 1e6, assets));
+        vault.depositUSDCe(assets, user1, assets, block.timestamp + 1 hours, intentId);
+        vm.stopPrank();
+
+        assertEq(vault.balanceOf(user1), 0);
+        assertEq(asset.balanceOf(address(vault)), 0);
+        assertEq(userAsset.balanceOf(address(vault)), 0);
+        assertFalse(vault.consumedIntents(intentId));
+    }
+
+    function testDepositUSDCeIntentCannotBeReusedAfterSuccess() public {
+        uint256 assets = 10_000 * 1e6;
+        bytes32 intentId = keccak256("single-use-deposit");
+
+        vm.startPrank(user1);
+        userAsset.approve(address(vault), assets * 2);
+        vault.depositUSDCe(assets, user1, assets, block.timestamp + 1 hours, intentId);
+        vm.expectRevert(abi.encodeWithSelector(FlatBookVaultV2.IntentAlreadyConsumed.selector, intentId));
+        vault.depositUSDCe(assets, user1, assets, block.timestamp + 1 hours, intentId);
+        vm.stopPrank();
+    }
+
+    function testRequestDepositUSDCeQueuesWrappedAssets() public {
+        uint256 assets = 30_000 * 1e6;
+        bytes32 intentId = keccak256("queue-usdce");
+
+        vm.prank(bookRunner);
+        vault.closeBook();
+
+        vm.startPrank(user2);
+        userAsset.approve(address(vault), assets);
+        vault.requestDepositUSDCe(assets, user2, user2, assets, block.timestamp + 1 hours, intentId);
+        vm.stopPrank();
+
+        assertEq(vault.pendingDepositRequest(0, user2), assets);
+        assertEq(asset.balanceOf(address(vault)), assets);
+        assertEq(userAsset.balanceOf(address(vault)), 0);
+    }
+
+    function testClaimUSDCeUnwrapsClaimableRedeemAtomically() public {
+        uint256 initialDeposit = 100_000 * 1e6;
+        uint256 redeemShares = 40_000 * 1e6;
+        bytes32 intentId = keccak256("claim-usdce");
+
+        vm.startPrank(user1);
+        asset.approve(address(vault), initialDeposit);
+        vault.deposit(initialDeposit, user1);
+        vault.approve(address(vault), redeemShares);
+        vault.requestRedeem(redeemShares, user1, user1);
+        vm.stopPrank();
+
+        vm.prank(bookRunner);
+        vault.closeBook();
+        vm.prank(navUpdater);
+        vault.updateNAV(1e18);
+        vm.prank(bookRunner);
+        vault.beginProcessing();
+        vm.prank(bookRunner);
+        vault.processRedeems(10);
+        vm.prank(bookRunner);
+        vault.processDeposits(10);
+        vm.prank(bookRunner);
+        vault.finalizeProcessing();
+
+        uint256 userAssetBefore = userAsset.balanceOf(user1);
+        vm.prank(user1);
+        uint256 claimed =
+            vault.claimUSDCe(redeemShares, user1, user1, redeemShares, block.timestamp + 1 hours, intentId);
+
+        assertEq(claimed, redeemShares);
+        assertEq(userAsset.balanceOf(user1) - userAssetBefore, redeemShares);
+        assertEq(vault.claimableRedeemRequest(0, user1), 0);
+        assertEq(vault.claimableRedeemAssetsByController(user1), 0);
+        assertEq(userAsset.balanceOf(address(vault)), 0);
+        assertTrue(vault.consumedIntents(intentId));
+    }
+
+    function testClaimUSDCeRejectsVaultReceiver() public {
+        uint256 initialDeposit = 100_000 * 1e6;
+        uint256 redeemShares = 40_000 * 1e6;
+        bytes32 intentId = keccak256("claim-usdce-self-receiver");
+
+        vm.startPrank(user1);
+        asset.approve(address(vault), initialDeposit);
+        vault.deposit(initialDeposit, user1);
+        vault.approve(address(vault), redeemShares);
+        vault.requestRedeem(redeemShares, user1, user1);
+        vm.stopPrank();
+
+        vm.prank(bookRunner);
+        vault.closeBook();
+        vm.prank(navUpdater);
+        vault.updateNAV(1e18);
+        vm.prank(bookRunner);
+        vault.beginProcessing();
+        vm.prank(bookRunner);
+        vault.processRedeems(10);
+        vm.prank(bookRunner);
+        vault.processDeposits(10);
+        vm.prank(bookRunner);
+        vault.finalizeProcessing();
+
+        vm.prank(user1);
+        vm.expectRevert(FlatBookVaultV2.InvalidAddress.selector);
+        vault.claimUSDCe(redeemShares, address(vault), user1, redeemShares, block.timestamp + 1 hours, intentId);
+
+        assertEq(vault.claimableRedeemRequest(0, user1), redeemShares);
+        assertEq(vault.claimableRedeemAssetsByController(user1), redeemShares);
+        assertFalse(vault.consumedIntents(intentId));
+    }
+
+    function testClaimUSDCeOfframpFailurePreservesClaimablePusdFallback() public {
+        uint256 initialDeposit = 100_000 * 1e6;
+        uint256 redeemShares = 40_000 * 1e6;
+        bytes32 failedIntent = keccak256("failed-usdce-claim");
+
+        vm.startPrank(user1);
+        asset.approve(address(vault), initialDeposit);
+        vault.deposit(initialDeposit, user1);
+        vault.approve(address(vault), redeemShares);
+        vault.requestRedeem(redeemShares, user1, user1);
+        vm.stopPrank();
+
+        vm.prank(bookRunner);
+        vault.closeBook();
+        vm.prank(navUpdater);
+        vault.updateNAV(1e18);
+        vm.prank(bookRunner);
+        vault.beginProcessing();
+        vm.prank(bookRunner);
+        vault.processRedeems(10);
+        vm.prank(bookRunner);
+        vault.processDeposits(10);
+        vm.prank(bookRunner);
+        vault.finalizeProcessing();
+
+        ramp.setUnwrapPaused(true);
+        vm.prank(user1);
+        vm.expectRevert("UNWRAP_PAUSED");
+        vault.claimUSDCe(redeemShares, user1, user1, redeemShares, block.timestamp + 1 hours, failedIntent);
+
+        assertEq(vault.claimableRedeemRequest(0, user1), redeemShares);
+        assertEq(vault.claimableRedeemAssetsByController(user1), redeemShares);
+        assertFalse(vault.consumedIntents(failedIntent));
+
+        uint256 pUsdBefore = asset.balanceOf(user1);
+        vm.prank(user1);
+        uint256 fallbackClaim = vault.redeem(redeemShares, user1, user1);
+        assertEq(fallbackClaim, redeemShares);
+        assertEq(asset.balanceOf(user1) - pUsdBefore, redeemShares);
     }
 
     function testOpenInstantDepositAndRedeem() public {
@@ -105,7 +368,7 @@ contract FlatBookVaultV2Test is Test {
         assertEq(vault.pendingRedeemRequest(0, user1), queuedRedeem);
         assertEq(vault.balanceOf(user1), assets - queuedRedeem);
         assertEq(vault.balanceOf(address(vault)), queuedRedeem);
-        (, , uint256 totalQueuedRedeemAssets,,,,,,,) = vault.cycles(0);
+        (,, uint256 totalQueuedRedeemAssets,,,,,,,) = vault.cycles(0);
         assertEq(totalQueuedRedeemAssets, queuedRedeem);
     }
 
@@ -125,7 +388,7 @@ contract FlatBookVaultV2Test is Test {
         assertEq(vault.pendingRedeemRequest(0, user1), 0);
         assertEq(vault.balanceOf(user1), assets);
         assertEq(vault.balanceOf(address(vault)), 0);
-        (, , uint256 totalQueuedRedeemAssets,,,,,,,) = vault.cycles(0);
+        (,, uint256 totalQueuedRedeemAssets,,,,,,,) = vault.cycles(0);
         assertEq(totalQueuedRedeemAssets, 0);
     }
 
@@ -146,7 +409,7 @@ contract FlatBookVaultV2Test is Test {
         vm.prank(user1);
         vault.cancelQueuedRedeem();
 
-        (, , uint256 totalQueuedRedeemAssets,,,,,,,) = vault.cycles(0);
+        (,, uint256 totalQueuedRedeemAssets,,,,,,,) = vault.cycles(0);
         assertEq(totalQueuedRedeemAssets, 0);
     }
 
@@ -166,9 +429,7 @@ contract FlatBookVaultV2Test is Test {
         vm.prank(admin);
         vm.expectRevert(
             abi.encodeWithSelector(
-                FlatBookVaultV2.AllocationExceedsAvailable.selector,
-                assets - queuedRedeem + 1,
-                assets - queuedRedeem
+                FlatBookVaultV2.AllocationExceedsAvailable.selector, assets - queuedRedeem + 1, assets - queuedRedeem
             )
         );
         vault.allocateToTradingWallet(assets - queuedRedeem + 1);
@@ -290,7 +551,9 @@ contract FlatBookVaultV2Test is Test {
         vm.prank(user2);
         vm.expectRevert(
             abi.encodeWithSelector(
-                FlatBookVaultV2.InvalidState.selector, FlatBookVaultV2.VaultState.Closed, FlatBookVaultV2.VaultState.Processing
+                FlatBookVaultV2.InvalidState.selector,
+                FlatBookVaultV2.VaultState.Closed,
+                FlatBookVaultV2.VaultState.Processing
             )
         );
         vault.cancelQueuedDeposit();
@@ -342,9 +605,7 @@ contract FlatBookVaultV2Test is Test {
         vm.prank(bookRunner);
         vm.expectRevert(
             abi.encodeWithSelector(
-                FlatBookVaultV2.InsufficientLiquidityForProcessing.selector,
-                300_000 * 1e6,
-                200_000 * 1e6
+                FlatBookVaultV2.InsufficientLiquidityForProcessing.selector, 300_000 * 1e6, 200_000 * 1e6
             )
         );
         vault.beginProcessing();
