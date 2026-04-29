@@ -5,7 +5,8 @@ export interface DerivedVaultPerformanceStats {
   sinceInception: number | null;
   thirtyDay: number | null;
   maxDrawdown: number | null;
-  winRate: number | null;
+  minPointValue: number | null;
+  maxPointValue: number | null;
   daysCovered: number;
   first: number | null;
   latest: number | null;
@@ -48,7 +49,8 @@ export function deriveVaultPerformanceStats(
       sinceInception: null,
       thirtyDay: null,
       maxDrawdown: null,
-      winRate: null,
+      minPointValue: null,
+      maxPointValue: null,
       daysCovered: 0,
       first: null,
       latest: null,
@@ -85,14 +87,18 @@ export function deriveVaultPerformanceStats(
 
   let peak = firstPoint?.value ?? 0;
   let maxDrawdown = 0;
-  let positiveMoves = 0;
+  let minPointValue = firstPoint?.value ?? null;
+  let maxPointValue = firstPoint?.value ?? null;
 
   for (let index = 1; index < points.length; index += 1) {
     const current = points[index]?.value ?? peak;
-    const previous = points[index - 1]?.value ?? peak;
 
-    if (current > previous) {
-      positiveMoves += 1;
+    if (minPointValue === null || current < minPointValue) {
+      minPointValue = current;
+    }
+
+    if (maxPointValue === null || current > maxPointValue) {
+      maxPointValue = current;
     }
 
     if (current > peak) {
@@ -110,7 +116,8 @@ export function deriveVaultPerformanceStats(
     sinceInception,
     thirtyDay,
     maxDrawdown,
-    winRate: points.length > 1 ? positiveMoves / (points.length - 1) : null,
+    minPointValue,
+    maxPointValue,
     daysCovered: days,
     first,
     latest,

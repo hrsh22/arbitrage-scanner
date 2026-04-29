@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { Button } from "@workspace/ui/components/button";
 import { Badge } from "@workspace/ui/components/badge";
 import { Skeleton } from "@workspace/ui/components/skeleton";
@@ -186,14 +187,27 @@ export function ClaimableRequests({
       vaultType,
     });
 
-  const totalClaimable = requests
-    .filter((r) => r.status === "claimable" && (Number(r.claimableAssetsFormatted) || 0) > 0)
-    .reduce((sum, r) => sum + (Number(r.claimableAssetsFormatted) || 0), 0);
+  const { totalClaimable, claimedCount, claimableCount } = useMemo(
+    () =>
+      requests.reduce(
+        (summary, request) => {
+          if (request.status === "claimed") {
+            summary.claimedCount += 1;
+            return summary;
+          }
 
-  const claimedCount = requests.filter((r) => r.status === "claimed").length;
-  const claimableCount = requests.filter(
-    (r) => r.status === "claimable" && (Number(r.claimableAssetsFormatted) || 0) > 0,
-  ).length;
+          const claimableAssets = Number(request.claimableAssetsFormatted) || 0;
+          if (request.status === "claimable" && claimableAssets > 0) {
+            summary.totalClaimable += claimableAssets;
+            summary.claimableCount += 1;
+          }
+
+          return summary;
+        },
+        { totalClaimable: 0, claimedCount: 0, claimableCount: 0 },
+      ),
+    [requests],
+  );
 
   if (!isConnected) {
     return <AuthGatedState variant="transparent" />;

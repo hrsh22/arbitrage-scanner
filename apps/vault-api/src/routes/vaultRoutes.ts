@@ -36,7 +36,16 @@ import { pendingTxRegistry } from "../services/pendingTxRegistry.js";
 import { LiquidityManager } from "../services/liquidityManager.js";
 
 const LIFECYCLE_CACHE_TTL_MS = 5_000;
+const TRADING_ANALYTICS_DB_FRESHNESS_MS = 30 * 60 * 1000;
 const lifecycleCache = new Map<number, { expiresAt: number; value: unknown }>();
+
+function isTradingAnalyticsSyncFresh(lastSuccessfulSyncAt: Date | null | undefined): boolean {
+  return (
+    lastSuccessfulSyncAt !== null &&
+    lastSuccessfulSyncAt !== undefined &&
+    Date.now() - lastSuccessfulSyncAt.getTime() <= TRADING_ANALYTICS_DB_FRESHNESS_MS
+  );
+}
 
 async function getCachedLifecycle(config: VaultInstanceConfig): Promise<unknown> {
   const cached = lifecycleCache.get(config.id);
@@ -799,7 +808,37 @@ export function buildVaultRouter(): Router {
         return;
       }
 
-      const analytics = await getExternalTradingAnalytics(config);
+      const network = (config.network ?? "mainnet").toLowerCase();
+      const [persistedAnalytics, syncState] = await Promise.all([
+        vaultAnalyticsRepository.getResolvedTradingAnalyticsSummary(network, config.vaultAddress),
+        vaultAnalyticsRepository.getSyncState(network, config.vaultAddress),
+      ]);
+      const shouldUsePersistedAnalytics =
+        persistedAnalytics !== null && isTradingAnalyticsSyncFresh(syncState?.lastSuccessfulSyncAt);
+
+      if (persistedAnalytics !== null && !shouldUsePersistedAnalytics) {
+        logger.warn("Vault API: Trading analytics DB snapshot is stale, using external fallback", {
+          vaultId: config.id,
+          vaultAddress: config.vaultAddress,
+          lastSuccessfulSyncAt: syncState?.lastSuccessfulSyncAt?.toISOString() ?? null,
+        });
+      }
+
+      const analytics =
+        shouldUsePersistedAnalytics && persistedAnalytics !== null
+          ? {
+              vaultAddress: config.vaultAddress,
+              walletAddress: config.safeAddress,
+              positionCount: persistedAnalytics.positionCount,
+              winCount: persistedAnalytics.winCount,
+              lossCount: persistedAnalytics.lossCount,
+              winRate: persistedAnalytics.winRate,
+              totalPnl: persistedAnalytics.totalPnl,
+              avgPnlPerPosition: persistedAnalytics.avgPnlPerPosition,
+              lastResolvedAt: persistedAnalytics.lastResolvedAt?.toISOString() ?? null,
+              computedAt: persistedAnalytics.computedAt.toISOString(),
+            }
+          : await getExternalTradingAnalytics(config);
 
       res.json({
         vaultId: config.id,

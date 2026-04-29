@@ -418,9 +418,8 @@ function NavChart({
 
   const width = 880;
   const height = 220;
-  const values = stats.points.map((point) => point.value);
-  let min = Math.min(...values);
-  let max = Math.max(...values);
+  let min = stats.minPointValue ?? stats.points[0]?.value ?? 0;
+  let max = stats.maxPointValue ?? stats.points[0]?.value ?? 0;
   if (min === max) {
     const padding = min === 0 ? 0.01 : min * 0.01;
     min -= padding;
@@ -2302,7 +2301,7 @@ export default function VaultDetailPage({
     ]);
   };
 
-  const navChartSnapshots = navHistoryData?.snapshots ?? [];
+  const navChartSnapshots = useMemo(() => navHistoryData?.snapshots ?? [], [navHistoryData?.snapshots]);
   const performance = useMemo(
     () => deriveVaultPerformanceStats(navChartSnapshots),
     [navChartSnapshots],

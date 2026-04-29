@@ -15,6 +15,17 @@ export type NewVaultResolvedAnalyticsPosition = typeof vaultResolvedAnalyticsPos
 export type NewVaultDetailedAnalytics = typeof vaultDetailedAnalytics.$inferInsert;
 export type NewVaultAnalyticsSyncState = typeof vaultAnalyticsSyncState.$inferInsert;
 
+export interface VaultResolvedTradingAnalyticsSummary {
+  positionCount: number;
+  winCount: number;
+  lossCount: number;
+  winRate: number;
+  totalPnl: number;
+  avgPnlPerPosition: number;
+  lastResolvedAt: Date | null;
+  computedAt: Date;
+}
+
 export class VaultAnalyticsRepository {
   constructor(private readonly database: DbClient = defaultDb) {}
 
@@ -106,6 +117,48 @@ export class VaultAnalyticsRepository {
       )
       .limit(1);
     return rows[0] ?? null;
+  }
+
+  async getResolvedTradingAnalyticsSummary(
+    network: string,
+    vaultAddress: string,
+  ): Promise<VaultResolvedTradingAnalyticsSummary | null> {
+    const rows = await this.database
+      .select({
+        positionCount: sql<number>`count(*)::int`,
+        winCount: sql<number>`count(*) filter (where ${vaultResolvedAnalyticsPositions.profitLoss}::numeric >= 0)::int`,
+        totalPnl: sql<string>`coalesce(sum(${vaultResolvedAnalyticsPositions.profitLoss}::numeric), 0)::text`,
+        lastResolvedAt: sql<Date | null>`max(${vaultResolvedAnalyticsPositions.resolvedAt})`,
+        computedAt: sql<Date | null>`max(${vaultResolvedAnalyticsPositions.updatedAt})`,
+      })
+      .from(vaultResolvedAnalyticsPositions)
+      .where(
+        and(
+          eq(vaultResolvedAnalyticsPositions.network, network.toLowerCase()),
+          eq(vaultResolvedAnalyticsPositions.vaultAddress, vaultAddress.toLowerCase()),
+        ),
+      );
+
+    const row = rows[0];
+    const positionCount = Number(row?.positionCount ?? 0);
+    if (!row || positionCount === 0) {
+      return null;
+    }
+
+    const winCount = Number(row.winCount ?? 0);
+    const totalPnl = Number(row.totalPnl ?? 0);
+    const lossCount = positionCount - winCount;
+
+    return {
+      positionCount,
+      winCount,
+      lossCount,
+      winRate: winCount / positionCount,
+      totalPnl,
+      avgPnlPerPosition: totalPnl / positionCount,
+      lastResolvedAt: row.lastResolvedAt ?? null,
+      computedAt: row.computedAt ?? new Date(),
+    };
   }
 
   async upsertDetailedAnalytics(record: NewVaultDetailedAnalytics): Promise<void> {
