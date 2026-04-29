@@ -10,6 +10,7 @@ import {
 } from "../db/schema.js";
 
 type DbClient = typeof defaultDb;
+type DatabaseTimestamp = Date | string | null;
 
 export type NewVaultResolvedAnalyticsPosition = typeof vaultResolvedAnalyticsPositions.$inferInsert;
 export type NewVaultDetailedAnalytics = typeof vaultDetailedAnalytics.$inferInsert;
@@ -24,6 +25,19 @@ export interface VaultResolvedTradingAnalyticsSummary {
   avgPnlPerPosition: number;
   lastResolvedAt: Date | null;
   computedAt: Date;
+}
+
+function normalizeDatabaseTimestamp(value: DatabaseTimestamp): Date | null {
+  if (value instanceof Date) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  return null;
 }
 
 export class VaultAnalyticsRepository {
@@ -128,8 +142,8 @@ export class VaultAnalyticsRepository {
         positionCount: sql<number>`count(*)::int`,
         winCount: sql<number>`count(*) filter (where ${vaultResolvedAnalyticsPositions.profitLoss}::numeric >= 0)::int`,
         totalPnl: sql<string>`coalesce(sum(${vaultResolvedAnalyticsPositions.profitLoss}::numeric), 0)::text`,
-        lastResolvedAt: sql<Date | null>`max(${vaultResolvedAnalyticsPositions.resolvedAt})`,
-        computedAt: sql<Date | null>`max(${vaultResolvedAnalyticsPositions.updatedAt})`,
+        lastResolvedAt: sql<DatabaseTimestamp>`max(${vaultResolvedAnalyticsPositions.resolvedAt})`,
+        computedAt: sql<DatabaseTimestamp>`max(${vaultResolvedAnalyticsPositions.updatedAt})`,
       })
       .from(vaultResolvedAnalyticsPositions)
       .where(
@@ -148,6 +162,7 @@ export class VaultAnalyticsRepository {
     const winCount = Number(row.winCount ?? 0);
     const totalPnl = Number(row.totalPnl ?? 0);
     const lossCount = positionCount - winCount;
+    const computedAt = normalizeDatabaseTimestamp(row.computedAt) ?? new Date();
 
     return {
       positionCount,
@@ -156,8 +171,8 @@ export class VaultAnalyticsRepository {
       winRate: winCount / positionCount,
       totalPnl,
       avgPnlPerPosition: totalPnl / positionCount,
-      lastResolvedAt: row.lastResolvedAt ?? null,
-      computedAt: row.computedAt ?? new Date(),
+      lastResolvedAt: normalizeDatabaseTimestamp(row.lastResolvedAt),
+      computedAt,
     };
   }
 
