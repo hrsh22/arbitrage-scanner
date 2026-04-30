@@ -17,6 +17,10 @@ export function Header({ className }: HeaderProps) {
   const pathname = usePathname();
   const isHomePage = pathname === "/";
 
+  if (isHomePage) {
+    return null;
+  }
+
   return (
     <header
       className={`z-50 w-full shrink-0 border-b border-white/10 bg-slate-950/85 backdrop-blur-xl supports-[backdrop-filter]:bg-slate-950/80 ${className ?? ""}`}
@@ -54,7 +58,7 @@ export function Header({ className }: HeaderProps) {
           </nav>
         </div>
 
-        {!isHomePage && <HeaderAuth />}
+        <HeaderAuth />
 
         <nav className="col-span-2 flex w-full md:hidden">
           <Link

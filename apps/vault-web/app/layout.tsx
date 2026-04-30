@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { DM_Mono } from "next/font/google";
+import { Cormorant_Garamond, DM_Mono, Manrope } from "next/font/google";
 
 import "@workspace/ui/globals.css";
 import { Providers } from "@/components/providers";
@@ -17,11 +17,22 @@ const mono = DM_Mono({
   variable: "--font-mono",
 });
 
+const serif = Cormorant_Garamond({
+  weight: ["400", "500", "600", "700"],
+  subsets: ["latin"],
+  variable: "--font-serif",
+});
+
+const landingSans = Manrope({
+  weight: ["400", "500", "600", "700", "800"],
+  subsets: ["latin"],
+  variable: "--font-landing-sans",
+});
+
 export const metadata: Metadata = {
   title: "Polymarket Vault",
-  description:
-    "Dark-mode vault dashboard for cycle-based deposits, exits, and settlement tracking.",
-  keywords: ["vault", "polymarket", "dashboard", "settlement", "polygon"],
+  description: "Allocate capital into prediction market strategy vaults.",
+  keywords: ["vault", "polymarket", "dashboard", "settlement", "prediction markets"],
   icons: {
     icon: "/logo/vault-platform.svg",
     shortcut: "/logo/vault-platform.svg",
@@ -44,7 +55,7 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body
-        className={`${sans.variable} ${mono.variable} min-h-[100dvh] overflow-x-hidden bg-background font-sans text-foreground antialiased selection:bg-cyan-300/30 selection:text-white`}
+        className={`${sans.variable} ${mono.variable} ${serif.variable} ${landingSans.variable} min-h-[100dvh] overflow-x-hidden bg-background font-sans text-foreground antialiased selection:bg-[#E8C08C]/30 selection:text-white`}
       >
         <Providers>
           <div className="relative flex min-h-[100dvh] flex-col overflow-x-hidden bg-[radial-gradient(circle_at_18%_2%,_rgba(217,70,239,0.07),_transparent_16%),radial-gradient(circle_at_86%_8%,_rgba(34,211,238,0.06),_transparent_15%),linear-gradient(180deg,_#020204,_#070708_48%,_#0A0A0A)]">

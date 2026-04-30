@@ -212,4 +212,131 @@
   .vault-pane-scroll::-webkit-scrollbar-thumb:hover {
     background-color: rgba(103, 232, 249, 0.52);
   }
+
+  .ambient-glow {
+    position: absolute;
+    top: -10%;
+    left: -10%;
+    width: 120vw;
+    height: 120vh;
+    z-index: 0;
+    pointer-events: none;
+  }
+
+  .aurora-bg {
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: conic-gradient(
+      from 180deg at 50% 50%,
+      rgba(232, 192, 140, 0.08) 0deg,
+      rgba(210, 170, 110, 0.3) 60deg,
+      rgba(184, 145, 91, 0.4) 120deg,
+      rgba(10, 9, 8, 0.15) 180deg,
+      rgba(200, 160, 100, 0.35) 240deg,
+      rgba(10, 9, 8, 0.15) 300deg,
+      rgba(232, 192, 140, 0.08) 360deg
+    );
+    filter: blur(80px);
+    animation: rotate-aurora 25s linear infinite;
+  }
+
+  .aurora-bg::after {
+    content: "";
+    position: absolute;
+    top: 10%;
+    left: 10%;
+    width: 80%;
+    height: 80%;
+    background: radial-gradient(ellipse at 60% 40%, rgba(232, 192, 140, 0.25) 0%, rgba(184, 145, 91, 0.1) 40%, transparent 70%);
+    filter: blur(60px);
+    animation: pulse-glow 8s ease-in-out infinite alternate;
+  }
+
+  .glow-sweep {
+    position: absolute;
+    top: -20%;
+    left: -100%;
+    width: 300%;
+    height: 140%;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(232, 192, 140, 0.04) 25%,
+      rgba(232, 192, 140, 0.25) 45%,
+      rgba(255, 215, 150, 0.3) 50%,
+      rgba(232, 192, 140, 0.25) 55%,
+      rgba(232, 192, 140, 0.04) 75%,
+      transparent 100%
+    );
+    transform: skewX(-30deg);
+    animation: sweep-light 12s ease-in-out infinite alternate;
+    mix-blend-mode: screen;
+  }
+
+  .glow-sweep::after {
+    content: "";
+    position: absolute;
+    top: 30%;
+    left: 40%;
+    width: 20%;
+    height: 40%;
+    background: radial-gradient(ellipse at center, rgba(232, 192, 140, 0.2) 0%, rgba(232, 192, 140, 0.08) 50%, transparent 80%);
+    filter: blur(40px);
+    animation: pulse-glow 6s ease-in-out infinite alternate-reverse;
+  }
+
+  .grid-bg {
+    background-image:
+      linear-gradient(90deg, rgba(204, 202, 196, 0.05) 1px, transparent 1px),
+      linear-gradient(180deg, rgba(204, 202, 196, 0.05) 1px, transparent 1px);
+    background-size: 50px 50px;
+    mask-image: radial-gradient(ellipse at center, black 20%, transparent 80%);
+    -webkit-mask-image: radial-gradient(ellipse at center, black 20%, transparent 80%);
+  }
+}
+
+@keyframes rotate-aurora {
+  0% {
+    transform: rotate(0deg) scale(1);
+  }
+
+  50% {
+    transform: rotate(180deg) scale(1.15);
+  }
+
+  100% {
+    transform: rotate(360deg) scale(1);
+  }
+}
+
+@keyframes sweep-light {
+  0% {
+    transform: skewX(-30deg) translateX(-20%);
+    opacity: 0.6;
+  }
+
+  50% {
+    transform: skewX(-30deg) translateX(30%);
+    opacity: 1;
+  }
+
+  100% {
+    transform: skewX(-30deg) translateX(80%);
+    opacity: 0.6;
+  }
+}
+
+@keyframes pulse-glow {
+  0% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+
+  100% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
 }
