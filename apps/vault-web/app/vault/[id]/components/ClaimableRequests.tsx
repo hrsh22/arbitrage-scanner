@@ -56,21 +56,21 @@ function ClaimableRequestCard({
 
   return (
     <div
-      className="space-y-3 rounded-[2px] border border-emerald-400/20 bg-emerald-400/10 p-4"
+      className="space-y-3 rounded-xl border border-[#58A65C]/25 bg-[#58A65C]/10 p-4"
       data-testid={`claimable-request-${request.requestId}`}
     >
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex items-center gap-2">
-          <Hash className="h-4 w-4 text-emerald-200" aria-hidden="true" />
-          <span className="text-sm font-mono font-medium text-emerald-50">Withdrawal</span>
+          <Hash className="h-4 w-4 text-[#2F7A35]" aria-hidden="true" />
+          <span className="font-mono text-sm font-bold text-[#1A202C]">Withdrawal</span>
           <Badge
             variant="outline"
-            className="border-emerald-400/25 bg-emerald-400/15 text-[10px] text-emerald-100"
+            className="border-[#58A65C]/25 bg-[#58A65C]/10 text-[10px] font-bold text-[#2F7A35]"
           >
             {request.status === "claimed" || isClaimedLocally ? "Claimed" : "Ready to claim"}
           </Badge>
         </div>
-        <span className="text-xs text-emerald-50/70">
+        <span className="text-xs text-[#615E4E]">
           {request.requestKind === "controller_claimable"
             ? ""
             : `Requested ${formatDateTime(request.createdAt)}`}
@@ -79,15 +79,15 @@ function ClaimableRequestCard({
 
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <p className="text-xs text-emerald-50/70">Amount</p>
-          <p className="text-sm font-mono font-medium text-emerald-50">
+          <p className="text-xs text-[#615E4E]">Amount</p>
+          <p className="font-mono text-sm font-semibold text-[#1A202C]">
             ${request.claimableAssetsFormatted || "0.00"}
           </p>
         </div>
         <div>
-          <p className="text-xs text-emerald-50/70">Available</p>
+          <p className="text-xs text-[#615E4E]">Available</p>
           <p
-            className="text-sm font-mono font-medium text-emerald-50"
+            className="font-mono text-sm font-semibold text-[#1A202C]"
             data-testid="claimable-amount"
           >
             ${request.claimableAssetsFormatted || "0.00"}
@@ -97,12 +97,12 @@ function ClaimableRequestCard({
 
       {/* Settlement indicator */}
       {request.proRataApplied && (
-        <div className="rounded-[2px] border border-amber-400/20 bg-amber-400/10 p-2">
+        <div className="rounded-lg border border-[#E8C08C]/40 bg-[#E8C08C]/20 p-2">
           <div className="flex items-center gap-2">
-            <Percent className="h-3.5 w-3.5 text-amber-200" aria-hidden="true" />
-            <span className="text-xs font-medium text-amber-100">Partial withdrawal</span>
+            <Percent className="h-3.5 w-3.5 text-[#8A6231]" aria-hidden="true" />
+            <span className="text-xs font-bold text-[#8A6231]">Partial withdrawal</span>
           </div>
-          <p className="mt-1 text-xs leading-6 text-amber-50/90">
+          <p className="mt-1 text-xs leading-6 text-[#8A6231]">
             {request.proRataPercentage && (
               <>
                 This withdrawal was partially filled at{" "}
@@ -113,9 +113,9 @@ function ClaimableRequestCard({
         </div>
       )}
       {request.status === "claimed" || isClaimedLocally ? (
-        <div className="flex items-center gap-2 rounded-[2px] border border-white/10 bg-slate-950/35 p-3">
-          <CheckCircle2 className="h-4 w-4 text-slate-300" aria-hidden="true" />
-          <span className="text-sm text-slate-300">
+        <div className="flex items-center gap-2 rounded-lg border border-[#CCCAC4] bg-[#F0EDE8] p-3">
+          <CheckCircle2 className="h-4 w-4 text-[#2F7A35]" aria-hidden="true" />
+          <span className="text-sm text-[#615E4E]">
             {isClaimedLocally ? "Claim confirmed — syncing status" : "Already claimed"}
           </span>
         </div>
@@ -127,7 +127,7 @@ function ClaimableRequestCard({
               onClaim(request);
             }}
             disabled={isBusy || !canClaim}
-            className="w-full rounded-[2px] bg-emerald-300 text-emerald-950 hover:bg-emerald-200 claim-button"
+            className="claim-button w-full rounded-full border border-[#58A65C]/25 bg-[#58A65C]/15 font-bold text-[#2F7A35] hover:bg-[#58A65C]/25"
             data-testid="claim-button"
           >
             {isProcessing ? (
@@ -148,25 +148,25 @@ function ClaimableRequestCard({
               href={`${EXPLORER_BASE_URL}/tx/${successTx}`}
               target="_blank"
               rel="noreferrer"
-              className="block rounded-[2px] text-center text-xs font-mono text-cyan-200 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
+              className="block rounded-lg text-center font-mono text-xs text-[#8A6231] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#615E4E]/40"
             >
               View transaction: {successTx.slice(0, 10)}...{successTx.slice(-4)}
             </a>
           )}
 
           {visibleError && (
-            <div className="rounded-[2px] border border-rose-400/20 bg-rose-400/10 p-2 text-xs leading-6 text-rose-50/90">
+            <div className="rounded-lg border border-rose-400/20 bg-rose-50 p-2 text-xs leading-6 text-rose-700">
               {visibleError}
             </div>
           )}
         </div>
       ) : (
         <div
-          className="flex items-center gap-2 rounded-[2px] border border-white/10 bg-slate-950/35 p-3"
+          className="flex items-center gap-2 rounded-lg border border-[#CCCAC4] bg-[#F0EDE8] p-3"
           data-testid="claim-disabled"
         >
-          <Clock className="h-4 w-4 text-slate-400" aria-hidden="true" />
-          <span className="text-sm text-slate-300">
+          <Clock className="h-4 w-4 text-[#615E4E]" aria-hidden="true" />
+          <span className="text-sm text-[#615E4E]">
             Processing — your withdrawal will be ready shortly.
           </span>
         </div>
@@ -223,8 +223,8 @@ export function ClaimableRequests({
   if (isLoading) {
     return (
       <div className="space-y-4" data-testid="claimable-requests-loading">
-        <Skeleton className="h-32 w-full rounded-[2px] bg-white/10" />
-        <Skeleton className="h-32 w-full rounded-[2px] bg-white/10" />
+        <Skeleton className="h-32 w-full rounded-xl bg-[#E8D9C0]" />
+        <Skeleton className="h-32 w-full rounded-xl bg-[#E8D9C0]" />
       </div>
     );
   }
@@ -243,7 +243,7 @@ export function ClaimableRequests({
 
   return (
     <div className="space-y-4" data-testid="claimable-requests">
-      <div className="flex items-center justify-between text-sm text-slate-400">
+      <div className="flex items-center justify-between text-sm text-[#615E4E]">
         <span>
           Claimable now: ${totalClaimable.toFixed(2)} {displaySymbol}
         </span>
@@ -251,7 +251,7 @@ export function ClaimableRequests({
           {claimableCount > 0 && (
             <Badge
               variant="secondary"
-              className="border border-emerald-400/25 bg-emerald-400/12 text-emerald-100"
+              className="border border-[#58A65C]/25 bg-[#58A65C]/10 text-[#2F7A35]"
             >
               {claimableCount} ready
             </Badge>
@@ -260,12 +260,12 @@ export function ClaimableRequests({
             <Tooltip>
               <TooltipTrigger asChild>
                 <div>
-                  <Badge variant="outline" className="border-white/10 text-slate-300">
+                  <Badge variant="outline" className="border-[#CCCAC4] text-[#615E4E]">
                     {claimedCount} claimed
                   </Badge>
                 </div>
               </TooltipTrigger>
-              <TooltipContent side="left" className="border-white/10 bg-slate-950 text-slate-100">
+              <TooltipContent side="left" className="border-[#CCCAC4] bg-[#FAF8F5] text-[#302B2C]">
                 Recently claimed — will update shortly.
               </TooltipContent>
             </Tooltip>
@@ -274,13 +274,13 @@ export function ClaimableRequests({
       </div>
 
       {totalClaimable > 0 && (
-        <div className="rounded-[2px] border border-emerald-400/20 bg-emerald-400/10 p-4">
+        <div className="rounded-xl border border-[#58A65C]/25 bg-[#58A65C]/10 p-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Wallet className="h-5 w-5 text-emerald-200" aria-hidden="true" />
-              <span className="text-sm font-medium text-emerald-100">Total available now</span>
+              <Wallet className="h-5 w-5 text-[#2F7A35]" aria-hidden="true" />
+              <span className="text-sm font-bold text-[#2F7A35]">Total available now</span>
             </div>
-            <span className="text-xl font-mono font-bold text-emerald-50">
+            <span className="font-mono text-xl font-bold text-[#1A202C]">
               ${totalClaimable.toFixed(2)}
             </span>
           </div>

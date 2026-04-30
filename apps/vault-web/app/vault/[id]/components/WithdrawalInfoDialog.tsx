@@ -55,31 +55,31 @@ export function WithdrawalInfoDialog({
 
   const colorMap = {
     orange: {
-      bg: "from-orange-500/15 to-orange-600/5",
-      border: "border-orange-400/30",
-      glow: "shadow-[0_0_20px_rgba(251,146,60,0.15)]",
-      icon: "text-orange-400",
-      ring: "ring-orange-400/30",
-      line: "from-orange-400",
-      badge: "bg-orange-500/10 text-orange-400 ring-orange-500/20",
+      bg: "from-[#E8C08C]/25 to-[#E8C08C]/5",
+      border: "border-[#D4A574]/35",
+      glow: "shadow-[0_12px_30px_-24px_rgba(48,43,44,0.35)]",
+      icon: "text-[#8A6231]",
+      ring: "ring-[#D4A574]/35",
+      line: "from-[#D4A574]",
+      badge: "bg-[#E8C08C]/25 text-[#8A6231] ring-[#D4A574]/35",
     },
     amber: {
-      bg: "from-amber-500/15 to-amber-600/5",
-      border: "border-amber-400/30",
-      glow: "shadow-[0_0_20px_rgba(251,191,36,0.15)]",
-      icon: "text-amber-400",
-      ring: "ring-amber-400/30",
-      line: "from-amber-400",
-      badge: "bg-amber-500/10 text-amber-400 ring-amber-500/20",
+      bg: "from-[#E8D9C0]/60 to-[#F1EEE8]/70",
+      border: "border-[#CCCAC4]",
+      glow: "shadow-[0_12px_30px_-24px_rgba(48,43,44,0.28)]",
+      icon: "text-[#8A6231]",
+      ring: "ring-[#CCCAC4]",
+      line: "from-[#B8915B]",
+      badge: "bg-[#E8D9C0] text-[#8A6231] ring-[#CCCAC4]",
     },
     emerald: {
-      bg: "from-emerald-500/15 to-emerald-600/5",
-      border: "border-emerald-400/30",
-      glow: "shadow-[0_0_20px_rgba(52,211,153,0.15)]",
-      icon: "text-emerald-400",
-      ring: "ring-emerald-400/30",
-      line: "from-emerald-400",
-      badge: "bg-emerald-500/10 text-emerald-400 ring-emerald-500/20",
+      bg: "from-[#58A65C]/12 to-[#58A65C]/5",
+      border: "border-[#58A65C]/25",
+      glow: "shadow-[0_12px_30px_-24px_rgba(48,43,44,0.25)]",
+      icon: "text-[#2F7A35]",
+      ring: "ring-[#58A65C]/25",
+      line: "from-[#58A65C]",
+      badge: "bg-[#58A65C]/10 text-[#2F7A35] ring-[#58A65C]/25",
     },
   };
 
@@ -90,30 +90,30 @@ export function WithdrawalInfoDialog({
           type="button"
           className={
             triggerClassName ||
-            "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-[4px] bg-[#121212] px-3 py-1.5 text-xs font-semibold text-slate-300 ring-1 ring-inset ring-[#212121] transition-all hover:bg-[#212121] hover:text-white"
+            "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full border border-[#CCCAC4] bg-[#F1EEE8] px-3 py-1.5 text-xs font-bold text-[#615E4E] transition-colors hover:border-[#D4A574] hover:bg-[#E8C08C] hover:text-[#302B2C]"
           }
         >
           <Info className="h-3.5 w-3.5" />
           <span>{triggerLabel}</span>
         </button>
       </DialogTrigger>
-      <DialogContent className="w-[min(900px,96vw)] !max-w-none overflow-hidden rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-0 text-white shadow-[0_35px_120px_-45px_rgba(0,0,0,0.95)] max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-h-[90vh] w-[min(900px,96vw)] !max-w-none overflow-y-auto overscroll-contain rounded-2xl border border-[#CCCAC4] bg-[#F1EEE8] p-0 text-[#1A202C] shadow-[0_35px_120px_-55px_rgba(26,32,44,0.65)] [&_[data-slot=dialog-close]]:text-[#615E4E] [&_[data-slot=dialog-close]]:hover:text-[#302B2C]">
         <DialogTitle className="sr-only">Withdrawal Process</DialogTitle>
         <DialogDescription className="sr-only">
           Explains how the withdrawal queue works.
         </DialogDescription>
 
-        <div className="grid lg:grid-cols-[1fr_1.4fr]">
-          <div className="relative border-b border-[#212121] bg-[#0A0A0A] p-4 sm:p-8 lg:border-b-0 lg:border-r lg:p-10">
+        <div className="grid min-h-0 lg:grid-cols-[1fr_1.4fr]">
+          <div className="relative border-b border-[#CCCAC4] bg-[#F0EDE8] p-4 sm:p-8 lg:border-b-0 lg:border-r lg:p-10">
             <div
               className="pointer-events-none absolute inset-0 opacity-[0.03]"
               style={{
-                backgroundImage: `radial-gradient(circle at 1px 1px, white 1px, transparent 0)`,
+                backgroundImage: `radial-gradient(circle at 1px 1px, rgba(184,145,91,0.42) 1px, transparent 0)`,
                 backgroundSize: "24px 24px",
               }}
             />
 
-            <h3 className="mb-8 text-center text-xs font-medium uppercase tracking-[0.2em] text-[#656565]">
+            <h3 className="mb-8 text-center text-xs font-bold uppercase tracking-[0.2em] text-[#615E4E]">
               Withdrawal Flow
             </h3>
 
@@ -127,7 +127,7 @@ export function WithdrawalInfoDialog({
                   <div key={step.key} className="relative flex w-full flex-col items-center">
                     <div
                       className={cn(
-                        "group relative flex h-[72px] w-full items-center gap-4 rounded-[2px] border bg-gradient-to-br px-4 transition-all duration-300 hover:scale-[1.02]",
+                        "group relative flex h-[72px] w-full items-center gap-4 rounded-xl border bg-gradient-to-br px-4 transition-all duration-300 hover:scale-[1.02]",
                         colors.border,
                         colors.bg,
                         colors.glow,
@@ -135,7 +135,7 @@ export function WithdrawalInfoDialog({
                     >
                       <div
                         className={cn(
-                          "flex h-11 w-11 shrink-0 items-center justify-center rounded-[2px] bg-[#121212] ring-1",
+                          "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#F1EEE8] ring-1",
                           colors.ring,
                         )}
                       >
@@ -143,8 +143,8 @@ export function WithdrawalInfoDialog({
                       </div>
 
                       <div className="flex flex-col">
-                        <span className="text-sm font-semibold text-white">{step.label}</span>
-                        <span className="text-[11px] text-[#656565]">{step.sublabel}</span>
+                        <span className="text-sm font-bold text-[#1A202C]">{step.label}</span>
+                        <span className="text-[11px] text-[#615E4E]">{step.sublabel}</span>
                       </div>
 
                       <div
@@ -181,7 +181,7 @@ export function WithdrawalInfoDialog({
           </div>
 
           <div className="p-4 sm:p-8 lg:p-12">
-            <h2 className="mb-10 text-xl font-medium tracking-tight text-white lg:text-3xl">
+            <h2 className="mb-10 font-serif text-2xl font-bold tracking-tight text-[#1A202C] lg:text-4xl">
               Withdrawal Process
             </h2>
 
@@ -189,15 +189,15 @@ export function WithdrawalInfoDialog({
               <div className="group flex gap-5">
                 <div
                   className={cn(
-                    "flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] text-sm font-bold ring-1",
+                    "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold ring-1",
                     colorMap.orange.badge,
                   )}
                 >
                   1
                 </div>
                 <div>
-                  <h3 className="text-[15px] font-semibold text-white">Submit your request</h3>
-                  <p className="mt-2 text-sm leading-relaxed text-[#828B8D]">
+                  <h3 className="text-[15px] font-bold text-[#1A202C]">Submit your request</h3>
+                  <p className="mt-2 text-sm leading-relaxed text-[#615E4E]">
                     Enter the amount of shares you want to withdraw and confirm the transaction.
                     Your request enters the withdrawal queue.
                   </p>
@@ -207,17 +207,17 @@ export function WithdrawalInfoDialog({
               <div className="group flex gap-5">
                 <div
                   className={cn(
-                    "flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] text-sm font-bold ring-1",
+                    "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold ring-1",
                     colorMap.amber.badge,
                   )}
                 >
                   2
                 </div>
                 <div>
-                  <h3 className="text-[15px] font-semibold text-white">
+                  <h3 className="text-[15px] font-bold text-[#1A202C]">
                     Vault processes the queue
                   </h3>
-                  <p className="mt-2 text-sm leading-relaxed text-[#828B8D]">
+                  <p className="mt-2 text-sm leading-relaxed text-[#615E4E]">
                     The vault batches withdrawal requests and processes them periodically based on
                     available liquidity and settlement cycles.
                   </p>
@@ -227,25 +227,25 @@ export function WithdrawalInfoDialog({
               <div className="group flex gap-5">
                 <div
                   className={cn(
-                    "flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] text-sm font-bold ring-1",
+                    "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold ring-1",
                     colorMap.emerald.badge,
                   )}
                 >
                   3
                 </div>
                 <div>
-                  <h3 className="text-[15px] font-semibold text-white">Claim your funds</h3>
-                  <p className="mt-2 text-sm leading-relaxed text-[#828B8D]">
-                    Once your withdrawal is processed, claim your {displaySymbol} to your connected wallet.
-                    You&apos;ll see the claimable amount in the redemption panel.
+                  <h3 className="text-[15px] font-bold text-[#1A202C]">Claim your funds</h3>
+                  <p className="mt-2 text-sm leading-relaxed text-[#615E4E]">
+                    Once your withdrawal is processed, claim your {displaySymbol} to your connected
+                    wallet. You&apos;ll see the claimable amount in the redemption panel.
                   </p>
                 </div>
               </div>
             </div>
 
-            <div className="mt-10 rounded-[2px] border border-[#212121] bg-[#121212] p-4">
-              <p className="text-[12px] leading-relaxed text-[#828B8D]">
-                <span className="font-semibold text-white">Note:</span> Processing time depends on
+            <div className="mt-10 rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] p-4">
+              <p className="text-[12px] leading-relaxed text-[#615E4E]">
+                <span className="font-bold text-[#1A202C]">Note:</span> Processing time depends on
                 vault liquidity and market conditions. Check back periodically to claim your funds
                 once ready.
               </p>

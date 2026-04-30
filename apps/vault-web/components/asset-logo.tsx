@@ -96,9 +96,9 @@ export function AssetBadge({
   const dimension = SIZE_MAP[size];
 
   const variantStyles = {
-    default: "bg-white/8 border-white/10 text-slate-200",
-    outline: "bg-transparent border-[#656565]/40 text-slate-300",
-    ghost: "bg-transparent border-transparent text-slate-400",
+    default: "bg-[#F1EEE8] border-[#CCCAC4] text-[#1A202C]",
+    outline: "bg-transparent border-[#CCCAC4] text-[#615E4E]",
+    ghost: "bg-transparent border-transparent text-[#615E4E]",
   };
 
   return (
@@ -140,7 +140,7 @@ export function AssetLogoStack({
         return (
           <span
             key={asset}
-            className="relative rounded-full bg-[#0A0A0A] ring-2 ring-[#0A0A0A]"
+            className="relative rounded-full bg-[#F1EEE8] ring-2 ring-[#F1EEE8]"
             style={{
               marginLeft: index > 0 ? -overlap : 0,
               zIndex: assets.length - index,

@@ -28,23 +28,25 @@ export function AsyncState({
       className={cn(
         "flex flex-col items-center justify-center text-center",
         isError && "flex-row justify-start gap-3 text-left",
-        isDashed && "rounded-2xl border border-dashed border-white/15 bg-white/[0.03] py-12 px-6",
-        isCard && "rounded-[2px] border border-[#212121] bg-[#121212] py-10 px-6",
-        isError && "rounded-[2px] border border-rose-400/25 bg-rose-400/10 py-4 px-6 text-rose-100",
+        isDashed && "rounded-2xl border border-dashed border-[#CCCAC4] bg-[#F0EDE8] py-12 px-6",
+        isCard && "rounded-2xl border border-[#CCCAC4] bg-[#F1EEE8] py-10 px-6",
+        isError && "rounded-2xl border border-rose-400/25 bg-rose-50 py-4 px-6 text-rose-700",
         isTransparent && "py-12 px-6",
         className,
       )}
       {...props}
     >
       {icon && (
-        <div className={cn("mb-3", isError ? "mb-0 shrink-0 text-rose-400" : "text-slate-500")}>{icon}</div>
+        <div className={cn("mb-3", isError ? "mb-0 shrink-0 text-rose-500" : "text-[#615E4E]")}>
+          {icon}
+        </div>
       )}
       {title && (
         <div
           className={cn(
             "font-medium",
-            isError ? "text-rose-100" : "text-white",
-            isCard ? "text-sm text-[#828B8D]" : "text-sm",
+            isError ? "text-rose-700" : "text-[#1A202C]",
+            isCard ? "text-sm" : "text-sm",
           )}
         >
           {title}
@@ -54,7 +56,7 @@ export function AsyncState({
         <div
           className={cn(
             "mt-1 max-w-xs text-xs leading-6",
-            isError ? "text-rose-200/70" : "text-slate-400",
+            isError ? "text-rose-600" : "text-[#615E4E]",
           )}
         >
           {description}

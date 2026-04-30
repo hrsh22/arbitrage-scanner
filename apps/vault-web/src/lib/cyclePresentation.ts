@@ -24,9 +24,9 @@ const DEFAULT_PRESENTATION: CyclePresentation = {
   eyebrow: "Loading",
   description: "Loading vault status...",
   detail: "Refresh in a few seconds to see the latest status.",
-  badgeClassName: "border-white/15 bg-white/8 text-slate-200",
-  dotClassName: "bg-slate-300",
-  panelClassName: "border-white/10 bg-white/6 text-slate-100",
+  badgeClassName: "border-[#CCCAC4] bg-[#F1EEE8] text-[#615E4E]",
+  dotClassName: "bg-[#A09E96]",
+  panelClassName: "border-[#CCCAC4] bg-[#F0EDE8] text-[#615E4E]",
 };
 
 const CYCLE_PRESENTATIONS: Record<CycleState, CyclePresentation> = {
@@ -35,81 +35,81 @@ const CYCLE_PRESENTATIONS: Record<CycleState, CyclePresentation> = {
     eyebrow: "Open",
     description: "Instant deposits and withdrawals at the current price.",
     detail: "Deposits and withdrawals are available now.",
-    badgeClassName: "border-emerald-400/30 bg-emerald-400/12 text-emerald-200",
-    dotClassName: "bg-emerald-300",
-    panelClassName: "border-emerald-400/20 bg-emerald-400/10 text-emerald-50",
+    badgeClassName: "border-[#58A65C]/25 bg-[#58A65C]/10 text-[#2F7A35]",
+    dotClassName: "bg-[#58A65C]",
+    panelClassName: "border-[#58A65C]/25 bg-[#58A65C]/10 text-[#2F7A35]",
   },
   closed: {
     label: "Queue only",
     eyebrow: "Trading",
     description: "Trading is active. Deposits and withdrawals are queued.",
     detail: "Requests are processed together.",
-    badgeClassName: "border-amber-400/30 bg-amber-400/12 text-amber-200",
-    dotClassName: "bg-amber-300",
-    panelClassName: "border-amber-400/20 bg-amber-400/10 text-amber-50",
+    badgeClassName: "border-[#E8C08C]/40 bg-[#E8C08C]/20 text-[#8A6231]",
+    dotClassName: "bg-[#E8C08C]",
+    panelClassName: "border-[#E8C08C]/40 bg-[#E8C08C]/20 text-[#8A6231]",
   },
   processing: {
     label: "Processing",
     eyebrow: "Processing",
     description: "Queued deposits and withdrawals are being processed.",
     detail: "Processing in progress. Please wait.",
-    badgeClassName: "border-sky-400/30 bg-sky-400/12 text-sky-200",
-    dotClassName: "bg-sky-300",
-    panelClassName: "border-sky-400/20 bg-sky-400/10 text-sky-50",
+    badgeClassName: "border-[#CCCAC4] bg-[#F1EEE8] text-[#615E4E]",
+    dotClassName: "bg-[#A09E96]",
+    panelClassName: "border-[#CCCAC4] bg-[#F0EDE8] text-[#615E4E]",
   },
   processed: {
     label: "Processed",
     eyebrow: "Complete",
     description: "Processing complete. The vault is ready for the next round.",
     detail: "Processing complete. Vault is ready.",
-    badgeClassName: "border-cyan-400/30 bg-cyan-400/12 text-cyan-200",
-    dotClassName: "bg-cyan-300",
-    panelClassName: "border-cyan-400/20 bg-cyan-400/10 text-cyan-50",
+    badgeClassName: "border-[#58A65C]/25 bg-[#58A65C]/10 text-[#2F7A35]",
+    dotClassName: "bg-[#58A65C]",
+    panelClassName: "border-[#58A65C]/25 bg-[#58A65C]/10 text-[#2F7A35]",
   },
   cutoff: {
     label: "Cutoff",
     eyebrow: "Transitioning",
     description: "The cycle is transitioning out of open mode.",
     detail: "Wait for the vault to enter the closed queue window or begin processing.",
-    badgeClassName: "border-amber-400/30 bg-amber-400/12 text-amber-200",
-    dotClassName: "bg-amber-300",
-    panelClassName: "border-amber-400/20 bg-amber-400/10 text-amber-50",
+    badgeClassName: "border-[#E8C08C]/40 bg-[#E8C08C]/20 text-[#8A6231]",
+    dotClassName: "bg-[#E8C08C]",
+    panelClassName: "border-[#E8C08C]/40 bg-[#E8C08C]/20 text-[#8A6231]",
   },
   flattening: {
     label: "Processing",
     eyebrow: "Processing",
     description: "Queued deposits and withdrawals are being processed.",
     detail: "Processing in progress. Please wait.",
-    badgeClassName: "border-sky-400/30 bg-sky-400/12 text-sky-200",
-    dotClassName: "bg-sky-300",
-    panelClassName: "border-sky-400/20 bg-sky-400/10 text-sky-50",
+    badgeClassName: "border-[#CCCAC4] bg-[#F1EEE8] text-[#615E4E]",
+    dotClassName: "bg-[#A09E96]",
+    panelClassName: "border-[#CCCAC4] bg-[#F0EDE8] text-[#615E4E]",
   },
   settling: {
     label: "Processing",
     eyebrow: "Processing",
     description: "Queued deposits and withdrawals are being finalized.",
     detail: "Processing in progress. Please wait.",
-    badgeClassName: "border-violet-400/30 bg-violet-400/12 text-violet-200",
-    dotClassName: "bg-violet-300",
-    panelClassName: "border-violet-400/20 bg-violet-400/10 text-violet-50",
+    badgeClassName: "border-[#CCCAC4] bg-[#F1EEE8] text-[#615E4E]",
+    dotClassName: "bg-[#A09E96]",
+    panelClassName: "border-[#CCCAC4] bg-[#F0EDE8] text-[#615E4E]",
   },
   settled: {
     label: "Processed",
     eyebrow: "Complete",
     description: "Processing complete. The vault is ready for the next round.",
     detail: "Processing complete. Vault is ready.",
-    badgeClassName: "border-cyan-400/30 bg-cyan-400/12 text-cyan-200",
-    dotClassName: "bg-cyan-300",
-    panelClassName: "border-cyan-400/20 bg-cyan-400/10 text-cyan-50",
+    badgeClassName: "border-[#58A65C]/25 bg-[#58A65C]/10 text-[#2F7A35]",
+    dotClassName: "bg-[#58A65C]",
+    panelClassName: "border-[#58A65C]/25 bg-[#58A65C]/10 text-[#2F7A35]",
   },
   reopen: {
     label: "Processed",
     eyebrow: "Complete",
     description: "Processing complete. The vault is transitioning back to open mode.",
     detail: "The vault will reopen shortly.",
-    badgeClassName: "border-fuchsia-400/30 bg-fuchsia-400/12 text-fuchsia-200",
-    dotClassName: "bg-fuchsia-300",
-    panelClassName: "border-fuchsia-400/20 bg-fuchsia-400/10 text-fuchsia-50",
+    badgeClassName: "border-[#CCCAC4] bg-[#F1EEE8] text-[#615E4E]",
+    dotClassName: "bg-[#A09E96]",
+    panelClassName: "border-[#CCCAC4] bg-[#F0EDE8] text-[#615E4E]",
   },
 };
 
@@ -130,9 +130,9 @@ export function getCustomCyclePresentationFromFields(fields: {
       eyebrow: "Paused",
       description: "Temporarily paused.",
       detail: "Deposits and withdrawals are paused.",
-      badgeClassName: "border-red-400/30 bg-red-400/12 text-red-200",
-      dotClassName: "bg-red-300",
-      panelClassName: "border-red-400/20 bg-red-400/10 text-red-50",
+      badgeClassName: "border-rose-400/25 bg-rose-50 text-rose-700",
+      dotClassName: "bg-rose-500",
+      panelClassName: "border-rose-400/25 bg-rose-50 text-rose-700",
     } as CyclePresentation;
   }
   const isInstant = fields.executionMode === "instant";
@@ -146,12 +146,12 @@ export function getCustomCyclePresentationFromFields(fields: {
     ? "Transactions process instantly at the current price."
     : "Requests will process at the end of the current cycle.";
   const badgeClassName = isInstant
-    ? "border-emerald-400/30 bg-emerald-400/12 text-emerald-200"
-    : "border-amber-400/30 bg-amber-400/12 text-amber-200";
-  const dotClassName = isInstant ? "bg-emerald-300" : "bg-amber-300";
+    ? "border-[#58A65C]/25 bg-[#58A65C]/10 text-[#2F7A35]"
+    : "border-[#E8C08C]/40 bg-[#E8C08C]/20 text-[#8A6231]";
+  const dotClassName = isInstant ? "bg-[#58A65C]" : "bg-[#E8C08C]";
   const panelClassName = isInstant
-    ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-50"
-    : "border-amber-400/20 bg-amber-400/10 text-amber-50";
+    ? "border-[#58A65C]/25 bg-[#58A65C]/10 text-[#2F7A35]"
+    : "border-[#E8C08C]/40 bg-[#E8C08C]/20 text-[#8A6231]";
   return {
     label,
     eyebrow,

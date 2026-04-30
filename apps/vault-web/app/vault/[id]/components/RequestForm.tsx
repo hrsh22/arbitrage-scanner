@@ -46,12 +46,12 @@ function SharesAmountField({
   const disabled = isBusy || hasExistingRequest || isBlocked;
 
   return (
-    <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-2.5">
+    <div className="rounded-xl border border-[#CCCAC4] bg-[#F1EEE8] p-2.5">
       <div className="mb-2 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <label
             htmlFor="shares-input"
-            className="text-xs font-medium uppercase tracking-[0.16em] text-slate-400"
+            className="text-xs font-bold uppercase tracking-[0.16em] text-[#615E4E]"
           >
             Shares
           </label>
@@ -60,12 +60,16 @@ function SharesAmountField({
               <button
                 type="button"
                 aria-label="Explain withdrawal share entry"
-                className="inline-flex h-5 w-5 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-white/5 hover:text-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
+                className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[#615E4E] transition-colors hover:bg-[#E8C08C]/20 hover:text-[#8A6231] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#615E4E]/40"
               >
                 <CircleHelp className="h-3 w-3" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="right" sideOffset={8} className="max-w-64 border-white/10 bg-slate-950 text-slate-100">
+            <TooltipContent
+              side="right"
+              sideOffset={8}
+              className="max-w-64 rounded-xl border-[#CCCAC4] bg-[#FAF8F5] text-[#302B2C] shadow-xl"
+            >
               {isQueuedMode
                 ? "Your request is submitted instantly. You'll be able to claim once it's processed."
                 : "Withdrawals are temporarily paused."}
@@ -76,7 +80,7 @@ function SharesAmountField({
           type="button"
           onClick={onMax}
           disabled={disabled}
-          className="-mr-3 rounded-[2px] px-3 py-2 text-[10px] font-medium uppercase tracking-[0.18em] text-cyan-200 transition-colors hover:bg-white/5 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50 disabled:opacity-50"
+          className="-mr-3 rounded-full px-3 py-2 text-[10px] font-bold uppercase tracking-[0.18em] text-[#8A6231] transition-colors hover:bg-[#E8C08C]/20 hover:text-[#302B2C] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#615E4E]/40 disabled:opacity-50"
           aria-label="Use maximum available shares"
         >
           MAX
@@ -90,7 +94,7 @@ function SharesAmountField({
         value={amount}
         onChange={(event) => onAmountChange(event.target.value)}
         disabled={disabled}
-        className="h-10 rounded-[2px] border border-[#212121] bg-transparent px-3 font-mono text-sm text-white placeholder:text-slate-500"
+        className="h-10 rounded-lg border border-[#CCCAC4] bg-[#FAF8F5] px-3 font-mono text-sm text-[#1A202C] placeholder:text-[#615E4E]/70 focus-visible:ring-[#615E4E]/30"
         aria-describedby="shares-input-help"
         data-testid="shares-input"
       />
@@ -137,7 +141,7 @@ function RequestActionButton({
         type="button"
         onClick={onApprove}
         disabled={disabled}
-        className="h-12 w-full rounded-[2px] bg-white text-slate-950 hover:bg-white/90"
+        className="h-12 w-full rounded-full border border-[#CCCAC4] bg-[#F1EEE8] font-bold text-[#615E4E] hover:border-[#D4A574] hover:bg-[#E8C08C] hover:text-[#302B2C]"
       >
         {approvePending
           ? "Approve in Wallet..."
@@ -157,7 +161,7 @@ function RequestActionButton({
       type="button"
       onClick={onSubmit}
       disabled={disabled}
-      className="h-12 w-full rounded-[2px] bg-cyan-300 text-cyan-950 hover:bg-cyan-200 request-redeem-button"
+      className="request-redeem-button h-12 w-full rounded-full border border-[#D4A574] bg-[#E8C08C] font-bold text-[#302B2C] hover:bg-[#D4A574]"
       data-testid="request-redeem-button"
     >
       {queuePending
@@ -187,22 +191,22 @@ function EstimatedPayoutPreview({
   }
 
   return (
-    <div className="space-y-3 rounded-[2px] border border-cyan-400/20 bg-cyan-400/10 p-4">
+    <div className="space-y-3 rounded-xl border border-[#D4A574]/35 bg-[#E8C08C]/20 p-4">
       <div className="flex items-center justify-between text-sm">
         <div>
-          <p className="text-cyan-50/70">Estimated payout</p>
-          <p className="mt-1 text-lg font-semibold text-cyan-50">
+          <p className="text-[#615E4E]">Estimated payout</p>
+          <p className="mt-1 text-lg font-bold text-[#1A202C]">
             {indicativePayoutUsd !== null ? `$${indicativePayoutUsd.toFixed(2)}` : "--"}
           </p>
         </div>
         <div className="text-right">
-          <p className="text-cyan-50/70">Shares</p>
-          <p className="mt-1 font-mono font-medium text-cyan-50">{amount}</p>
+          <p className="text-[#615E4E]">Shares</p>
+          <p className="mt-1 font-mono font-semibold text-[#1A202C]">{amount}</p>
         </div>
       </div>
-      <div className="flex items-start gap-2 rounded-[2px] border border-cyan-400/15 bg-black/10 p-2.5">
-        <ArrowUpRight className="mt-0.5 h-3.5 w-3.5 text-cyan-200" />
-        <p className="text-xs leading-6 text-cyan-50/90">
+      <div className="flex items-start gap-2 rounded-lg border border-[#CCCAC4] bg-[#F1EEE8] p-2.5">
+        <ArrowUpRight className="mt-0.5 h-3.5 w-3.5 text-[#8A6231]" />
+        <p className="text-xs leading-6 text-[#615E4E]">
           Estimated. Final amount confirmed after processing.
         </p>
       </div>
@@ -230,8 +234,8 @@ function RequestStatusAlerts({
           className="border-amber-400/20 bg-amber-400/10"
           data-testid="existing-request-warning"
         >
-          <AlertTriangle className="h-4 w-4 text-amber-200" aria-hidden="true" />
-          <AlertDescription className="text-xs leading-6 text-amber-50/90">
+          <AlertTriangle className="h-4 w-4 text-[#8A6231]" aria-hidden="true" />
+          <AlertDescription className="text-xs leading-6 text-[#8A6231]">
             You have an active withdrawal request. Start a new one after the current request
             finishes.
           </AlertDescription>
@@ -240,8 +244,8 @@ function RequestStatusAlerts({
 
       {isBrokenZeroEntitlementRequest && (
         <Alert className="border-amber-400/20 bg-amber-400/10" data-testid="broken-request-warning">
-          <AlertTriangle className="h-4 w-4 text-amber-200" aria-hidden="true" />
-          <AlertDescription className="text-xs leading-6 text-amber-50/90">
+          <AlertTriangle className="h-4 w-4 text-[#8A6231]" aria-hidden="true" />
+          <AlertDescription className="text-xs leading-6 text-[#8A6231]">
             A previous request encountered an issue. Please contact support.
           </AlertDescription>
         </Alert>
@@ -249,8 +253,8 @@ function RequestStatusAlerts({
 
       {exitDisabledReason && !hasExistingRequest && (
         <Alert className="border-amber-400/20 bg-amber-400/10">
-          <AlertTriangle className="h-4 w-4 text-amber-200" aria-hidden="true" />
-          <AlertDescription className="text-xs leading-6 text-amber-50/90">
+          <AlertTriangle className="h-4 w-4 text-[#8A6231]" aria-hidden="true" />
+          <AlertDescription className="text-xs leading-6 text-[#8A6231]">
             {exitDisabledReason}
           </AlertDescription>
         </Alert>
@@ -258,8 +262,8 @@ function RequestStatusAlerts({
 
       {visibleError && (
         <Alert className="border-rose-400/20 bg-rose-400/10" data-testid="request-error">
-          <AlertTriangle className="h-4 w-4 text-rose-200" aria-hidden="true" />
-          <AlertDescription className="text-xs leading-6 text-rose-50/90">
+          <AlertTriangle className="h-4 w-4 text-rose-600" aria-hidden="true" />
+          <AlertDescription className="text-xs leading-6 text-rose-700">
             {visibleError}
           </AlertDescription>
         </Alert>
@@ -267,8 +271,8 @@ function RequestStatusAlerts({
 
       {showSuccessMessage && (
         <Alert className="border-emerald-400/20 bg-emerald-400/10" data-testid="request-success">
-          <Info className="h-4 w-4 text-emerald-200" aria-hidden="true" />
-          <AlertDescription className="text-xs leading-6 text-emerald-50/90">
+          <Info className="h-4 w-4 text-[#2F7A35]" aria-hidden="true" />
+          <AlertDescription className="text-xs leading-6 text-[#2F7A35]">
             Withdrawal request submitted. You&apos;ll be notified when it&apos;s ready.
           </AlertDescription>
         </Alert>
@@ -410,8 +414,8 @@ export function RequestForm({
     <div className="space-y-4" data-testid="request-form">
       {/* Shares Balance */}
       <div className="flex items-center justify-between text-sm">
-        <span className="text-slate-400">Your balance</span>
-        <span className="font-medium font-mono text-slate-100" data-testid="share-balance">
+        <span className="text-[#615E4E]">Your balance</span>
+        <span className="font-mono font-semibold text-[#1A202C]" data-testid="share-balance">
           {Number(formattedShares).toFixed(6)} shares
         </span>
       </div>
@@ -444,7 +448,7 @@ export function RequestForm({
           onSubmit={handleSubmit}
         />
 
-        <p id="shares-input-help" className="text-xs leading-6 text-slate-400">
+        <p id="shares-input-help" className="text-xs leading-6 text-[#615E4E]">
           {isQueuedMode
             ? "Your request will be processed shortly."
             : "Withdrawals are temporarily paused."}

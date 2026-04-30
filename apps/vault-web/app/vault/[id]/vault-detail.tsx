@@ -8,7 +8,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
   ArrowLeft,
-  Dot,
   Wallet,
   User,
   Building2,
@@ -73,7 +72,6 @@ import {
   USER_COLLATERAL_SYMBOL,
   VAULT_NETWORK,
 } from "../../../src/constants";
-import { getNetworkDisplayInfo, type NetworkDisplayInfo } from "../../../src/lib/network";
 import type {
   Cycle,
   VaultInstance,
@@ -83,7 +81,11 @@ import type {
 } from "../../../src/types";
 import { RedemptionPanel } from "./components";
 import { AssetLogoStack, type AssetType } from "../../../components/asset-logo";
-import { buildVaultDetailReadModel, type ActivityItem, type HeroMetric } from "./vaultDetailReadModel";
+import {
+  buildVaultDetailReadModel,
+  type ActivityItem,
+  type HeroMetric,
+} from "./vaultDetailReadModel";
 
 declare global {
   interface Window {
@@ -130,7 +132,10 @@ type VaultDetailUiAction =
   | { type: "previous-user-activity-page"; scope: string }
   | { type: "next-user-activity-page"; scope: string };
 
-function createVaultDetailUiState(routeVaultId: number, userActivityScope: string): VaultDetailUiState {
+function createVaultDetailUiState(
+  routeVaultId: number,
+  userActivityScope: string,
+): VaultDetailUiState {
   return {
     e2eConnectedSeam: false,
     tradesOffset: 0,
@@ -346,46 +351,42 @@ function getRiskSummary(vault: VaultInstance, cycle: Cycle | null): string {
 }
 
 const ACTIVITY_PAGE_SIZE = 10;
+const NAV_CHART_TARGET_POINTS = 120;
 
 const NAV_CHART_RANGES = [
   {
     value: "1M",
     label: "1M",
     rangeDays: 30,
-    maxPoints: 80,
-    smooth: false,
+    maxPoints: NAV_CHART_TARGET_POINTS,
     description: "Last 30 days",
   },
   {
     value: "3M",
     label: "3M",
     rangeDays: 90,
-    maxPoints: 96,
-    smooth: false,
+    maxPoints: NAV_CHART_TARGET_POINTS,
     description: "Last 3 months",
   },
   {
     value: "6M",
     label: "6M",
     rangeDays: 183,
-    maxPoints: 120,
-    smooth: true,
+    maxPoints: NAV_CHART_TARGET_POINTS,
     description: "Last 6 months",
   },
   {
     value: "1Y",
     label: "1Y",
     rangeDays: 365,
-    maxPoints: 140,
-    smooth: true,
+    maxPoints: NAV_CHART_TARGET_POINTS,
     description: "Last year",
   },
   {
     value: "ALL",
     label: "All",
     rangeDays: undefined,
-    maxPoints: 160,
-    smooth: true,
+    maxPoints: NAV_CHART_TARGET_POINTS,
     description: "All history",
   },
 ] as const;
@@ -421,14 +422,14 @@ function InfoTooltip({ label, content }: { label: string; content: string }) {
         <button
           type="button"
           aria-label={label}
-          className="inline-flex h-5 w-5 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-white/5 hover:text-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
+          className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[#615E4E] transition-colors hover:bg-[#F6F4F3] hover:text-[#8A6231] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#615E4E]/50"
         >
           <AlertCircle className="h-3 w-3" />
         </button>
       </TooltipTrigger>
       <TooltipContent
         sideOffset={8}
-        className="max-w-xs rounded-[2px] border-white/10 bg-slate-950 px-3 py-2 text-slate-100 shadow-2xl"
+        className="max-w-xs rounded-xl border-[#CCCAC4] bg-[#FAF8F5] px-3 py-2 text-[#302B2C] shadow-[0_18px_45px_-24px_rgba(48,43,44,0.45)]"
       >
         {content}
       </TooltipContent>
@@ -452,17 +453,19 @@ function SectionShell({
   return (
     <Card
       id={id}
-      className="min-w-0 overflow-hidden rounded-[2px] border border-[#212121] bg-[#121212] shadow-none"
+      className="min-w-0 overflow-hidden rounded-2xl border border-[#CCCAC4] bg-[#F1EEE8] shadow-[0_22px_80px_-58px_rgba(26,32,44,0.48)]"
     >
-      <CardHeader className="border-b border-white/10 pb-5">
+      <CardHeader className="border-b border-[#CCCAC4] pb-5">
         {eyebrow ? (
-          <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-cyan-200/80">
+          <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-[#615E4E]">
             {eyebrow}
           </p>
         ) : null}
-        <CardTitle className="text-2xl tracking-tight text-white">{title}</CardTitle>
+        <CardTitle className="font-serif text-3xl font-bold tracking-tight text-[#1A202C]">
+          {title}
+        </CardTitle>
         {description ? (
-          <CardDescription className="max-w-2xl text-sm leading-6 text-slate-400">
+          <CardDescription className="max-w-2xl text-sm leading-6 text-[#615E4E]">
             {description}
           </CardDescription>
         ) : null}
@@ -484,13 +487,13 @@ function SummaryMetric({
   tooltip?: string;
 }) {
   return (
-    <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4">
+    <div className="rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] p-4">
       <div className="flex items-center gap-2">
-        <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</p>
+        <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#615E4E]">{label}</p>
         {tooltip ? <InfoTooltip label={label} content={tooltip} /> : null}
       </div>
-      <p className="mt-3 text-2xl font-semibold tracking-tight text-white">{value}</p>
-      <p className="mt-2 text-xs leading-6 text-slate-400">{hint}</p>
+      <p className="mt-3 text-2xl font-bold tracking-tight text-[#1A202C]">{value}</p>
+      <p className="mt-2 text-xs leading-6 text-[#615E4E]">{hint}</p>
     </div>
   );
 }
@@ -507,17 +510,17 @@ function PerformanceTile({
   tooltip?: string;
 }) {
   return (
-    <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4">
+    <div className="rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] p-4">
       <div className="flex items-center gap-2">
-        <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</p>
+        <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#615E4E]">{label}</p>
         {tooltip ? <InfoTooltip label={label} content={tooltip} /> : null}
       </div>
       <p
         className={cn(
           "mt-2 text-xl font-semibold tracking-tight",
-          tone === "good" && "text-emerald-200",
-          tone === "warning" && "text-amber-200",
-          tone === "neutral" && "text-white",
+          tone === "good" && "text-[#2F7A35]",
+          tone === "warning" && "text-[#8A6231]",
+          tone === "neutral" && "text-[#1A202C]",
         )}
       >
         {value}
@@ -570,12 +573,12 @@ function NavChart({
   }, [stats.maxPointValue, stats.minPointValue, stats.points]);
 
   if (isLoading) {
-    return <Skeleton className="h-[320px] w-full rounded-[2px] bg-white/10" />;
+    return <Skeleton className="h-[320px] w-full rounded-2xl bg-[#E8D9C0]" />;
   }
 
   if (stats.points.length < 2) {
     return (
-      <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-6 text-sm text-[#828B8D]">
+      <div className="rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] p-6 text-sm text-[#615E4E]">
         Not enough NAV history yet to render a performance curve.
       </div>
     );
@@ -595,17 +598,19 @@ function NavChart({
   };
 
   return (
-    <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-5">
+    <div className="rounded-2xl border border-[#CCCAC4] bg-[#F0EDE8] p-5">
       <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">NAV chart</p>
-          <p className="mt-2 text-3xl font-semibold tracking-tight text-white">
+          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#615E4E]">
+            NAV chart
+          </p>
+          <p className="mt-2 font-serif text-4xl font-bold tracking-tight text-[#1A202C]">
             {stats.latest !== null ? formatSharePrice(stats.latest) : "--"}
           </p>
         </div>
         <div className="flex flex-col gap-3 sm:items-end">
           <div
-            className="inline-flex w-fit rounded-[2px] border border-[#212121] bg-[#121212] p-1"
+            className="inline-flex w-fit rounded-full border border-[#CCCAC4] bg-[#F1EEE8] p-1"
             aria-label="NAV chart time range"
           >
             {NAV_CHART_RANGES.map((option) => (
@@ -617,10 +622,10 @@ function NavChart({
                   onRangeChange(option.value);
                 }}
                 className={cn(
-                  "rounded-[2px] px-2.5 py-1.5 text-[11px] font-medium uppercase tracking-[0.12em] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50",
+                  "rounded-full px-2.5 py-1.5 text-[11px] font-bold uppercase tracking-[0.12em] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#615E4E]/50",
                   selectedRange === option.value
-                    ? "bg-cyan-300/12 text-cyan-100 ring-1 ring-inset ring-cyan-300/20"
-                    : "text-slate-500 hover:bg-white/5 hover:text-slate-200",
+                    ? "bg-[#E8C08C]/25 text-[#1A202C] ring-1 ring-inset ring-[#615E4E]/25"
+                    : "text-[#615E4E] hover:bg-[#F6F4F3] hover:text-[#1A202C]",
                 )}
                 aria-pressed={selectedRange === option.value}
               >
@@ -628,15 +633,13 @@ function NavChart({
               </button>
             ))}
           </div>
-          <div className="grid gap-2 text-xs text-slate-400 sm:grid-cols-2 sm:text-right">
+          <div className="grid gap-2 text-xs text-[#615E4E] sm:grid-cols-2 sm:text-right">
             <div>Start: {stats.first !== null ? formatSharePrice(stats.first) : "--"}</div>
             <div>
-              Latest snapshot: {formatDate(stats.points[stats.points.length - 1]?.timestamp ?? null)}
+              Latest snapshot:{" "}
+              {formatDate(stats.points[stats.points.length - 1]?.timestamp ?? null)}
             </div>
-            <div className="sm:col-span-2 text-slate-500">
-              {rangeConfig.description}
-              {rangeConfig.smooth ? " · smoothed" : ""}
-            </div>
+            <div className="sm:col-span-2 text-[#615E4E]">{rangeConfig.description}</div>
           </div>
         </div>
       </div>
@@ -672,12 +675,12 @@ function NavChart({
         >
           <defs>
             <linearGradient id="vault-line" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor="rgba(103,232,249,0.95)" />
-              <stop offset="100%" stopColor="rgba(125,211,252,0.95)" />
+              <stop offset="0%" stopColor="rgba(184,145,91,0.95)" />
+              <stop offset="100%" stopColor="rgba(232,192,140,0.95)" />
             </linearGradient>
             <linearGradient id="vault-area" x1="0%" y1="0%" x2="0%" y2="100%">
-              <stop offset="0%" stopColor="rgba(103,232,249,0.28)" />
-              <stop offset="100%" stopColor="rgba(103,232,249,0.01)" />
+              <stop offset="0%" stopColor="rgba(232,192,140,0.34)" />
+              <stop offset="100%" stopColor="rgba(232,192,140,0.02)" />
             </linearGradient>
           </defs>
           <polyline fill="url(#vault-area)" stroke="none" points={area} />
@@ -689,7 +692,7 @@ function NavChart({
                 x2={hoveredPoint.x}
                 y1={0}
                 y2={height}
-                stroke="rgba(148,163,184,0.38)"
+                stroke="rgba(155,140,118,0.48)"
                 strokeDasharray="5 5"
                 vectorEffect="non-scaling-stroke"
               />
@@ -697,8 +700,8 @@ function NavChart({
                 cx={hoveredPoint.x}
                 cy={hoveredPoint.y}
                 r="6"
-                fill="#0A0A0A"
-                stroke="rgba(125,211,252,0.95)"
+                fill="#F1EEE8"
+                stroke="rgba(184,145,91,0.95)"
                 strokeWidth="3"
                 vectorEffect="non-scaling-stroke"
               />
@@ -707,15 +710,15 @@ function NavChart({
         </svg>
         {hoveredPoint ? (
           <div
-            className="pointer-events-none absolute top-3 w-max min-w-0 max-w-[calc(100vw-3rem)] rounded-[2px] border border-white/10 bg-[#121212]/95 px-3 py-2 text-xs shadow-2xl shadow-black/40 backdrop-blur"
+            className="pointer-events-none absolute top-3 w-max min-w-0 max-w-[calc(100vw-3rem)] rounded-xl border border-[#CCCAC4] bg-[#FAF8F5]/95 px-3 py-2 text-xs shadow-[0_18px_45px_-24px_rgba(48,43,44,0.5)] backdrop-blur"
             style={{
               left: `${Math.min(Math.max((hoveredPoint.x / width) * 100, 8), 92)}%`,
-              transform: (hoveredPoint.x / width) > 0.75 ? "translateX(-100%)" : "translateX(-8%)",
+              transform: hoveredPoint.x / width > 0.75 ? "translateX(-100%)" : "translateX(-8%)",
             }}
           >
-            <p className="font-medium text-white">{formatSharePrice(hoveredPoint.value)}</p>
-            <p className="mt-1 text-slate-400">{formatDate(hoveredPoint.timestamp)}</p>
-            <p className="mt-1 text-slate-500">
+            <p className="font-bold text-[#302B2C]">{formatSharePrice(hoveredPoint.value)}</p>
+            <p className="mt-1 text-[#61604E]">{formatDate(hoveredPoint.timestamp)}</p>
+            <p className="mt-1 text-[#8A6231]">
               Assets {formatCompactCurrency(hoveredPoint.totalAssets)}
             </p>
           </div>
@@ -736,7 +739,7 @@ function ActivityTimeline({
 }) {
   if (items.length === 0) {
     return (
-      <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-5 text-sm text-[#828B8D]">
+      <div className="rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] p-5 text-sm text-[#615E4E]">
         {emptyState}
       </div>
     );
@@ -747,7 +750,7 @@ function ActivityTimeline({
       {items.map((item) => (
         <div
           key={item.id}
-          className="min-h-[92px] rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4"
+          className="min-h-[92px] rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] p-4"
         >
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="space-y-1.5">
@@ -757,14 +760,14 @@ function ActivityTimeline({
                     "h-2.5 w-2.5 rounded-full",
                     item.tone === "good" && "bg-emerald-300",
                     item.tone === "warning" && "bg-amber-300",
-                    item.tone === "neutral" && "bg-cyan-300",
+                    item.tone === "neutral" && "bg-[#E8C08C]",
                   )}
                 />
-                <p className="text-sm font-medium text-white">{item.title}</p>
+                <p className="text-sm font-bold text-[#1A202C]">{item.title}</p>
               </div>
-              <p className="text-sm leading-6 text-slate-400">{item.detail}</p>
+              <p className="text-sm leading-6 text-[#615E4E]">{item.detail}</p>
             </div>
-            <p className="whitespace-nowrap text-xs font-medium text-slate-500 mt-0.5">
+            <p className="whitespace-nowrap text-xs font-medium text-[#615E4E] mt-0.5">
               {formatDate(item.timestamp)}
             </p>
           </div>
@@ -774,7 +777,7 @@ function ActivityTimeline({
       {Array.from({ length: Math.max(pageSize - items.length, 0) }).map((_, index) => (
         <div
           key={`activity-placeholder-${index}`}
-          className="invisible min-h-[92px] rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4"
+          className="invisible min-h-[92px] rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] p-4"
           aria-hidden="true"
         />
       ))}
@@ -801,7 +804,7 @@ function ActivityPaginationControls({
   const end = offset + currentCount;
 
   return (
-    <div className="flex flex-col gap-3 rounded-[2px] border border-[#212121] bg-[#0A0A0A] px-4 py-3 text-xs text-slate-400 sm:flex-row sm:items-center sm:justify-between">
+    <div className="flex flex-col gap-3 rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] px-4 py-3 text-xs text-[#615E4E] sm:flex-row sm:items-center sm:justify-between">
       <span>{currentCount > 0 ? `Showing ${start}-${end}` : "No activity on this page"}</span>
       <div className="flex items-center gap-2">
         <Button
@@ -810,7 +813,7 @@ function ActivityPaginationControls({
           size="sm"
           onClick={onPrevious}
           disabled={offset === 0 || isLoading}
-          className="h-8 rounded-[2px] border-[#656565]/40 bg-transparent px-3 text-xs text-white hover:bg-[#212121] disabled:opacity-40"
+          className="h-8 rounded-full border-[#CCCAC4] bg-[#F1EEE8] px-3 text-xs font-bold text-[#615E4E] hover:border-[#615E4E] hover:bg-[#F6F4F3] hover:text-[#1A202C] disabled:opacity-40"
         >
           Previous
         </Button>
@@ -820,7 +823,7 @@ function ActivityPaginationControls({
           size="sm"
           onClick={onNext}
           disabled={!hasMore || isLoading}
-          className="h-8 rounded-[2px] border-[#656565]/40 bg-transparent px-3 text-xs text-white hover:bg-[#212121] disabled:opacity-40"
+          className="h-8 rounded-full border-[#CCCAC4] bg-[#F1EEE8] px-3 text-xs font-bold text-[#615E4E] hover:border-[#615E4E] hover:bg-[#F6F4F3] hover:text-[#1A202C] disabled:opacity-40"
         >
           Next
         </Button>
@@ -840,14 +843,14 @@ function TradesList({
 }) {
   if (!positions || positions.length === 0) {
     return (
-      <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-5 text-sm text-[#828B8D]">
+      <div className="rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] p-5 text-sm text-[#615E4E]">
         {emptyState}
       </div>
     );
   }
 
   return (
-    <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] overflow-hidden">
+    <div className="overflow-hidden rounded-xl border border-[#CCCAC4] bg-[#F0EDE8]">
       {positions.map((pos) => {
         const isClosed = pos.status === "closed";
         const pnl = pos.realizedPnl ?? pos.cashPnl ?? 0;
@@ -857,40 +860,40 @@ function TradesList({
         return (
           <div
             key={`${pos.tokenId}-${pos.conditionId}-${pos.outcome}-${pos.endDate}`}
-            className="group flex flex-col gap-3 border-b border-[#212121] p-4 transition-colors hover:bg-[#121212] last:border-b-0 sm:flex-row sm:items-center sm:justify-between"
+            className="group flex flex-col gap-3 border-b border-[#CCCAC4] p-4 transition-colors hover:bg-[#F6F4F3] last:border-b-0 sm:flex-row sm:items-center sm:justify-between"
           >
             <div className="flex flex-1 flex-col min-w-0 pr-4">
               <div className="mb-1.5 flex items-center gap-2">
                 <span
                   className={cn(
-                    "rounded-[2px] bg-white/5 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider",
+                    "rounded-full bg-[#F1EEE8] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ring-1 ring-inset ring-[#CCCAC4]",
                     pos.outcome === "Yes"
                       ? "text-emerald-400"
                       : pos.outcome === "No"
                         ? "text-rose-400"
-                        : "text-cyan-400",
+                        : "text-[#8A6231]",
                   )}
                 >
                   {pos.outcome}
                 </span>
-                <span className="whitespace-nowrap text-xs font-medium text-slate-500">
+                <span className="whitespace-nowrap text-xs font-medium text-[#615E4E]">
                   {formatDate(pos.endDate)}
                 </span>
                 {!isClosed && (
-                  <span className="rounded-[2px] bg-amber-400/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-400">
+                  <span className="rounded-full bg-[#E8C08C]/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[#8A6231]">
                     Open
                   </span>
                 )}
               </div>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <p className="cursor-default truncate text-sm font-medium text-white transition-colors group-hover:text-cyan-50">
+                  <p className="cursor-default truncate text-sm font-bold text-[#1A202C] transition-colors group-hover:text-[#8A6231]">
                     {pos.title}
                   </p>
                 </TooltipTrigger>
                 <TooltipContent
                   sideOffset={8}
-                  className="max-w-[320px] rounded-xl bg-slate-950 px-3 py-2 text-slate-100 shadow-2xl"
+                  className="max-w-[320px] rounded-xl bg-[#1A202C] px-3 py-2 text-[#F6F4F3] shadow-2xl"
                 >
                   <p className="text-sm font-medium leading-relaxed">{pos.title}</p>
                 </TooltipContent>
@@ -899,35 +902,35 @@ function TradesList({
 
             <div className="flex flex-wrap gap-4 sm:shrink-0 sm:flex-nowrap sm:items-center sm:gap-8">
               <div className="flex flex-col text-left sm:text-right">
-                <span className="text-[10px] uppercase tracking-wider text-slate-500">
+                <span className="text-[10px] uppercase tracking-wider text-[#615E4E]">
                   Invested
                 </span>
-                <span className="font-mono text-sm text-white">
+                <span className="font-mono text-sm text-[#1A202C]">
                   {Number.isFinite(pos.size) && Number.isFinite(pos.avgPrice)
                     ? formatCurrency(pos.size * pos.avgPrice)
                     : "--"}
                 </span>
                 {Number.isFinite(pos.size) && (
-                  <span className="mt-0.5 font-mono text-[9px] text-slate-500">
+                  <span className="mt-0.5 font-mono text-[9px] text-[#615E4E]">
                     {pos.size.toFixed(2)} shares
                   </span>
                 )}
               </div>
               <div className="flex flex-col text-left sm:text-right">
-                <span className="text-[10px] uppercase tracking-wider text-slate-500">
+                <span className="text-[10px] uppercase tracking-wider text-[#615E4E]">
                   Avg Price
                 </span>
-                <span className="font-mono text-sm text-white">
+                <span className="font-mono text-sm text-[#1A202C]">
                   {Number.isFinite(pos.avgPrice) ? `$${pos.avgPrice.toFixed(2)}` : "--"}
                 </span>
               </div>
               <div className="flex flex-col text-left sm:text-right">
                 {!isClosed ? (
                   <>
-                    <span className="text-[10px] uppercase tracking-wider text-slate-500">
+                    <span className="text-[10px] uppercase tracking-wider text-[#615E4E]">
                       Value
                     </span>
-                    <span className="font-mono text-sm font-medium text-white">
+                    <span className="font-mono text-sm font-bold text-[#1A202C]">
                       {typeof pos.currentValue === "number"
                         ? formatCurrency(pos.currentValue)
                         : "--"}
@@ -935,13 +938,13 @@ function TradesList({
                   </>
                 ) : (
                   <>
-                    <span className="text-[10px] uppercase tracking-wider text-slate-500">
+                    <span className="text-[10px] uppercase tracking-wider text-[#615E4E]">
                       Return
                     </span>
                     <span
                       className={cn(
                         "font-mono text-sm font-semibold",
-                        isWin ? "text-emerald-400" : "text-slate-400",
+                        isWin ? "text-[#2F7A35]" : "text-[#615E4E]",
                       )}
                     >
                       {pnlFormatted}
@@ -957,7 +960,7 @@ function TradesList({
       {Array.from({ length: Math.max(pageSize - positions.length, 0) }).map((_, index) => (
         <div
           key={`trades-placeholder-${index}`}
-          className="invisible min-h-[96px] border-b border-[#212121] last:border-b-0"
+          className="invisible min-h-[96px] border-b border-[#CCCAC4] last:border-b-0"
           aria-hidden="true"
         />
       ))}
@@ -967,12 +970,12 @@ function TradesList({
 
 function RailStat({ label, value, tooltip }: { label: string; value: string; tooltip?: string }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-[2px] border border-[#212121] bg-[#0A0A0A] px-4 py-3">
-      <span className="flex items-center gap-2 text-sm text-slate-400">
+    <div className="flex items-center justify-between gap-3 rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] px-4 py-3">
+      <span className="flex items-center gap-2 text-sm text-[#615E4E]">
         {label}
         {tooltip ? <InfoTooltip label={label} content={tooltip} /> : null}
       </span>
-      <span className="text-sm font-medium text-white">{value}</span>
+      <span className="text-sm font-bold text-[#1A202C]">{value}</span>
     </div>
   );
 }
@@ -987,12 +990,12 @@ function KeyInfoItem({
   tooltip?: string;
 }) {
   return (
-    <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-3">
+    <div className="rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] p-3">
       <div className="flex items-center gap-2">
-        <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{label}</p>
+        <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#615E4E]">{label}</p>
         {tooltip ? <InfoTooltip label={label} content={tooltip} /> : null}
       </div>
-      <p className="mt-1.5 text-sm font-medium text-white">{value}</p>
+      <p className="mt-1.5 text-sm font-bold text-[#1A202C]">{value}</p>
     </div>
   );
 }
@@ -1026,9 +1029,9 @@ function AddressField({
   }, [address, resetCopied]);
 
   return (
-    <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4">
+    <div className="rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] p-4">
       <div className="flex items-center justify-between gap-3">
-        <span className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-slate-500">
+        <span className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.18em] text-[#615E4E]">
           {logoSrc && <Image src={logoSrc} alt={label} width={16} height={16} />}
           {label}
         </span>
@@ -1040,14 +1043,14 @@ function AddressField({
                 void navigator.clipboard.writeText(address);
                 copyAddress();
               }}
-              className="rounded-[2px] border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] uppercase tracking-[0.18em] text-slate-300 transition-colors hover:border-cyan-300/30 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
+              className="rounded-full border border-[#CCCAC4] bg-[#F1EEE8] px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.18em] text-[#615E4E] transition-colors hover:border-[#D4A574] hover:bg-[#E8C08C] hover:text-[#302B2C] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#615E4E]/40"
             >
               {copied ? "Copied" : "Copy"}
             </button>
           </TooltipTrigger>
           <TooltipContent
             sideOffset={8}
-            className="max-w-sm rounded-[4px] bg-[#212121] px-3 py-2 text-xs text-white shadow-xl"
+            className="max-w-sm rounded-xl border-[#CCCAC4] bg-[#FAF8F5] px-3 py-2 text-xs text-[#302B2C] shadow-xl"
           >
             Click to copy full address
           </TooltipContent>
@@ -1057,7 +1060,7 @@ function AddressField({
         <TooltipTrigger asChild>
           <button
             type="button"
-            className="mt-3 block min-h-8 rounded-[2px] py-1 text-left font-mono text-sm text-white transition-colors hover:text-cyan-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
+            className="mt-3 block min-h-8 rounded-lg py-1 text-left font-mono text-sm font-semibold text-[#302B2C] transition-colors hover:text-[#8A6231] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#615E4E]/40"
             onClick={() => {
               void navigator.clipboard.writeText(address);
               copyAddress();
@@ -1068,18 +1071,18 @@ function AddressField({
         </TooltipTrigger>
         <TooltipContent
           sideOffset={8}
-          className="max-w-sm rounded-[4px] bg-[#212121] px-3 py-2 font-mono text-xs text-white shadow-xl"
+          className="max-w-sm rounded-xl border-[#CCCAC4] bg-[#FAF8F5] px-3 py-2 font-mono text-xs text-[#302B2C] shadow-xl"
         >
           {address}
         </TooltipContent>
       </Tooltip>
 
       {balance !== undefined && (
-        <div className="mt-4 flex flex-col items-start gap-1 border-t border-[#212121] pt-3 sm:flex-row sm:items-center sm:justify-between">
-          <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+        <div className="mt-4 flex flex-col items-start gap-1 border-t border-[#CCCAC4] pt-3 sm:flex-row sm:items-center sm:justify-between">
+          <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#615E4E]">
             {balanceLabel}
           </span>
-          <span className="font-mono text-sm font-medium text-white">{balance}</span>
+          <span className="font-mono text-sm font-semibold text-[#1A202C]">{balance}</span>
         </div>
       )}
     </div>
@@ -1102,15 +1105,17 @@ function TechnicalDetailsDialog({
         <Button
           type="button"
           variant="outline"
-          className="rounded-[10px] border border-[#656565]/40 bg-[#121212] text-white hover:bg-[#212121]"
+          className="rounded-full border border-[#D4A574] bg-[#FAF8F5] px-4 font-bold text-[#1A202C] shadow-none ring-1 ring-white/70 hover:border-[#8A6231] hover:bg-white hover:text-[#1A202C] focus-visible:ring-[#8A6231]/30"
         >
           Addresses
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-3xl rounded-[2px] border border-[#212121] bg-[#0A0A0A] text-white shadow-none">
+      <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto rounded-2xl border border-[#CCCAC4] bg-[#F1EEE8] text-[#1A202C] shadow-[0_35px_120px_-55px_rgba(26,32,44,0.55)] [&_[data-slot=dialog-close]]:text-[#615E4E] [&_[data-slot=dialog-close]]:hover:text-[#302B2C]">
         <DialogHeader>
-          <DialogTitle className="text-2xl tracking-tight text-white">Addresses</DialogTitle>
-          <DialogDescription className="text-sm leading-6 text-slate-400">
+          <DialogTitle className="font-serif text-3xl font-bold tracking-tight text-[#1A202C]">
+            Addresses
+          </DialogTitle>
+          <DialogDescription className="text-sm leading-6 text-[#615E4E]">
             Contract addresses and wallet balances.
           </DialogDescription>
         </DialogHeader>
@@ -1120,7 +1125,9 @@ function TechnicalDetailsDialog({
             label="Operator safe"
             address={vault.config.safeAddress}
             balanceLabel="Trading Wallet Balance"
-            balance={tradingWalletCollateral !== null ? formatCurrency(tradingWalletCollateral) : "--"}
+            balance={
+              tradingWalletCollateral !== null ? formatCurrency(tradingWalletCollateral) : "--"
+            }
             logoSrc="/logo/gnosis-safe.svg"
           />
           <AddressField
@@ -1196,12 +1203,12 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
       line: "from-emerald-400",
     },
     slate: {
-      bg: "from-slate-500/15 to-slate-600/5",
-      border: "border-slate-400/30",
-      glow: "shadow-[0_0_20px_rgba(148,163,184,0.1)]",
-      icon: "text-slate-400",
-      ring: "ring-slate-400/30",
-      line: "from-slate-400",
+      bg: "from-[#E8D9C0]/60 to-[#F1EEE8]/70",
+      border: "border-[#CCCAC4]",
+      glow: "shadow-[0_12px_30px_-24px_rgba(48,43,44,0.28)]",
+      icon: "text-[#615E4E]",
+      ring: "ring-[#CCCAC4]",
+      line: "from-[#B8915B]",
     },
   };
 
@@ -1210,29 +1217,29 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
       <DialogTrigger asChild>
         <button
           type="button"
-          className="inline-flex shrink-0 self-start items-center justify-center gap-1.5 whitespace-nowrap rounded-[2px] bg-[#121212] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-300 ring-1 ring-inset ring-[#212121] transition-all hover:bg-[#212121] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
+          className="inline-flex shrink-0 self-start items-center justify-center gap-1.5 whitespace-nowrap rounded-full border border-[#CCCAC4] bg-[#F1EEE8] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-[#615E4E] transition-all hover:border-[#615E4E] hover:bg-[#F6F4F3] hover:text-[#1A202C] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#615E4E]/50"
         >
           <AlertCircle className="h-3.5 w-3.5" />
           <span>How Vaults Work</span>
         </button>
       </DialogTrigger>
-      <DialogContent className="w-[min(1120px,96vw)] !max-w-none overflow-hidden rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-0 text-white shadow-[0_35px_120px_-45px_rgba(0,0,0,0.95)] max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-h-[90vh] w-[min(1120px,96vw)] !max-w-none overflow-y-auto overscroll-contain rounded-2xl border border-[#CCCAC4] bg-[#F1EEE8] p-0 text-[#1A202C] shadow-[0_35px_120px_-55px_rgba(26,32,44,0.65)] [&_[data-slot=dialog-close]]:text-[#615E4E] [&_[data-slot=dialog-close]]:hover:text-[#302B2C]">
         <DialogTitle className="sr-only">How Vaults Work Flowchart</DialogTitle>
         <DialogDescription className="sr-only">
           Explains the lifecycle of a vault deposit.
         </DialogDescription>
 
-        <div className="grid lg:grid-cols-[1fr_1.4fr]">
-          <div className="relative border-b border-[#212121] bg-[#0A0A0A] p-8 lg:border-b-0 lg:border-r lg:p-10">
+        <div className="grid min-h-0 lg:grid-cols-[1fr_1.4fr]">
+          <div className="relative border-b border-[#CCCAC4] bg-[#F0EDE8] p-8 lg:border-b-0 lg:border-r lg:p-10">
             <div
               className="pointer-events-none absolute inset-0 opacity-[0.03]"
               style={{
-                backgroundImage: `radial-gradient(circle at 1px 1px, white 1px, transparent 0)`,
+                backgroundImage: `radial-gradient(circle at 1px 1px, rgba(184,145,91,0.42) 1px, transparent 0)`,
                 backgroundSize: "24px 24px",
               }}
             />
 
-            <h3 className="mb-8 text-center text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
+            <h3 className="mb-8 text-center text-xs font-bold uppercase tracking-[0.2em] text-[#615E4E]">
               Capital Flow
             </h3>
 
@@ -1255,7 +1262,7 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
                     >
                       <div
                         className={cn(
-                          "flex h-11 w-11 shrink-0 items-center justify-center rounded-[2px] bg-[#121212] ring-1",
+                          "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#F1EEE8] ring-1",
                           colors.ring,
                         )}
                       >
@@ -1267,8 +1274,8 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
                       </div>
 
                       <div className="flex flex-col">
-                        <span className="text-sm font-semibold text-white">{step.label}</span>
-                        <span className="text-[11px] text-slate-500">{step.sublabel}</span>
+                        <span className="text-sm font-bold text-[#1A202C]">{step.label}</span>
+                        <span className="text-[11px] text-[#615E4E]">{step.sublabel}</span>
                       </div>
 
                       <div
@@ -1276,7 +1283,7 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
                           "absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full",
                           step.color === "orange" && "bg-orange-400",
                           step.color === "amber" && "bg-amber-400",
-                          step.color === "slate" && "bg-slate-400",
+                          step.color === "slate" && "bg-[#A09E96]",
                           step.color === "emerald" && "bg-emerald-400",
                         )}
                       >
@@ -1285,7 +1292,7 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
                             "absolute inset-0 animate-ping rounded-full opacity-75",
                             step.color === "orange" && "bg-orange-400",
                             step.color === "amber" && "bg-amber-400",
-                            step.color === "slate" && "bg-slate-400",
+                            step.color === "slate" && "bg-[#A09E96]",
                             step.color === "emerald" && "bg-emerald-400",
                           )}
                         />
@@ -1321,20 +1328,20 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
           </div>
 
           <div className="p-4 sm:p-8 lg:p-12">
-            <h2 className="mb-10 text-xl font-medium tracking-tight text-white lg:text-3xl">
+            <h2 className="mb-10 font-serif text-2xl font-bold tracking-tight text-[#1A202C] lg:text-4xl">
               How Vaults Work
             </h2>
 
             <div className="space-y-8">
               <div className="group flex gap-5">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] bg-orange-500/10 text-sm font-bold text-orange-400 ring-1 ring-orange-500/20">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#E8C08C]/25 text-sm font-bold text-[#8A6231] ring-1 ring-[#615E4E]/25">
                   1
                 </div>
                 <div>
-                  <h3 className="text-[15px] font-semibold text-white">
+                  <h3 className="text-[15px] font-bold text-[#1A202C]">
                     Deposit and receive shares
                   </h3>
-                  <p className="mt-2 text-sm leading-relaxed text-[#828B8D]">
+                  <p className="mt-2 text-sm leading-relaxed text-[#615E4E]">
                     Your {USER_COLLATERAL_SYMBOL} deposit is converted atomically into vault
                     collateral and mints vault shares, giving you proportional exposure to the
                     vault&apos;s pooled strategy and returns.
@@ -1343,14 +1350,14 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
               </div>
 
               <div className="group flex gap-5">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] bg-emerald-500/10 text-sm font-bold text-emerald-400 ring-1 ring-emerald-500/20">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#58A65C]/10 text-sm font-bold text-[#2F7A35] ring-1 ring-[#58A65C]/20">
                   2
                 </div>
                 <div>
-                  <h3 className="text-[15px] font-semibold text-white">
+                  <h3 className="text-[15px] font-bold text-[#1A202C]">
                     Trading safe executes strategy
                   </h3>
-                  <p className="mt-2 text-sm leading-relaxed text-[#828B8D]">
+                  <p className="mt-2 text-sm leading-relaxed text-[#615E4E]">
                     The trading safe deploys capital under{" "}
                     {vault.profile.strategyLabel?.toLowerCase() || "the defined strategy"} rules
                     with built-in risk controls and active position management.
@@ -1359,14 +1366,14 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
               </div>
 
               <div className="group flex gap-5">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] bg-slate-500/10 text-sm font-bold text-slate-400 ring-1 ring-slate-500/20">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#E8D9C0] text-sm font-bold text-[#615E4E] ring-1 ring-[#CCCAC4]">
                   3
                 </div>
                 <div>
-                  <h3 className="text-[15px] font-semibold text-white">
+                  <h3 className="text-[15px] font-bold text-[#1A202C]">
                     Withdraw and claim proceeds
                   </h3>
-                  <p className="mt-2 text-sm leading-relaxed text-[#828B8D]">
+                  <p className="mt-2 text-sm leading-relaxed text-[#615E4E]">
                     Withdrawal requests enter queue processing, then become claimable as{" "}
                     {USER_COLLATERAL_SYMBOL} by default once settlement completes.
                   </p>
@@ -1374,9 +1381,9 @@ function HowVaultWorksDialog({ vault }: { vault: VaultInstance }) {
               </div>
             </div>
 
-            <div className="mt-10 rounded-[2px] border border-[#212121] bg-[#121212] p-4">
-              <p className="text-[12px] leading-relaxed text-[#828B8D]">
-                <span className="font-semibold text-white">Risk notice:</span> Strategy performance
+            <div className="mt-10 rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] p-4">
+              <p className="text-[12px] leading-relaxed text-[#615E4E]">
+                <span className="font-bold text-[#1A202C]">Risk notice:</span> Strategy performance
                 varies with market conditions, execution quality, and liquidity. Review the risk
                 profile before allocating capital.
               </p>
@@ -1398,8 +1405,8 @@ function TxFeedback({ message, error }: { message: string | null; error: string 
       className={cn(
         "rounded-[2px] border px-4 py-3 text-sm leading-6",
         error
-          ? "border-rose-400/25 bg-rose-400/10 text-rose-100"
-          : "border-emerald-400/25 bg-emerald-400/10 text-emerald-100",
+          ? "border-rose-400/25 bg-rose-50 text-rose-700"
+          : "border-[#58A65C]/25 bg-[#58A65C]/10 text-[#2F7A35]",
       )}
     >
       {error ?? message}
@@ -1430,7 +1437,8 @@ function DepositRail({
 }) {
   const isCustomVault = vault.type === "custom";
   const depositDisplaySymbol = isCustomVault ? USER_COLLATERAL_SYMBOL : COLLATERAL_SYMBOL;
-  const depositsDisabled = migration?.depositsDisabled ?? vault.migration?.depositsDisabled ?? false;
+  const depositsDisabled =
+    migration?.depositsDisabled ?? vault.migration?.depositsDisabled ?? false;
   const depositDisabledReason = migration?.message ?? vault.migration?.message;
   const {
     amount,
@@ -1482,41 +1490,43 @@ function DepositRail({
         <RailStat label="Status" value={getDepositActionLabel(vault, cycle, migration)} />
         <RailStat label="NAV" value={nav ? formatSharePrice(nav.sharePrice) : "--"} />
         <RailStat label="Min deposit" value={formatCurrency(vault.profile.minDeposit)} />
-        <div className="flex items-center justify-between gap-3 rounded-[2px] border border-[#212121] bg-[#0A0A0A] px-4 py-3">
-          <span className="flex items-center gap-2 text-sm text-slate-400">
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] px-4 py-3">
+          <span className="flex items-center gap-2 text-sm text-[#615E4E]">
             <Image src="/logo/usdc-logo.svg" alt={depositDisplaySymbol} width={16} height={16} />
             Wallet balance
           </span>
-          <span className="text-sm font-medium text-white">
-            {walletBalanceLoading ? "Loading..." : `${walletBalanceFormatted} ${depositDisplaySymbol}`}
+          <span className="text-sm font-bold text-[#1A202C]">
+            {walletBalanceLoading
+              ? "Loading..."
+              : `${walletBalanceFormatted} ${depositDisplaySymbol}`}
           </span>
         </div>
       </div>
 
       {!walletConnected && (
-        <p className="text-[11px] text-slate-400" data-testid="vault-deposit-connect-prompt">
+        <p className="text-[11px] text-[#615E4E]" data-testid="vault-deposit-connect-prompt">
           Connect wallet to deposit.
         </p>
       )}
 
       {depositsDisabled && (
-        <div className="rounded-[10px] border border-amber-400/20 bg-amber-400/10 p-3 text-amber-50">
-          <p className="flex items-center gap-2 text-sm font-medium">
-            <AlertCircle className="h-4 w-4 text-amber-200" />
+        <div className="rounded-[10px] border border-[#E8C08C]/40 bg-[#E8C08C]/20 p-3 text-[#8A6231]">
+          <p className="flex items-center gap-2 text-sm font-bold text-[#1A202C]">
+            <AlertCircle className="h-4 w-4 text-[#8A6231]" />
             {migration?.title ?? vault.migration?.title ?? "Deposits paused"}
           </p>
-          <p className="mt-1 text-xs leading-6 text-amber-50/90">
+          <p className="mt-1 text-xs leading-6 text-[#8A6231]">
             {depositDisabledReason ??
               "New deposits are paused, but withdrawals, claims, queue status, and activity remain available."}
           </p>
         </div>
       )}
 
-      <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-2.5">
+      <div className="rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] p-2.5">
         <div className="mb-2 flex items-center justify-between">
           <label
             htmlFor="vault-deposit-amount"
-            className="flex items-center gap-1.5 text-xs text-slate-400"
+            className="flex items-center gap-1.5 text-xs font-medium text-[#615E4E]"
           >
             <Image src="/logo/usdc-logo.svg" alt={depositDisplaySymbol} width={14} height={14} />
             Amount
@@ -1525,7 +1535,7 @@ function DepositRail({
             type="button"
             onClick={handleMaxAmount}
             disabled={depositsDisabled}
-            className="-mr-3 rounded-[2px] px-3 py-2 text-[10px] font-medium uppercase tracking-[0.18em] text-cyan-200 transition-colors hover:bg-white/5 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50 disabled:cursor-not-allowed disabled:text-slate-600"
+            className="-mr-3 rounded-full px-3 py-2 text-[10px] font-bold uppercase tracking-[0.18em] text-[#8A6231] transition-colors hover:bg-[#F6F4F3] hover:text-[#1A202C] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#615E4E]/50 disabled:cursor-not-allowed disabled:text-[#AD9D84]"
           >
             Max
           </button>
@@ -1539,38 +1549,38 @@ function DepositRail({
           value={amount}
           onChange={(event) => setAmount(event.target.value)}
           disabled={actionPending || depositsDisabled}
-          className="h-10 rounded-[2px] border border-[#212121] bg-transparent px-3 font-mono text-sm text-white placeholder:text-slate-500"
+          className="h-10 rounded-lg border border-[#CCCAC4] bg-[#FAF8F5] px-3 font-mono text-sm text-[#1A202C] placeholder:text-[#615E4E]/70 focus-visible:ring-[#615E4E]/30"
         />
       </div>
 
       {previewShares !== undefined && parsedAmount && parsedAmount > 0n && !isCustomVault && (
-        <p className="text-xs text-slate-400">
+        <p className="text-xs text-[#615E4E]">
           Estimated shares: {Number(formatUnits(previewShares, 6)).toFixed(6)}
         </p>
       )}
 
       {isCustomVault && hasQueuedDeposit && (
-        <div className="rounded-[10px] border border-amber-400/20 bg-amber-400/10 p-3 text-amber-50">
-          <p className="text-sm font-medium">Deposit is queued</p>
-          <p className="mt-1 text-xs leading-6 text-amber-50/90">
+        <div className="rounded-[10px] border border-[#E8C08C]/40 bg-[#E8C08C]/20 p-3 text-[#8A6231]">
+          <p className="text-sm font-bold text-[#1A202C]">Deposit is queued</p>
+          <p className="mt-1 text-xs leading-6 text-[#8A6231]">
             {queuedFormatted} {depositDisplaySymbol} is queued for processing. Shares are minted
             automatically when processing completes. Estimated shares: {queuedSharesFormatted}.
           </p>
           {estimateBasis && (
-            <p className="mt-1 text-xs leading-6 text-amber-50/90">{estimateBasis}</p>
+            <p className="mt-1 text-xs leading-6 text-[#8A6231]">{estimateBasis}</p>
           )}
           {depositCreatedAt && (
-            <p className="mt-1 text-xs leading-6 text-amber-50/90">
+            <p className="mt-1 text-xs leading-6 text-[#8A6231]">
               Queued: {formatDate(depositCreatedAt)}
             </p>
           )}
         </div>
       )}
 
-      {depositQueueLoading && <Skeleton className="h-16 w-full bg-white/10" />}
+      {depositQueueLoading && <Skeleton className="h-16 w-full rounded-xl bg-[#E8D9C0]" />}
 
       {(customQueuePendingClose || cycleStateUnavailable) && (
-        <p className="text-xs leading-6 text-amber-200/90">
+        <p className="text-xs leading-6 text-[#8A6231]">
           {cycleStateUnavailable
             ? "Loading status, please wait…"
             : "Processing, try again shortly."}
@@ -1578,7 +1588,7 @@ function DepositRail({
       )}
 
       {!meetsMinDeposit && amount.trim() && (
-        <p className="text-xs text-amber-200">
+        <p className="text-xs font-medium text-[#8A6231]">
           Minimum deposit is {formatCurrency(vault.profile.minDeposit)}.
         </p>
       )}
@@ -1595,7 +1605,7 @@ function DepositRail({
             actionPending ||
             depositsDisabled
           }
-          className="h-12 w-full rounded-[10px] bg-white text-black hover:bg-white/90"
+          className="h-12 w-full rounded-full border border-[#CCCAC4] bg-[#F1EEE8] font-bold text-[#615E4E] hover:border-[#D4A574] hover:bg-[#E8C08C] hover:text-[#302B2C]"
         >
           {approvePending || approveConfirming
             ? "Approving..."
@@ -1623,7 +1633,7 @@ function DepositRail({
             cycle?.executionMode === "blocked" ||
             cycleStateUnavailable
           }
-          className="h-12 w-full rounded-[10px] bg-white text-black hover:bg-white/90"
+          className="h-12 w-full rounded-full border border-[#D4A574] bg-[#E8C08C] font-bold text-[#302B2C] hover:bg-[#D4A574]"
         >
           {navSyncPending || depositPreflightPending
             ? "Loading..."
@@ -1640,12 +1650,12 @@ function DepositRail({
                     : depositsDisabled
                       ? "Deposits paused"
                       : customQueuePendingClose
-                      ? "Checking status..."
-                      : customQueueWindowOpen
-                        ? "Join next cycle"
-                        : cycle?.executionMode === "blocked"
-                          ? "Deposit blocked"
-                          : "Deposit"}
+                        ? "Checking status..."
+                        : customQueueWindowOpen
+                          ? "Join next cycle"
+                          : cycle?.executionMode === "blocked"
+                            ? "Deposit blocked"
+                            : "Deposit"}
         </Button>
       )}
 
@@ -1670,31 +1680,35 @@ function VaultOverviewSection({
   const validAssets = getVaultTradingAssets(vault);
 
   return (
-    <section className="relative overflow-hidden rounded-[2px] border border-[#212121] bg-[#121212] px-6 py-7 shadow-none sm:px-8 lg:px-10 lg:py-9">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_12%_10%,_rgba(217,70,239,0.07),_transparent_18%),radial-gradient(circle_at_86%_16%,_rgba(34,211,238,0.06),_transparent_16%)]" />
-      <div className="relative grid gap-8">
+    <section className="relative overflow-hidden rounded-2xl border border-[#CCCAC4] bg-[#F1EEE8] px-6 py-7 shadow-[0_24px_90px_-60px_rgba(26,32,44,0.5)] sm:px-8 lg:px-10 lg:py-9">
+      <div className="relative z-20 grid gap-8">
         <div className="min-w-0 space-y-5">
-          <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Vault</p>
+          <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[#615E4E]">Vault</p>
 
           <div className="space-y-3">
             <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-              <h1 className="min-w-0 max-w-3xl break-words text-4xl font-semibold tracking-[-0.04em] text-white sm:text-5xl">
+              <h1 className="min-w-0 max-w-3xl break-words font-serif text-5xl font-bold tracking-tight text-[#1A202C] sm:text-6xl">
                 {vault.name}
               </h1>
               <HowVaultWorksDialog vault={vault} />
             </div>
-            <p className="max-w-3xl text-base leading-8 text-slate-300 sm:text-lg">
+            <p className="max-w-3xl text-base leading-8 text-[#615E4E] sm:text-lg">
               {getHeroSentence(vault)}
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/6 px-3 py-1 text-xs text-slate-200">
-              <Image src="/logo/usdc-logo.svg" alt={USER_COLLATERAL_SYMBOL} width={14} height={14} />
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-[#CCCAC4] bg-[#F6F4F3] px-3 py-1 text-xs font-medium text-[#615E4E]">
+              <Image
+                src="/logo/usdc-logo.svg"
+                alt={USER_COLLATERAL_SYMBOL}
+                width={14}
+                height={14}
+              />
               {USER_COLLATERAL_SYMBOL}
             </span>
             {validAssets.length > 0 ? (
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/6 px-3 py-1 text-xs text-slate-200">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-[#CCCAC4] bg-[#F6F4F3] px-3 py-1 text-xs font-medium text-[#615E4E]">
                 <AssetLogoStack assets={validAssets} size="xs" />
                 <span>{vault.profile.tradingMetadata?.assets?.[0]?.toUpperCase()} Markets</span>
               </span>
@@ -1703,7 +1717,7 @@ function VaultOverviewSection({
               <Badge
                 key={tag}
                 variant="outline"
-                className="rounded-full border-white/10 bg-white/6 px-3 py-1 text-xs text-slate-200"
+                className="rounded-full border-[#CCCAC4] bg-[#F6F4F3] px-3 py-1 text-xs font-medium text-[#615E4E]"
               >
                 {tag}
               </Badge>
@@ -1723,7 +1737,7 @@ function VaultOverviewSection({
           ))}
         </div>
         {optimisticDeposit ? (
-          <div className="rounded-[2px] border border-emerald-400/20 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-50">
+          <div className="rounded-xl border border-[#58A65C]/25 bg-[#58A65C]/10 px-4 py-3 text-sm text-[#2F7A35]">
             {optimisticDeposit.mode === "queued"
               ? `${formatCurrency(optimisticDeposit.amount)} deposit queued. It will appear in TVL after processing mints shares.`
               : `${formatCurrency(optimisticDeposit.amount)} deposit confirmed. Dashboard values are refreshing now.`}
@@ -1797,7 +1811,13 @@ function VaultPerformanceSection({
   );
 }
 
-function VaultStrategySection({ vault, status }: { vault: VaultInstance; status: VaultStatusResponse | null }) {
+function VaultStrategySection({
+  vault,
+  status,
+}: {
+  vault: VaultInstance;
+  status: VaultStatusResponse | null;
+}) {
   const validAssets = getVaultTradingAssets(vault);
   const assetLabel = vault.profile.tradingMetadata?.assets?.[0]?.toUpperCase() || "";
   const platform = vault.profile.tradingMetadata?.platforms?.[0];
@@ -1810,11 +1830,13 @@ function VaultStrategySection({ vault, status }: { vault: VaultInstance; status:
           <KeyInfoItem label="Managed by" value={getManagementLabel(vault)} />
           <KeyInfoItem label="Focus" value={vault.profile.strategyLabel} />
           {validAssets.length > 0 ? (
-            <div className="rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-3">
-              <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Trading on</p>
+            <div className="rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] p-3">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#615E4E]">
+                Trading on
+              </p>
               <div className="mt-1.5 flex items-center gap-2">
                 <AssetLogoStack assets={validAssets} size="sm" />
-                <p className="text-sm font-medium text-white">
+                <p className="text-sm font-bold text-[#1A202C]">
                   {assetLabel} on {platformLabel}
                 </p>
               </div>
@@ -1850,7 +1872,7 @@ function VaultRiskTermsSection({ vault, cycle }: { vault: VaultInstance; cycle: 
           tooltip="Fees charged by this vault."
         />
       </div>
-      <div className="mt-5 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-5 text-sm leading-7 text-slate-400">
+      <div className="mt-5 rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] p-5 text-sm leading-7 text-[#615E4E]">
         {getRiskSummary(vault, cycle)}
       </div>
     </SectionShell>
@@ -1913,12 +1935,12 @@ function VaultActivitySection({
 
   return (
     <SectionShell title="Activity">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 text-xs text-[#615E4E]">
         <div className="flex flex-wrap items-center gap-2">
           <span>Recent updates</span>
           <Badge
             variant="outline"
-            className="rounded-full border-white/10 bg-white/6 px-3 py-1 text-[11px] text-slate-200"
+            className="rounded-full border-[#CCCAC4] bg-[#F6F4F3] px-3 py-1 text-[11px] text-[#615E4E]"
           >
             {openPositionCount ?? "--"} open positions
           </Badge>
@@ -1934,7 +1956,7 @@ function VaultActivitySection({
         className="space-y-3"
       >
         <div className="block sm:hidden">
-          <span className="mb-2 block text-[10px] uppercase tracking-[0.18em] text-slate-500">
+          <span className="mb-2 block text-[10px] font-bold uppercase tracking-[0.18em] text-[#615E4E]">
             Activity view
           </span>
           <Select
@@ -1943,19 +1965,19 @@ function VaultActivitySection({
           >
             <SelectTrigger
               aria-label="Activity view"
-              className="h-11 w-full rounded-[2px] border-[#212121] bg-[#0A0A0A] px-3 text-sm font-medium text-white shadow-none focus:ring-cyan-300/20 [&>svg]:text-slate-500"
+              className="h-11 w-full rounded-full border-[#CCCAC4] bg-[#F1EEE8] px-3 text-sm font-bold text-[#1A202C] shadow-none focus:ring-[#615E4E]/20 [&>svg]:text-[#615E4E]"
             >
               <SelectValue />
             </SelectTrigger>
             <SelectContent
               position="popper"
-              className="rounded-[2px] border-[#212121] bg-[#0A0A0A] text-white shadow-2xl shadow-black/40"
+              className="rounded-xl border-[#CCCAC4] bg-[#F1EEE8] text-[#1A202C] shadow-2xl shadow-black/20"
             >
               {ACTIVITY_TAB_OPTIONS.map((option) => (
                 <SelectItem
                   key={option.value}
                   value={option.value}
-                  className="rounded-[2px] text-slate-300 focus:bg-[#212121] focus:text-white data-[state=checked]:text-cyan-100"
+                  className="rounded-lg text-[#615E4E] focus:bg-[#F6F4F3] focus:text-[#1A202C] data-[state=checked]:text-[#8A6231]"
                 >
                   {option.label}
                 </SelectItem>
@@ -1964,12 +1986,12 @@ function VaultActivitySection({
           </Select>
         </div>
 
-        <TabsList className="hidden h-auto w-full rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-1 sm:grid sm:grid-cols-3">
+        <TabsList className="hidden h-auto w-full rounded-full border border-[#CCCAC4] bg-[#F1EEE8] p-1 sm:grid sm:grid-cols-3">
           {ACTIVITY_TAB_OPTIONS.map((option) => (
             <TabsTrigger
               key={option.value}
               value={option.value}
-              className="rounded-[2px] px-3 py-2 text-sm text-slate-400 hover:text-white data-[state=active]:border-b data-[state=active]:border-[#656565]/40 data-[state=active]:bg-[#212121] data-[state=active]:text-white"
+              className="rounded-full px-3 py-2 text-sm font-bold text-[#615E4E] hover:text-[#1A202C] data-[state=active]:bg-[#E8C08C]/25 data-[state=active]:text-[#1A202C]"
             >
               {option.label}
             </TabsTrigger>
@@ -1978,30 +2000,42 @@ function VaultActivitySection({
 
         <TabsContent value="user" className="space-y-3">
           {!sessionKnown ? (
-            <Skeleton className="h-40 w-full rounded-[2px] bg-white/10" />
+            <Skeleton className="h-40 w-full rounded-xl bg-[#E8D9C0]" />
           ) : userAuthorized ? (
             userHistoryLoading ? (
-              <Skeleton className="h-40 w-full rounded-[2px] bg-white/10" />
+              <Skeleton className="h-40 w-full rounded-xl bg-[#E8D9C0]" />
             ) : userHistoryError ? (
-              <div className="rounded-[2px] border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-rose-100">
+              <div className="rounded-xl border border-rose-400/20 bg-rose-50 p-5 text-sm text-rose-700">
                 {userHistoryError}
               </div>
             ) : userHistoryUnauthorized ? (
-              <div className="rounded-[2px] border border-amber-400/20 bg-amber-400/10 p-5 text-sm text-amber-50">
+              <div className="rounded-xl border border-[#E8C08C]/40 bg-[#E8C08C]/20 p-5 text-sm text-[#8A6231]">
                 Your account history is temporarily unavailable.
               </div>
             ) : (
               <div className="space-y-3">
-                <ActivityTimeline items={userActivity} emptyState="No account activity yet." pageSize={ACTIVITY_PAGE_SIZE} />
+                <ActivityTimeline
+                  items={userActivity}
+                  emptyState="No account activity yet."
+                  pageSize={ACTIVITY_PAGE_SIZE}
+                />
                 <ActivityPaginationControls
                   offset={userActivityOffset}
                   currentCount={userActivity.length}
                   hasMore={userActivityHasMore}
                   isLoading={userHistoryLoading}
-                  onPrevious={() => dispatchUiState({ type: "previous-user-activity-page", scope: userActivityScope })}
+                  onPrevious={() =>
+                    dispatchUiState({
+                      type: "previous-user-activity-page",
+                      scope: userActivityScope,
+                    })
+                  }
                   onNext={() => {
                     if (userActivityHasMore) {
-                      dispatchUiState({ type: "next-user-activity-page", scope: userActivityScope });
+                      dispatchUiState({
+                        type: "next-user-activity-page",
+                        scope: userActivityScope,
+                      });
                     }
                   }}
                 />
@@ -2009,7 +2043,7 @@ function VaultActivitySection({
             )
           ) : (
             <div
-              className="rounded-[2px] border border-white/10 bg-slate-950/30 p-5 text-sm text-slate-400"
+              className="rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] p-5 text-sm text-[#615E4E]"
               data-testid="vault-history-auth-prompt"
             >
               Sign in to view your deposit, withdrawal, and claim history.
@@ -2019,20 +2053,26 @@ function VaultActivitySection({
 
         <TabsContent value="vault" className="space-y-3">
           {vaultEventsLoading ? (
-            <Skeleton className="h-40 w-full rounded-[2px] bg-white/10" />
+            <Skeleton className="h-40 w-full rounded-xl bg-[#E8D9C0]" />
           ) : vaultEventsError ? (
-            <div className="rounded-[2px] border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-rose-100">
+            <div className="rounded-xl border border-rose-400/20 bg-rose-50 p-5 text-sm text-rose-700">
               {vaultEventsError}
             </div>
           ) : (
             <div className="space-y-3">
-              <ActivityTimeline items={vaultActivity} emptyState="No meaningful vault updates yet." pageSize={ACTIVITY_PAGE_SIZE} />
+              <ActivityTimeline
+                items={vaultActivity}
+                emptyState="No meaningful vault updates yet."
+                pageSize={ACTIVITY_PAGE_SIZE}
+              />
               <ActivityPaginationControls
                 offset={vaultActivityOffset}
                 currentCount={vaultActivity.length}
                 hasMore={vaultActivityHasMore}
                 isLoading={vaultEventsLoading}
-                onPrevious={() => dispatchUiState({ type: "previous-vault-activity-page", routeVaultId })}
+                onPrevious={() =>
+                  dispatchUiState({ type: "previous-vault-activity-page", routeVaultId })
+                }
                 onNext={() => {
                   if (vaultActivityHasMore) {
                     dispatchUiState({ type: "next-vault-activity-page", routeVaultId });
@@ -2045,14 +2085,18 @@ function VaultActivitySection({
 
         <TabsContent value="trades" className="space-y-3">
           {positionHistoryLoading ? (
-            <Skeleton className="h-40 w-full rounded-[2px] bg-white/10" />
+            <Skeleton className="h-40 w-full rounded-xl bg-[#E8D9C0]" />
           ) : positionHistoryError ? (
-            <div className="rounded-[2px] border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-rose-100">
+            <div className="rounded-xl border border-rose-400/20 bg-rose-50 p-5 text-sm text-rose-700">
               {positionHistoryError}
             </div>
           ) : (
             <div className="space-y-3">
-              <TradesList positions={visibleTrades} emptyState="No trades yet." pageSize={ACTIVITY_PAGE_SIZE} />
+              <TradesList
+                positions={visibleTrades}
+                emptyState="No trades yet."
+                pageSize={ACTIVITY_PAGE_SIZE}
+              />
               <ActivityPaginationControls
                 offset={tradesOffset}
                 currentCount={visibleTrades.length}
@@ -2111,14 +2155,21 @@ function VaultPositionSidebar({
   estimatedExitValueUsd: number | null;
 }) {
   return (
-    <aside className={cn("min-w-0 lg:min-h-0 lg:border-l lg:border-white/10 lg:pl-6", className)} id="manage-position">
+    <aside
+      className={cn("min-w-0 lg:min-h-0 lg:border-l lg:border-[#CCCAC4] lg:pl-6", className)}
+      id="manage-position"
+    >
       <section className="vault-pane-scroll space-y-4 lg:h-full lg:overflow-y-auto">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.2em] text-slate-500">Manage position</p>
-            <h2 className="mt-1 text-lg font-semibold tracking-tight text-white">Deposit or withdraw</h2>
+            <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-[#615E4E]">
+              Manage position
+            </p>
+            <h2 className="mt-1 font-serif text-2xl font-bold tracking-tight text-[#1A202C]">
+              Deposit or withdraw
+            </h2>
           </div>
-          <div className="rounded-full border border-cyan-300/15 bg-cyan-300/10 p-1.5 text-cyan-200">
+          <div className="rounded-full border border-[#CCCAC4] bg-[#E8C08C]/20 p-1.5 text-[#8A6231]">
             <Wallet className="h-3.5 w-3.5" />
           </div>
         </div>
@@ -2128,11 +2179,17 @@ function VaultPositionSidebar({
           onValueChange={(value) => onActiveTabChange(value as PositionActionTab)}
           className="space-y-3"
         >
-          <TabsList className="grid h-auto w-full grid-cols-2 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-0.5">
-            <TabsTrigger value="deposit" className="rounded-[2px] py-1.5 text-sm text-slate-400 hover:text-white data-[state=active]:border data-[state=active]:border-[#656565]/40 data-[state=active]:bg-[#212121] data-[state=active]:text-white">
+          <TabsList className="grid h-auto w-full grid-cols-2 rounded-full border border-[#CCCAC4] bg-[#F1EEE8] p-0.5">
+            <TabsTrigger
+              value="deposit"
+              className="rounded-full py-1.5 text-sm font-bold text-[#615E4E] hover:text-[#1A202C] data-[state=active]:bg-[#E8C08C]/25 data-[state=active]:text-[#1A202C]"
+            >
               Deposit
             </TabsTrigger>
-            <TabsTrigger value="withdraw" className="rounded-[2px] py-1.5 text-sm text-slate-400 hover:text-white data-[state=active]:border data-[state=active]:border-[#656565]/40 data-[state=active]:bg-[#212121] data-[state=active]:text-white">
+            <TabsTrigger
+              value="withdraw"
+              className="rounded-full py-1.5 text-sm font-bold text-[#615E4E] hover:text-[#1A202C] data-[state=active]:bg-[#E8C08C]/25 data-[state=active]:text-[#1A202C]"
+            >
               Withdraw
             </TabsTrigger>
           </TabsList>
@@ -2164,9 +2221,12 @@ function VaultPositionSidebar({
                 userShares={redemptionUserShares}
               />
             ) : (
-              <div className="space-y-4 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4 text-sm leading-7 text-slate-300">
+              <div className="space-y-4 rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] p-4 text-sm leading-7 text-[#615E4E]">
                 <div>For this vault, use the Withdraw section below.</div>
-                <Button asChild className="w-full rounded-[2px] bg-white text-slate-950 hover:bg-slate-100">
+                <Button
+                  asChild
+                  className="w-full rounded-full bg-[#1A202C] text-[#F6F4F3] hover:bg-[#4A4142]"
+                >
                   <a href="#exit-queue">Go to Withdraw</a>
                 </Button>
               </div>
@@ -2179,13 +2239,11 @@ function VaultPositionSidebar({
 }
 
 function VaultPageChrome({
-  networkInfo,
   migration,
   statusError,
   cycleError,
   onRefresh,
 }: {
-  networkInfo: NetworkDisplayInfo;
   migration: VaultStatusResponse["migration"] | null;
   statusError: string | null;
   cycleError: string | null;
@@ -2196,29 +2254,20 @@ function VaultPageChrome({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Link
           href="/discover"
-          className="inline-flex items-center gap-2 text-sm text-slate-400 transition-colors hover:text-white"
+          className="inline-flex items-center gap-2 text-sm font-bold text-[#615E4E] transition-colors hover:text-[#1A202C]"
         >
           <ArrowLeft className="h-4 w-4" />
           Back to vaults
         </Link>
-        {!networkInfo.isTestnet ? (
-          <Badge
-            variant="outline"
-            className="gap-2 border-white/10 bg-white/5 px-3 py-1.5 text-xs uppercase tracking-[0.2em] text-emerald-200"
-          >
-            <Dot className="h-5 w-5" />
-            {networkInfo.name}
-          </Badge>
-        ) : null}
       </div>
 
       {VAULT_NETWORK === "amoy" && (
-        <div className="rounded-[2px] border border-amber-400/20 bg-amber-400/10 p-4 text-amber-50">
+        <div className="rounded-xl border border-[#E8C08C]/40 bg-[#E8C08C]/20 p-4 text-[#8A6231]">
           <div className="flex items-start gap-3">
-            <AlertCircle className="mt-0.5 h-5 w-5 text-amber-200" />
+            <AlertCircle className="mt-0.5 h-5 w-5 text-[#8A6231]" />
             <div>
-              <h3 className="text-sm font-medium text-amber-100">Testnet mode: Amoy</h3>
-              <p className="mt-1 text-sm leading-7 text-amber-50/85">
+              <h3 className="text-sm font-bold text-[#1A202C]">Testnet mode: Amoy</h3>
+              <p className="mt-1 text-sm leading-7 text-[#615E4E]">
                 You are connected to Polygon Amoy Testnet. Vault testing is supported here, but
                 Polymarket trading is disabled.
                 {!SUPPORTS_POLYMARKET_TRADING &&
@@ -2230,26 +2279,26 @@ function VaultPageChrome({
       )}
 
       {migration?.enabled && (
-        <div className="rounded-[2px] border border-amber-400/20 bg-amber-400/10 p-4 text-amber-50">
+        <div className="rounded-xl border border-[#E8C08C]/40 bg-[#E8C08C]/20 p-4 text-[#8A6231]">
           <div className="flex items-start gap-3">
-            <AlertCircle className="mt-0.5 h-5 w-5 text-amber-200" />
+            <AlertCircle className="mt-0.5 h-5 w-5 text-[#8A6231]" />
             <div>
-              <h3 className="text-sm font-medium text-amber-100">{migration.title}</h3>
-              <p className="mt-1 text-sm leading-7 text-amber-50/85">{migration.message}</p>
+              <h3 className="text-sm font-bold text-[#1A202C]">{migration.title}</h3>
+              <p className="mt-1 text-sm leading-7 text-[#615E4E]">{migration.message}</p>
             </div>
           </div>
         </div>
       )}
 
       {(statusError || cycleError) && (
-        <Card className="rounded-[2px] border-rose-400/20 bg-rose-400/10 text-rose-50 shadow-none">
+        <Card className="rounded-xl border-rose-400/20 bg-rose-50 text-rose-700 shadow-none">
           <CardContent className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm">{statusError ?? cycleError}</p>
             <Button
               variant="outline"
               size="sm"
               onClick={onRefresh}
-              className="border-white/15 bg-white/5 text-white hover:bg-white/10"
+              className="rounded-full border-[#CCCAC4] bg-[#F1EEE8] text-[#615E4E] hover:border-[#D4A574] hover:bg-[#E8C08C] hover:text-[#302B2C]"
             >
               Retry
             </Button>
@@ -2304,14 +2353,22 @@ function LegacyWithdrawSection({
 
 function VaultNotFound() {
   return (
-    <main className="flex-1 px-4 py-10 sm:px-6 lg:px-10 lg:py-12" data-testid="vault-not-found">
-      <div className="mx-auto max-w-4xl rounded-[2px] border border-[#212121] bg-[#121212] p-10 text-center shadow-none">
-        <p className="text-sm uppercase tracking-[0.24em] text-slate-500">Vault</p>
-        <h1 className="mt-4 text-4xl font-semibold tracking-tight text-white">Vault not found</h1>
-        <p className="mx-auto mt-4 max-w-xl text-sm leading-7 text-slate-400">
+    <main
+      className="polyvaults-app-shell flex-1 px-4 py-10 sm:px-6 lg:px-20 lg:py-12"
+      data-testid="vault-not-found"
+    >
+      <div className="mx-auto max-w-4xl rounded-2xl border border-[#CCCAC4] bg-[#F1EEE8] p-10 text-center shadow-[0_24px_90px_-60px_rgba(26,32,44,0.5)]">
+        <p className="text-sm font-bold uppercase tracking-[0.24em] text-[#615E4E]">Vault</p>
+        <h1 className="mt-4 font-serif text-5xl font-bold tracking-tight text-[#1A202C]">
+          Vault not found
+        </h1>
+        <p className="mx-auto mt-4 max-w-xl text-sm leading-7 text-[#615E4E]">
           This vault does not exist, or it is not currently available.
         </p>
-        <Button asChild className="mt-6 rounded-[10px] bg-white text-black hover:bg-white/90">
+        <Button
+          asChild
+          className="mt-6 rounded-full bg-[#1A202C] text-[#F6F4F3] hover:bg-[#4A4142]"
+        >
           <Link href="/discover">Back to vaults</Link>
         </Button>
       </div>
@@ -2322,13 +2379,13 @@ function VaultNotFound() {
 function VaultDetailLoading() {
   return (
     <main
-      className="flex-1 px-4 py-10 sm:px-6 lg:px-10 lg:py-12"
+      className="polyvaults-app-shell flex-1 px-4 py-10 sm:px-6 lg:px-20 lg:py-12"
       data-testid="vault-detail-loading"
     >
       <div className="mx-auto max-w-6xl space-y-6">
-        <Skeleton className="h-10 w-40 bg-white/10" />
-        <Skeleton className="h-[220px] w-full rounded-[2px] bg-[#212121]" />
-        <Skeleton className="h-[540px] w-full rounded-[2px] bg-[#212121]" />
+        <Skeleton className="h-10 w-40 rounded-full bg-[#E8D9C0]" />
+        <Skeleton className="h-[220px] w-full rounded-2xl bg-[#E8D9C0]" />
+        <Skeleton className="h-[540px] w-full rounded-2xl bg-[#E8D9C0]" />
       </div>
     </main>
   );
@@ -2469,10 +2526,10 @@ export default function VaultDetailPage({
   const shouldLoadTrades = activityTab === "trades";
   const shouldLoadWithdrawData = vault?.type !== "custom" || positionActionTab === "withdraw";
   const { data: status, isLoading: statusLoading, error: statusError } = useVaultStatus(vault?.id);
-  const {
-    data: navHistoryData,
-    isLoading: navHistoryLoading,
-  } = useVaultNavHistory(undefined, effectiveVaultId);
+  const { data: navHistoryData, isLoading: navHistoryLoading } = useVaultNavHistory(
+    undefined,
+    effectiveVaultId,
+  );
   const {
     data: positionHistoryData,
     isLoading: positionHistoryLoading,
@@ -2539,7 +2596,10 @@ export default function VaultDetailPage({
 
   useOptimisticDepositExpiry(optimisticDeposit, dispatchUiState);
 
-  const navHistorySnapshots = useMemo(() => navHistoryData?.snapshots ?? [], [navHistoryData?.snapshots]);
+  const navHistorySnapshots = useMemo(
+    () => navHistoryData?.snapshots ?? [],
+    [navHistoryData?.snapshots],
+  );
   const navChartRangeConfig = getNavChartRangeConfig(navChartRange);
   const performance = useMemo(
     () => deriveVaultPerformanceStats(navHistorySnapshots),
@@ -2550,11 +2610,9 @@ export default function VaultDetailPage({
       deriveVaultChartStats(navHistorySnapshots, {
         maxPoints: navChartRangeConfig.maxPoints,
         rangeDays: navChartRangeConfig.rangeDays,
-        smooth: navChartRangeConfig.smooth,
       }),
-    [navHistorySnapshots, navChartRangeConfig.maxPoints, navChartRangeConfig.rangeDays, navChartRangeConfig.smooth],
+    [navHistorySnapshots, navChartRangeConfig.maxPoints, navChartRangeConfig.rangeDays],
   );
-  const networkInfo = getNetworkDisplayInfo(VAULT_NETWORK);
   const migration = status?.migration ?? vault?.migration ?? null;
   const { freshestNavSnapshot, tags, heroMetrics, vaultActivity, userActivity } = useMemo(
     () =>
@@ -2609,12 +2667,11 @@ export default function VaultDetailPage({
   }
 
   return (
-    <main className="vault-pane-scroll min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-3 py-6 sm:px-6 lg:overflow-hidden lg:px-10 lg:py-6">
-      <div className="mx-auto min-w-0 max-w-7xl lg:h-full lg:min-h-0">
+    <main className="polyvaults-app-shell vault-pane-scroll relative min-h-0 flex-1 overflow-hidden overflow-y-auto px-4 py-8 text-[#1A202C] sm:px-8 lg:px-20 lg:py-8">
+      <div className="relative z-10 mx-auto min-w-0 max-w-7xl lg:h-full lg:min-h-0">
         <div className="grid min-w-0 grid-cols-1 gap-6 lg:h-full lg:grid-cols-[minmax(0,1fr)_380px] lg:grid-rows-[auto_minmax(0,1fr)] lg:gap-x-8 lg:gap-y-6">
           <div className="min-w-0 space-y-6 lg:col-start-1 lg:row-start-1">
             <VaultPageChrome
-              networkInfo={networkInfo}
               migration={migration}
               statusError={statusError}
               cycleError={cycleError}

@@ -24,36 +24,39 @@ function formatDateTime(iso: string): string {
 function PendingRequestCard({ request }: { request: RedemptionRequest }) {
   return (
     <div
-      className="space-y-3 rounded-[2px] border border-amber-400/20 bg-amber-400/10 p-4"
+      className="space-y-3 rounded-xl border border-[#E8C08C]/40 bg-[#E8C08C]/20 p-4"
       data-testid={`pending-request-${request.requestId}`}
     >
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex items-center gap-2">
-          <Hash className="h-4 w-4 text-amber-200" aria-hidden="true" />
-          <span className="text-sm font-mono font-medium text-amber-50" data-testid="request-id">
+          <Hash className="h-4 w-4 text-[#8A6231]" aria-hidden="true" />
+          <span className="font-mono text-sm font-bold text-[#1A202C]" data-testid="request-id">
             Pending withdrawal
           </span>
           <Badge
             variant="outline"
-            className="border-amber-400/25 bg-amber-400/15 text-[10px] text-amber-100"
+            className="border-[#D4A574]/35 bg-[#E8C08C]/25 text-[10px] font-bold text-[#8A6231]"
           >
             In progress
           </Badge>
         </div>
-        <span className="text-xs text-amber-50/70">
+        <span className="text-xs text-[#615E4E]">
           {request.requestKind === "controller_pending" ? "" : formatDateTime(request.createdAt)}
         </span>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <p className="text-xs text-amber-50/70">Amount</p>
-          <p className="text-sm font-mono font-medium text-amber-50" data-testid="shares-requested">
+          <p className="text-xs text-[#615E4E]">Amount</p>
+          <p
+            className="font-mono text-sm font-semibold text-[#1A202C]"
+            data-testid="shares-requested"
+          >
             {request.sharesFormatted} shares
           </p>
         </div>
       </div>
-      <p className="text-xs leading-6 text-amber-50/90">Your withdrawal is being processed.</p>
+      <p className="text-xs leading-6 text-[#8A6231]">Your withdrawal is being processed.</p>
     </div>
   );
 }
@@ -68,8 +71,8 @@ export function PendingRequests({ requests, isLoading }: PendingRequestsProps) {
   if (isLoading) {
     return (
       <div className="space-y-4" data-testid="pending-requests-loading">
-        <Skeleton className="h-32 w-full rounded-[2px] bg-white/10" />
-        <Skeleton className="h-32 w-full rounded-[2px] bg-white/10" />
+        <Skeleton className="h-32 w-full rounded-xl bg-[#E8D9C0]" />
+        <Skeleton className="h-32 w-full rounded-xl bg-[#E8D9C0]" />
       </div>
     );
   }
