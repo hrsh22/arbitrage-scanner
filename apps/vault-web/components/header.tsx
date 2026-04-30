@@ -6,7 +6,7 @@ import dynamic from "next/dynamic";
 
 const HeaderAuth = dynamic(() => import("./header-auth").then((mod) => mod.HeaderAuth), {
   ssr: false, // Wait for client side to prevent hydration mismatches with wallet state
-  loading: () => <div className="h-9 w-[120px] animate-pulse rounded-[10px] bg-white/5" />,
+  loading: () => <div className="h-8 w-[120px] animate-pulse rounded-full bg-[#F1EEE8]" />,
 });
 
 interface HeaderProps {
@@ -16,6 +16,7 @@ interface HeaderProps {
 export function Header({ className }: HeaderProps) {
   const pathname = usePathname();
   const isHomePage = pathname === "/";
+  const vaultNavActive = pathname.startsWith("/discover") || pathname.startsWith("/vault");
 
   if (isHomePage) {
     return null;
@@ -23,35 +24,33 @@ export function Header({ className }: HeaderProps) {
 
   return (
     <header
-      className={`z-50 w-full shrink-0 border-b border-white/10 bg-slate-950/85 backdrop-blur-xl supports-[backdrop-filter]:bg-slate-950/80 ${className ?? ""}`}
+      className={`relative z-50 w-full shrink-0 bg-transparent text-[#1A202C] ${className ?? ""}`}
     >
-      <div className="mx-auto grid min-h-16 max-w-7xl grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-3 py-3 sm:px-6 md:flex md:flex-nowrap md:justify-between md:gap-4">
-        <div className="flex min-w-0 items-center gap-3 sm:gap-4">
-          <Link href="/" className="group flex min-w-0 items-center gap-2.5 sm:gap-3">
-            <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-[2px] border border-[#656565] bg-[#121212] shadow-[0_0_15px_rgba(255,255,255,0.05)] transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:shadow-[0_0_20px_rgba(255,255,255,0.08)] sm:h-11 sm:w-11">
-              <div className="absolute inset-1 rounded-[1px] bg-gradient-to-br from-white/10 to-transparent" />
-              <div className="z-10 flex flex-col items-center gap-0.5">
-                <div className="flex gap-1">
-                  <div className="h-1.5 w-1.5 rounded-[1px] bg-white" />
-                  <div className="h-1.5 w-1.5 rounded-[1px] bg-white" />
+      <div className="mx-auto grid min-h-10 max-w-7xl grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 py-0 sm:px-8 md:flex md:flex-nowrap md:justify-between md:gap-8">
+        <div className="flex min-w-0 items-center gap-4 sm:gap-8">
+          <Link href="/" className="group flex min-w-0 items-center gap-2.5">
+            <div className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] bg-[#1A202C] transition-transform duration-300 group-hover:-translate-y-0.5">
+              <div className="flex flex-col items-center gap-0.5">
+                <div className="flex gap-0.5">
+                  <div className="h-1 w-1 rounded-[1px] bg-[#FAF8F5]" />
+                  <div className="h-1 w-1 rounded-[1px] bg-[#FAF8F5]" />
                 </div>
-                <div className="h-3 w-4 rounded-[1px] border border-white/80" />
+                <div className="h-2 w-3 rounded-[1px] border border-[#FAF8F5]/85" />
               </div>
             </div>
-            <div className="min-w-0 space-y-0.5">
-              <span className="block truncate text-xs font-semibold uppercase tracking-wider text-white sm:text-sm sm:tracking-[0.24em]">
+            <div className="min-w-0">
+              <span className="block truncate text-sm font-bold tracking-tight text-[#1A202C]">
                 Polymarket Vault
               </span>
-              <span className="hidden text-xs text-slate-400 sm:block">Prediction Market Vaults</span>
             </div>
           </Link>
-
-          <div className="ml-4 mr-2 hidden h-8 w-[1px] bg-white/10 md:block" />
 
           <nav className="hidden md:flex items-center">
             <Link
               href="/discover"
-              className="rounded-[2px] border border-[#212121] bg-transparent px-4 py-1.5 text-sm font-medium text-[#828B8D] transition-colors hover:bg-[#121212] hover:text-white"
+              className={`text-sm font-bold underline-offset-4 transition-colors hover:text-[#302B2C] ${
+                vaultNavActive ? "text-[#302B2C] underline" : "text-[#61604E]"
+              }`}
             >
               Discover Vaults
             </Link>
@@ -63,7 +62,11 @@ export function Header({ className }: HeaderProps) {
         <nav className="col-span-2 flex w-full md:hidden">
           <Link
             href="/discover"
-            className="inline-flex min-h-9 w-full items-center justify-center rounded-[2px] border border-[#212121] bg-[#121212]/80 px-3 py-1.5 text-xs font-medium text-[#C8D0D2] transition-colors hover:bg-[#1A1A1A] hover:text-white"
+            className={`inline-flex min-h-8 w-full items-center justify-center rounded-full border px-3 py-1.5 text-xs font-bold transition-colors ${
+              vaultNavActive
+                ? "border-[#D4A574] bg-[#E8C08C] text-[#302B2C]"
+                : "border-[#CCCAC4] bg-[#F1EEE8] text-[#61604E] hover:border-[#D4A574] hover:bg-[#E8C08C] hover:text-[#302B2C]"
+            }`}
           >
             Discover Vaults
           </Link>

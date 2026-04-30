@@ -124,7 +124,9 @@ export default function LandingPage() {
           <div className="mb-12 flex flex-col items-center animate-in fade-in zoom-in-90 slide-in-from-top-4 duration-700">
             <div className="flex items-center gap-4">
               <LogoMark className="h-10 w-10" />
-              <h1 className="text-2xl font-bold tracking-wider text-[#F1EEE8] md:text-3xl">Polymarket Vault</h1>
+              <h1 className="text-2xl font-bold tracking-wider text-[#F1EEE8] md:text-3xl">
+                Polymarket Vault
+              </h1>
             </div>
           </div>
 
@@ -132,7 +134,7 @@ export default function LandingPage() {
             <h2 className="font-serif text-4xl font-bold leading-tight text-[#F1EEE8] animate-in fade-in slide-in-from-bottom-8 duration-700 md:text-6xl lg:text-7xl">
               Vaults For
             </h2>
-            <h2 className="bg-gradient-to-r from-[#E8C08C] to-[#b8915b] bg-clip-text pb-2 font-serif text-4xl font-bold leading-tight text-transparent animate-in fade-in slide-in-from-bottom-8 duration-700 delay-150 md:pb-4 md:text-6xl lg:text-7xl">
+            <h2 className="pb-2 font-serif text-4xl font-bold leading-tight text-[#E8C08C] animate-in fade-in slide-in-from-bottom-8 duration-700 delay-150 md:pb-4 md:text-6xl lg:text-7xl">
               Prediction Market Strategies
             </h2>
           </div>
@@ -168,9 +170,18 @@ export default function LandingPage() {
         <div className="mx-auto max-w-5xl px-6">
           <SectionIntro
             eyebrow="Why PM Vaults"
-            title={<>Prediction markets are powerful.<br />Using them well is still too hard.</>}
+            title={
+              <>
+                Prediction markets are powerful.
+                <br />
+                Using them well is still too hard.
+              </>
+            }
           >
-            Today, prediction markets are trader-centric. Users manage individual outcomes, fragmented positions, and manual risk. PM Vaults turn that into a cleaner product: deposit into a vault, receive shares, and get exposure to a strategy instead of a stream of trades.
+            Today, prediction markets are trader-centric. Users manage individual outcomes,
+            fragmented positions, and manual risk. PM Vaults turn that into a cleaner product:
+            deposit into a vault, receive shares, and get exposure to a strategy instead of a stream
+            of trades.
           </SectionIntro>
 
           <div className="grid gap-6 md:grid-cols-3">
@@ -199,7 +210,12 @@ export default function LandingPage() {
             <ComparisonCard
               tone="muted"
               title="Before: Trader-Centric"
-              items={["Pick markets one by one", "Manage positions manually", "Track scattered PnL", "React to settlement yourself"]}
+              items={[
+                "Pick markets one by one",
+                "Manage positions manually",
+                "Track scattered PnL",
+                "React to settlement yourself",
+              ]}
             />
             <div className="flex justify-center rotate-90 md:rotate-0">
               <div className="flex h-12 w-12 items-center justify-center rounded-full border border-[#E8C08C]/20 bg-[#E8C08C]/5 text-[#E8C08C]">
@@ -209,7 +225,12 @@ export default function LandingPage() {
             <ComparisonCard
               tone="gold"
               title="After: PM Vaults"
-              items={["Deposit into a vault", "Own strategy shares", "Track a single NAV", "Let mandates handle execution"]}
+              items={[
+                "Deposit into a vault",
+                "Own strategy shares",
+                "Track a single NAV",
+                "Let mandates handle execution",
+              ]}
             />
           </div>
         </div>
@@ -219,7 +240,13 @@ export default function LandingPage() {
         <div className="mx-auto max-w-4xl px-6">
           <SectionIntro
             eyebrow="How Vaults Work"
-            title={<>How vaults turn markets<br />into investable products</>}
+            title={
+              <>
+                How vaults turn markets
+                <br />
+                into investable products
+              </>
+            }
             description="From deposit to NAV reporting — a cleaner way to access prediction-market strategies."
           />
 
@@ -255,7 +282,9 @@ export default function LandingPage() {
                       {step.icon}
                     </div>
                     <div className="min-w-0 flex-1">
-                      <h4 className="mb-1 text-base font-bold text-[#F1EEE8] md:text-lg">{step.title}</h4>
+                      <h4 className="mb-1 text-base font-bold text-[#F1EEE8] md:text-lg">
+                        {step.title}
+                      </h4>
                       <p className="text-sm leading-relaxed text-[#9B9690]">{step.body}</p>
                     </div>
                   </div>
@@ -273,10 +302,15 @@ export default function LandingPage() {
               Agent and curator capital
             </span>
             <h3 className="mb-6 font-serif text-3xl font-bold leading-tight text-[#F1EEE8] md:text-5xl">
-              Built for allocating capital<br />to prediction markets
+              Built for allocating capital
+              <br />
+              to prediction markets
             </h3>
             <p className="text-base leading-relaxed text-[#9B9690] md:text-lg">
-              PM Vaults are built to make prediction market capital allocatable. Users delegate capital to experts, generating passive exposure to Prediction Markets. Each vault surfaces the manager, strategy type, and risk profile up front, while the execution stays contained inside the vault.
+              PM Vaults are built to make prediction market capital allocatable. Users delegate
+              capital to experts, generating passive exposure to Prediction Markets. Each vault
+              surfaces the manager, strategy type, and risk profile up front, while the execution
+              stays contained inside the vault.
             </p>
           </div>
 
@@ -300,10 +334,7 @@ export default function LandingPage() {
 
       <section className="relative z-10 bg-[#0D0C0A] py-24 md:py-32">
         <div className="mx-auto max-w-5xl px-6">
-          <SectionIntro
-            eyebrow="Featured vault"
-            title="Discover Vaults"
-          />
+          <SectionIntro eyebrow="Featured vault" title="Discover Vaults" />
 
           <div className="mx-auto grid max-w-md gap-6">
             {strategies.map((strategy) => (
@@ -313,30 +344,53 @@ export default function LandingPage() {
                 key={strategy.title}
               >
                 <div className="mb-4 flex items-center gap-3">
-                  <span className={`rounded-full border px-2.5 py-1 text-xs font-bold ${strategy.directionClass}`}>
+                  <span
+                    className={`rounded-full border px-2.5 py-1 text-xs font-bold ${strategy.directionClass}`}
+                  >
                     {strategy.direction}
                   </span>
                   <span className="flex items-center gap-1.5">
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#58A65C]" />
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-[#58A65C]">Live</span>
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-[#58A65C]">
+                      Live
+                    </span>
                   </span>
                 </div>
-                <h4 className="mb-3 text-xl font-bold text-[#F1EEE8] md:text-2xl">{strategy.title}</h4>
+                <h4 className="mb-3 text-xl font-bold text-[#F1EEE8] md:text-2xl">
+                  {strategy.title}
+                </h4>
                 <p className="mb-6 text-sm leading-relaxed text-[#9B9690]">{strategy.body}</p>
                 <div className="relative mb-6 h-16 w-full overflow-hidden rounded-lg border border-[#E8C08C]/5 bg-[#0A0908]">
-                  <svg className="absolute inset-0" height="64" preserveAspectRatio="none" viewBox="0 0 400 64" width="100%">
+                  <svg
+                    className="absolute inset-0"
+                    height="64"
+                    preserveAspectRatio="none"
+                    viewBox="0 0 400 64"
+                    width="100%"
+                  >
                     <defs>
                       <linearGradient id={strategy.gradientId} x1="0" x2="0" y1="0" y2="1">
                         <stop offset="0%" stopColor={strategy.chartColor} stopOpacity="0.15" />
                         <stop offset="100%" stopColor={strategy.chartColor} stopOpacity="0" />
                       </linearGradient>
                     </defs>
-                    <path d={strategy.chart} fill="none" opacity="0.6" stroke={strategy.chartColor} strokeWidth="2" />
-                    <path d={`${strategy.chart} L400,64 L0,64Z`} fill={`url(#${strategy.gradientId})`} />
+                    <path
+                      d={strategy.chart}
+                      fill="none"
+                      opacity="0.6"
+                      stroke={strategy.chartColor}
+                      strokeWidth="2"
+                    />
+                    <path
+                      d={`${strategy.chart} L400,64 L0,64Z`}
+                      fill={`url(#${strategy.gradientId})`}
+                    />
                   </svg>
                 </div>
                 <div className="flex items-center justify-between gap-4">
-                  <div className="text-xs text-[#9B9690]">{strategy.manager} · {strategy.risk}</div>
+                  <div className="text-xs text-[#9B9690]">
+                    {strategy.manager} · {strategy.risk}
+                  </div>
                   <span className="text-sm font-bold text-[#E8C08C] transition-transform duration-300 group-hover:translate-x-1">
                     Explore →
                   </span>
@@ -350,10 +404,14 @@ export default function LandingPage() {
       <section className="relative z-10 bg-[#0D0C0A] py-24 md:py-32">
         <div className="mx-auto max-w-4xl px-6 text-center">
           <h3 className="mb-6 font-serif text-3xl font-bold leading-tight text-[#F1EEE8] md:text-5xl">
-            From trader-centric markets<br />to investable products
+            From trader-centric markets
+            <br />
+            to investable products
           </h3>
           <p className="mx-auto mb-10 max-w-2xl text-base leading-relaxed text-[#9B9690] md:text-lg">
-            Prediction markets shouldn&apos;t stop at trading. They should support indices, mandates, vaults, and agent-managed capital. PM Vaults turn markets into products users can allocate to, compare, and hold.
+            Prediction markets shouldn&apos;t stop at trading. They should support indices,
+            mandates, vaults, and agent-managed capital. PM Vaults turn markets into products users
+            can allocate to, compare, and hold.
           </p>
           <div className="flex flex-col items-center justify-center gap-4 sm:flex-row">
             <GoldSolidButton href={APP_URL}>Explore Vaults</GoldSolidButton>
@@ -369,12 +427,22 @@ export default function LandingPage() {
               <LogoMark className="h-6 w-6" />
               <span className="text-sm font-bold text-[#F1EEE8]/60">Polymarket Vault</span>
             </div>
-            <p className="text-xs text-[#9B9690]/60">Prediction-market strategy vaults · Shares, NAV, mandates, and reporting</p>
+            <p className="text-xs text-[#9B9690]/60">
+              Prediction-market strategy vaults · Shares, NAV, mandates, and reporting
+            </p>
             <div className="flex items-center gap-6">
-              <Link className="text-xs text-[#9B9690] transition-colors duration-200 hover:text-[#E8C08C]" href={APP_URL}>
+              <Link
+                className="text-xs text-[#9B9690] transition-colors duration-200 hover:text-[#E8C08C]"
+                href={APP_URL}
+              >
                 Explore Vaults
               </Link>
-              <a className="text-xs text-[#9B9690] transition-colors duration-200 hover:text-[#E8C08C]" href={BUILD_URL} rel="noreferrer" target="_blank">
+              <a
+                className="text-xs text-[#9B9690] transition-colors duration-200 hover:text-[#E8C08C]"
+                href={BUILD_URL}
+                rel="noreferrer"
+                target="_blank"
+              >
                 Start Building
               </a>
             </div>
@@ -385,7 +453,15 @@ export default function LandingPage() {
   );
 }
 
-function ComparisonCard({ title, items, tone }: { title: string; items: readonly string[]; tone: "gold" | "muted" }) {
+function ComparisonCard({
+  title,
+  items,
+  tone,
+}: {
+  title: string;
+  items: readonly string[];
+  tone: "gold" | "muted";
+}) {
   const isGold = tone === "gold";
 
   return (
@@ -425,7 +501,9 @@ function SectionIntro({
       <span className="mb-6 inline-flex items-center gap-2 rounded-full border border-[#E8C08C]/20 bg-[#E8C08C]/5 px-4 py-1.5 text-xs font-bold uppercase tracking-widest text-[#E8C08C]">
         {eyebrow}
       </span>
-      <h3 className="mb-6 font-serif text-3xl font-bold leading-tight text-[#F1EEE8] md:text-5xl">{title}</h3>
+      <h3 className="mb-6 font-serif text-3xl font-bold leading-tight text-[#F1EEE8] md:text-5xl">
+        {title}
+      </h3>
       {(description || children) && (
         <p className="mx-auto max-w-3xl text-base leading-relaxed text-[#9B9690] md:text-lg">
           {description ?? children}
@@ -475,15 +553,37 @@ function LogoMark({ className }: { className?: string }) {
       <rect fill="#F1EEE8" fillOpacity="0.1" height="36" rx="1" width="36" x="4" y="4" />
       <rect fill="#F1EEE8" height="6" rx="1" width="6" x="14" y="13" />
       <rect fill="#F1EEE8" height="6" rx="1" width="6" x="24" y="13" />
-      <rect height="12" rx="1" stroke="#F1EEE8" strokeOpacity="0.8" strokeWidth="1.2" width="16" x="14" y="23" />
+      <rect
+        height="12"
+        rx="1"
+        stroke="#F1EEE8"
+        strokeOpacity="0.8"
+        strokeWidth="1.2"
+        width="16"
+        x="14"
+        y="23"
+      />
     </svg>
   );
 }
 
 function FlowArrow() {
   return (
-    <svg className="hidden shrink-0 sm:block" fill="none" height="12" viewBox="0 0 20 12" width="20">
-      <path d="M2 6h16M14 2l4 4-4 4" opacity="0.3" stroke="#E8C08C" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" />
+    <svg
+      className="hidden shrink-0 sm:block"
+      fill="none"
+      height="12"
+      viewBox="0 0 20 12"
+      width="20"
+    >
+      <path
+        d="M2 6h16M14 2l4 4-4 4"
+        opacity="0.3"
+        stroke="#E8C08C"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
     </svg>
   );
 }
@@ -491,7 +591,14 @@ function FlowArrow() {
 function ArrowDownIcon() {
   return (
     <svg fill="none" height="24" viewBox="0 0 16 24" width="16">
-      <path d="M8 4v16M8 20l-4-4M8 20l4-4" opacity="0.4" stroke="#9B9690" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" />
+      <path
+        d="M8 4v16M8 20l-4-4M8 20l4-4"
+        opacity="0.4"
+        stroke="#9B9690"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
     </svg>
   );
 }
@@ -509,7 +616,12 @@ function BotIcon() {
   return (
     <svg fill="none" height="24" viewBox="0 0 24 24" width="24">
       <rect height="12" rx="3" stroke="#E8C08C" strokeWidth="1.5" width="16" x="4" y="7" />
-      <path d="M9 7V4h6v3M9 12h.01M15 12h.01M8 16h8" stroke="#58A65C" strokeLinecap="round" strokeWidth="1.5" />
+      <path
+        d="M9 7V4h6v3M9 12h.01M15 12h.01M8 16h8"
+        stroke="#58A65C"
+        strokeLinecap="round"
+        strokeWidth="1.5"
+      />
     </svg>
   );
 }
@@ -517,7 +629,13 @@ function BotIcon() {
 function ChartIcon() {
   return (
     <svg fill="none" height="24" viewBox="0 0 24 24" width="24">
-      <path d="M3 17l4-4 4 4 4-8 5 6" stroke="#58A65C" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" />
+      <path
+        d="M3 17l4-4 4 4 4-8 5 6"
+        stroke="#58A65C"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
       <path d="M3 3v18h18" stroke="#E8C08C" strokeLinecap="round" strokeWidth="1.5" />
     </svg>
   );
@@ -547,7 +665,12 @@ function CpuIcon() {
   return (
     <svg fill="none" height="24" viewBox="0 0 24 24" width="24">
       <rect height="12" rx="2" stroke="#E8C08C" strokeWidth="1.5" width="12" x="6" y="6" />
-      <path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" stroke="#58A65C" strokeLinecap="round" strokeWidth="1.5" />
+      <path
+        d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"
+        stroke="#58A65C"
+        strokeLinecap="round"
+        strokeWidth="1.5"
+      />
     </svg>
   );
 }
@@ -557,7 +680,12 @@ function UserCogIcon() {
     <svg fill="none" height="24" viewBox="0 0 24 24" width="24">
       <circle cx="10" cy="8" r="4" stroke="#E8C08C" strokeWidth="1.5" />
       <path d="M3 21a7 7 0 0 1 10-6.32" stroke="#E8C08C" strokeLinecap="round" strokeWidth="1.5" />
-      <path d="M18 14v2M18 22v-2M14.54 16l1.73 1M21.46 20l-1.73-1M14.54 20l1.73-1M21.46 16l-1.73 1" stroke="#58A65C" strokeLinecap="round" strokeWidth="1.5" />
+      <path
+        d="M18 14v2M18 22v-2M14.54 16l1.73 1M21.46 20l-1.73-1M14.54 20l1.73-1M21.46 16l-1.73 1"
+        stroke="#58A65C"
+        strokeLinecap="round"
+        strokeWidth="1.5"
+      />
     </svg>
   );
 }
@@ -566,8 +694,19 @@ function UserCheckIcon() {
   return (
     <svg fill="none" height="24" viewBox="0 0 24 24" width="24">
       <circle cx="9" cy="8" r="4" stroke="#E8C08C" strokeWidth="1.5" />
-      <path d="M3 21a7 7 0 0 1 11.5-5.35" stroke="#E8C08C" strokeLinecap="round" strokeWidth="1.5" />
-      <path d="M15 19l2 2 4-5" stroke="#58A65C" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" />
+      <path
+        d="M3 21a7 7 0 0 1 11.5-5.35"
+        stroke="#E8C08C"
+        strokeLinecap="round"
+        strokeWidth="1.5"
+      />
+      <path
+        d="M15 19l2 2 4-5"
+        stroke="#58A65C"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
     </svg>
   );
 }
@@ -575,7 +714,13 @@ function UserCheckIcon() {
 function RightArrowIcon() {
   return (
     <svg fill="none" height="24" viewBox="0 0 24 24" width="24">
-      <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" />
+      <path
+        d="M5 12h14M13 6l6 6-6 6"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
     </svg>
   );
 }
@@ -583,7 +728,13 @@ function RightArrowIcon() {
 function CheckIcon() {
   return (
     <svg className="h-5 w-5 shrink-0 text-[#58A65C]" fill="none" viewBox="0 0 24 24">
-      <path d="M5 12l4 4L19 6" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path
+        d="M5 12l4 4L19 6"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
     </svg>
   );
 }
@@ -591,7 +742,12 @@ function CheckIcon() {
 function XIcon() {
   return (
     <svg className="h-5 w-5 shrink-0 text-[#DC2626]/70" fill="none" viewBox="0 0 24 24">
-      <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+      <path
+        d="M6 6l12 12M18 6L6 18"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.8"
+      />
     </svg>
   );
 }
@@ -600,7 +756,13 @@ function TerminalChartIcon() {
   return (
     <svg fill="none" height="28" viewBox="0 0 28 28" width="28">
       <rect height="14" rx="2" stroke="#E8C08C" strokeWidth="1.5" width="22" x="3" y="8" />
-      <path d="M7 18l4-5 3 3 7-7" stroke="#58A65C" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" />
+      <path
+        d="M7 18l4-5 3 3 7-7"
+        stroke="#58A65C"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
       <circle cx="21" cy="9" fill="#58A65C" r="1" />
       <path d="M9 4h5M11.5 2v4" stroke="#E8C08C" strokeLinecap="round" />
     </svg>
@@ -610,7 +772,13 @@ function TerminalChartIcon() {
 function PulseIcon() {
   return (
     <svg fill="none" height="28" viewBox="0 0 28 28" width="28">
-      <path d="M6 14h4l2-5 3 10 2-7 2 4h3" stroke="#E8C08C" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" />
+      <path
+        d="M6 14h4l2-5 3 10 2-7 2 4h3"
+        stroke="#E8C08C"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
       <circle cx="14" cy="14" r="10" stroke="#E8C08C" strokeDasharray="3 2" strokeWidth="1.5" />
     </svg>
   );
@@ -619,8 +787,19 @@ function PulseIcon() {
 function WithdrawIcon() {
   return (
     <svg fill="none" height="28" viewBox="0 0 28 28" width="28">
-      <path d="M14 4v12m0 0l-4-4m4 4l4-4" stroke="#58A65C" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" />
-      <path d="M6 20v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke="#E8C08C" strokeLinecap="round" strokeWidth="1.5" />
+      <path
+        d="M14 4v12m0 0l-4-4m4 4l4-4"
+        stroke="#58A65C"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+      <path
+        d="M6 20v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
+        stroke="#E8C08C"
+        strokeLinecap="round"
+        strokeWidth="1.5"
+      />
     </svg>
   );
 }

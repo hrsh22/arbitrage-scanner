@@ -22,7 +22,6 @@ export interface DerivedVaultPerformanceStats {
 export interface VaultChartSeriesOptions {
   maxPoints: number;
   rangeDays?: number;
-  smooth?: boolean;
 }
 
 const MIN_MEANINGFUL_TOTAL_ASSETS = 1;
@@ -153,7 +152,7 @@ function filterPointsByRange(
   return points.slice(-Math.min(points.length, 2));
 }
 
-function downsampleEvenly(
+function downsampleEvenlyByIndex(
   points: VaultPerformancePoint[],
   maxPoints: number,
 ): VaultPerformancePoint[] {
@@ -167,12 +166,12 @@ function downsampleEvenly(
   );
 }
 
-function smoothIntoTimeBuckets(
+function sampleEvenlyByTime(
   points: VaultPerformancePoint[],
   maxPoints: number,
 ): VaultPerformancePoint[] {
-  if (points.length <= maxPoints || maxPoints < 4) {
-    return downsampleEvenly(points, maxPoints);
+  if (points.length <= maxPoints || maxPoints < 2) {
+    return points;
   }
 
   const firstPoint = points[0];
@@ -181,53 +180,69 @@ function smoothIntoTimeBuckets(
     return points;
   }
 
-  const interiorPoints = points.slice(1, -1);
-  const bucketCount = Math.max(maxPoints - 2, 1);
   const firstTimestamp = new Date(firstPoint.timestamp).getTime();
   const lastTimestamp = new Date(lastPoint.timestamp).getTime();
-  const bucketMs = Math.max((lastTimestamp - firstTimestamp) / bucketCount, 1);
 
-  const buckets = new Map<
-    number,
-    {
-      timestamp: number;
-      valueTotal: number;
-      assetsTotal: number;
-      count: number;
-    }
-  >();
-
-  for (const point of interiorPoints) {
-    const timestamp = new Date(point.timestamp).getTime();
-    const bucketIndex = Math.min(
-      bucketCount - 1,
-      Math.max(0, Math.floor((timestamp - firstTimestamp) / bucketMs)),
-    );
-    const bucket = buckets.get(bucketIndex);
-
-    if (!bucket) {
-      buckets.set(bucketIndex, {
-        timestamp,
-        valueTotal: point.value,
-        assetsTotal: point.totalAssets,
-        count: 1,
-      });
-      continue;
-    }
-
-    bucket.timestamp = timestamp;
-    bucket.valueTotal += point.value;
-    bucket.assetsTotal += point.totalAssets;
-    bucket.count += 1;
+  if (
+    !Number.isFinite(firstTimestamp) ||
+    !Number.isFinite(lastTimestamp) ||
+    firstTimestamp === lastTimestamp
+  ) {
+    return downsampleEvenlyByIndex(points, maxPoints);
   }
 
-  const smoothed = [...buckets.values()].map((bucket) => ({
-    timestamp: new Date(bucket.timestamp).toISOString(),
-    value: bucket.valueTotal / bucket.count,
-    totalAssets: bucket.assetsTotal / bucket.count,
-  }));
+  const timestamps = points.map((point) => new Date(point.timestamp).getTime());
+  const selectedIndexes = new Set<number>();
+  let cursor = 0;
 
-  return [firstPoint, ...smoothed, lastPoint];
+  for (let targetIndex = 0; targetIndex < maxPoints; targetIndex += 1) {
+    const targetTimestamp =
+      firstTimestamp + ((lastTimestamp - firstTimestamp) * targetIndex) / (maxPoints - 1);
+
+    while (
+      cursor < points.length - 2 &&
+      (timestamps[cursor + 1] ?? lastTimestamp) < targetTimestamp
+    ) {
+      cursor += 1;
+    }
+
+    const nextCursor = Math.min(cursor + 1, points.length - 1);
+    const currentTimestamp = timestamps[cursor] ?? firstTimestamp;
+    const nextTimestamp = timestamps[nextCursor] ?? lastTimestamp;
+    const currentDistance = Math.abs(currentTimestamp - targetTimestamp);
+    const nextDistance = Math.abs(nextTimestamp - targetTimestamp);
+
+    selectedIndexes.add(nextDistance < currentDistance ? nextCursor : cursor);
+  }
+
+  selectedIndexes.add(0);
+  selectedIndexes.add(points.length - 1);
+
+  if (selectedIndexes.size < maxPoints) {
+    const indexSample = downsampleEvenlyByIndex(points, maxPoints);
+    for (const point of indexSample) {
+      const pointIndex = points.indexOf(point);
+      if (pointIndex >= 0) {
+        selectedIndexes.add(pointIndex);
+      }
+
+      if (selectedIndexes.size >= maxPoints) {
+        break;
+      }
+    }
+  }
+
+  if (selectedIndexes.size < maxPoints) {
+    for (let index = 0; index < points.length && selectedIndexes.size < maxPoints; index += 1) {
+      selectedIndexes.add(index);
+    }
+  }
+
+  return [...selectedIndexes]
+    .sort((a, b) => a - b)
+    .slice(0, maxPoints)
+    .map((index) => points[index])
+    .filter((point): point is VaultPerformancePoint => point !== undefined);
 }
 
 export function deriveVaultPerformanceStats(
@@ -241,9 +256,7 @@ export function deriveVaultChartStats(
   options: VaultChartSeriesOptions,
 ): DerivedVaultPerformanceStats {
   const points = filterPointsByRange(normalizeNavPoints(snapshots), options.rangeDays);
-  const chartPoints = options.smooth
-    ? smoothIntoTimeBuckets(points, options.maxPoints)
-    : downsampleEvenly(points, options.maxPoints);
+  const chartPoints = sampleEvenlyByTime(points, options.maxPoints);
 
   return deriveStatsFromPoints(chartPoints);
 }
