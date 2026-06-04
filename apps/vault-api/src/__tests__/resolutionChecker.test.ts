@@ -25,11 +25,13 @@ vi.mock("../logger.js", () => ({
 }));
 
 vi.mock("../constants.js", () => ({
-  CTF_ADDRESS: "0xCTF",
+  COLLATERAL_ADDRESS: "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
+  CTF_ADDRESS: "0x00000000000000000000000000000000000000c7",
   CTF_EXCHANGE_ADDRESS: "0xCTFExchange",
   NEGRISK_CTF_EXCHANGE_ADDRESS: "0xNegRiskCTFExchange",
   NEGRISK_ADAPTER_ADDRESS: "0xNegRiskAdapter",
   USDC_E_ADDRESS: "0xUSDC",
+  COLLATERAL_DECIMALS: 6,
   NAV_STALENESS_THRESHOLD: 3600,
   MAX_DEPLOYED_RATIO: 0.25,
   WITHDRAWAL_FEE_BPS: 50,
@@ -48,6 +50,8 @@ vi.mock("../env.js", () => ({
     SAFE_ADDRESS: "0xSafe",
     VAULT_PRIVATE_KEY: "0x0000000000000000000000000000000000000000000000000000000000000001",
     POLYGON_RPC_URL: "https://polygon-rpc.com",
+    POLYGON_RPC_URLS: ["https://polygon-rpc.com"],
+    AMOY_RPC_URLS: ["https://polygon-rpc.com"],
   },
 }));
 

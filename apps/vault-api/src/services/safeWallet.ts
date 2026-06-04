@@ -26,7 +26,8 @@ import { privateKeyToAccount } from "viem/accounts";
 import type { Chain } from "viem/chains";
 
 import {
-  USDC_E_ADDRESS,
+  COLLATERAL_ADDRESS,
+  COLLATERAL_SYMBOL,
   CTF_ADDRESS,
   CTF_EXCHANGE_ADDRESS,
   NEGRISK_CTF_EXCHANGE_ADDRESS,
@@ -454,14 +455,14 @@ export class SafeWalletService {
   }
 
   /**
-   * Approve USDC.e and CTF tokens to all 3 Polymarket exchange contracts.
+   * Approve active collateral and CTF tokens to all configured Polymarket exchange contracts.
    * Batches all 6 approvals into a single MultiSend Safe TX.
    */
   async approvePolymarketExchanges(): Promise<SafeTxResult> {
     if (this.eoaMode) {
       let lastTxHash: string | undefined;
       for (const exchange of POLYMARKET_EXCHANGES) {
-        const usdcApprove = await this.approveToken(USDC_E_ADDRESS, exchange, MAX_UINT256);
+        const usdcApprove = await this.approveToken(COLLATERAL_ADDRESS, exchange, MAX_UINT256);
         if (!usdcApprove.success) {
           return usdcApprove;
         }
@@ -469,7 +470,7 @@ export class SafeWalletService {
       }
 
       for (const exchange of POLYMARKET_EXCHANGES) {
-        const ctfApprove = await this.approveToken(CTF_ADDRESS, exchange, MAX_UINT256);
+        const ctfApprove = await this.setApprovalForAll(CTF_ADDRESS, exchange, true);
         if (!ctfApprove.success) {
           return ctfApprove;
         }
@@ -491,7 +492,7 @@ export class SafeWalletService {
       });
 
       transactions.push({
-        to: USDC_E_ADDRESS,
+        to: COLLATERAL_ADDRESS,
         value: "0",
         data: usdcApproveData,
         operation: OperationType.Call,
@@ -500,9 +501,9 @@ export class SafeWalletService {
 
     for (const exchange of POLYMARKET_EXCHANGES) {
       const ctfApproveData = encodeFunctionData({
-        abi: APPROVE_ABI,
-        functionName: "approve",
-        args: [exchange, BigInt(MAX_UINT256)],
+        abi: SET_APPROVAL_FOR_ALL_ABI,
+        functionName: "setApprovalForAll",
+        args: [exchange, true],
       });
 
       transactions.push({
@@ -515,7 +516,8 @@ export class SafeWalletService {
 
     logger.info("SafeWalletService: approvePolymarketExchanges", {
       exchanges: POLYMARKET_EXCHANGES,
-      tokens: [USDC_E_ADDRESS, CTF_ADDRESS],
+      tokens: [COLLATERAL_ADDRESS, CTF_ADDRESS],
+      collateralSymbol: COLLATERAL_SYMBOL,
       txCount: transactions.length,
     });
 

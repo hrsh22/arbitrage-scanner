@@ -36,16 +36,47 @@ export const SUPPORTS_POLYMARKET_TRADING = networkConfig.supportsPolymarketTradi
 // These addresses are network-specific and loaded from lib/network.ts
 // based on the NEXT_PUBLIC_VAULT_NETWORK environment variable.
 
-/** USDC.e (USDC from Ethereum, NOT native USDC) on Polygon */
-export const USDC_E_ADDRESS = networkConfig.addresses.usdcE as `0x${string}`;
+/** Active vault collateral token address. Mainnet uses Polymarket pUSD for CLOB V2. */
+export const COLLATERAL_ADDRESS = networkConfig.addresses.collateral as `0x${string}`;
+
+/** Active vault collateral display symbol. */
+export const COLLATERAL_SYMBOL = networkConfig.collateral.symbol;
+
+/** Active vault collateral decimals. */
+export const COLLATERAL_DECIMALS = networkConfig.collateral.decimals;
+
+/** User-facing vault deposit/withdraw token address. Mainnet users use USDC.e. */
+export const USER_COLLATERAL_ADDRESS = networkConfig.userCollateral.address as `0x${string}`;
+
+/** User-facing vault deposit/withdraw token display symbol. */
+export const USER_COLLATERAL_SYMBOL = networkConfig.userCollateral.symbol;
+
+/** User-facing vault deposit/withdraw token decimals. */
+export const USER_COLLATERAL_DECIMALS = networkConfig.userCollateral.decimals;
+
+/** Legacy USDC.e retained for historical migration and compatibility views. */
+export const LEGACY_USDC_E_ADDRESS = networkConfig.addresses.legacyUsdcE as `0x${string}`;
+
+/** Collateral onramp for converting legacy USDC.e to pUSD where available. */
+export const COLLATERAL_ONRAMP_ADDRESS = networkConfig.addresses
+  .collateralOnramp as `0x${string}`;
+
+/** Collateral offramp for converting pUSD back to legacy USDC.e where available. */
+export const COLLATERAL_OFFRAMP_ADDRESS = networkConfig.addresses
+  .collateralOfframp as `0x${string}`;
+
+/** User-facing USDC.e token used by vault helper entrypoints. */
+export const USDC_E_ADDRESS = USER_COLLATERAL_ADDRESS;
+export const USDC_E_SYMBOL = USER_COLLATERAL_SYMBOL;
+export const USDC_E_DECIMALS = USER_COLLATERAL_DECIMALS;
 
 /** Conditional Token Framework (CTF) contract */
 export const CTF_ADDRESS = networkConfig.addresses.ctf as `0x${string}`;
 
-/** CTF Exchange for market order execution */
+/** CLOB V2 Exchange for market order execution */
 export const CTF_EXCHANGE_ADDRESS = networkConfig.addresses.ctfExchange as `0x${string}`;
 
-/** NegRisk CTF Exchange for negative risk markets */
+/** NegRisk CLOB V2 Exchange for negative risk markets */
 export const NEGRISK_CTF_EXCHANGE_ADDRESS = networkConfig.addresses
   .negRiskCtfExchange as `0x${string}`;
 
@@ -70,20 +101,23 @@ export const CUSTOM_VAULT_DEPOSIT_ENDPOINT = `${CUSTOM_VAULT_API_PREFIX}/deposit
 
 // Reown Kit Config
 export const REOWN_PROJECT_ID = process.env.NEXT_PUBLIC_REOWN_PROJECT_ID || "vault-web-project-id";
+const APP_ORIGIN = process.env.NEXT_PUBLIC_APP_ORIGIN || "http://localhost:3000";
 
 export const REOWN_APP_METADATA = {
   name: "Vault Platform",
   description: "Vault trading dashboard",
-  url: "http://localhost:3001",
-  icons: ["http://localhost:3001/icon.png"],
+  url: APP_ORIGIN,
+  icons: [`${APP_ORIGIN}/icon.png`],
 };
 
 // ============================================
 // Contract ABIs
 // ============================================
 
-// USDC.e decimals
-export const USDC_DECIMALS = 6;
+// Active collateral decimals
+export const TOKEN_DECIMALS = COLLATERAL_DECIMALS;
+/** User-facing stable token decimals. */
+export const USDC_DECIMALS = USER_COLLATERAL_DECIMALS;
 
 // ERC-20 ABI (balance, allowance, approve, decimals)
 export const ERC20_ABI = [
@@ -135,6 +169,20 @@ export const VAULT_ABI = [
     type: "function",
   },
   {
+    inputs: [
+      { name: "userAssets", type: "uint256" },
+      { name: "controller", type: "address" },
+      { name: "owner", type: "address" },
+      { name: "minVaultAssetsOut", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+      { name: "intentId", type: "bytes32" },
+    ],
+    name: "requestDepositUSDCe",
+    outputs: [{ name: "requestId", type: "uint256" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
     inputs: [{ name: "assets", type: "uint256" }],
     name: "queueDeposit",
     outputs: [{ name: "requestId", type: "uint256" }],
@@ -172,6 +220,19 @@ export const VAULT_ABI = [
   },
   {
     inputs: [
+      { name: "userAssets", type: "uint256" },
+      { name: "receiver", type: "address" },
+      { name: "minSharesOut", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+      { name: "intentId", type: "bytes32" },
+    ],
+    name: "depositUSDCe",
+    outputs: [{ name: "shares", type: "uint256" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [
       { name: "assets", type: "uint256" },
       { name: "receiver", type: "address" },
       { name: "controller", type: "address" },
@@ -202,6 +263,20 @@ export const VAULT_ABI = [
     ],
     name: "redeem",
     outputs: [{ name: "assets", type: "uint256" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [
+      { name: "shares", type: "uint256" },
+      { name: "receiver", type: "address" },
+      { name: "owner", type: "address" },
+      { name: "minUserAssetsOut", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+      { name: "intentId", type: "bytes32" },
+    ],
+    name: "claimUSDCe",
+    outputs: [{ name: "userAssetsOut", type: "uint256" }],
     stateMutability: "nonpayable",
     type: "function",
   },

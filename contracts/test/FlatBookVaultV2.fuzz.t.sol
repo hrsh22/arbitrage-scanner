@@ -35,7 +35,9 @@ contract FlatBookVaultV2FuzzTest is Test {
     function setUp() public {
         vm.startPrank(admin);
         asset = new MockTokenFuzz();
-        vault = new FlatBookVaultV2(address(asset), admin, bookRunner, navUpdater, tradingWallet, 10 minutes);
+        vault = new FlatBookVaultV2(
+            address(asset), address(asset), admin, admin, admin, bookRunner, navUpdater, tradingWallet, 10 minutes
+        );
         asset.transfer(owner, 3_000_000 * 1e6);
         asset.transfer(controller, 3_000_000 * 1e6);
         asset.transfer(carol, 3_000_000 * 1e6);
@@ -132,7 +134,9 @@ contract FlatBookVaultV2FuzzTest is Test {
 
         assertEq(vault.pendingDepositRequest(0, controller), 0);
         assertEq(vault.pendingRedeemRequest(0, owner), 0);
-        assertEq(vault.claimableDepositRequest(0, controller), queuedDeposit);
+        uint256 expectedMintedShares = (queuedDeposit * 1e18) / 15e17;
+        assertEq(vault.claimableDepositRequest(0, controller), 0);
+        assertEq(vault.balanceOf(controller), 500_000 * 1e6 + expectedMintedShares);
         assertEq(vault.claimableRedeemRequest(0, owner), queuedRedeem);
     }
 
@@ -175,10 +179,13 @@ contract FlatBookVaultV2FuzzTest is Test {
         assertEq(vault.pendingRedeemRequest(0, owner), 0);
         assertEq(vault.pendingRedeemRequest(0, controller), 0);
 
-        assertEq(vault.claimableDepositRequest(0, controller), depositA);
-        assertEq(vault.claimableDepositRequest(0, carol), depositB);
+        assertEq(vault.claimableDepositRequest(0, controller), 0);
+        assertEq(vault.claimableDepositRequest(0, carol), 0);
         assertEq(vault.claimableRedeemRequest(0, owner), redeemA);
         assertEq(vault.claimableRedeemRequest(0, controller), redeemB);
+
+        assertEq(vault.balanceOf(controller), 500_000 * 1e6 - redeemB + ((depositA * 1e18) / 125e16));
+        assertEq(vault.balanceOf(carol), 500_000 * 1e6 + ((depositB * 1e18) / 125e16));
 
         uint256 expectedClaimableRedeemAssets = ((redeemA + redeemB) * 125e16) / 1e18;
         assertEq(vault.totalClaimableRedeemAssets(), expectedClaimableRedeemAssets);

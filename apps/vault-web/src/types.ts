@@ -9,7 +9,13 @@ export interface VaultNAV {
   totalAssets: number;
   trackedTotalAssets?: number;
   idleAssets: number;
+  /** Active collateral held by the vault contract. */
+  vaultCollateral?: number;
+  /** Active collateral held by the trading safe. */
+  safeCollateral?: number;
+  /** @deprecated Backend compatibility field; semantically active collateral after pUSD migration. */
   vaultUsdc: number;
+  /** @deprecated Backend compatibility field; semantically active collateral after pUSD migration. */
   safeUsdc: number;
   deployedCostBasis: number;
   redeemableCostBasis?: number;
@@ -42,6 +48,17 @@ export interface VaultProfile {
   };
 }
 
+export interface VaultMigration {
+  enabled: boolean;
+  phase: "usdc_e_to_pusd";
+  depositsDisabled: boolean;
+  title: string;
+  message: string;
+  startedAt?: string;
+  targetAssetSymbol?: string;
+  targetAssetAddress?: string;
+}
+
 export interface VaultInstance {
   id: number;
   slug: string;
@@ -49,6 +66,7 @@ export interface VaultInstance {
   enabled: boolean;
   type: "bot" | "agent" | "custom";
   mode: "simulation" | "live";
+  migration?: VaultMigration | null;
   profile: VaultProfile;
   config: {
     vaultAddress: string;
@@ -78,6 +96,7 @@ export interface VaultStatusResponse {
   committedExposureRatio?: number;
   totalCostBasis: number;
   mode: "simulation" | "live";
+  migration?: VaultMigration | null;
   capState?: {
     maxAllowedDeployed: number;
     currentDeployed: number;

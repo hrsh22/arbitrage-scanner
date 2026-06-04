@@ -11,13 +11,13 @@
  * - Contract addresses are valid for the selected network
  * - No legacy contract shapes or placeholder addresses
  * - Dual-safe configuration (tradingSafe address, capital functions)
- * - Vault USDC balance for operations
+ * - Vault collateral balance for operations
  * - TradingSafe approval for recall operations
  *
  * Dual-Safe Amoy Flow:
  * - Validates tradingSafe is configured and valid
  * - Checks deployCapital and recallCapital function accessibility
- * - Verifies vault has USDC balance for capital deployment
+ * - Verifies vault has collateral balance for capital deployment
  * - Verifies tradingSafe has approved vault for recall operations
  *
  * Usage:
@@ -119,6 +119,27 @@ const TRADING_WALLET_ABI = [
   {
     type: "function",
     name: "tradingWallet",
+    inputs: [],
+    outputs: [{ name: "", type: "address", internalType: "address" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "userAsset",
+    inputs: [],
+    outputs: [{ name: "", type: "address", internalType: "address" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "collateralOnramp",
+    inputs: [],
+    outputs: [{ name: "", type: "address", internalType: "address" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "collateralOfframp",
     inputs: [],
     outputs: [{ name: "", type: "address", internalType: "address" }],
     stateMutability: "view",
@@ -336,7 +357,7 @@ async function checkContractAddresses(network: NetworkType): Promise<ReadinessCh
   const addresses = config.addresses;
 
   const addressChecks: { name: string; address: string; required: boolean }[] = [
-    { name: "USDC.e", address: addresses.usdcE, required: true },
+    { name: addresses.collateralSymbol, address: addresses.collateral, required: true },
     { name: "CTF", address: addresses.ctf, required: network === "mainnet" },
     { name: "CTF Exchange", address: addresses.ctfExchange, required: network === "mainnet" },
     {
@@ -452,6 +473,56 @@ async function checkVaultContractShape(): Promise<ReadinessCheck[]> {
           currentNav: currentNav.toString(),
         },
       });
+
+      try {
+        const [userAssetResult, collateralOnrampResult, collateralOfframpResult] = await Promise.all([
+          client.readContract({
+            address: vaultAddress as Address,
+            abi: TRADING_WALLET_ABI,
+            functionName: "userAsset",
+          }),
+          client.readContract({
+            address: vaultAddress as Address,
+            abi: TRADING_WALLET_ABI,
+            functionName: "collateralOnramp",
+          }),
+          client.readContract({
+            address: vaultAddress as Address,
+            abi: TRADING_WALLET_ABI,
+            functionName: "collateralOfframp",
+          }),
+        ]);
+        const userAsset: Address = userAssetResult;
+        const collateralOnramp: Address = collateralOnrampResult;
+        const collateralOfframp: Address = collateralOfframpResult;
+
+        const helpersMatch =
+          userAsset.toLowerCase() === config.addresses.legacyUsdcE.toLowerCase() &&
+          collateralOnramp.toLowerCase() === config.addresses.collateralOnramp.toLowerCase() &&
+          collateralOfframp.toLowerCase() === config.addresses.collateralOfframp.toLowerCase();
+
+        checks.push({
+          name: "vault:UsdceHelperSurface",
+          status: helpersMatch ? "pass" : "fail",
+          message: helpersMatch
+            ? "USDC.e helper surface matches configured user asset and Polymarket ramps"
+            : "USDC.e helper surface does not match configured user asset and Polymarket ramps",
+          details: {
+            userAsset,
+            expectedUserAsset: config.addresses.legacyUsdcE,
+            collateralOnramp,
+            expectedOnramp: config.addresses.collateralOnramp,
+            collateralOfframp,
+            expectedOfframp: config.addresses.collateralOfframp,
+          },
+        });
+      } catch (error) {
+        checks.push({
+          name: "vault:UsdceHelperSurface",
+          status: "fail",
+          message: `Configured vault must expose USDC.e helper views: ${(error as Error).message}`,
+        });
+      }
     } catch {
       checks.push({
         name: "vault:ContractShape",
@@ -487,27 +558,21 @@ async function checkPolymarketConfiguration(network: NetworkType): Promise<Readi
   }
 
   // Check for Polymarket credentials on mainnet
-  const hasBuilderKey = !!process.env.POLYMARKET_BUILDER_API_KEY;
-  const hasBuilderSecret = !!process.env.POLYMARKET_BUILDER_SECRET;
-  const hasBuilderPassphrase = !!process.env.POLYMARKET_BUILDER_PASSPHRASE;
+  const hasBuilderCode = !!process.env.POLYMARKET_BUILDER_CODE;
 
-  const allBuilderVarsSet = hasBuilderKey && hasBuilderSecret && hasBuilderPassphrase;
-
-  if (allBuilderVarsSet) {
+  if (hasBuilderCode) {
     checks.push({
       name: "polymarket:BuilderCredentials",
       status: "pass",
-      message: "Polymarket builder credentials are configured",
+      message: "Polymarket builder code is configured",
     });
   } else {
     checks.push({
       name: "polymarket:BuilderCredentials",
       status: "warn",
-      message: `Polymarket builder credentials incomplete on mainnet. Trading may fail.`,
+      message: "Polymarket builder code is not configured. Builder attribution will be skipped.",
       details: {
-        hasKey: hasBuilderKey,
-        hasSecret: hasBuilderSecret,
-        hasPassphrase: hasBuilderPassphrase,
+        hasBuilderCode,
       },
     });
   }
@@ -659,23 +724,25 @@ async function checkVaultUSDCBalance(network: NetworkType): Promise<ReadinessChe
 
   if (!vaultAddress) {
     checks.push({
-      name: "dualsafe:VaultUSDCBalance",
+      name: "dualsafe:VaultCollateralBalance",
       status: "warn",
-      message: "No vault config available, skipping USDC balance check",
+      message: "No vault config available, skipping collateral balance check",
     });
     return checks;
   }
 
   const config = NETWORK_CONFIGS[network];
-  const usdcAddress = config.addresses.usdcE;
+  const collateralAddress = config.addresses.collateral;
+  const collateralSymbol = config.addresses.collateralSymbol;
+  const collateralDecimals = config.addresses.collateralDecimals;
 
-  // Skip if USDC address is not configured for this network
-  if (usdcAddress.toLowerCase() === ZERO_ADDRESS.toLowerCase()) {
+  // Skip if collateral address is not configured for this network
+  if (collateralAddress.toLowerCase() === ZERO_ADDRESS.toLowerCase()) {
     checks.push({
-      name: "dualsafe:VaultUSDCBalance",
+      name: "dualsafe:VaultCollateralBalance",
       status: "warn",
-      message: `USDC.e address not configured for ${network}, skipping balance check`,
-      details: { network, usdcAddress },
+      message: `${collateralSymbol} address not configured for ${network}, skipping balance check`,
+      details: { network, collateralAddress },
     });
     return checks;
   }
@@ -687,36 +754,36 @@ async function checkVaultUSDCBalance(network: NetworkType): Promise<ReadinessChe
       transport: http(rpcUrl, { timeout: 15_000 }),
     });
 
-    // Check vault USDC balance
+    // Check vault collateral balance
     const balance = await client.readContract({
-      address: usdcAddress as Address,
+      address: collateralAddress as Address,
       abi: USDC_ABI,
       functionName: "balanceOf",
       args: [vaultAddress as Address],
     });
 
-    const balanceFormatted = Number(balance) / 1e6;
+    const balanceFormatted = Number(balance) / 10 ** collateralDecimals;
 
     if (balance === 0n) {
       checks.push({
-        name: "dualsafe:VaultUSDCBalance",
+        name: "dualsafe:VaultCollateralBalance",
         status: "warn",
-        message: `Vault has zero USDC balance. Deposit required for operations.`,
+        message: `Vault has zero ${collateralSymbol} balance. Deposit required for operations.`,
         details: { vaultAddress, balance: balance.toString(), balanceFormatted },
       });
     } else {
       checks.push({
-        name: "dualsafe:VaultUSDCBalance",
+        name: "dualsafe:VaultCollateralBalance",
         status: "pass",
-        message: `Vault USDC balance: ${balanceFormatted.toFixed(2)} USDC`,
+        message: `Vault ${collateralSymbol} balance: ${balanceFormatted.toFixed(2)} ${collateralSymbol}`,
         details: { vaultAddress, balance: balance.toString(), balanceFormatted },
       });
     }
   } catch (error) {
     checks.push({
-      name: "dualsafe:VaultUSDCBalance",
+      name: "dualsafe:VaultCollateralBalance",
       status: "fail",
-      message: `Failed to check vault USDC balance: ${(error as Error).message}`,
+      message: `Failed to check vault collateral balance: ${(error as Error).message}`,
       details: { vaultAddress, error: (error as Error).message },
     });
   }
@@ -739,15 +806,16 @@ async function checkTradingSafeApproval(network: NetworkType): Promise<Readiness
   }
 
   const config = NETWORK_CONFIGS[network];
-  const usdcAddress = config.addresses.usdcE;
+  const collateralAddress = config.addresses.collateral;
+  const collateralSymbol = config.addresses.collateralSymbol;
 
-  // Skip if USDC address is not configured for this network
-  if (usdcAddress.toLowerCase() === ZERO_ADDRESS.toLowerCase()) {
+  // Skip if collateral address is not configured for this network
+  if (collateralAddress.toLowerCase() === ZERO_ADDRESS.toLowerCase()) {
     checks.push({
       name: "dualsafe:TradingSafeApproval",
       status: "warn",
-      message: `USDC.e address not configured for ${network}, skipping approval check`,
-      details: { network, usdcAddress },
+      message: `${collateralSymbol} address not configured for ${network}, skipping approval check`,
+      details: { network, collateralAddress },
     });
     return checks;
   }
@@ -777,8 +845,8 @@ async function checkTradingSafeApproval(network: NetworkType): Promise<Readiness
     }
 
     const exchanges = [
-      { name: "CTF Exchange", address: config.addresses.ctfExchange },
-      { name: "NegRisk CTF Exchange", address: config.addresses.negRiskCtfExchange },
+      { name: "CTF Exchange V2", address: config.addresses.ctfExchange },
+      { name: "NegRisk CTF Exchange V2", address: config.addresses.negRiskCtfExchange },
       { name: "NegRisk Adapter", address: config.addresses.negRiskAdapter },
     ].filter((exchange) => exchange.address.toLowerCase() !== ZERO_ADDRESS.toLowerCase());
 
@@ -795,7 +863,7 @@ async function checkTradingSafeApproval(network: NetworkType): Promise<Readiness
     for (const exchange of exchanges) {
       const [allowance, isApprovedForAll] = await Promise.all([
         client.readContract({
-          address: usdcAddress as Address,
+          address: collateralAddress as Address,
           abi: USDC_ABI,
           functionName: "allowance",
           args: [tradingWalletAddress, exchange.address as Address],
@@ -809,12 +877,12 @@ async function checkTradingSafeApproval(network: NetworkType): Promise<Readiness
       ]);
 
       checks.push({
-        name: `dualsafe:TradingSafeApproval:${exchange.name}:USDC`,
+        name: `dualsafe:TradingSafeApproval:${exchange.name}:${collateralSymbol}`,
         status: allowance > 0n ? "pass" : "warn",
         message:
           allowance > 0n
-            ? `Trading wallet has USDC approval for ${exchange.name}`
-            : `Trading wallet is missing USDC approval for ${exchange.name}`,
+            ? `Trading wallet has ${collateralSymbol} approval for ${exchange.name}`
+            : `Trading wallet is missing ${collateralSymbol} approval for ${exchange.name}`,
         details: {
           vaultAddress,
           tradingWalletAddress,
@@ -999,7 +1067,7 @@ async function runPostDeployValidation(
       }
     }
 
-    // Verify asset matches expected (USDC.e)
+    // Verify asset matches expected collateral
     if (expectedConfig.asset) {
       try {
         const actualAsset = await client.readContract({
@@ -1013,7 +1081,7 @@ async function runPostDeployValidation(
           name: "postdeploy:AssetMatch",
           status: matches ? "pass" : "fail",
           message: matches
-            ? `Asset (USDC.e) matches expected`
+            ? `Asset (${config.addresses.collateralSymbol}) matches expected`
             : `Asset mismatch! Expected: ${expectedConfig.asset}, Got: ${actualAsset}`,
           details: { expected: expectedConfig.asset, actual: actualAsset },
         });
@@ -1038,7 +1106,7 @@ async function runPostDeployValidation(
       checks.push({
         name: "postdeploy:ContractState",
         status: "pass",
-        message: `Contract is functional - totalAssets: ${(Number(totalAssets) / 1e6).toFixed(2)} USDC`,
+        message: `Contract is functional - totalAssets: ${(Number(totalAssets) / 10 ** config.addresses.collateralDecimals).toFixed(2)} ${config.addresses.collateralSymbol}`,
         details: { totalAssets: totalAssets.toString() },
       });
     } catch (error) {

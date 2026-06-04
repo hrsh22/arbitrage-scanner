@@ -1,5 +1,11 @@
 import { test, expect, Page, Route } from "@playwright/test";
 
+declare global {
+  interface Window {
+    __E2E_PREFLIGHT_TIMEOUT_TRIGGERED__?: boolean;
+  }
+}
+
 // Unauthenticated scenario: test reachable lifecycle UI with real API endpoints
 test.describe("Flatbook Lifecycle – unauthenticated", () => {
   const mockEndpoints = async (
@@ -10,7 +16,7 @@ test.describe("Flatbook Lifecycle – unauthenticated", () => {
     liquidityMode = "vault_liquid",
   ) => {
     await page.route("**/api/vaults/1/cycles/current", (route: Route) => {
-      const payload: any = {
+      const payload = {
         cycle: {
           cycleId: 1,
           batchState,
@@ -231,7 +237,7 @@ test("recall preflight timeout with e2eConnected seam", async ({ page }) => {
   await expect
     .poll(
       () =>
-        page.evaluate(() => ((window as any).__E2E_PREFLIGHT_TIMEOUT_TRIGGERED__ === true ? 1 : 0)),
+        page.evaluate(() => (window.__E2E_PREFLIGHT_TIMEOUT_TRIGGERED__ === true ? 1 : 0)),
       { timeout: 5000 },
     )
     .toBe(1);

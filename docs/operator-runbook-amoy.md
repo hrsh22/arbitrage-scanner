@@ -10,6 +10,10 @@
 > - Operators must use the legacy epoch-based procedures documented in Appendix C
 > - This document describes the **target** closed-book system for post-cutover operations
 
+> **FLATBOOK HELPER DEPLOYMENT NOTE (April 2026)**
+>
+> Mainnet custom-vault work now targets `FlatBookVaultV2` with pUSD accounting and required USDC.e helper entrypoints. Do not use this Amoy closed-book runbook as the source of truth for the mainnet helper deployment. Use `contracts/scripts/deployFlatBookVaultV2.js`, the `FLATBOOK_*` env vars in `contracts/scripts/.env.example`, and verify with `pnpm verify:mainnet` after `VAULT_1_VAULT_ADDRESS` points to the helper-enabled vault.
+
 ---
 
 **Target Environment:** Polygon Amoy Testnet (Chain ID: 80002)  

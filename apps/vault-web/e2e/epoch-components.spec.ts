@@ -9,7 +9,7 @@ test.describe("Epoch Countdown Component", () => {
     await page.waitForSelector("[class*='epoch-countdown']", { timeout: 10000 });
 
     // Take screenshot of countdown component
-    const countdown = await page.locator("text=Next Settlement").first();
+    const countdown = page.locator("text=Next Settlement").first();
     await countdown.scrollIntoViewIfNeeded();
     await page.screenshot({
       path: ".sisyphus/evidence/task-15-countdown.png",
@@ -30,7 +30,7 @@ test.describe("Settlement Status Component", () => {
     await page.waitForSelector("text=Settlement Status", { timeout: 10000 });
 
     // Take screenshot of settlement status
-    const status = await page.locator("text=Settlement Status").first();
+    const status = page.locator("text=Settlement Status").first();
     await status.scrollIntoViewIfNeeded();
     await page.screenshot({
       path: ".sisyphus/evidence/task-15-settlement-status.png",

@@ -13,6 +13,17 @@ export interface VaultFeeConfig {
   withdrawal: number;
 }
 
+export interface VaultMigrationConfig {
+  enabled: boolean;
+  phase: "usdc_e_to_pusd";
+  depositsDisabled: boolean;
+  title: string;
+  message: string;
+  startedAt?: string;
+  targetAssetSymbol?: string;
+  targetAssetAddress?: string;
+}
+
 export interface VaultProfile {
   strategy: string;
   strategyLabel: string;
@@ -50,6 +61,7 @@ export interface VaultInstanceConfig {
   enabled: boolean;
   type: VaultType;
   profile?: VaultProfile;
+  migration?: VaultMigrationConfig;
 
   vaultContractType: "flatBookVaultV2";
 
@@ -83,7 +95,7 @@ export interface VaultInstanceConfig {
   safeOperatorKeyEnv: string;
   tradingSignerKeyEnv?: string;
   settlerKeyEnv?: string;
-  tradingSignatureType?: 0 | 1 | 2;
+  tradingSignatureType?: 0 | 1 | 2 | 3;
 
   /**
    * Trading

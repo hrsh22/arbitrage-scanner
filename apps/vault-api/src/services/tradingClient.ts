@@ -2,41 +2,99 @@
  * Vault Trading Client - Polymarket CLOB SDK Wrapper
  *
  * Adapted from apps/api/src/bot/tradingClient.ts for vault usage:
- * - Uses USDC.e (bridged) instead of native USDC
- * - Uses Safe address as funder with signatureType 2 (Gnosis Safe)
- * - Initializes Builder attribution config from env vars
+ * - Uses pUSD collateral instead of legacy USDC.e
+ * - Uses Safe address as funder with a Polymarket V2 signature type
+ * - Initializes Builder attribution from builderCode env config
  * - No bot-specific logic (bet sizing, daily budget tracking, PPH)
  */
 
-import { ClobClient, Side, AssetType, OrderType } from "@polymarket/clob-client";
-import type { OpenOrder, Trade } from "@polymarket/clob-client";
-import { BuilderConfig } from "@polymarket/builder-signing-sdk";
+import {
+  AssetType,
+  Chain,
+  ClobClient,
+  OrderType,
+  type OpenOrder,
+  SignatureTypeV2,
+  Side,
+  type Trade,
+} from "@polymarket/clob-client-v2";
 import { Wallet } from "ethers";
 import { logger } from "../logger.js";
 import { env } from "../env.js";
-import { POLYGON_CHAIN_ID, SUPPORTS_POLYMARKET_TRADING, USDC_E_ADDRESS } from "../constants.js";
+import { SUPPORTS_POLYMARKET_TRADING } from "../constants.js";
 import type { TradeResult } from "../types.js";
 import type { VaultInstanceConfig } from "../config/types.js";
 import { getAllVaultConfigs, resolveVaultIdentity } from "../config/index.js";
 
 const CLOB_HOST = "https://clob.polymarket.com";
 
+interface ClobApiCreds {
+  key: string;
+  secret: string;
+  passphrase: string;
+}
+
+function isClobApiCreds(value: unknown): value is ClobApiCreds {
+  const candidate = value as Partial<ClobApiCreds> | null;
+  return Boolean(candidate?.key && candidate.secret && candidate.passphrase);
+}
+
+async function withSuppressedClobRequestLogs<T>(callback: () => Promise<T>): Promise<T> {
+  const originalError = console.error;
+
+  console.error = (...args: unknown[]) => {
+    const firstArg = args[0];
+    if (typeof firstArg === "string" && firstArg.includes("[CLOB Client] request error")) {
+      return;
+    }
+
+    originalError(...args);
+  };
+
+  try {
+    return await callback();
+  } finally {
+    console.error = originalError;
+  }
+}
+
+async function createOrDeriveApiCredentials(client: ClobClient): Promise<ClobApiCreds> {
+  return withSuppressedClobRequestLogs(async () => {
+    try {
+      const createdOrDerived = await client.createOrDeriveApiKey();
+      if (isClobApiCreds(createdOrDerived)) {
+        return createdOrDerived;
+      }
+    } catch {
+      // The SDK's createOrDeriveApiKey does not catch createApiKey failures.
+      // Fall through to deriveApiKey so existing Polymarket API keys can be recovered safely.
+    }
+
+    const derived = await client.deriveApiKey();
+    if (!isClobApiCreds(derived)) {
+      throw new Error("Failed to obtain valid API credentials from Polymarket");
+    }
+
+    return derived;
+  });
+}
+
 export class VaultTradingClient {
   private client: ClobClient | null = null;
   private wallet: Wallet | null = null;
   private safeAddress: string;
-  private signatureType: 0 | 1 | 2;
+  private signatureType: SignatureTypeV2;
   private initialized = false;
 
   constructor(
     private readonly options: {
       safeAddress?: string;
       privateKey?: string | null;
-      signatureType?: 0 | 1 | 2;
+      signatureType?: SignatureTypeV2;
     } = {},
   ) {
     this.safeAddress = this.options.safeAddress ?? "";
-    this.signatureType = this.options.signatureType ?? 2;
+    this.signatureType = this.options.signatureType ?? SignatureTypeV2.POLY_GNOSIS_SAFE;
   }
 
   /**
@@ -74,32 +132,21 @@ export class VaultTradingClient {
     try {
       this.wallet = new Wallet(privateKey);
 
-      logger.info("VaultTradingClient: Initializing", {
-        operatorAddress: this.wallet.address,
-        safeAddress: this.safeAddress,
-        signatureType: this.signatureType,
-        usdcAddress: USDC_E_ADDRESS,
-      });
+        logger.info("VaultTradingClient: Initializing", {
+          operatorAddress: this.wallet.address,
+          safeAddress: this.safeAddress,
+          signatureType: this.signatureType,
+        });
 
       const builderConfig = this.createBuilderConfig();
 
-      this.client = new ClobClient(
-        CLOB_HOST,
-        POLYGON_CHAIN_ID,
-        this.wallet,
-        undefined,
-        this.signatureType,
-        this.safeAddress,
-        undefined,
-        undefined,
-        builderConfig,
-      );
+      const l1Client = new ClobClient({
+        host: CLOB_HOST,
+        chain: Chain.POLYGON,
+        signer: this.wallet,
+      });
 
-      const apiCreds = await this.client.createOrDeriveApiKey();
-
-      if (!apiCreds?.key || !apiCreds?.secret || !apiCreds?.passphrase) {
-        throw new Error("Failed to obtain valid API credentials from Polymarket");
-      }
+      const apiCreds = await createOrDeriveApiCredentials(l1Client);
 
       logger.info("VaultTradingClient: Obtained API credentials", {
         hasApiKey: !!apiCreds.key,
@@ -107,17 +154,15 @@ export class VaultTradingClient {
       });
 
       // Recreate with full credentials (two-pass init required by CLOB SDK)
-      this.client = new ClobClient(
-        CLOB_HOST,
-        POLYGON_CHAIN_ID,
-        this.wallet,
-        apiCreds,
-        this.signatureType,
-        this.safeAddress,
-        undefined,
-        undefined,
+      this.client = new ClobClient({
+        host: CLOB_HOST,
+        chain: Chain.POLYGON,
+        signer: this.wallet,
+        creds: apiCreds,
+        signatureType: this.signatureType,
+        funderAddress: this.safeAddress,
         builderConfig,
-      );
+      });
 
       this.initialized = true;
       logger.info("VaultTradingClient: Initialization complete");
@@ -130,35 +175,27 @@ export class VaultTradingClient {
   }
 
   /**
-   * Create BuilderConfig from environment variables.
-   * Returns undefined if builder attribution is disabled via flag or credentials are missing.
+   * Create builder config from environment variables.
+   * Returns undefined if builder attribution is disabled via flag or builderCode is missing.
    */
-  private createBuilderConfig(): BuilderConfig | undefined {
+  private createBuilderConfig(): { builderCode: string } | undefined {
     if (!env.VAULT_BUILDER_ENABLED) {
       logger.info("VaultTradingClient: Builder attribution disabled by config");
       return undefined;
     }
 
-    const apiKey = env.POLYMARKET_BUILDER_API_KEY;
-    const secret = env.POLYMARKET_BUILDER_SECRET;
-    const passphrase = env.POLYMARKET_BUILDER_PASSPHRASE;
+    const builderCode = env.POLYMARKET_BUILDER_CODE;
 
-    if (!apiKey || !secret || !passphrase) {
-      logger.warn("VaultTradingClient: Builder credentials not configured, skipping attribution");
+    if (!builderCode) {
+      logger.warn("VaultTradingClient: Builder code not configured, skipping attribution");
       return undefined;
     }
 
     logger.info("VaultTradingClient: Builder attribution configured", {
-      hasApiKey: true,
+      hasBuilderCode: true,
     });
 
-    return new BuilderConfig({
-      localBuilderCreds: {
-        key: apiKey,
-        secret,
-        passphrase,
-      },
-    });
+    return { builderCode };
   }
 
   isInitialized(): boolean {
@@ -197,14 +234,21 @@ export class VaultTradingClient {
         size: roundedSize,
       });
 
-      const order = await this.client!.createOrder({
-        tokenID: tokenId,
-        price: roundedPrice,
-        size: roundedSize,
-        side: clobSide,
-      });
+      const [tickSize, negRisk] = await Promise.all([
+        this.client!.getTickSize(tokenId),
+        this.client!.getNegRisk(tokenId),
+      ]);
 
-      const result = await this.client!.postOrder(order, OrderType.GTC);
+      const result = await this.client!.createAndPostOrder(
+        {
+          tokenID: tokenId,
+          price: roundedPrice,
+          size: roundedSize,
+          side: clobSide,
+        },
+        { tickSize, negRisk },
+        OrderType.GTC,
+      );
 
       logger.info("VaultTradingClient: Order posted", {
         orderId: result.orderID,
@@ -352,7 +396,7 @@ export class VaultTradingClient {
         return 0;
       }
 
-      // USDC.e has 6 decimals
+      // pUSD collateral has 6 decimals
       const balance = parseFloat(String(balanceStr)) / 1e6;
       return isNaN(balance) ? 0 : balance;
     } catch (error) {

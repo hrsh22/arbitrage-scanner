@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@workspace/ui/components/card";
 import { Badge } from "@workspace/ui/components/badge";
 import { Skeleton } from "@workspace/ui/components/skeleton";
@@ -9,6 +9,7 @@ import { useDiscoverVaultCards, useVaultInstances } from "../src/lib/hooks";
 import { getVaultHref } from "../src/lib/vaultRouting";
 import { AssetBadge, AssetLogoStack, type AssetType } from "../components/asset-logo";
 import { EmptyState, ErrorState } from "../components/async-state";
+import { USER_COLLATERAL_SYMBOL } from "../src/constants";
 import type { VaultInstance, VaultRiskLevel } from "../src/types";
 
 function formatCompactCurrency(value: number): string {
@@ -22,9 +23,14 @@ function formatCompactCurrency(value: number): string {
 
 function getDepositStatusLabel(
   enabled: boolean,
+  depositsDisabled?: boolean,
   executionMode?: string | null,
   telemetryFresh?: boolean | null,
 ): string {
+  if (depositsDisabled) {
+    return "Migration Mode";
+  }
+
   if (!enabled) {
     return "Deposits Paused";
   }
@@ -46,16 +52,24 @@ function getVaultCardSummary(vault: VaultInstance): string {
 
 function RiskBadge({ level }: { level: VaultRiskLevel }) {
   const colors = {
-    low: "border-emerald-400/25 bg-emerald-400/12 text-emerald-200",
-    medium: "border-amber-400/25 bg-amber-400/12 text-amber-200",
-    high: "border-rose-400/25 bg-rose-400/12 text-rose-200",
+    low: "border-[#58A65C]/30 bg-[#58A65C]/10 text-[#2F7A35]",
+    medium: "border-[#E8C08C]/50 bg-[#E8C08C]/20 text-[#8A6231]",
+    high: "border-[#DC2626]/25 bg-[#DC2626]/10 text-[#B91C1C]",
   };
 
   return (
-    <Badge variant="outline" className={`border ${colors[level]}`}>
+    <Badge variant="outline" className={`rounded-full border font-bold ${colors[level]}`}>
       {level.charAt(0).toUpperCase() + level.slice(1)} Risk
     </Badge>
   );
+}
+
+function VaultMetricValue({ isLoading, value }: { isLoading: boolean; value: string }) {
+  if (isLoading) {
+    return <Skeleton className="mt-1 h-6 w-20 rounded-md bg-[#E8D9C0]" />;
+  }
+
+  return <span className="text-lg font-bold text-[#1A202C]">{value}</span>;
 }
 
 function VaultCard({
@@ -74,13 +88,12 @@ function VaultCard({
       redeemableCostBasis?: number;
       sharePrice: number;
     };
+    migration?: VaultInstance["migration"];
   } | null;
   isLoading: boolean;
   executionMode: string | null;
   telemetryFresh: boolean | null;
 }) {
-  const router = useRouter();
-
   const tvl = status?.nav?.trackedTotalAssets ?? status?.nav?.totalAssets ?? 0;
   const deployedCapital =
     (status?.nav?.deployedCostBasis ?? 0) + (status?.nav?.redeemableCostBasis ?? 0);
@@ -93,43 +106,39 @@ function VaultCard({
   const vaultHref = getVaultHref(vault);
 
   return (
-    <div
-      role="link"
-      tabIndex={0}
+    <Link
+      href={vaultHref}
       data-testid={`discover-vault-card-${vault.id}`}
-      onClick={() => router.push(vaultHref)}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          router.push(vaultHref);
-        }
-      }}
-      className="group block h-full cursor-pointer focus:outline-none"
+      className="group block h-full rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#CCCAC4]"
     >
-      <Card className="relative h-full overflow-hidden rounded-[2px] border border-[#212121] bg-[#121212] shadow-none transition-all duration-300 hover:scale-[1.02] hover:border-[#656565] hover:bg-[#1A1A1A]">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(236,102,0,0.10),_transparent_28%),radial-gradient(circle_at_88%_18%,_rgba(137,145,130,0.12),_transparent_18%)] opacity-80" />
-        <CardHeader className="relative space-y-4 pb-3">
+      <Card className="relative h-full overflow-hidden rounded-2xl border border-[#CCCAC4] bg-[#F1EEE8] shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition-all duration-300 hover:-translate-y-1 hover:border-[#CCCAC4] hover:shadow-[0_10px_30px_-24px_rgba(26,32,44,0.35)]">
+        <CardHeader className="relative space-y-4 px-4 pb-3 pt-5 sm:px-6">
           <div className="flex items-start justify-between gap-3">
             <div className="flex flex-col gap-3">
               <div className="flex flex-wrap items-center gap-2">
-                <AssetBadge asset="usdc" size="sm" variant="default" />
-                <Badge className="w-fit border border-white/10 bg-white/8 text-[10px] uppercase tracking-[0.22em] text-slate-300">
+                <AssetBadge
+                  asset="usdc"
+                  size="sm"
+                  variant="default"
+                  label={USER_COLLATERAL_SYMBOL}
+                />
+                <Badge className="w-fit rounded-full border border-[#CCCAC4] bg-[#F6F4F3] text-[10px] uppercase tracking-[0.22em] text-[#615E4E]">
                   {vault.type === "custom" ? "Vault" : vault.type}
                 </Badge>
                 <RiskBadge level={vault.profile.riskLevel} />
               </div>
 
               <div className="space-y-1">
-                <CardTitle className="text-2xl font-semibold tracking-tight text-white">
+                <CardTitle className="font-serif text-3xl font-bold tracking-tight text-[#1A202C]">
                   {vault.name}
                 </CardTitle>
-                <p className="text-sm leading-6 text-slate-300">{getVaultCardSummary(vault)}</p>
+                <p className="text-sm leading-6 text-[#615E4E]">{getVaultCardSummary(vault)}</p>
               </div>
 
               <div className="flex flex-wrap items-center gap-2 pt-1">
                 <Badge
                   variant="secondary"
-                  className="rounded-[2px] border border-[#656565]/40 bg-[#212121] text-white"
+                  className="rounded-full border border-[#CCCAC4] bg-[#F6F4F3] text-[#1A202C]"
                 >
                   {vault.profile.strategyLabel}
                 </Badge>
@@ -147,7 +156,7 @@ function VaultCard({
                     return (
                       <Badge
                         variant="secondary"
-                        className="inline-flex items-center gap-1.5 border border-white/10 bg-white/6 text-slate-200"
+                        className="inline-flex items-center gap-1.5 rounded-full border border-[#CCCAC4] bg-[#F6F4F3] text-[#615E4E]"
                       >
                         <AssetLogoStack assets={validAssets} size="xs" />
                         <span>
@@ -158,14 +167,19 @@ function VaultCard({
                   })()}
                 <Badge
                   variant="secondary"
-                  className="border border-white/10 bg-white/6 text-slate-200"
+                  className="rounded-full border border-[#CCCAC4] bg-[#F6F4F3] text-[#615E4E]"
                 >
-                  {getDepositStatusLabel(vault.enabled, executionMode, telemetryFresh)}
+                  {getDepositStatusLabel(
+                    vault.enabled,
+                    status?.migration?.depositsDisabled ?? vault.migration?.depositsDisabled,
+                    executionMode,
+                    telemetryFresh,
+                  )}
                 </Badge>
                 {showAweCredit ? (
                   <Badge
                     variant="secondary"
-                    className="border border-white/10 bg-white/6 text-slate-200"
+                    className="rounded-full border border-[#CCCAC4] bg-[#F6F4F3] text-[#615E4E]"
                   >
                     @AWEnetwork_ai
                   </Badge>
@@ -176,40 +190,44 @@ function VaultCard({
         </CardHeader>
 
         <CardContent className="relative space-y-5">
-          <div className="grid grid-cols-3 gap-3 rounded-[2px] border border-[#212121] bg-[#0A0A0A] p-4">
+          <div className="grid grid-cols-2 gap-2 rounded-xl border border-[#CCCAC4] bg-[#F0EDE8] p-3 sm:grid-cols-3 sm:gap-3 sm:p-4">
             <div className="flex flex-col gap-1">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-slate-400">NAV</span>
-              <span className="text-lg font-semibold text-white">
-                {isLoading ? "--" : `$${status?.nav.sharePrice.toFixed(4) ?? "--"}`}
+              <span className="text-[10px] uppercase tracking-[0.12em] text-[#615E4E] sm:text-[11px] sm:tracking-[0.18em]">
+                NAV
               </span>
+              <VaultMetricValue
+                isLoading={isLoading}
+                value={status ? `$${status.nav.sharePrice.toFixed(4)}` : "--"}
+              />
             </div>
 
             <div className="flex flex-col gap-1">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-slate-400">TVL</span>
-              <span className="text-lg font-semibold text-white">
-                {isLoading ? "--" : formatCompactCurrency(tvl)}
+              <span className="text-[10px] uppercase tracking-[0.12em] text-[#615E4E] sm:text-[11px] sm:tracking-[0.18em]">
+                TVL
               </span>
+              <VaultMetricValue isLoading={isLoading} value={formatCompactCurrency(tvl)} />
             </div>
 
             <div className="flex flex-col gap-1">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-slate-400">
+              <span className="text-[10px] uppercase tracking-[0.12em] text-[#615E4E] sm:text-[11px] sm:tracking-[0.18em]">
                 Capital deployed
               </span>
-              <span className="text-lg font-semibold text-white">
-                {isLoading ? "--" : formatCompactCurrency(deployedCapital)}
-              </span>
+              <VaultMetricValue
+                isLoading={isLoading}
+                value={formatCompactCurrency(deployedCapital)}
+              />
             </div>
           </div>
 
-          <div className="flex items-center justify-end border-t border-[#212121] pt-4">
-            <span className="inline-flex items-center gap-2 text-sm font-medium text-white transition-transform duration-300 group-hover:translate-x-1">
+          <div className="flex items-center justify-end border-t border-[#CCCAC4] pt-4">
+            <span className="inline-flex items-center gap-2 text-sm font-bold text-[#1A202C] transition-transform duration-300 group-hover:translate-x-1">
               Open vault
               <ArrowUpRight className="h-4 w-4" />
             </span>
           </div>
         </CardContent>
       </Card>
-    </div>
+    </Link>
   );
 }
 
@@ -219,54 +237,65 @@ export default function VaultsPageClient() {
   const discoverCards = useDiscoverVaultCards(instances);
 
   return (
-    <main className="vault-pane-scroll flex-1 min-h-0 overflow-y-auto px-4 py-8 sm:px-6 sm:py-10 lg:px-10 lg:py-12">
-      <div className="mx-auto max-w-6xl space-y-10">
-        <section className="relative overflow-hidden rounded-[2px] border border-[#212121] bg-[#121212] px-6 py-8 shadow-none sm:px-8 lg:px-10">
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(137,145,130,0.16),_transparent_34%),radial-gradient(circle_at_85%_15%,_rgba(236,102,0,0.14),_transparent_18%)]" />
-          <div className="relative space-y-3 animate-in fade-in-0 slide-in-from-bottom-4 duration-700">
-            <h1 className="max-w-3xl text-4xl font-semibold tracking-tight text-white sm:text-5xl">
-              Discover vaults
+    <main className="polyvaults-app-shell vault-pane-scroll relative min-h-0 flex-1 overflow-hidden overflow-y-auto px-4 py-8 text-[#1A202C] sm:px-8 sm:py-10 lg:px-20 lg:py-12">
+      <div className="relative z-10 mx-auto max-w-7xl space-y-8 sm:space-y-10">
+        <section className="relative overflow-hidden rounded-2xl border border-[#CCCAC4] bg-[#F1EEE8] px-5 py-8 shadow-[0_1px_2px_rgba(0,0,0,0.05)] sm:px-8 sm:py-10 lg:px-10">
+          <div className="relative z-20 space-y-3 animate-in fade-in-0 slide-in-from-bottom-4 duration-700">
+            <p className="text-xs font-bold uppercase tracking-[0.24em] text-[#615E4E]">
+              Strategies
+            </p>
+            <h1 className="max-w-3xl font-serif text-5xl font-bold tracking-tight text-[#1A202C] sm:text-6xl">
+              Discover Vaults
             </h1>
-            <p className="max-w-2xl text-base leading-7 text-slate-300 sm:text-lg">
+            <p className="max-w-2xl text-base leading-7 text-[#615E4E] sm:text-lg">
               Find vaults and strategies run by agents or human operators
             </p>
-            <div className="pt-2 text-sm text-slate-400">
+            <div className="pt-2 text-sm font-medium text-[#615E4E]">
               {instances.length} vault{instances.length === 1 ? "" : "s"} available
             </div>
           </div>
         </section>
 
-        <div className="flex items-end justify-between gap-4">
-          <div className="space-y-2">
-            <h2 className="text-2xl font-semibold tracking-tight text-white">Available vaults</h2>
-          </div>
-        </div>
+        <section className="relative overflow-hidden rounded-2xl px-1 py-1">
+          <div className="relative z-10 space-y-8 sm:space-y-10">
+            <div className="flex items-end justify-between gap-4">
+              <div className="space-y-2">
+                <p className="text-xs font-bold uppercase tracking-[0.22em] text-[#615E4E]">
+                  Available
+                </p>
+                <h2 className="font-serif text-3xl font-bold tracking-tight text-[#1A202C]">
+                  Vault strategies
+                </h2>
+              </div>
+            </div>
 
-        {error && <ErrorState description={error} className="text-left items-start" />}
+            {error && <ErrorState description={error} className="text-left items-start" />}
 
-        {isLoading ? (
-          <div className="grid gap-6 md:grid-cols-2" data-testid="discover-vaults-loading">
-            <Skeleton className="h-[420px] w-full rounded-[28px] bg-white/10" />
-            <Skeleton className="h-[420px] w-full rounded-[28px] bg-white/10" />
-          </div>
-        ) : instances.length === 0 ? (
-          <EmptyState variant="card" title="No vaults are available right now." />
-        ) : (
-          <div className="grid gap-6 md:grid-cols-2">
-            {discoverCards.map(
-              ({ vault, status, isLoading: vaultIsLoading, executionMode, telemetryFresh }) => (
-                <VaultCard
-                  key={vault.id}
-                  vault={vault}
-                  status={status}
-                  isLoading={vaultIsLoading}
-                  executionMode={executionMode}
-                  telemetryFresh={telemetryFresh}
-                />
-              ),
+            {isLoading ? (
+              <div className="grid gap-6 md:grid-cols-2" data-testid="discover-vaults-loading">
+                <Skeleton className="h-[420px] w-full rounded-2xl bg-[#E8D9C0]" />
+                <Skeleton className="h-[420px] w-full rounded-2xl bg-[#E8D9C0]" />
+              </div>
+            ) : instances.length === 0 ? (
+              <EmptyState variant="card" title="No vaults are available right now." />
+            ) : (
+              <div className="grid gap-6 md:grid-cols-2">
+                {discoverCards.map(
+                  ({ vault, status, isLoading: vaultIsLoading, executionMode, telemetryFresh }) => (
+                    <VaultCard
+                      key={vault.id}
+                      vault={vault}
+                      status={status}
+                      isLoading={vaultIsLoading}
+                      executionMode={executionMode}
+                      telemetryFresh={telemetryFresh}
+                    />
+                  ),
+                )}
+              </div>
             )}
           </div>
-        )}
+        </section>
       </div>
     </main>
   );

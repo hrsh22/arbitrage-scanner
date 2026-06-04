@@ -231,7 +231,10 @@ export function useAuthSession(): UseAuthSessionResult {
     walletConnected && snapshot.walletAddress === normalizedAddress;
   const sessionAuthenticated = sessionOwnedByCurrentWallet && snapshot.status === "authenticated";
   const sessionChecking = sessionOwnedByCurrentWallet && snapshot.status === "checking";
-  const sessionKnown = !walletConnected || (sessionOwnedByCurrentWallet && !sessionChecking);
+  const sessionKnown =
+    snapshot.status === "idle" ||
+    !walletConnected ||
+    (sessionOwnedByCurrentWallet && !sessionChecking);
   const sessionError = sessionOwnedByCurrentWallet ? snapshot.error : null;
 
   return {

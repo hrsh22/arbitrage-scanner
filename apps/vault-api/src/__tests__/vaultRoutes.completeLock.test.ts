@@ -173,27 +173,53 @@ function createMockResponse(): MockResponse {
   return res;
 }
 
-function getRouteHandler(path: string): (req: Request, res: Response) => Promise<void> {
+function getRouteHandler(
+  path: string,
+  method: "get" | "post" = "post",
+): (req: Request, res: Response) => Promise<void> {
   const router = buildVaultRouter();
   const layer = router.stack.find((entry) => {
     const route = (entry as { route?: { path?: string; methods?: Record<string, boolean> } }).route;
-    return route?.path === path && route.methods?.post;
+    return route?.path === path && route.methods?.[method];
   });
 
   if (!layer) {
-    throw new Error(`Route not found: POST ${path}`);
+    throw new Error(`Route not found: ${method.toUpperCase()} ${path}`);
   }
 
   const handlers = (layer as { route: { stack: Array<{ handle: unknown }> } }).route.stack;
   const finalHandler = handlers[handlers.length - 1]?.handle;
   if (typeof finalHandler !== "function") {
-    throw new Error(`Route handler missing for POST ${path}`);
+    throw new Error(`Route handler missing for ${method.toUpperCase()} ${path}`);
   }
 
   return finalHandler as (req: Request, res: Response) => Promise<void>;
 }
 
 describe("vaultRoutes complete lock behavior", () => {
+  const migration = {
+    enabled: true,
+    phase: "usdc_e_to_pusd" as const,
+    depositsDisabled: true,
+    title: "Vault migration in progress",
+    message:
+        "New deposits are paused while this pUSD vault is finalized for Polymarket CLOB V2. Withdrawals, claims, queue status, and activity remain available.",
+    startedAt: "2026-04-28T11:00:00.000Z",
+    targetAssetSymbol: "pUSD",
+    targetAssetAddress: "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
+  };
+
+  const enabledVaultConfig = {
+    id: 1,
+    name: "PPH Vault",
+    enabled: true,
+    type: "custom" as const,
+    providerType: "custom",
+    vaultAddress: "0x62646C39547c004a922D928DCe247Cae11F7d2d2",
+    safeAddress: "0x5991fd6Ecc5634C4de497b47Eb0Aa0065fffb214",
+    vaultContractType: "flatBookVaultV2" as const,
+  };
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockReleaseLock.mockReturnValue(true);
@@ -216,17 +242,67 @@ describe("vaultRoutes complete lock behavior", () => {
       shortfall: 0,
       reason: "Vault idle liquidity already covers this withdrawal",
     });
-    mockGetAllVaultConfigs.mockReturnValue([
-      {
-        id: 1,
-        enabled: true,
-        type: "custom",
-        providerType: "custom",
-        vaultAddress: "0x62646C39547c004a922D928DCe247Cae11F7d2d2",
-        safeAddress: "0x5991fd6Ecc5634C4de497b47Eb0Aa0065fffb214",
-        vaultContractType: "flatBookVaultV2",
-      },
-    ]);
+    mockGetAllVaultConfigs.mockReturnValue([enabledVaultConfig]);
+  });
+
+  it("returns 423 for new deposits while migration disables deposits", async () => {
+    mockGetAllVaultConfigs.mockReturnValue([{ ...enabledVaultConfig, migration }]);
+
+    const handler = getRouteHandler("/deposit");
+    const req = {
+      body: { amount: 25 },
+      session: { address: "0x1234567890123456789012345678901234567890" },
+    } as unknown as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(423);
+    expect(res.payload).toMatchObject({
+      success: false,
+      amount: 25,
+      vaultId: 1,
+      migration,
+      error: "Deposits are paused for vault migration.",
+      message: migration.message,
+    });
+  });
+
+  it("returns active migration metadata on the active migration-status endpoint", async () => {
+    mockGetAllVaultConfigs.mockReturnValue([{ ...enabledVaultConfig, migration }]);
+
+    const handler = getRouteHandler("/migration-status/active", "get");
+    const req = {} as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.payload).toMatchObject({
+      success: true,
+      active: true,
+      migrations: [
+        {
+          vaultId: 1,
+          vaultName: "PPH Vault",
+          migration,
+        },
+      ],
+    });
+  });
+
+  it("keeps the legacy migration-status endpoint as a 410 compatibility response", async () => {
+    const handler = getRouteHandler("/migration-status", "get");
+    const req = {} as Request;
+    const res = createMockResponse();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(410);
+    expect(res.payload).toMatchObject({
+      error: "Migration status moved.",
+      message: "Use /vault/migration-status/active for active vault migration mode.",
+    });
   });
 
   it("returns idempotent success when lock is held but request already completed", async () => {

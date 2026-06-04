@@ -146,14 +146,20 @@ export function HeaderAuth() {
   const isTestnet = VAULT_NETWORK === "amoy";
   const networkDisplayName = isTestnet ? "Amoy Testnet" : "Polygon Mainnet";
   const networkBadgeClass = isTestnet
-    ? "border-amber-400/25 bg-amber-400/12 text-amber-200"
-    : "border-emerald-400/25 bg-emerald-400/12 text-emerald-200";
+    ? "border-[#CCCAC4] bg-[#F1EEE8] text-[#8A6231]"
+    : "border-[#CCCAC4] bg-[#F1EEE8] text-[#2F7A35]";
+  const addressPillClass =
+    "hidden rounded-full border border-[#CCCAC4] bg-[#F1EEE8] px-3 py-2 text-[#302B2C] sm:block";
+  const softButtonClass =
+    "rounded-full border border-[#CCCAC4] bg-[#F1EEE8] px-3 font-bold text-[#61604E] transition-colors hover:border-[#D4A574] hover:bg-[#E8C08C] hover:text-[#302B2C] disabled:opacity-60 sm:px-4";
+  const ghostButtonClass =
+    "rounded-full border border-[#CCCAC4] bg-[#F1EEE8] px-2 font-bold text-[#61604E] transition-colors hover:border-[#D4A574] hover:bg-[#E8C08C] hover:text-[#302B2C] sm:px-3";
 
   return (
-    <div className="flex items-center gap-2 sm:gap-3">
+    <div className="polyvaults-app-header-auth flex min-w-0 items-center justify-end gap-2 sm:gap-3">
       <Badge
         variant="outline"
-        className={`gap-1.5 font-normal ${networkBadgeClass}`}
+        className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-bold sm:px-3 ${networkBadgeClass}`}
         title={
           isTestnet ? "Polymarket trading is disabled on testnet" : "Connected to Polygon Mainnet"
         }
@@ -164,40 +170,32 @@ export function HeaderAuth() {
         {networkDisplayName}
       </Badge>
 
-      {error && <span className="animate-pulse text-xs text-rose-300">{error}</span>}
+      {error && <span className="animate-pulse text-xs font-bold text-rose-700">{error}</span>}
 
       {isAuthenticated ? (
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 rounded-[2px] border border-[#212121] bg-[#121212] px-3 py-2">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <div className="hidden items-center gap-2 rounded-full border border-[#CCCAC4] bg-[#F1EEE8] px-3 py-2 sm:flex">
             <Badge
               variant="outline"
-              className="gap-1.5 border-emerald-400/25 bg-emerald-400/5 font-normal text-emerald-200"
+              className="gap-1.5 rounded-full border-[#58A65C]/25 bg-[#58A65C]/10 font-bold text-[#2F7A35]"
             >
               <span className="h-1.5 w-1.5 rounded-[1px] bg-emerald-500" />
               Signed in
             </Badge>
-            <Separator orientation="vertical" className="h-5 bg-white/10" />
-            <span className="font-mono text-sm text-[#E4E4E7]">{truncateAddress(address)}</span>
+            <Separator orientation="vertical" className="h-5 bg-[#CCCAC4]" />
+            <span className="font-mono text-sm text-[#302B2C]">{truncateAddress(address)}</span>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={handleDisconnect}
-            className="rounded-[10px] text-slate-300 hover:bg-[#212121] hover:text-white"
-          >
-            Disconnect
+          <Button variant="ghost" size="sm" onClick={handleDisconnect} className={ghostButtonClass}>
+            <span className="sm:hidden">Exit</span>
+            <span className="hidden sm:inline">Disconnect</span>
           </Button>
         </div>
       ) : isCheckingSession ? (
-        <div className="flex items-center gap-3">
-          <div className="hidden rounded-[2px] border border-[#212121] bg-[#121212] px-3 py-2 sm:block">
-            <span className="font-mono text-sm text-[#E4E4E7]">{truncateAddress(address)}</span>
+        <div className="flex items-center gap-2 sm:gap-3">
+          <div className={addressPillClass}>
+            <span className="font-mono text-sm text-[#302B2C]">{truncateAddress(address)}</span>
           </div>
-          <Button
-            disabled
-            size="sm"
-            className="min-w-[120px] rounded-[10px] bg-white text-black hover:bg-white"
-          >
+          <Button disabled size="sm" className={`min-w-[92px] ${softButtonClass} sm:min-w-[120px]`}>
             <span className="flex items-center gap-2">
               <svg
                 className="h-3.5 w-3.5 animate-spin"
@@ -222,25 +220,21 @@ export function HeaderAuth() {
               Checking...
             </span>
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={handleDisconnect}
-            className="rounded-[10px] text-slate-300 hover:bg-[#212121] hover:text-white"
-          >
-            Disconnect
+          <Button variant="ghost" size="sm" onClick={handleDisconnect} className={ghostButtonClass}>
+            <span className="sm:hidden">Exit</span>
+            <span className="hidden sm:inline">Disconnect</span>
           </Button>
         </div>
       ) : walletConnected ? (
-        <div className="flex items-center gap-3">
-          <div className="hidden rounded-[2px] border border-[#212121] bg-[#121212] px-3 py-2 sm:block">
-            <span className="font-mono text-sm text-[#E4E4E7]">{truncateAddress(address)}</span>
+        <div className="flex items-center gap-2 sm:gap-3">
+          <div className={addressPillClass}>
+            <span className="font-mono text-sm text-[#302B2C]">{truncateAddress(address)}</span>
           </div>
           <Button
             onClick={handleSignIn}
             disabled={isLoading}
             size="sm"
-            className="min-w-[120px] rounded-[10px] bg-white text-black hover:bg-white/90"
+            className={`min-w-[88px] ${softButtonClass} sm:min-w-[120px]`}
           >
             {isLoading ? (
               <span className="flex items-center gap-2">
@@ -270,22 +264,15 @@ export function HeaderAuth() {
               "Sign In"
             )}
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={handleDisconnect}
-            className="rounded-[10px] text-slate-300 hover:bg-[#212121] hover:text-white"
-          >
-            Disconnect
+          <Button variant="ghost" size="sm" onClick={handleDisconnect} className={ghostButtonClass}>
+            <span className="sm:hidden">Exit</span>
+            <span className="hidden sm:inline">Disconnect</span>
           </Button>
         </div>
       ) : (
-        <Button
-          onClick={() => open()}
-          size="sm"
-          className="rounded-[10px] bg-white text-black hover:bg-white/90"
-        >
-          Connect Wallet
+        <Button onClick={() => open()} size="sm" className={softButtonClass}>
+          <span className="sm:hidden">Connect</span>
+          <span className="hidden sm:inline">Connect Wallet</span>
         </Button>
       )}
     </div>

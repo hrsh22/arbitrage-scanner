@@ -21,8 +21,7 @@
     "activity:backfill": "tsx scripts/backfillActivityEvents.ts"
   },
   "dependencies": {
-    "@polymarket/builder-signing-sdk": "^0.0.8",
-    "@polymarket/clob-client": "^5.1.2",
+    "@polymarket/clob-client-v2": "^1.0.2",
     "@safe-global/protocol-kit": "^6.1.2",
     "@safe-global/types-kit": "^3.0.0",
     "cookie-session": "^2.1.1",

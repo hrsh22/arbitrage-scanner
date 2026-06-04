@@ -9,7 +9,7 @@ import {
   resolveVaultIdentity,
   type ResolvedVaultIdentity,
 } from "../config/index.js";
-import { NAV_STALENESS_THRESHOLD, USDC_E_ADDRESS } from "../constants.js";
+import { COLLATERAL_ADDRESS, COLLATERAL_DECIMALS, NAV_STALENESS_THRESHOLD } from "../constants.js";
 import { logger } from "../logger.js";
 import { createNetworkTransport } from "../rpcTransport.js";
 import { getNetworkConfigFromEnv } from "../config/network.js";
@@ -254,7 +254,7 @@ const VAULT_CLAIMABLE_DEPOSIT_REQUEST_ABI = [
 
 // ===== Constants =====
 
-const USDC_DECIMALS = 6;
+const USDC_DECIMALS = COLLATERAL_DECIMALS;
 const VAULT_SHARE_DECIMALS = 6;
 const USDC_SCALE = 10n ** BigInt(USDC_DECIMALS);
 const NAV_SCALE = 10n ** 18n;
@@ -806,7 +806,7 @@ export class NavOracleService {
           : position.size;
     }
 
-    const usdcAddress = USDC_E_ADDRESS as Address;
+    const usdcAddress = COLLATERAL_ADDRESS as Address;
     const [vaultUsdcRaw, safeUsdcRaw, totalSupplyRaw, liabilityState] = await Promise.all([
       this.publicClient.readContract({
         address: usdcAddress,
@@ -1022,7 +1022,7 @@ export class NavOracleService {
       }
     }
 
-    const usdcAddress = USDC_E_ADDRESS as Address;
+    const usdcAddress = COLLATERAL_ADDRESS as Address;
 
     const [vaultUsdcRaw, safeUsdcRaw, totalSupplyRaw, onChainTotalCostBasis, lastNavUpdate] =
       await Promise.all([
@@ -1438,7 +1438,7 @@ export class NavOracleService {
    * Legacy (Morpho) force NAV update.
    */
   private async forceNavUpdateLegacy(newValue: string | number): Promise<NavUpdateResult> {
-    const usdcAddress = USDC_E_ADDRESS as Address;
+    const usdcAddress = COLLATERAL_ADDRESS as Address;
 
     const [currentOnChainValue, vaultUsdcRaw, safeUsdcRaw, totalSupplyRaw] = await Promise.all([
       this.publicClient.readContract({
@@ -1521,7 +1521,7 @@ export class NavOracleService {
    * Custom (ERC7540) force NAV update.
    */
   private async forceNavUpdateCustom(newValue: string | number): Promise<NavUpdateResult> {
-    const usdcAddress = USDC_E_ADDRESS as Address;
+    const usdcAddress = COLLATERAL_ADDRESS as Address;
 
     const [vaultUsdcRaw, safeUsdcRaw, totalSupplyRaw, liabilityState] = await Promise.all([
       this.publicClient.readContract({

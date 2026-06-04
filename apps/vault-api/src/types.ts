@@ -14,7 +14,7 @@ export interface VaultConfig {
   adapterAddress: string;
   /** Safe (multisig) contract address for asset custody */
   safeAddress: string;
-  /** Asset token address (USDC.e on Polygon) */
+  /** Asset token address (pUSD on Polygon) */
   assetAddress: string;
   /** Chain configuration (chainId, RPC endpoint) */
   chainConfig: {
@@ -118,7 +118,7 @@ export interface VaultStatus {
   positionCount: number;
   /** Ratio of deployed assets to total assets */
   deployedRatio: number;
-  /** Safe contract USDC balance */
+  /** Safe contract collateral balance */
   safeBalance: number;
   /** Timestamp of last market scan */
   lastScanAt?: Date;
@@ -154,7 +154,7 @@ export interface WithdrawalRequest {
   userAddress: string;
   /** Vault shares to withdraw (18 decimal string) */
   shares: string;
-  /** Estimated USDC.e value at request time */
+  /** Estimated collateral value at request time */
   assetsEstimated: number;
   /** Queue status */
   status: "pending" | "ready" | "completed" | "cancelled" | "expired";
@@ -174,16 +174,16 @@ export interface WithdrawalRequest {
  * Result of a reconciliation cycle
  */
 export interface ReconciliationResult {
-  /** Vault contract USDC.e balance */
+  /** Vault contract collateral balance */
   vaultBalance: number;
-  /** Safe contract USDC.e balance */
+  /** Safe contract collateral balance */
   safeBalance: number;
   /** Number of pending withdrawal requests */
   pendingWithdrawals: number;
   /** Action taken during reconciliation */
   action: "none" | "deallocated" | "allocated" | "marked_ready" | "settled";
-  /** Amount involved in the action (USDC.e) */
-  /** Amount involved in the action (USDC.e) */
+  /** Amount involved in the action (collateral) */
+  /** Amount involved in the action (collateral) */
   amount?: number;
   /** Human-readable description */
   details: string;

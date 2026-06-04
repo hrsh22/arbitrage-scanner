@@ -36,15 +36,38 @@ export interface NetworkConfig {
   readonly defaultRpcUrl: string;
   /** Whether Polymarket trading is supported on this network */
   readonly supportsPolymarketTrading: boolean;
+  /** Active collateral metadata */
+    readonly collateral: {
+    /** Active vault and Polymarket CLOB V2 collateral token */
+    readonly address: string;
+    /** Display symbol for the active collateral token */
+    readonly symbol: string;
+    /** ERC-20 decimals for the active collateral token */
+    readonly decimals: number;
+  };
+  /** User-facing deposit/withdraw token metadata. */
+  readonly userCollateral: {
+    readonly address: string;
+    readonly symbol: string;
+    readonly decimals: number;
+  };
   /** Network-specific contract addresses */
   readonly addresses: {
-    /** USDC.e (USDC from Ethereum, NOT native USDC) */
+    /** Active collateral token address */
+    readonly collateral: string;
+    /** Legacy USDC.e address retained for historical migration views */
+    readonly legacyUsdcE: string;
+    /** Collateral onramp used to convert legacy USDC.e into pUSD */
+    readonly collateralOnramp: string;
+    /** Collateral offramp used to convert pUSD back into legacy USDC.e */
+    readonly collateralOfframp: string;
+    /** @deprecated Use collateral or legacyUsdcE depending on intent. */
     readonly usdcE: string;
     /** Conditional Token Framework (CTF) contract */
     readonly ctf: string;
-    /** CTF Exchange for market order execution */
+    /** CLOB V2 Exchange for market order execution */
     readonly ctfExchange: string;
-    /** NegRisk CTF Exchange for negative risk markets */
+    /** NegRisk CLOB V2 Exchange for negative risk markets */
     readonly negRiskCtfExchange: string;
     /** NegRisk adapter for outcome token conversion */
     readonly negRiskAdapter: string;
@@ -64,11 +87,25 @@ const MAINNET_CONFIG: NetworkConfig = {
   rpcEnvKey: "NEXT_PUBLIC_POLYGON_RPC_URL",
   defaultRpcUrl: "https://polygon-bor-rpc.publicnode.com",
   supportsPolymarketTrading: true,
+  collateral: {
+    address: "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
+    symbol: "pUSD",
+    decimals: 6,
+  },
+  userCollateral: {
+    address: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+    symbol: "USDC.e",
+    decimals: 6,
+  },
   addresses: {
+    collateral: "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
+    legacyUsdcE: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+    collateralOnramp: "0x93070a847efEf7F70739046A929D47a521F5B8ee",
+    collateralOfframp: "0x2957922Eb93258b93368531d39fAcCA3B4dC5854",
     usdcE: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
     ctf: "0x4d97dcd97ec945f40cf65f87097ace5ea0476045",
-    ctfExchange: "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
-    negRiskCtfExchange: "0xC5d563A36AE78145C45a50134d48A1215220f80a",
+    ctfExchange: "0xE111180000d2663C0091e4f400237545B87B996B",
+    negRiskCtfExchange: "0xe2222d279d744050d28e00520010520000310F59",
     negRiskAdapter: "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296",
     vaultV2Factory: "0xA1D94F746dEfa1928926b84fB2596c06926C0405",
   },
@@ -85,9 +122,23 @@ const AMOY_CONFIG: NetworkConfig = {
   rpcEnvKey: "NEXT_PUBLIC_AMOY_RPC_URL",
   defaultRpcUrl: "https://rpc-amoy.polygon.technology",
   supportsPolymarketTrading: false,
+  collateral: {
+    address: "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582",
+    symbol: "pUSD",
+    decimals: 6,
+  },
+  userCollateral: {
+    address: "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582",
+    symbol: "USDC.e",
+    decimals: 6,
+  },
   addresses: {
     // NOTE: Amoy testnet requires manual contract deployment
     // These are placeholder addresses - update with actual deployed contracts
+    collateral: "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582",
+    legacyUsdcE: "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582",
+    collateralOnramp: "0x0000000000000000000000000000000000000000",
+    collateralOfframp: "0x0000000000000000000000000000000000000000",
     usdcE: "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582",
     ctf: "0x0000000000000000000000000000000000000000",
     ctfExchange: "0x0000000000000000000000000000000000000000",

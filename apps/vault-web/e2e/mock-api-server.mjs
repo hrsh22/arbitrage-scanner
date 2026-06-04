@@ -1,4 +1,5 @@
 import http from "http";
+import process from "node:process";
 
 const ALLOWED_ORIGINS = new Set([
   "http://127.0.0.1:3000",

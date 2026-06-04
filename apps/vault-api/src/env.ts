@@ -45,11 +45,11 @@ const resolveVaultNetwork = (value: string): "mainnet" | "amoy" => {
   return value;
 };
 
-const resolveClobSignatureType = (value: string): 0 | 1 | 2 => {
-  if (value !== "0" && value !== "1" && value !== "2") {
-    throw new Error(`VAULT_CLOB_SIGNATURE_TYPE must be one of 0, 1, 2. Received: ${value}`);
+const resolveClobSignatureType = (value: string): 0 | 1 | 2 | 3 => {
+  if (value !== "0" && value !== "1" && value !== "2" && value !== "3") {
+    throw new Error(`VAULT_CLOB_SIGNATURE_TYPE must be one of 0, 1, 2, 3. Received: ${value}`);
   }
-  return Number(value) as 0 | 1 | 2;
+  return Number(value) as 0 | 1 | 2 | 3;
 };
 
 const vaultMode = resolveVaultMode(stringFromEnv("VAULT_MODE", "simulation"));
@@ -96,10 +96,8 @@ export const env = {
   POLYGON_RPC_RETRY_COUNT: numberFromEnv("POLYGON_RPC_RETRY_COUNT", 2),
   POLYGON_RPC_RETRY_DELAY_MS: numberFromEnv("POLYGON_RPC_RETRY_DELAY_MS", 300),
 
-  // Polymarket Builder profile credentials (for attribution)
-  POLYMARKET_BUILDER_API_KEY: process.env.POLYMARKET_BUILDER_API_KEY ?? null,
-  POLYMARKET_BUILDER_SECRET: process.env.POLYMARKET_BUILDER_SECRET ?? null,
-  POLYMARKET_BUILDER_PASSPHRASE: process.env.POLYMARKET_BUILDER_PASSPHRASE ?? null,
+  // Polymarket Builder attribution
+  POLYMARKET_BUILDER_CODE: process.env.POLYMARKET_BUILDER_CODE ?? null,
   VAULT_BUILDER_ENABLED: booleanFromEnv("VAULT_BUILDER_ENABLED", false),
 
   // Session

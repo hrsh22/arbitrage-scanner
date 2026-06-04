@@ -1,13 +1,11 @@
 import "dotenv/config";
 
-import { AssetType, ClobClient } from "@polymarket/clob-client";
+import { AssetType, Chain, ClobClient, type SignatureTypeV2 } from "@polymarket/clob-client-v2";
 import { Wallet } from "ethers";
 import { getVaultConfig, resolveVaultIdentity } from "../config/index.js";
 
 const HOST = "https://clob.polymarket.com";
-const CHAIN_ID = 137;
-
-type SigType = 0 | 1 | 2;
+type SigType = SignatureTypeV2;
 
 interface AuthCheckResult {
   signatureType: SigType;
@@ -16,44 +14,83 @@ interface AuthCheckResult {
   error?: string;
 }
 
+interface ClobApiCreds {
+  key: string;
+  secret: string;
+  passphrase: string;
+}
+
+function isClobApiCreds(value: unknown): value is ClobApiCreds {
+  const candidate = value as Partial<ClobApiCreds> | null;
+  return Boolean(candidate?.key && candidate.secret && candidate.passphrase);
+}
+
+async function withSuppressedClobRequestLogs<T>(callback: () => Promise<T>): Promise<T> {
+  const originalError = console.error;
+
+  console.error = (...args: unknown[]) => {
+    const firstArg = args[0];
+    if (typeof firstArg === "string" && firstArg.includes("[CLOB Client] request error")) {
+      return;
+    }
+
+    originalError(...args);
+  };
+
+  try {
+    return await callback();
+  } finally {
+    console.error = originalError;
+  }
+}
+
+async function createOrDeriveApiCredentials(client: ClobClient): Promise<ClobApiCreds> {
+  return withSuppressedClobRequestLogs(async () => {
+    try {
+      const createdOrDerived = await client.createOrDeriveApiKey();
+      if (isClobApiCreds(createdOrDerived)) {
+        return createdOrDerived;
+      }
+    } catch {
+      // createOrDeriveApiKey does not catch createApiKey failures in clob-client-v2.
+      // Derive explicitly so existing keys can still be recovered without logging request headers.
+    }
+
+    const derived = await client.deriveApiKey();
+    if (!isClobApiCreds(derived)) {
+      throw new Error("createOrDeriveApiKey returned incomplete credentials");
+    }
+
+    return derived;
+  });
+}
+
 async function checkWithSignatureType(
   signer: Wallet,
   funderAddress: string,
   signatureType: SigType,
 ): Promise<AuthCheckResult> {
   try {
-    const l1Client = new ClobClient(
-      HOST,
-      CHAIN_ID,
+    const l1Client = new ClobClient({
+      host: HOST,
+      chain: Chain.POLYGON,
       signer,
-      undefined,
-      signatureType,
-      funderAddress,
-      undefined,
-      true,
-    );
-    const creds = await l1Client.createOrDeriveApiKey();
-    if (!creds?.key || !creds?.secret || !creds?.passphrase) {
-      return {
-        signatureType,
-        ok: false,
-        stage: "l1",
-        error: "createOrDeriveApiKey returned incomplete credentials",
-      };
-    }
+    });
+    const creds = await createOrDeriveApiCredentials(l1Client);
 
-    const l2Client = new ClobClient(
-      HOST,
-      CHAIN_ID,
+    const l2Client = new ClobClient({
+      host: HOST,
+      chain: Chain.POLYGON,
       signer,
       creds,
       signatureType,
       funderAddress,
-      undefined,
-      true,
-    );
+      throwOnError: true,
+    });
 
-    await l2Client.getBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+    await withSuppressedClobRequestLogs(() =>
+      l2Client.getBalanceAllowance({ asset_type: AssetType.COLLATERAL }),
+    );
     return { signatureType, ok: true, stage: "ok" };
   } catch (error) {
     const message = (error as Error).message;
@@ -113,7 +150,7 @@ async function main(): Promise<void> {
   }
 
   const signer = new Wallet(privateKey);
-  const signaturesToTest: SigType[] = [configuredType, 2, 1, 0].filter(
+  const signaturesToTest: SigType[] = [configuredType, 3, 2, 1, 0].filter(
     (value, index, self) => self.indexOf(value) === index,
   ) as SigType[];
 

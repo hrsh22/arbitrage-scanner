@@ -13,9 +13,9 @@
  * New Lifecycle Fields:
  * - queued: Assets waiting in deposit queue
  * - frozen: Assets frozen in pending epochs
- * - accrued: Total realized USDC accrued for user (settlement boundary only)
- * - claimed: Total USDC already claimed by user
- * - claimableNow: USDC available to claim right now
+ * - accrued: Total realized collateral accrued for user (settlement boundary only)
+ * - claimed: Total collateral already claimed by user
+ * - claimableNow: Collateral available to claim right now
  * - minClaimThreshold: Minimum claim amount required
  *
  * Routes:
@@ -42,6 +42,7 @@ import { parseUnits, formatUnits } from "viem";
 import { and, desc, eq } from "drizzle-orm";
 import { logger } from "../logger.js";
 import { requireAuth } from "../middleware/auth.js";
+import { getVaultConfig } from "../config/index.js";
 import {
   epochRequests,
   flatBookCycles,
@@ -70,6 +71,7 @@ import {
 import { activityEventRepository } from "../repositories/activityEventRepository.js";
 import { flatBookStateRepository } from "../repositories/flatBookStateRepository.js";
 import type { BatchStatus } from "../services/vaultProvider.js";
+import { COLLATERAL_DECIMALS, COLLATERAL_SYMBOL } from "../constants.js";
 
 const LIFECYCLE_CACHE_TTL_MS = 5_000;
 const lifecycleCache = new WeakMap<
@@ -1048,7 +1050,7 @@ async function formatRedemptionRequest(
   includeLifecycleFields = true,
 ): Promise<Record<string, unknown>> {
   const VAULT_SHARE_DECIMALS = 6;
-  const USDC_DECIMALS = 6;
+const USDC_DECIMALS = COLLATERAL_DECIMALS;
 
   const baseResponse = {
     id: request.requestId,
@@ -1117,7 +1119,7 @@ async function formatRedemptionRequest(
         carryRemainingFormatted: "0",
         claimableNow: "0",
         claimableNowFormatted: "0",
-        minClaimThreshold: "1000000", // 1 USDC in 6 decimals
+      minClaimThreshold: "1000000", // 1 collateral unit in 6 decimals
         minClaimThresholdFormatted: "1.0",
         dustOverrideEligible: false,
         lifecycleError: "No entitlement record found",
@@ -1519,6 +1521,19 @@ export function buildCustomVaultRouter(): Router {
         return;
       }
 
+      const migration = getVaultConfig(vaultId)?.migration ?? null;
+      if (migration?.depositsDisabled) {
+        res.status(423).json({
+          success: false,
+          vaultId,
+          migration,
+          error: "Deposit activity recording is paused for vault migration.",
+          message:
+            "New deposit activity cannot be recorded while this pUSD vault is in migration mode. Withdrawals, claims, queue status, and activity reads remain available.",
+        });
+        return;
+      }
+
       const userAddress = req.session!.address as Address;
       const txHash = typeof req.body?.txHash === "string" ? req.body.txHash : undefined;
       const assets = typeof req.body?.assets === "string" ? req.body.assets : undefined;
@@ -1857,7 +1872,7 @@ export function buildCustomVaultRouter(): Router {
         if (claimableAmount < minClaimThreshold) {
           res.status(409).json({
             success: false,
-            error: `Claim amount ${formatUnits(claimableAmount, 6)} USDC is below minimum threshold of 1.0 USDC. Micro partial claims are not supported.`,
+      error: `Claim amount ${formatUnits(claimableAmount, COLLATERAL_DECIMALS)} ${COLLATERAL_SYMBOL} is below minimum threshold of 1.0 ${COLLATERAL_SYMBOL}. Micro partial claims are not supported.`,
             requestId,
             vaultId,
             claimableAmount: eligibility.unclaimedAmount,
@@ -2713,6 +2728,8 @@ export function buildCustomVaultRouter(): Router {
         Promise.resolve(provider.getCapabilities()),
       ]);
 
+      const migration = getVaultConfig(vaultId)?.migration ?? null;
+
       res.json({
         success: true,
         vault: {
@@ -2738,7 +2755,12 @@ export function buildCustomVaultRouter(): Router {
           navLastUpdated: vaultInfo.navLastUpdated.toISOString(),
           navIsStale: vaultInfo.navIsStale,
         },
-        capabilities,
+        migration,
+        capabilities: {
+          ...capabilities,
+          depositsDisabled: migration?.depositsDisabled ?? false,
+          depositDisabledReason: migration?.depositsDisabled ? migration.message : undefined,
+        },
       });
     } catch (error) {
       logger.error("CustomVault API: Failed to get vault info", {

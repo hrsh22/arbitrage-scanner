@@ -12,6 +12,14 @@ import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {IERC7540, IERC7540Operator, IERC7540Deposit, IERC7540Redeem} from "./interfaces/IERC7540.sol";
 import {IERC7575} from "./interfaces/IERC7575.sol";
 
+interface ICollateralOnramp {
+    function wrap(address asset, address to, uint256 amount) external;
+}
+
+interface ICollateralOfframp {
+    function unwrap(address asset, address to, uint256 amount) external;
+}
+
 contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
     using SafeERC20 for IERC20;
 
@@ -39,6 +47,9 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
     }
 
     IERC20 private immutable assetToken;
+    IERC20 private immutable userAssetToken;
+    ICollateralOnramp public immutable collateralOnramp;
+    ICollateralOfframp public immutable collateralOfframp;
     address public immutable tradingWallet;
     uint256 public immutable NAV_STALENESS_THRESHOLD;
 
@@ -62,6 +73,7 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
     uint256 public totalClaimableRedeemAssets;
 
     mapping(address => mapping(address => bool)) public isOperator;
+    mapping(bytes32 => bool) public consumedIntents;
 
     event NAVUpdated(uint256 nav, uint256 timestamp);
     event BookClosed(uint256 indexed cycleId);
@@ -75,13 +87,44 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
     event ProcessingFinalized(uint256 indexed processedCycleId, uint256 nextCycleId);
     event IdleCycleReopened(uint256 closedCycleId, uint256 nextCycleId);
     event ProcessingRedeemsChunk(uint256 indexed cycleId, uint256 startIndex, uint256 endIndex, uint256 processedUsers);
-    event ProcessingDepositsChunk(uint256 indexed cycleId, uint256 startIndex, uint256 endIndex, uint256 processedUsers);
+    event ProcessingDepositsChunk(
+        uint256 indexed cycleId, uint256 startIndex, uint256 endIndex, uint256 processedUsers
+    );
     event InstantDeposit(address indexed caller, address indexed receiver, uint256 assets, uint256 shares);
-    event InstantRedeem(address indexed caller, address indexed receiver, address indexed owner, uint256 shares, uint256 assets);
-    event InstantWithdraw(address indexed caller, address indexed receiver, address indexed owner, uint256 assets, uint256 shares);
+    event InstantRedeem(
+        address indexed caller, address indexed receiver, address indexed owner, uint256 shares, uint256 assets
+    );
+    event InstantWithdraw(
+        address indexed caller, address indexed receiver, address indexed owner, uint256 assets, uint256 shares
+    );
     event CapitalAllocated(address indexed tradingWallet, uint256 amount);
     event DepositRequestCancelled(address indexed controller, uint256 assets);
     event RedeemRequestCancelled(address indexed controller, uint256 shares);
+    event UserAssetDeposited(
+        bytes32 indexed intentId,
+        address indexed caller,
+        address indexed receiver,
+        uint256 userAssetsIn,
+        uint256 vaultAssetsIn,
+        uint256 shares
+    );
+    event UserAssetDepositRequested(
+        bytes32 indexed intentId,
+        address indexed caller,
+        address indexed controller,
+        address owner,
+        uint256 userAssetsIn,
+        uint256 vaultAssetsQueued
+    );
+    event UserAssetRedeemClaimed(
+        bytes32 indexed intentId,
+        address indexed caller,
+        address indexed receiver,
+        address owner,
+        uint256 shares,
+        uint256 vaultAssetsOut,
+        uint256 userAssetsOut
+    );
 
     error InvalidAddress();
     error ZeroAmount();
@@ -100,16 +143,27 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
     error RequestNotClaimable(address controller);
     error InsufficientClaimableAmount(uint256 requested, uint256 available);
     error PreviewNotSupported();
+    error InvalidIntent();
+    error IntentAlreadyConsumed(bytes32 intentId);
+    error DeadlineExpired(uint256 deadline, uint256 currentTimestamp);
+    error SlippageExceeded(uint256 actual, uint256 minimum);
+    error UnexpectedUserAssetBalance(uint256 beforeBalance, uint256 afterBalance);
 
     constructor(
         address _asset,
+        address _userAsset,
+        address _collateralOnramp,
+        address _collateralOfframp,
         address _admin,
         address _bookRunner,
         address _navUpdater,
         address _tradingWallet,
         uint256 _navStalenessThreshold
-    ) ERC20("Flat Book Vault", "FBV2") {
+    ) ERC20("Sisyphus Vault Token", "SVT") {
         if (_asset == address(0)) revert InvalidAddress();
+        if (_userAsset == address(0)) revert InvalidAddress();
+        if (_collateralOnramp == address(0)) revert InvalidAddress();
+        if (_collateralOfframp == address(0)) revert InvalidAddress();
         if (_admin == address(0)) revert InvalidAddress();
         if (_bookRunner == address(0)) revert InvalidAddress();
         if (_navUpdater == address(0)) revert InvalidAddress();
@@ -117,6 +171,9 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
         if (_navStalenessThreshold == 0) revert InvalidAddress();
 
         assetToken = IERC20(_asset);
+        userAssetToken = IERC20(_userAsset);
+        collateralOnramp = ICollateralOnramp(_collateralOnramp);
+        collateralOfframp = ICollateralOfframp(_collateralOfframp);
         tradingWallet = _tradingWallet;
         NAV_STALENESS_THRESHOLD = _navStalenessThreshold;
 
@@ -136,13 +193,7 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
         _;
     }
 
-    function supportsInterface(bytes4 interfaceId)
-        public
-        view
-        virtual
-        override(AccessControl, IERC165)
-        returns (bool)
-    {
+    function supportsInterface(bytes4 interfaceId) public view virtual override(AccessControl, IERC165) returns (bool) {
         return interfaceId == type(IERC7540Operator).interfaceId || interfaceId == type(IERC7540Deposit).interfaceId
             || interfaceId == type(IERC7540Redeem).interfaceId || interfaceId == type(IERC7575).interfaceId
             || super.supportsInterface(interfaceId);
@@ -154,6 +205,10 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
 
     function asset() external view override returns (address assetTokenAddress) {
         return address(assetToken);
+    }
+
+    function userAsset() external view returns (address userAssetTokenAddress) {
+        return address(userAssetToken);
     }
 
     function setOperator(address operator, bool approved) external override returns (bool success) {
@@ -169,9 +224,9 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
 
     function requestDeposit(uint256 assets, address controller, address owner)
         public
+        override
         nonReentrant
         onlyState(VaultState.Closed)
-        override
         returns (uint256 requestId)
     {
         if (assets == 0) revert ZeroAmount();
@@ -180,29 +235,12 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
             revert NotOwner(owner, msg.sender);
         }
 
-        uint256 cycleId = currentCycleId;
-        CycleData storage cycle = cycles[cycleId];
-
         assetToken.safeTransferFrom(owner, address(this), assets);
-
-        if (!hasQueuedDepositEntry[cycleId][controller]) {
-            hasQueuedDepositEntry[cycleId][controller] = true;
-            cycleDepositParticipants[cycleId].push(controller);
-        }
-
-        queuedDepositAssets[cycleId][controller] += assets;
-        cycle.totalQueuedDepositAssets += assets;
-
-        emit DepositRequest(controller, owner, 0, msg.sender, assets);
+        _recordDepositRequest(assets, controller, owner, msg.sender);
         return 0;
     }
 
-    function pendingDepositRequest(uint256, address controller)
-        external
-        view
-        override
-        returns (uint256 pendingAssets)
-    {
+    function pendingDepositRequest(uint256, address controller) external view override returns (uint256 pendingAssets) {
         return queuedDepositAssets[currentCycleId][controller];
     }
 
@@ -221,8 +259,8 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
 
     function requestRedeem(uint256 shares, address controller, address owner)
         public
-        nonReentrant
         override
+        nonReentrant
         returns (uint256 requestId)
     {
         if (state != VaultState.Open && state != VaultState.Closed) {
@@ -254,12 +292,7 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
         return 0;
     }
 
-    function pendingRedeemRequest(uint256, address controller)
-        external
-        view
-        override
-        returns (uint256 pendingShares)
-    {
+    function pendingRedeemRequest(uint256, address controller) external view override returns (uint256 pendingShares) {
         return queuedRedeemShares[currentCycleId][controller];
     }
 
@@ -298,39 +331,32 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
 
         queuedRedeemShares[cycleId][msg.sender] = 0;
         cycle.totalQueuedRedeemShares -= sharesReturned;
-        cycle.totalQueuedRedeemAssets = cycle.totalQueuedRedeemAssets > reservedAssets
-            ? cycle.totalQueuedRedeemAssets - reservedAssets
-            : 0;
+        cycle.totalQueuedRedeemAssets =
+            cycle.totalQueuedRedeemAssets > reservedAssets ? cycle.totalQueuedRedeemAssets - reservedAssets : 0;
         _transfer(address(this), msg.sender, sharesReturned);
         emit RedeemRequestCancelled(msg.sender, sharesReturned);
     }
 
     function deposit(uint256 assets, address receiver)
         external
+        override
         nonReentrant
         onlyState(VaultState.Open)
-        override
         returns (uint256 shares)
     {
         if (assets == 0) revert ZeroAmount();
         if (receiver == address(0)) revert InvalidAddress();
         _requireFreshNAV();
 
-        shares = _convertAssetsToShares(assets, currentNAV);
-        if (shares == 0) revert ZeroAmount();
-
         assetToken.safeTransferFrom(msg.sender, address(this), assets);
-        _mint(receiver, shares);
-
-        emit Deposit(msg.sender, receiver, assets, shares);
-        emit InstantDeposit(msg.sender, receiver, assets, shares);
+        shares = _mintOpenDeposit(assets, receiver, msg.sender);
     }
 
     function mint(uint256 shares, address receiver)
         external
+        override
         nonReentrant
         onlyState(VaultState.Open)
-        override
         returns (uint256 assets)
     {
         if (shares == 0) revert ZeroAmount();
@@ -349,8 +375,8 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
 
     function deposit(uint256 assets, address receiver, address controller)
         external
-        nonReentrant
         override
+        nonReentrant
         returns (uint256 shares)
     {
         if (assets == 0) revert ZeroAmount();
@@ -375,10 +401,52 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
         emit Deposit(msg.sender, receiver, consumedAssets, shares);
     }
 
+    function depositUSDCe(
+        uint256 userAssets,
+        address receiver,
+        uint256 minSharesOut,
+        uint256 deadline,
+        bytes32 intentId
+    ) external nonReentrant onlyState(VaultState.Open) returns (uint256 shares) {
+        if (userAssets == 0) revert ZeroAmount();
+        if (receiver == address(0)) revert InvalidAddress();
+        _consumeIntent(intentId, deadline);
+        _requireFreshNAV();
+
+        uint256 vaultAssets = _wrapUserAssetsFrom(msg.sender, userAssets);
+        shares = _mintOpenDeposit(vaultAssets, receiver, msg.sender);
+        if (shares < minSharesOut) revert SlippageExceeded(shares, minSharesOut);
+
+        emit UserAssetDeposited(intentId, msg.sender, receiver, userAssets, vaultAssets, shares);
+    }
+
+    function requestDepositUSDCe(
+        uint256 userAssets,
+        address controller,
+        address owner,
+        uint256 minVaultAssetsOut,
+        uint256 deadline,
+        bytes32 intentId
+    ) external nonReentrant onlyState(VaultState.Closed) returns (uint256 requestId) {
+        if (userAssets == 0) revert ZeroAmount();
+        if (controller == address(0) || owner == address(0)) revert InvalidAddress();
+        if (msg.sender != owner && !isOperator[owner][msg.sender]) {
+            revert NotOwner(owner, msg.sender);
+        }
+        _consumeIntent(intentId, deadline);
+
+        uint256 vaultAssets = _wrapUserAssetsFrom(owner, userAssets);
+        if (vaultAssets < minVaultAssetsOut) revert SlippageExceeded(vaultAssets, minVaultAssetsOut);
+
+        _recordDepositRequest(vaultAssets, controller, owner, msg.sender);
+        emit UserAssetDepositRequested(intentId, msg.sender, controller, owner, userAssets, vaultAssets);
+        return 0;
+    }
+
     function mint(uint256 shares, address receiver, address controller)
         external
-        nonReentrant
         override
+        nonReentrant
         returns (uint256 assets)
     {
         if (shares == 0) revert ZeroAmount();
@@ -402,12 +470,12 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
 
     function redeem(uint256 shares, address receiver, address owner)
         external
-        nonReentrant
         override
+        nonReentrant
         returns (uint256 assets)
     {
         if (shares == 0) revert ZeroAmount();
-        if (receiver == address(0) || owner == address(0)) revert InvalidAddress();
+        if (receiver == address(0) || receiver == address(this) || owner == address(0)) revert InvalidAddress();
 
         uint256 claimableShares = claimableRedeemSharesByController[owner];
         uint256 claimableAssets = claimableRedeemAssetsByController[owner];
@@ -439,12 +507,12 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
 
     function withdraw(uint256 assets, address receiver, address owner)
         external
-        nonReentrant
         override
+        nonReentrant
         returns (uint256 shares)
     {
         if (assets == 0) revert ZeroAmount();
-        if (receiver == address(0) || owner == address(0)) revert InvalidAddress();
+        if (receiver == address(0) || receiver == address(this) || owner == address(0)) revert InvalidAddress();
 
         uint256 claimableAssets = claimableRedeemAssetsByController[owner];
         uint256 claimableShares = claimableRedeemSharesByController[owner];
@@ -475,6 +543,29 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
         assetToken.safeTransfer(receiver, assets);
         emit Withdraw(msg.sender, receiver, owner, assets, shares);
         emit InstantWithdraw(msg.sender, receiver, owner, assets, shares);
+    }
+
+    function claimUSDCe(
+        uint256 shares,
+        address receiver,
+        address owner,
+        uint256 minUserAssetsOut,
+        uint256 deadline,
+        bytes32 intentId
+    ) external nonReentrant returns (uint256 userAssetsOut) {
+        if (shares == 0) revert ZeroAmount();
+        if (receiver == address(0) || receiver == address(this) || owner == address(0)) revert InvalidAddress();
+        if (msg.sender != owner && !isOperator[owner][msg.sender]) {
+            revert NotOwner(owner, msg.sender);
+        }
+        _consumeIntent(intentId, deadline);
+
+        uint256 vaultAssetsOut = _consumeClaimableRedeem(shares, owner);
+        userAssetsOut = _unwrapVaultAssetsTo(vaultAssetsOut, receiver);
+        if (userAssetsOut < minUserAssetsOut) revert SlippageExceeded(userAssetsOut, minUserAssetsOut);
+
+        emit Withdraw(msg.sender, receiver, owner, vaultAssetsOut, shares);
+        emit UserAssetRedeemClaimed(intentId, msg.sender, receiver, owner, shares, vaultAssetsOut, userAssetsOut);
     }
 
     function closeBook() external onlyRole(BOOK_RUNNER_ROLE) onlyState(VaultState.Open) {
@@ -510,7 +601,9 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
         uint256 requiredRedeemAssets = _convertSharesToAssets(cycle.totalQueuedRedeemShares, lockedNav);
         uint256 availableAssets = assetToken.balanceOf(address(this));
         if (availableAssets < requiredRedeemAssets + totalClaimableRedeemAssets) {
-            revert InsufficientLiquidityForProcessing(requiredRedeemAssets + totalClaimableRedeemAssets, availableAssets);
+            revert InsufficientLiquidityForProcessing(
+                requiredRedeemAssets + totalClaimableRedeemAssets, availableAssets
+            );
         }
 
         cycle.lockedNav = lockedNav;
@@ -524,11 +617,7 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
 
         state = VaultState.Processing;
         emit ProcessingStarted(
-            cycleId,
-            lockedNav,
-            cycle.totalQueuedDepositAssets,
-            cycle.totalQueuedRedeemShares,
-            requiredRedeemAssets
+            cycleId, lockedNav, cycle.totalQueuedDepositAssets, cycle.totalQueuedRedeemShares, requiredRedeemAssets
         );
     }
 
@@ -650,18 +739,13 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
         currentNAV = _nav;
         lastNAVUpdate = block.timestamp;
         if (state != VaultState.Processing) {
-            cycles[currentCycleId].totalQueuedRedeemAssets = _convertSharesToAssets(
-                cycles[currentCycleId].totalQueuedRedeemShares, _nav
-            );
+            cycles[currentCycleId].totalQueuedRedeemAssets =
+                _convertSharesToAssets(cycles[currentCycleId].totalQueuedRedeemShares, _nav);
         }
         emit NAVUpdated(_nav, block.timestamp);
     }
 
-    function allocateToTradingWallet(uint256 amount)
-        external
-        onlyRole(ADMIN_ROLE)
-        nonReentrant
-    {
+    function allocateToTradingWallet(uint256 amount) external onlyRole(ADMIN_ROLE) nonReentrant {
         if (amount == 0) revert ZeroAmount();
         if (state == VaultState.Processing) revert InvalidState(VaultState.Open, state);
 
@@ -783,5 +867,77 @@ contract FlatBookVaultV2 is ERC20, AccessControl, ReentrancyGuard, IERC7540 {
         if (msg.sender != controller && !isOperator[controller][msg.sender]) {
             revert NotController(controller, msg.sender);
         }
+    }
+
+    function _mintOpenDeposit(uint256 assets, address receiver, address caller) internal returns (uint256 shares) {
+        shares = _convertAssetsToShares(assets, currentNAV);
+        if (shares == 0) revert ZeroAmount();
+
+        _mint(receiver, shares);
+        emit Deposit(caller, receiver, assets, shares);
+        emit InstantDeposit(caller, receiver, assets, shares);
+    }
+
+    function _recordDepositRequest(uint256 assets, address controller, address owner, address caller) internal {
+        uint256 cycleId = currentCycleId;
+        CycleData storage cycle = cycles[cycleId];
+
+        if (!hasQueuedDepositEntry[cycleId][controller]) {
+            hasQueuedDepositEntry[cycleId][controller] = true;
+            cycleDepositParticipants[cycleId].push(controller);
+        }
+
+        queuedDepositAssets[cycleId][controller] += assets;
+        cycle.totalQueuedDepositAssets += assets;
+
+        emit DepositRequest(controller, owner, 0, caller, assets);
+    }
+
+    function _consumeClaimableRedeem(uint256 shares, address owner) internal returns (uint256 assets) {
+        uint256 claimableShares = claimableRedeemSharesByController[owner];
+        uint256 claimableAssets = claimableRedeemAssetsByController[owner];
+        if (claimableShares == 0 || claimableAssets == 0) revert RequestNotClaimable(owner);
+        if (shares > claimableShares) revert InsufficientClaimableAmount(shares, claimableShares);
+
+        assets = Math.mulDiv(shares, claimableAssets, claimableShares);
+        claimableRedeemSharesByController[owner] = claimableShares - shares;
+        claimableRedeemAssetsByController[owner] = claimableAssets - assets;
+        totalClaimableRedeemAssets -= assets;
+    }
+
+    function _wrapUserAssetsFrom(address owner, uint256 userAssets) internal returns (uint256 vaultAssets) {
+        uint256 userAssetBalanceBefore = userAssetToken.balanceOf(address(this));
+        uint256 vaultAssetBalanceBefore = assetToken.balanceOf(address(this));
+
+        userAssetToken.safeTransferFrom(owner, address(this), userAssets);
+        userAssetToken.forceApprove(address(collateralOnramp), userAssets);
+        collateralOnramp.wrap(address(userAssetToken), address(this), userAssets);
+        userAssetToken.forceApprove(address(collateralOnramp), 0);
+
+        uint256 userAssetBalanceAfter = userAssetToken.balanceOf(address(this));
+        if (userAssetBalanceAfter != userAssetBalanceBefore) {
+            revert UnexpectedUserAssetBalance(userAssetBalanceBefore, userAssetBalanceAfter);
+        }
+
+        vaultAssets = assetToken.balanceOf(address(this)) - vaultAssetBalanceBefore;
+        if (vaultAssets == 0) revert ZeroAmount();
+    }
+
+    function _unwrapVaultAssetsTo(uint256 vaultAssets, address receiver) internal returns (uint256 userAssetsOut) {
+        uint256 receiverBalanceBefore = userAssetToken.balanceOf(receiver);
+
+        assetToken.forceApprove(address(collateralOfframp), vaultAssets);
+        collateralOfframp.unwrap(address(userAssetToken), receiver, vaultAssets);
+        assetToken.forceApprove(address(collateralOfframp), 0);
+
+        userAssetsOut = userAssetToken.balanceOf(receiver) - receiverBalanceBefore;
+        if (userAssetsOut == 0) revert ZeroAmount();
+    }
+
+    function _consumeIntent(bytes32 intentId, uint256 deadline) internal {
+        if (intentId == bytes32(0)) revert InvalidIntent();
+        if (block.timestamp > deadline) revert DeadlineExpired(deadline, block.timestamp);
+        if (consumedIntents[intentId]) revert IntentAlreadyConsumed(intentId);
+        consumedIntents[intentId] = true;
     }
 }

@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 import "dotenv/config";
 
-import { AssetType, ClobClient } from "@polymarket/clob-client";
+import { AssetType, Chain, ClobClient } from "@polymarket/clob-client-v2";
 import { Wallet, utils } from "ethers";
 import { createPublicClient, type Address } from "viem";
 import { getVaultConfig, resolveVaultIdentity } from "../config/index.js";
 import { getNetworkConfigFromEnv, validateNetworkConfiguration } from "../config/network.js";
 import {
+  COLLATERAL_ADDRESS,
+  COLLATERAL_SYMBOL,
   CTF_ADDRESS,
   CTF_EXCHANGE_ADDRESS,
   NEGRISK_ADAPTER_ADDRESS,
   NEGRISK_CTF_EXCHANGE_ADDRESS,
-  USDC_E_ADDRESS,
 } from "../constants.js";
 import { env } from "../env.js";
 import { createNetworkTransport } from "../rpcTransport.js";
@@ -57,6 +58,27 @@ const VAULT_ABI = [
   {
     type: "function",
     name: "tradingWallet",
+    inputs: [],
+    outputs: [{ name: "", type: "address", internalType: "address" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "userAsset",
+    inputs: [],
+    outputs: [{ name: "", type: "address", internalType: "address" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "collateralOnramp",
+    inputs: [],
+    outputs: [{ name: "", type: "address", internalType: "address" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "collateralOfframp",
     inputs: [],
     outputs: [{ name: "", type: "address", internalType: "address" }],
     stateMutability: "view",
@@ -187,6 +209,57 @@ function printTextReport(report: Report): void {
   console.log(
     `Passed: ${report.summary.passed}  Failed: ${report.summary.failed}  Warnings: ${report.summary.warnings}`,
   );
+}
+
+async function withSuppressedClobRequestLogs<T>(callback: () => Promise<T>): Promise<T> {
+  const originalError = console.error;
+
+  console.error = (...args: unknown[]) => {
+    const firstArg = args[0];
+    if (typeof firstArg === "string" && firstArg.includes("[CLOB Client] request error")) {
+      return;
+    }
+
+    originalError(...args);
+  };
+
+  try {
+    return await callback();
+  } finally {
+    console.error = originalError;
+  }
+}
+
+interface ClobApiCreds {
+  key: string;
+  secret: string;
+  passphrase: string;
+}
+
+function isClobApiCreds(value: unknown): value is ClobApiCreds {
+  const candidate = value as Partial<ClobApiCreds> | null;
+  return Boolean(candidate?.key && candidate.secret && candidate.passphrase);
+}
+
+async function createOrDeriveApiCredentials(client: ClobClient): Promise<ClobApiCreds> {
+  return withSuppressedClobRequestLogs(async () => {
+    try {
+      const createdOrDerived = await client.createOrDeriveApiKey();
+      if (isClobApiCreds(createdOrDerived)) {
+        return createdOrDerived;
+      }
+    } catch {
+      // createOrDeriveApiKey does not catch createApiKey failures in clob-client-v2.
+      // Derive explicitly so existing keys can still be recovered without logging request headers.
+    }
+
+    const derived = await client.deriveApiKey();
+    if (!isClobApiCreds(derived)) {
+      throw new Error("createOrDeriveApiKey returned incomplete credentials");
+    }
+
+    return derived;
+  });
 }
 
 async function main(): Promise<void> {
@@ -346,13 +419,13 @@ async function main(): Promise<void> {
 
       addCheck(
         checks,
-        assetAddress.toLowerCase() === networkConfig.addresses.usdcE.toLowerCase()
+        assetAddress.toLowerCase() === networkConfig.addresses.collateral.toLowerCase()
           ? "pass"
           : "fail",
         "contract:asset",
-        assetAddress.toLowerCase() === networkConfig.addresses.usdcE.toLowerCase()
-          ? `Vault asset matches Polygon USDC.e ${assetAddress}`
-          : `Vault asset ${assetAddress} does not match expected ${networkConfig.addresses.usdcE}`,
+        assetAddress.toLowerCase() === networkConfig.addresses.collateral.toLowerCase()
+          ? `Vault asset matches ${networkConfig.addresses.collateralSymbol} ${assetAddress}`
+          : `Vault asset ${assetAddress} does not match expected ${networkConfig.addresses.collateral}`,
       );
 
       addCheck(
@@ -363,6 +436,66 @@ async function main(): Promise<void> {
           ? `On-chain tradingWallet matches expected ${tradingWallet}`
           : `On-chain tradingWallet ${tradingWallet} does not match expected ${expectedTradingWallet}`,
       );
+
+      try {
+        const [userAsset, collateralOnramp, collateralOfframp] = await Promise.all([
+          client.readContract({
+            address: config.vaultAddress as Address,
+            abi: VAULT_ABI,
+            functionName: "userAsset",
+          }),
+          client.readContract({
+            address: config.vaultAddress as Address,
+            abi: VAULT_ABI,
+            functionName: "collateralOnramp",
+          }),
+          client.readContract({
+            address: config.vaultAddress as Address,
+            abi: VAULT_ABI,
+            functionName: "collateralOfframp",
+          }),
+        ]);
+
+        addCheck(
+          checks,
+          userAsset.toLowerCase() === networkConfig.addresses.legacyUsdcE.toLowerCase()
+            ? "pass"
+            : "fail",
+          "contract:userAsset",
+          userAsset.toLowerCase() === networkConfig.addresses.legacyUsdcE.toLowerCase()
+            ? `User-facing asset matches USDC.e ${userAsset}`
+            : `User-facing asset ${userAsset} does not match expected USDC.e ${networkConfig.addresses.legacyUsdcE}`,
+        );
+
+        addCheck(
+          checks,
+          collateralOnramp.toLowerCase() === networkConfig.addresses.collateralOnramp.toLowerCase()
+            ? "pass"
+            : "fail",
+          "contract:collateralOnramp",
+          collateralOnramp.toLowerCase() === networkConfig.addresses.collateralOnramp.toLowerCase()
+            ? `Collateral onramp matches ${collateralOnramp}`
+            : `Collateral onramp ${collateralOnramp} does not match expected ${networkConfig.addresses.collateralOnramp}`,
+        );
+
+        addCheck(
+          checks,
+          collateralOfframp.toLowerCase() === networkConfig.addresses.collateralOfframp.toLowerCase()
+            ? "pass"
+            : "fail",
+          "contract:collateralOfframp",
+          collateralOfframp.toLowerCase() === networkConfig.addresses.collateralOfframp.toLowerCase()
+            ? `Collateral offramp matches ${collateralOfframp}`
+            : `Collateral offramp ${collateralOfframp} does not match expected ${networkConfig.addresses.collateralOfframp}`,
+        );
+      } catch (error) {
+        addCheck(
+          checks,
+          "fail",
+          "contract:usdce-helper-surface",
+          `Configured vault must expose USDC.e helper view functions: ${(error as Error).message}`,
+        );
+      }
 
       const [
         allocatorHasNavRole,
@@ -488,7 +621,7 @@ async function main(): Promise<void> {
 
       const [usdcAllowance, ctfApprovedForAll] = await Promise.all([
         client.readContract({
-          address: USDC_E_ADDRESS as Address,
+          address: COLLATERAL_ADDRESS as Address,
           abi: ERC20_ALLOWANCE_ABI,
           functionName: "allowance",
           args: [expectedTradingWallet as Address, exchange as Address],
@@ -504,10 +637,10 @@ async function main(): Promise<void> {
       addCheck(
         checks,
         usdcAllowance > 0n ? "pass" : "fail",
-        `approval:USDC:${exchange}`,
+        `approval:${COLLATERAL_SYMBOL}:${exchange}`,
         usdcAllowance > 0n
-          ? `USDC allowance is set for ${exchange}`
-          : `USDC allowance is missing for ${exchange}`,
+          ? `${COLLATERAL_SYMBOL} allowance is set for ${exchange}`
+          : `${COLLATERAL_SYMBOL} allowance is missing for ${exchange}`,
       );
 
       addCheck(
@@ -544,34 +677,26 @@ async function main(): Promise<void> {
   } else {
     try {
       const signer = new Wallet(identity.tradingSignerKey);
-      const l1Client = new ClobClient(
-        CLOB_HOST,
-        networkConfig.chainId,
+      const l1Client = new ClobClient({
+        host: CLOB_HOST,
+        chain: networkConfig.chainId as Chain,
         signer,
-        undefined,
-        identity.tradingSignatureType ?? 2,
-        identity.safeAddress,
-        undefined,
-        true,
-      );
-      const creds = await l1Client.createOrDeriveApiKey();
+      });
+      const creds = await createOrDeriveApiCredentials(l1Client);
 
-      if (!creds?.key || !creds?.secret || !creds?.passphrase) {
-        throw new Error("createOrDeriveApiKey returned incomplete credentials");
-      }
+      await withSuppressedClobRequestLogs(async () => {
+        const l2Client = new ClobClient({
+          host: CLOB_HOST,
+          chain: networkConfig.chainId as Chain,
+          signer,
+          creds,
+          signatureType: identity.tradingSignatureType ?? 2,
+          funderAddress: identity.safeAddress,
+          throwOnError: true,
+        });
 
-      const l2Client = new ClobClient(
-        CLOB_HOST,
-        networkConfig.chainId,
-        signer,
-        creds,
-        identity.tradingSignatureType ?? 2,
-        identity.safeAddress,
-        undefined,
-        true,
-      );
-
-      await l2Client.getBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+        await l2Client.getBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+      });
 
       addCheck(
         checks,

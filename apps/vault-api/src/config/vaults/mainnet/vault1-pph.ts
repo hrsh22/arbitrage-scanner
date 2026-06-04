@@ -15,6 +15,7 @@ function requireEnv(name: string): string {
 
 const VAULT_1_VAULT_ADDRESS = requireEnv("VAULT_1_VAULT_ADDRESS");
 const VAULT_1_SAFE_ADDRESS = requireEnv("VAULT_1_SAFE_ADDRESS");
+const PUSD_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB";
 
 const config: VaultInstanceConfig = {
   id: 1,
@@ -23,6 +24,17 @@ const config: VaultInstanceConfig = {
   enabled: true,
   type: "custom",
   network: "mainnet",
+  migration: {
+    enabled: false,
+    phase: "usdc_e_to_pusd",
+    depositsDisabled: false,
+    title: "Vault migration complete",
+    message:
+      "Deposits are open through the helper-enabled pUSD vault. Users deposit USDC.e while the vault converts to pUSD atomically for Polymarket CLOB V2 trading.",
+    startedAt: "2026-04-28T11:00:00.000Z",
+    targetAssetSymbol: "pUSD",
+    targetAssetAddress: PUSD_ADDRESS,
+  },
   profile: {
     strategy: "external-ai",
     strategyLabel: "BTC 15m",

@@ -374,6 +374,9 @@ export interface VaultCapabilities {
   epochBased: boolean;
   /** Batch-based closed-book processing (new closed-book batch model) */
   batchBased?: boolean;
+  /** App-level migration/maintenance guard for new deposits */
+  depositsDisabled?: boolean;
+  depositDisabledReason?: string;
 }
 
 // ============================================================================

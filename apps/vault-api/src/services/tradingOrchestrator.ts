@@ -11,7 +11,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, gte, isNotNull, sql } from "drizzle-orm";
 
-import { SUPPORTS_POLYMARKET_TRADING, USDC_E_ADDRESS } from "../constants.js";
+import { COLLATERAL_ADDRESS, COLLATERAL_DECIMALS, SUPPORTS_POLYMARKET_TRADING } from "../constants.js";
 import type { VaultInstanceConfig } from "../config/types.js";
 import type { ResolvedVaultIdentity } from "../config/identityResolver.js";
 import { resolveVaultIdentity } from "../config/identityResolver.js";
@@ -33,7 +33,7 @@ import { withdrawalRepository } from "../repositories/withdrawalRepository.js";
 import { getVaultProvider } from "./vaultProviderFactory.js";
 import { FlatnessDetector, type FlatnessCheckResult } from "./flatnessDetector.js";
 
-const USDC_DECIMALS = 1_000_000;
+const COLLATERAL_SCALE = 10 ** COLLATERAL_DECIMALS;
 const DEFAULT_MAX_DEPLOYED_RATIO = 0.25;
 const GAMMA_BASE_URL = "https://gamma-api.polymarket.com";
 const EVENT_BATCH_SIZE = 100;
@@ -515,7 +515,7 @@ export class TradingOrchestratorService {
         return {
           success: false,
           simulated: false,
-          error: `Insufficient Safe balance for trade. Need ${tradeCost.toFixed(6)} USDC, have ${safeBalance.toFixed(6)} USDC`,
+          error: `Insufficient trading wallet collateral for trade. Need ${tradeCost.toFixed(6)}, have ${safeBalance.toFixed(6)}`,
         };
       }
 
@@ -960,8 +960,8 @@ export class TradingOrchestratorService {
   private async getSafeBalanceUsdc(): Promise<number> {
     try {
       const service = this.getSafeWalletService();
-      const raw = await service.getBalance(USDC_E_ADDRESS);
-      return Number(raw) / USDC_DECIMALS;
+      const raw = await service.getBalance(COLLATERAL_ADDRESS);
+      return Number(raw) / COLLATERAL_SCALE;
     } catch {
       return 0;
     }

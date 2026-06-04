@@ -6,7 +6,9 @@ import { getAllVaultConfigs, getVaultConfig } from "../config/index.js";
 import { resolveVaultIdentity } from "../config/identityResolver.js";
 import type { VaultInstanceConfig } from "../config/types.js";
 import {
-  USDC_E_ADDRESS,
+  COLLATERAL_ADDRESS,
+  COLLATERAL_DECIMALS,
+  COLLATERAL_SYMBOL,
   CTF_ADDRESS,
   CTF_EXCHANGE_ADDRESS,
   NEGRISK_CTF_EXCHANGE_ADDRESS,
@@ -34,7 +36,16 @@ import { pendingTxRegistry } from "../services/pendingTxRegistry.js";
 import { LiquidityManager } from "../services/liquidityManager.js";
 
 const LIFECYCLE_CACHE_TTL_MS = 5_000;
+const TRADING_ANALYTICS_DB_FRESHNESS_MS = 30 * 60 * 1000;
 const lifecycleCache = new Map<number, { expiresAt: number; value: unknown }>();
+
+function isTradingAnalyticsSyncFresh(lastSuccessfulSyncAt: Date | null | undefined): boolean {
+  return (
+    lastSuccessfulSyncAt !== null &&
+    lastSuccessfulSyncAt !== undefined &&
+    Date.now() - lastSuccessfulSyncAt.getTime() <= TRADING_ANALYTICS_DB_FRESHNESS_MS
+  );
+}
 
 async function getCachedLifecycle(config: VaultInstanceConfig): Promise<unknown> {
   const cached = lifecycleCache.get(config.id);
@@ -84,6 +95,10 @@ async function reconcileCustomReadyWithdrawalRequests(
 
   const config = getVaultConfigByAddress(readyRequests[0]!.vaultAddress);
   if (!config || config.type !== "custom") {
+    return requests;
+  }
+
+  if (config.vaultContractType === "flatBookVaultV2") {
     return requests;
   }
 
@@ -287,6 +302,20 @@ const VAULT_REDEEM_ABI = [
     ],
     outputs: [{ name: "assets", type: "uint256" }],
   },
+  {
+    type: "function",
+    name: "claimUSDCe",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "shares", type: "uint256" },
+      { name: "receiver", type: "address" },
+      { name: "owner", type: "address" },
+      { name: "minUserAssetsOut", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+      { name: "intentId", type: "bytes32" },
+    ],
+    outputs: [{ name: "userAssetsOut", type: "uint256" }],
+  },
 ] as const;
 
 const CUSTOM_VAULT_CLAIM_STATE_ABI = [
@@ -382,18 +411,18 @@ async function verifyWithdrawalCompletionTx(params: {
     }
 
     const decoded = decodeFunctionData({ abi: VAULT_REDEEM_ABI, data: tx.input });
-    if (decoded.functionName !== "redeem") {
-      return { valid: false, error: "Claim transaction did not call redeem." };
+    if (decoded.functionName !== "redeem" && decoded.functionName !== "claimUSDCe") {
+      return { valid: false, error: "Claim transaction did not call redeem or claimUSDCe." };
     }
 
-    const [shares, receiver, onBehalf] = decoded.args;
+    const [shares, receiver, owner] = decoded.args;
     const expectedShares = parseUnits(params.shares, VAULT_SHARE_DECIMALS);
 
     if (shares !== expectedShares) {
       return { valid: false, error: "Claim transaction redeemed the wrong share amount." };
     }
 
-    if (getAddress(receiver) !== normalizedUser || getAddress(onBehalf) !== normalizedUser) {
+    if (getAddress(receiver) !== normalizedUser || getAddress(owner) !== normalizedUser) {
       return {
         valid: false,
         error: "Claim transaction receiver does not match the connected wallet.",
@@ -409,7 +438,7 @@ async function verifyWithdrawalCompletionTx(params: {
   }
 }
 
-const USDC_DECIMALS = 6;
+const USDC_DECIMALS = COLLATERAL_DECIMALS;
 const VAULT_SHARE_DECIMALS = 6;
 
 const DEFAULT_VAULT_PROFILE = {
@@ -498,6 +527,10 @@ function createResolutionCheckerForConfig(config: VaultInstanceConfig): Resoluti
   const safeWallet = new SafeWalletService(config.safeAddress, identity.safeOperatorKey);
   const navOracle = createNavOracle(config);
   return new ResolutionCheckerService(positionRepository, navOracle, safeWallet, config);
+}
+
+function getVaultMigration(config: VaultInstanceConfig) {
+  return config.migration ?? null;
 }
 
 async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> {
@@ -592,13 +625,13 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> 
     if (config.type !== "custom") {
       const [vaultUsdcRaw, safeUsdcRaw, totalSupplyRaw] = await Promise.all([
         publicClient.readContract({
-          address: USDC_E_ADDRESS as Address,
+          address: COLLATERAL_ADDRESS as Address,
           abi: ERC20_BALANCE_ABI,
           functionName: "balanceOf",
           args: [config.vaultAddress as Address],
         }),
         publicClient.readContract({
-          address: USDC_E_ADDRESS as Address,
+          address: COLLATERAL_ADDRESS as Address,
           abi: ERC20_BALANCE_ABI,
           functionName: "balanceOf",
           args: [config.safeAddress as Address],
@@ -688,6 +721,7 @@ async function getVaultStatusPayload(config: VaultInstanceConfig): Promise<any> 
     committedExposureRatio,
     totalCostBasis: deployedCostBasis + redeemableCostBasis,
     mode: getEffectiveMode(config),
+    migration: getVaultMigration(config),
     capState,
     riskState: lifecycle?.riskState ?? "unknown",
     executionMode: lifecycle?.executionMode ?? "blocked",
@@ -720,6 +754,7 @@ export function buildVaultRouter(): Router {
         type: config.type,
         profile: getVaultProfile(config),
         mode: getEffectiveMode(config),
+        migration: getVaultMigration(config),
         config: {
           vaultAddress: config.vaultAddress,
           safeAddress: config.safeAddress,
@@ -773,7 +808,37 @@ export function buildVaultRouter(): Router {
         return;
       }
 
-      const analytics = await getExternalTradingAnalytics(config);
+      const network = (config.network ?? "mainnet").toLowerCase();
+      const [persistedAnalytics, syncState] = await Promise.all([
+        vaultAnalyticsRepository.getResolvedTradingAnalyticsSummary(network, config.vaultAddress),
+        vaultAnalyticsRepository.getSyncState(network, config.vaultAddress),
+      ]);
+      const shouldUsePersistedAnalytics =
+        persistedAnalytics !== null && isTradingAnalyticsSyncFresh(syncState?.lastSuccessfulSyncAt);
+
+      if (persistedAnalytics !== null && !shouldUsePersistedAnalytics) {
+        logger.warn("Vault API: Trading analytics DB snapshot is stale, using external fallback", {
+          vaultId: config.id,
+          vaultAddress: config.vaultAddress,
+          lastSuccessfulSyncAt: syncState?.lastSuccessfulSyncAt?.toISOString() ?? null,
+        });
+      }
+
+      const analytics =
+        shouldUsePersistedAnalytics && persistedAnalytics !== null
+          ? {
+              vaultAddress: config.vaultAddress,
+              walletAddress: config.safeAddress,
+              positionCount: persistedAnalytics.positionCount,
+              winCount: persistedAnalytics.winCount,
+              lossCount: persistedAnalytics.lossCount,
+              winRate: persistedAnalytics.winRate,
+              totalPnl: persistedAnalytics.totalPnl,
+              avgPnlPerPosition: persistedAnalytics.avgPnlPerPosition,
+              lastResolvedAt: persistedAnalytics.lastResolvedAt?.toISOString() ?? null,
+              computedAt: persistedAnalytics.computedAt.toISOString(),
+            }
+          : await getExternalTradingAnalytics(config);
 
       res.json({
         vaultId: config.id,
@@ -951,8 +1016,8 @@ export function buildVaultRouter(): Router {
 
       // Run approvals individually — reinitialize Safe for each tx to avoid nonce cache staleness (GS026)
       const exchanges = [
-        { name: "CTF Exchange", address: CTF_EXCHANGE_ADDRESS },
-        { name: "NegRisk CTF Exchange", address: NEGRISK_CTF_EXCHANGE_ADDRESS },
+        { name: "CTF Exchange V2", address: CTF_EXCHANGE_ADDRESS },
+        { name: "NegRisk CTF Exchange V2", address: NEGRISK_CTF_EXCHANGE_ADDRESS },
         { name: "NegRisk Adapter", address: NEGRISK_ADAPTER_ADDRESS },
       ];
       const results: Array<{ name: string; token: string; result: SafeTxResult }> = [];
@@ -967,9 +1032,9 @@ export function buildVaultRouter(): Router {
       for (const exchange of exchanges) {
         approvals.push({
           name: exchange.name,
-          token: "USDC.e",
+          token: COLLATERAL_SYMBOL,
           spender: exchange.address,
-          exec: (s) => s.approveToken(USDC_E_ADDRESS, exchange.address),
+          exec: (s) => s.approveToken(COLLATERAL_ADDRESS, exchange.address),
         });
         approvals.push({
           name: exchange.name,
@@ -991,8 +1056,8 @@ export function buildVaultRouter(): Router {
       for (const approval of approvals) {
         const safe = await createInitializedSafe();
 
-        if (approval.token === "USDC.e" && approval.spender) {
-          const currentAllowance = await safe.getAllowance(USDC_E_ADDRESS, approval.spender);
+        if (approval.token === COLLATERAL_SYMBOL && approval.spender) {
+          const currentAllowance = await safe.getAllowance(COLLATERAL_ADDRESS, approval.spender);
           if (hasSufficientAllowance(currentAllowance, safe)) {
             results.push({
               name: approval.name,
@@ -1013,10 +1078,10 @@ export function buildVaultRouter(): Router {
           result = await approval.exec(retrySafe);
         }
 
-        if (!result.success && approval.token === "USDC.e" && approval.spender) {
+        if (!result.success && approval.token === COLLATERAL_SYMBOL && approval.spender) {
           const verificationSafe = await createInitializedSafe();
           const allowanceAfterFailure = await verificationSafe.getAllowance(
-            USDC_E_ADDRESS,
+            COLLATERAL_ADDRESS,
             approval.spender,
           );
 
@@ -1066,12 +1131,13 @@ export function buildVaultRouter(): Router {
 
       const [safeInfo, balance] = await Promise.all([
         safe.getSafeInfo(),
-        safe.getBalance(USDC_E_ADDRESS),
+        safe.getBalance(COLLATERAL_ADDRESS),
       ]);
 
       res.json({
         safeInfo: { ...safeInfo, chainId: Number(safeInfo.chainId) },
-        usdcBalance: Number(balance) / 1e6,
+        collateralBalance: Number(balance) / 10 ** COLLATERAL_DECIMALS,
+        collateralSymbol: COLLATERAL_SYMBOL,
       });
     } catch (error) {
       logger.error("Vault API: Safe status failed", { error: (error as Error).message });
@@ -1136,6 +1202,19 @@ export function buildVaultRouter(): Router {
       const mode = getEffectiveMode(config);
       logger.info("Vault API: Deposit requested", { amount, mode, vaultId: config.id });
 
+      if (config.migration?.depositsDisabled) {
+        res.status(423).json({
+          success: false,
+          mode,
+          amount,
+          vaultId: config.id,
+          migration: getVaultMigration(config),
+          error: "Deposits are paused for vault migration.",
+          message: config.migration.message,
+        });
+        return;
+      }
+
       if (mode !== "live") {
         res.json({
           success: true,
@@ -1152,7 +1231,7 @@ export function buildVaultRouter(): Router {
         amount,
         vaultId: config.id,
         error:
-          "Direct deposit allocation is disabled for custom vault flow. Transfer USDC to the vault address, then run reconciliation.",
+          `Direct deposit allocation is disabled for custom vault flow. Transfer ${COLLATERAL_SYMBOL} to the vault address, then run reconciliation.`,
       });
     } catch (error) {
       logger.error("Vault API: Deposit failed", { error: (error as Error).message });
@@ -2367,6 +2446,7 @@ export function buildVaultRouter(): Router {
         enabled: config.enabled,
         profile: getVaultProfile(config),
         mode: payload.mode,
+        migration: getVaultMigration(config),
         nav: payload.nav,
         health,
         positionCount: payload.positionCount,
@@ -2542,12 +2622,30 @@ export function buildVaultRouter(): Router {
     }
   });
 
-  // Migration status endpoint removed - fresh rollout has no migration
-  // GET /vault/migration-status returns 410 Gone for backward compatibility
+  router.get("/migration-status/active", async (_req, res) => {
+    const configs = getAllVaultConfigs();
+    const migrations = configs
+      .filter((config) => config.migration?.enabled)
+      .map((config) => ({
+        vaultId: config.id,
+        vaultSlug: getVaultSlug(config),
+        vaultName: config.name,
+        migration: getVaultMigration(config),
+      }));
+
+    res.json({
+      success: true,
+      active: migrations.length > 0,
+      migrations,
+    });
+  });
+
+  // Legacy endpoint kept as 410 for backward compatibility with the fresh-rollout contract.
+  // Use GET /vault/migration-status/active for the current pUSD migration-mode state.
   router.get("/migration-status", async (_req, res) => {
     res.status(410).json({
-      error: "Migration is not available in fresh rollout.",
-      message: "Fresh vault deployment - no migration needed.",
+      error: "Migration status moved.",
+      message: "Use /vault/migration-status/active for active vault migration mode.",
     });
   });
 

@@ -17,7 +17,7 @@
 import { createPublicClient, formatUnits, parseUnits, type Address } from "viem";
 
 import type { VaultInstanceConfig } from "../config/types.js";
-import { USDC_E_ADDRESS } from "../constants.js";
+import { COLLATERAL_ADDRESS, COLLATERAL_DECIMALS } from "../constants.js";
 import { logger } from "../logger.js";
 import { activityEventRepository } from "../repositories/activityEventRepository.js";
 import { epochRepository } from "../repositories/epochRepository.js";
@@ -34,7 +34,7 @@ import { getVaultProvider } from "./vaultProviderFactory.js";
 import { FlatnessDetector, type FlatnessCheckResult } from "./flatnessDetector.js";
 import { getAllVaultConfigs, getVaultConfig } from "../config/index.js";
 
-const USDC_DECIMALS = 6;
+const USDC_DECIMALS = COLLATERAL_DECIMALS;
 
 const ERC20_ABI = [
   {
@@ -957,7 +957,7 @@ export class LiquidityManager {
 
   private async getUsdcBalance(account: Address): Promise<bigint> {
     return (await this.publicClient.readContract({
-      address: USDC_E_ADDRESS as Address,
+      address: COLLATERAL_ADDRESS as Address,
       abi: ERC20_ABI,
       functionName: "balanceOf",
       args: [account],

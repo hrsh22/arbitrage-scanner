@@ -77,7 +77,7 @@ function getDisplayedTvl(
 function formatActivityAmount(
   value: string | undefined,
   formatCurrency: (value: number, maximumFractionDigits?: number) => string,
-  suffix = "USDC.e",
+  suffix = "pUSD",
 ): string | null {
   if (!value) {
     return null;

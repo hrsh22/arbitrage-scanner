@@ -82,13 +82,8 @@ vi.mock("viem", async () => {
   };
 });
 
-vi.mock("@polymarket/clob-client", () => ({
+vi.mock("@polymarket/clob-client-v2", () => ({
   ClobClient: vi.fn(),
-}));
-
-vi.mock("@polymarket/builder-signing-sdk", () => ({
-  createL1Signer: vi.fn(),
-  createL2Signer: vi.fn(),
 }));
 
 /**
@@ -612,7 +607,7 @@ describe("Settlement Lifecycle Integration Tests", () => {
       vi.spyOn(provider, "canFlattenBatch").mockResolvedValue({ canFlatten: true });
 
       // Execute settlement
-      const result = await provider.executeSettlement(10);
+      const result = await provider.executeSettlement(10, true);
 
       // Verify settlement succeeded
       expect(result.success).toBe(true);
@@ -659,6 +654,10 @@ describe("Settlement Lifecycle Integration Tests", () => {
       });
       (provider as unknown as { client: CustomVaultClient }).client =
         mockClient as CustomVaultClient;
+      vi.spyOn(provider, "recallWithdrawalLiquidityOnDemand").mockResolvedValue({
+        success: false,
+        error: "Transaction confirmation timeout",
+      });
 
       const result = await provider.executeSettlement(10);
 
@@ -908,8 +907,12 @@ describe("Settlement Lifecycle Integration Tests", () => {
 
       (provider as unknown as { client: CustomVaultClient }).client =
         mockClient as CustomVaultClient;
+      vi.spyOn(provider, "recallWithdrawalLiquidityOnDemand").mockResolvedValue({
+        success: false,
+        error: "Transaction confirmation timeout",
+      });
 
-      const result = await provider.executeSettlement(10);
+      const result = await provider.executeSettlement(10, true);
 
       expect(result.success).toBe(true);
       expect(mockMarkDepositProcessed).toHaveBeenCalledTimes(1);
@@ -1013,8 +1016,12 @@ describe("Settlement Lifecycle Integration Tests", () => {
       );
       (provider as unknown as { client: CustomVaultClient }).client =
         mockClient as CustomVaultClient;
+      vi.spyOn(provider, "recallWithdrawalLiquidityOnDemand").mockResolvedValue({
+        success: false,
+        error: "Transaction confirmation timeout",
+      });
 
-      const result = await provider.executeSettlement(10);
+      const result = await provider.executeSettlement(10, true);
 
       expect(result.success).toBe(true);
       expect(mockAppendUserVaultActivityEvent).toHaveBeenCalledWith(
@@ -1110,8 +1117,12 @@ describe("Settlement Lifecycle Integration Tests", () => {
       );
       (provider as unknown as { client: CustomVaultClient }).client =
         mockClient as CustomVaultClient;
+      vi.spyOn(provider, "recallWithdrawalLiquidityOnDemand").mockResolvedValue({
+        success: false,
+        error: "Transaction confirmation timeout",
+      });
 
-      const result = await provider.executeSettlement(10);
+      const result = await provider.executeSettlement(10, true);
 
       expect(result.success).toBe(true);
       expect(mockAppendUserVaultActivityEvent).toHaveBeenCalledWith(
@@ -1994,8 +2005,12 @@ describe("Settlement Lifecycle Integration Tests", () => {
       );
       (provider as unknown as { client: CustomVaultClient }).client =
         mockClient as CustomVaultClient;
+      vi.spyOn(provider, "recallWithdrawalLiquidityOnDemand").mockResolvedValue({
+        success: false,
+        error: "Transaction confirmation timeout",
+      });
 
-      const result = await provider.executeSettlement(10);
+      const result = await provider.executeSettlement(10, true);
 
       expect(result.success).toBe(false);
       expect(result.error).toContain("Failed to fund redeem processing before flattening");

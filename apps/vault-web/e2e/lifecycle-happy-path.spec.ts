@@ -7,6 +7,11 @@ import { test, expect } from "@playwright/test";
 // without requiring actual blockchain transactions.
 // Tests are designed to work with or without API data.
 
+async function anyVisible(checks: Promise<boolean>[]): Promise<boolean> {
+  const results = await Promise.all(checks);
+  return results.some(Boolean);
+}
+
 test.describe("Deposit Lifecycle Flow", () => {
   test.beforeEach(async ({ page }) => {
     // Navigate to vault page with extended timeout for dev server startup
@@ -121,12 +126,12 @@ test.describe("Epoch Phase Timeline", () => {
     const finalizedDesc = page.locator("text=/All redemptions processed/");
 
     // At least one description should be visible
-    const hasAnyDesc = await Promise.any([
+    const hasAnyDesc = await anyVisible([
       activeDesc.isVisible().catch(() => false),
       frozenDesc.isVisible().catch(() => false),
       settledDesc.isVisible().catch(() => false),
       finalizedDesc.isVisible().catch(() => false),
-    ]).catch(() => false);
+    ]);
 
     expect(hasAnyDesc).toBe(true);
   });
@@ -142,7 +147,7 @@ test.describe("Epoch Phase Timeline", () => {
     const endTime = page.locator("text=/End:/");
 
     // At least one timing element should be present
-    const hasTiming = await Promise.any([
+    const hasTiming = await anyVisible([
       timelineSection.isVisible().catch(() => false),
       epochNumber
         .first()
@@ -156,7 +161,7 @@ test.describe("Epoch Phase Timeline", () => {
         .first()
         .isVisible()
         .catch(() => false),
-    ]).catch(() => false);
+    ]);
 
     expect(hasTiming).toBe(true);
   });
@@ -203,11 +208,11 @@ test.describe("Redemption Lifecycle Flow", () => {
     const claimTab = page.locator('button[aria-label="View claimable requests"]');
 
     // At least one tab should be visible
-    const hasTabs = await Promise.any([
+    const hasTabs = await anyVisible([
       requestTab.isVisible().catch(() => false),
       pendingTab.isVisible().catch(() => false),
       claimTab.isVisible().catch(() => false),
-    ]).catch(() => false);
+    ]);
 
     expect(hasTabs).toBe(true);
 
@@ -234,14 +239,14 @@ test.describe("Redemption Lifecycle Flow", () => {
     const proRataText = page.locator("text=Pro-rata");
 
     // At least one should be present
-    const hasFormElement = await Promise.any([
+    const hasFormElement = await anyVisible([
       sharesInput.isVisible().catch(() => false),
       requestButton.isVisible().catch(() => false),
       proRataText
         .first()
         .isVisible()
         .catch(() => false),
-    ]).catch(() => false);
+    ]);
 
     expect(hasFormElement).toBe(true);
   });
@@ -272,9 +277,6 @@ test.describe("Redemption Lifecycle Flow", () => {
     if (hasPendingRequests) {
       // Look for lifecycle progress indicators
       const requestPhase = page.locator("text=Request").first();
-      const freezePhase = page.locator("text=Freeze").first();
-      const settlePhase = page.locator("text=Settle").first();
-      const claimPhase = page.locator("text=Claim").first();
 
       // At least Request phase should be visible
       await expect(requestPhase).toBeVisible();
@@ -380,7 +382,7 @@ test.describe("Queue Status Display", () => {
     const emptyState = page.locator("text=/No deposits currently queued/");
 
     // At least one should be visible or we should see the deposit form
-    const hasDepositInfo = await Promise.any([
+    const hasDepositInfo = await anyVisible([
       depositStatus.isVisible().catch(() => false),
       queuedStatus
         .first()
@@ -391,7 +393,7 @@ test.describe("Queue Status Display", () => {
         .isVisible()
         .catch(() => false),
       emptyState.isVisible().catch(() => false),
-    ]).catch(() => false);
+    ]);
 
     expect(hasDepositInfo).toBe(true);
   });
@@ -410,7 +412,7 @@ test.describe("Queue Status Display", () => {
       const pendingBadge = page.locator("text=Pending");
       const processingBadge = page.locator("text=Processing");
 
-      const hasAnyCard = await Promise.any([
+      const hasAnyCard = await anyVisible([
         queuedCard.isVisible().catch(() => false),
         frozenCard.isVisible().catch(() => false),
         pendingBadge
@@ -421,7 +423,7 @@ test.describe("Queue Status Display", () => {
           .first()
           .isVisible()
           .catch(() => false),
-      ]).catch(() => false);
+      ]);
 
       expect(hasAnyCard).toBe(true);
 

@@ -95,9 +95,11 @@ export default async function Page({
   params: Promise<{ id: string }>;
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const { id } = await params;
-  const resolvedSearchParams = await searchParams;
-  const bootstrapInstances = await fetchVaultInstancesForBootstrap();
+  const [{ id }, resolvedSearchParams, bootstrapInstances] = await Promise.all([
+    params,
+    searchParams,
+    fetchVaultInstancesForBootstrap(),
+  ]);
   const bootstrapVault = bootstrapInstances
     ? resolveVaultFromRouteSegment(id, bootstrapInstances)
     : null;

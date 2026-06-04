@@ -10,7 +10,11 @@
     "POLYMARKET_PRIVATE_KEY",
     "POLYMARKET_FUNDER_ADDRESS",
     "LOG_LEVEL",
-    "NEXT_PUBLIC_API_BASE"
+    "NEXT_PUBLIC_API_BASE",
+    "NEXT_PUBLIC_APP_ORIGIN",
+    "PLAYWRIGHT_FULL_SUITE",
+    "NODE_OPTIONS",
+    "CI"
   ],
   "tasks": {
     "build": {

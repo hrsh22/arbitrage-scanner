@@ -34,7 +34,9 @@ contract FlatBookVaultV2ConformanceTest is Test {
     function setUp() public {
         vm.startPrank(admin);
         asset = new MockTokenConformance();
-        vault = new FlatBookVaultV2(address(asset), admin, bookRunner, navUpdater, tradingWallet, 10 minutes);
+        vault = new FlatBookVaultV2(
+            address(asset), address(asset), admin, admin, admin, bookRunner, navUpdater, tradingWallet, 10 minutes
+        );
         asset.transfer(alice, 2_000_000 * 1e6);
         asset.transfer(bob, 2_000_000 * 1e6);
         vm.stopPrank();
@@ -46,6 +48,7 @@ contract FlatBookVaultV2ConformanceTest is Test {
         assertTrue(vault.supportsInterface(type(IERC7540Redeem).interfaceId));
         assertTrue(vault.supportsInterface(type(IERC7575).interfaceId));
         assertEq(vault.asset(), address(asset));
+        assertEq(vault.userAsset(), address(asset));
         assertEq(vault.share(), address(vault));
     }
 

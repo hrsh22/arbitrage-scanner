@@ -75,7 +75,7 @@ export const vaultConfig = pgTable("vault_config", {
   vaultAddress: text("vault_address").notNull().unique(),
   adapterAddress: text("adapter_address").notNull(),
   safeAddress: text("safe_address").notNull(),
-  asset: text("asset").notNull().default("USDC.e"), // Token symbol
+  asset: text("asset").notNull().default("pUSD"), // Token symbol
   deploymentBlock: integer("deployment_block").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

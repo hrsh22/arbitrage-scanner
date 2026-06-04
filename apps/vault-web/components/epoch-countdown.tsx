@@ -134,10 +134,9 @@ export function EpochCountdown({
   const completedRef = useRef(false);
 
   useEffect(() => {
-    setTimeLeft(calculateTimeLeft(targetTime));
     completedRef.current = false;
 
-    const interval = setInterval(() => {
+    const updateCountdown = () => {
       const newTimeLeft = calculateTimeLeft(targetTime);
       setTimeLeft(newTimeLeft);
 
@@ -145,7 +144,10 @@ export function EpochCountdown({
         completedRef.current = true;
         onComplete?.();
       }
-    }, 1000);
+    };
+
+    updateCountdown();
+    const interval = setInterval(updateCountdown, 1000);
 
     return () => clearInterval(interval);
   }, [targetTime, onComplete]);

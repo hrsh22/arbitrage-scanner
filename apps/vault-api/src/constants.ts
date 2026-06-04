@@ -36,8 +36,31 @@ export const SUPPORTS_POLYMARKET_TRADING = networkConfig.supportsPolymarketTradi
 // These addresses are network-specific and loaded from config/network.ts
 // based on the VAULT_NETWORK environment variable.
 
-/** USDC.e (USDC from Ethereum, NOT native USDC) on Polygon */
-export const USDC_E_ADDRESS = networkConfig.addresses.usdcE;
+/** Active Polymarket collateral token for the current network (pUSD on Polygon mainnet) */
+export const COLLATERAL_ADDRESS = networkConfig.addresses.collateral;
+
+/** Active Polymarket collateral display symbol */
+export const COLLATERAL_SYMBOL = networkConfig.addresses.collateralSymbol;
+
+/** Active Polymarket collateral decimals */
+export const COLLATERAL_DECIMALS = networkConfig.addresses.collateralDecimals;
+
+/** Legacy Polygon USDC.e address retained for migration/onramp flows only */
+export const LEGACY_USDC_E_ADDRESS = networkConfig.addresses.legacyUsdcE;
+
+/** User-facing vault deposit/withdraw token used by USDC.e helper entrypoints. */
+export const USER_COLLATERAL_ADDRESS = LEGACY_USDC_E_ADDRESS;
+export const USER_COLLATERAL_SYMBOL = "USDC.e";
+export const USER_COLLATERAL_DECIMALS = 6;
+
+/** Polymarket collateral onramp for legacy USDC.e -> pUSD conversion */
+export const COLLATERAL_ONRAMP_ADDRESS = networkConfig.addresses.collateralOnramp;
+
+/** Polymarket collateral offramp for pUSD -> legacy USDC.e conversion */
+export const COLLATERAL_OFFRAMP_ADDRESS = networkConfig.addresses.collateralOfframp;
+
+/** User-facing USDC.e token used by vault helper entrypoints. */
+export const USDC_E_ADDRESS = USER_COLLATERAL_ADDRESS;
 
 /** Conditional Token Framework (CTF) contract */
 export const CTF_ADDRESS = networkConfig.addresses.ctf;
@@ -47,6 +70,12 @@ export const CTF_EXCHANGE_ADDRESS = networkConfig.addresses.ctfExchange;
 
 /** NegRisk CTF Exchange for negative risk markets */
 export const NEGRISK_CTF_EXCHANGE_ADDRESS = networkConfig.addresses.negRiskCtfExchange;
+
+/** CLOB V2 exchange for market order execution */
+export const EXCHANGE_V2_ADDRESS = networkConfig.addresses.exchangeV2;
+
+/** CLOB V2 negative-risk exchange */
+export const NEGRISK_EXCHANGE_V2_ADDRESS = networkConfig.addresses.negRiskExchangeV2;
 
 /** NegRisk adapter for outcome token conversion */
 export const NEGRISK_ADAPTER_ADDRESS = networkConfig.addresses.negRiskAdapter;

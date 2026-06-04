@@ -77,7 +77,7 @@ async function main(): Promise<void> {
     rpcUrls[0],
     network.chain,
   );
-  const usdcAddress = network.addresses.usdcE as `0x${string}`;
+  const usdcAddress = network.addresses.collateral as `0x${string}`;
 
   const [vaultBalanceBefore, safeBalanceBefore] = await Promise.all([
     publicClient.readContract({
