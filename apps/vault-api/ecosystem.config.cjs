@@ -2,22 +2,31 @@ module.exports = {
   apps: [
     {
       name: "vault-api-server",
-      script: "pnpm",
-      args: "run dev",
+      script: "dist/index.js",
+      instances: 1,
+      exec_mode: "fork",
       autorestart: true,
       watch: false,
+      env: {
+        NODE_ENV: "production",
+      },
     },
     {
       name: "vault-api-worker",
-      script: "pnpm",
-      args: "run worker",
+      script: "dist/worker.js",
+      instances: 1,
+      exec_mode: "fork",
       autorestart: true,
       watch: false,
+      env: {
+        NODE_ENV: "production",
+      },
     },
     {
       name: "vault-analytics-sync",
-      script: "pnpm",
-      args: "cron:sync-vault-analytics",
+      script: "dist/cron/syncVaultAnalytics.js",
+      instances: 1,
+      exec_mode: "fork",
       cron_restart: "7-59/10 * * * *",
       autorestart: false,
       watch: false,
