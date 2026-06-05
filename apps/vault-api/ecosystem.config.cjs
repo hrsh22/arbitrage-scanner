@@ -1,34 +1,18 @@
 module.exports = {
   apps: [
     {
-      name: "vault-api",
-      script: "dist/index.js",
-      instances: 1,
+      name: "vault-api-server",
+      script: "pnpm",
+      args: "run dev",
       autorestart: true,
       watch: false,
-      env: {
-        NODE_ENV: "production",
-      },
     },
     {
-      name: "vault-capital-worker",
-      script: "dist/worker.js",
-      instances: 1,
+      name: "vault-api-worker",
+      script: "pnpm",
+      args: "run worker",
       autorestart: true,
       watch: false,
-      env: {
-        NODE_ENV: "production",
-      },
-    },
-    {
-      name: "vault-resolution-worker",
-      script: "dist/tradingWorker.js",
-      instances: 1,
-      autorestart: true,
-      watch: false,
-      env: {
-        NODE_ENV: "production",
-      },
     },
     {
       name: "vault-analytics-sync",
