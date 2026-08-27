@@ -1,0 +1,10 @@
+Snapshot Tranche Vault Deployment Evidence
+=========================================
+
+Run ID: deploy-test-2026-03-01T11-16-08-228Z
+Profile: test
+Verdict: failure
+Duration: 15ms
+Timestamp: 2026-03-01T11:16:08.249Z
+
+Steps:

@@ -1,0 +1,52 @@
+# Task 8: Loss Attribution Evidence
+
+## Summary
+Implemented `realizeLoss()` function in EpochTrancheVault.sol that attributes realized losses proportionally across redemption requests based on shares.
+
+## Implementation Details
+
+### Function: realizeLoss(uint256 epochId, uint256 lossAmount)
+- **Access Control**: SETTLER_ROLE only
+- **Validation**: 
+  - Epoch must exist and be in Settled or Finalized state
+  - Loss amount must be > 0
+  - Loss amount cannot exceed cohortCarryRemaining
+
+### Loss Attribution Logic
+1. **First Pass**: Calculate total claimable shares across all Claimable requests
+2. **Second Pass**: Apply loss proportionally to each request:
+   - `requestLoss = (lossAmount * request.shares) / totalClaimableShares`
+   - Capped at request's remaining carry (`request.carryRemaining`)
+   - Updates: `request.accrued`, `request.carryRemaining`, `epoch.cohortCarryRemaining`
+
+### Cohort-Fair Allocation
+- Loss is distributed proportionally based on shares
+- Each request's loss is capped at their remaining carry liability
+- No request can lose more than their accrued carry
+
+### Events Emitted
+- `LossRealized(epochId, lossAmount, requestsAffected)`
+- `RequestLossAttributed(requestId, lossAmount, newAccrued)`
+
+## Test Coverage
+1. Single request loss attribution
+2. Multiple requests with proportional allocation
+3. Conservation equation verification
+4. Authorization checks (only settler)
+5. Epoch state validation
+6. Loss amount bounds checking
+7. Partial claim then loss scenario
+8. Loss on finalized epoch
+
+## Files Modified
+- contracts/src/EpochTrancheVault.sol: Added realizeLoss() function
+- contracts/src/EpochTrancheVault.sol: Added LossRealized event
+- contracts/src/EpochTrancheVault.sol: Added RequestLossAttributed event
+- contracts/src/EpochTrancheVault.sol: Added EpochNotSettledOrFinalized error
+- contracts/src/EpochTrancheVault.sol: Added LossExceedsCarryRemaining error
+- contracts/src/EpochTrancheVault.sol: Added NoClaimableRequests error
+- contracts/test/EpochTrancheVault.t.sol: Added comprehensive loss attribution tests
+
+## Conservation Equation
+After loss realization: `cohortTotalClaimed + cohortCarryRemaining ≈ cohortTotalEntitlement`
+(Within rounding tolerance of 10 wei)

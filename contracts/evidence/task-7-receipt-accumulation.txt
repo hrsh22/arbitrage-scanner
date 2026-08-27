@@ -1,0 +1,91 @@
+# Task 7 Evidence: Receipt Accumulation
+
+## Implementation Summary
+
+The `queueDeposit` function in `EpochTrancheVault.sol` has been modified to support **receipt accumulation** for repeated same-epoch deposits.
+
+## Key Changes
+
+### 1. New Storage Mapping
+```solidity
+mapping(address => mapping(uint256 => uint256)) public depositorEpochRequest;
+// depositor => targetEpoch => requestId
+```
+
+This mapping tracks which request ID belongs to each depositor for each target epoch, enabling accumulation detection.
+
+### 2. Accumulation Logic in queueDeposit()
+
+The function now checks if a deposit request already exists for the depositor in the target epoch:
+
+```solidity
+// Check if depositor already has a request for this target epoch
+requestId = depositorEpochRequest[msg.sender][targetEpoch];
+
+if (requestId != 0) {
+    // Accumulate into existing request
+    DepositRequest storage existingRequest = depositRequests[requestId];
+    if (!existingRequest.exists || existingRequest.processed) {
+        revert InvalidRequest(requestId);
+    }
+    existingRequest.assets += assets;
+    totalQueuedAssets += assets;
+    // ... emit event with accumulated amount
+} else {
+    // Create new deposit request
+    // ... normal new request creation
+    depositorEpochRequest[msg.sender][targetEpoch] = requestId;
+    // ...
+}
+```
+
+## Receipt Accumulation Behavior
+
+### Scenario: Same Depositor, Same Epoch
+
+**Before this change:**
+- Deposit 1: 100 USDC → Request ID 1 (100 USDC)
+- Deposit 2: 200 USDC → Request ID 2 (200 USDC) 
+- Deposit 3: 300 USDC → Request ID 3 (300 USDC)
+- Total: 3 separate requests, 600 USDC total
+
+**After this change:**
+- Deposit 1: 100 USDC → Request ID 1 (100 USDC)
+- Deposit 2: 200 USDC → Request ID 1 (300 USDC accumulated)
+- Deposit 3: 300 USDC → Request ID 1 (600 USDC accumulated)
+- Total: 1 request with 600 USDC
+
+### Benefits
+
+1. **Gas Efficiency**: Fewer storage writes and events for repeated deposits
+2. **Cleaner UX**: Depositor sees single consolidated request
+3. **Simplified Processing**: Single request to process per depositor per epoch
+4. **Prevents Request Sprawl**: Avoids creating many small requests
+
+## Test Verification
+
+To verify receipt accumulation works correctly:
+
+```solidity
+// Pseudocode test
+function test_ReceiptAccumulation() {
+    // First deposit
+    uint256 requestId1 = vault.queueDeposit(100e6);
+    
+    // Second deposit (same epoch)
+    uint256 requestId2 = vault.queueDeposit(200e6);
+    
+    // Should return same request ID
+    assertEq(requestId1, requestId2);
+    
+    // Request should have accumulated amount
+    DepositRequest memory request = vault.depositRequests(requestId1);
+    assertEq(request.assets, 300e6);
+}
+```
+
+## Related Requirements
+
+- [x] Deposit requests are persisted for next-epoch minting
+- [x] Repeated deposits in same epoch accumulate in one receipt
+- [x] Shares are NOT minted in queueDeposit function (see task-7-no-early-mint.txt)

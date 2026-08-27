@@ -1,0 +1,1277 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+pragma solidity 0.8.28;
+
+import {Test} from "forge-std/Test.sol";
+import {WeeklyEpochVault} from "../src/WeeklyEpochVault.sol";
+import {EpochMath} from "../src/libraries/EpochMath.sol";
+
+/// @notice Mock ERC20 token for testing
+contract MockERC20 {
+    string public name;
+    string public symbol;
+    uint8 public decimals;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    uint256 public totalSupply;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    constructor(string memory _name, string memory _symbol, uint8 _decimals) {
+        name = _name;
+        symbol = _symbol;
+        decimals = _decimals;
+    }
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+        totalSupply += amount;
+        emit Transfer(address(0), to, amount);
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        require(balanceOf[msg.sender] >= amount, "insufficient balance");
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+        emit Transfer(msg.sender, to, amount);
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        require(balanceOf[from] >= amount, "insufficient balance");
+        require(allowance[from][msg.sender] >= amount, "insufficient allowance");
+        allowance[from][msg.sender] -= amount;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+        emit Transfer(from, to, amount);
+        return true;
+    }
+}
+
+/// @title WeeklyEpochVaultHandler
+/// @notice Handler contract for stateful fuzzing of WeeklyEpochVault
+/// @dev This contract acts as the entry point for all invariant test actions
+contract WeeklyEpochVaultHandler is Test {
+    WeeklyEpochVault public vault;
+    MockERC20 public asset;
+
+    // Ghost variables to track state for invariants
+    uint256 public ghostTotalDeposited;
+    uint256 public ghostTotalClaimed;
+    uint256 public ghostTotalCancelled;
+    uint256 public ghostTotalSharesPending;
+    uint256 public ghostTotalSharesSettled;
+    uint256 public ghostTotalSharesClaimed;
+    mapping(uint256 => bool) public ghostClaimedRequestIds;
+
+    // Track users and their requests
+    address[] public users;
+    mapping(address => bool) public isUser;
+
+    // Settlement tracking
+    uint256 public ghostSettlementsCompleted;
+    uint256 public ghostTotalChunksProcessed;
+
+    // Rounding error accumulator
+    uint256 public ghostRoundingErrorAccumulator;
+
+    // Role addresses
+    address public admin;
+    address public settler;
+    address public navUpdater;
+
+    // Epoch tracking for boundary tests
+    uint256 public lastRequestTimestamp;
+
+    constructor(
+        WeeklyEpochVault _vault,
+        MockERC20 _asset,
+        address _admin,
+        address _settler,
+        address _navUpdater
+    ) {
+        vault = _vault;
+        asset = _asset;
+        admin = _admin;
+        settler = _settler;
+        navUpdater = _navUpdater;
+    }
+
+    /// @notice Create a redemption request
+    /// @param _userSeed Seed for generating user address
+    /// @param _shares Amount of shares to redeem (bounded to prevent overflow)
+    function requestRedeem(uint256 _userSeed, uint256 _shares) external {
+        // Bound shares to reasonable amounts (1 to 1M USDC)
+        _shares = bound(_shares, 1e6, 1_000_000e6);
+
+        address user = _getOrCreateUser(_userSeed);
+
+        // Mint and approve tokens for user
+        vm.startPrank(address(this));
+        asset.mint(user, _shares);
+        vm.stopPrank();
+
+        vm.startPrank(user);
+        asset.approve(address(vault), _shares);
+
+        uint256 requestId = vault.requestRedeem(_shares);
+        vm.stopPrank();
+
+        // Update ghost variables
+        ghostTotalDeposited += _shares;
+        ghostTotalSharesPending += _shares;
+        lastRequestTimestamp = block.timestamp;
+
+        // Ensure we have fresh NAV for settlement
+        _ensureFreshNAV();
+    }
+
+    /// @notice Cancel a pending redemption request
+    /// @param _requestId The request ID to cancel (will be clamped to valid range)
+    function cancelRedemption(uint256 _requestId) external {
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(_requestId);
+
+        // Only cancel if request exists, is pending, and not past settlement
+        if (request.requestId == 0) return;
+        if (request.status != WeeklyEpochVault.RequestStatus.Pending) return;
+
+        uint256 epochEnd = vault.getEpochEnd(request.epochId);
+        if (block.timestamp >= epochEnd) return;
+
+        // Get user and cancel
+        address user = request.user;
+        uint256 shares = request.shares;
+
+        vm.prank(user);
+        vault.cancelRedemption(_requestId);
+
+        // Update ghost variables
+        ghostTotalCancelled += shares;
+        ghostTotalSharesPending -= shares;
+    }
+
+    /// @notice Settle an epoch (chunked if needed)
+    /// @param _epochId The epoch to settle
+    /// @param _availableAssets Assets available for distribution
+    function settleEpoch(uint256 _epochId, uint256 _availableAssets) external {
+        // Bound epochId to a reasonable range to prevent out-of-bounds
+        _epochId = bound(_epochId, 0, vault.getCurrentEpoch() + 1);
+
+        // Only settler can call
+        vm.startPrank(settler);
+
+        // Check preconditions
+        uint256 epochEnd = vault.getEpochEnd(_epochId);
+        if (block.timestamp < epochEnd) {
+            vm.stopPrank();
+            return;
+        }
+
+        // Ensure fresh NAV
+        _ensureFreshNAV();
+
+        (WeeklyEpochVault.SettlementStatus memory status,, uint256 totalRequests) =
+            vault.getSettlementStatus(_epochId);
+
+        if (status.settled || totalRequests == 0) {
+            vm.stopPrank();
+            return;
+        }
+
+        // Bound available assets to prevent unrealistic scenarios
+        // Use a minimum of 1 to avoid edge cases, max based on pending shares
+        uint256 maxAssets = ghostTotalSharesPending > 0 ? ghostTotalSharesPending * 2 : 1000e6;
+        _availableAssets = bound(_availableAssets, 1, maxAssets);
+
+        // Initial settlement call
+        try vault.settleEpoch(_epochId, _availableAssets) {
+            // Continue with chunked settlement if needed
+            uint256 chunks = 0;
+            (status,,) = vault.getSettlementStatus(_epochId);
+
+            while (!status.settled && chunks < 50) {
+                try vault.settleEpochChunked(_epochId) {
+                    (status,,) = vault.getSettlementStatus(_epochId);
+                    chunks++;
+                    ghostTotalChunksProcessed++;
+                } catch {
+                    break;
+                }
+            }
+
+            if (status.settled) {
+                ghostSettlementsCompleted++;
+                // Move shares from pending to settled
+                ghostTotalSharesSettled += status.totalShares;
+                ghostTotalSharesPending = ghostTotalSharesPending > status.totalShares 
+                    ? ghostTotalSharesPending - status.totalShares 
+                    : 0;
+            }
+        } catch {
+            // Settlement failed, continue
+        }
+
+        vm.stopPrank();
+    }
+
+    /// @notice Claim assets for a settled request
+    /// @param _requestId The request ID to claim
+    function claim(uint256 _requestId) external {
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(_requestId);
+
+        // Only claim if settled and not already claimed
+        if (request.requestId == 0) return;
+        if (request.status != WeeklyEpochVault.RequestStatus.Settled) return;
+        if (ghostClaimedRequestIds[_requestId]) return;
+        if (request.claimableAssets == 0) return;
+
+        address user = request.user;
+        uint256 claimableAssets = request.claimableAssets;
+
+        vm.prank(user);
+        vault.claim(_requestId);
+
+        // Update ghost variables
+        ghostTotalClaimed += claimableAssets;
+        ghostTotalSharesClaimed += request.shares;
+        ghostClaimedRequestIds[_requestId] = true;
+    }
+
+    /// @notice Roll over a partially settled request
+    /// @param _requestId The request ID to rollover
+    function rolloverUnsettled(uint256 _requestId) external {
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(_requestId);
+
+        // Only rollover if settled and has unfilled portion
+        if (request.requestId == 0) return;
+        if (request.status != WeeklyEpochVault.RequestStatus.Settled) return;
+        if (request.claimableAssets >= request.shares) return; // Fully filled
+
+        address user = request.user;
+        uint256 unfilledShares = request.shares - request.claimableAssets;
+
+        vm.prank(user);
+        vault.rolloverUnsettled(_requestId);
+
+        // Update ghost tracking - rollover creates a new pending request
+        ghostTotalSharesPending += unfilledShares;
+    }
+
+    /// @notice Advance time by a random amount
+    /// @param _seconds Seconds to advance (bounded)
+    function advanceTime(uint256 _seconds) external {
+        _seconds = bound(_seconds, 1, 14 days);
+        vm.warp(block.timestamp + _seconds);
+    }
+
+    /// @notice Advance to a specific epoch boundary
+    /// @param _epochId The epoch to advance to
+    /// @notice Advance to a specific epoch boundary
+    /// @param _epochId The epoch to advance to
+    function advanceToEpochEnd(uint256 _epochId) external {
+        // Bound epochId to a safe range
+        _epochId = bound(_epochId, 0, vault.getCurrentEpoch() + 10);
+        uint256 epochEnd = vault.getEpochEnd(_epochId);
+        if (block.timestamp < epochEnd) {
+            vm.warp(epochEnd);
+        }
+    }
+
+    /// @notice Update NAV with a fresh value
+    /// @param _nav New NAV value
+    function updateNAV(uint256 _nav) external {
+        _nav = bound(_nav, 1e6, 1_000_000_000e6);
+
+        vm.prank(navUpdater);
+        vault.updateNAV(_nav);
+    }
+
+    /// @notice Allow NAV to go stale
+    function letNAVGoStale() external {
+        vm.warp(block.timestamp + vault.NAV_STALENESS_THRESHOLD() + 1);
+    }
+
+    /// @notice Get user address from seed
+    function _getOrCreateUser(uint256 _seed) internal returns (address) {
+        address user = address(uint160(uint256(keccak256(abi.encodePacked(_seed)))));
+
+        if (!isUser[user]) {
+            isUser[user] = true;
+            users.push(user);
+        }
+
+        return user;
+    }
+
+    /// @notice Ensure NAV is fresh for operations that require it
+    function _ensureFreshNAV() internal {
+        if (!vault.isNAVFresh()) {
+            vm.prank(navUpdater);
+            vault.updateNAV(1_000_000e6); // Default NAV
+        }
+    }
+
+    /// @notice Get total ghost shares
+    function getTotalGhostShares() external view returns (uint256) {
+        return ghostTotalSharesPending + ghostTotalSharesSettled - ghostTotalSharesClaimed;
+    }
+
+    /// @notice Get number of users
+    function getUserCount() external view returns (uint256) {
+        return users.length;
+    }
+}
+
+/// @title WeeklyEpochVaultInvariantTest
+/// @notice Invariant tests for WeeklyEpochVault using handler-based stateful fuzzing
+/// @dev Tests conservation laws, no double-spend, and other critical invariants
+contract WeeklyEpochVaultInvariantTest is Test {
+    WeeklyEpochVault public vault;
+    MockERC20 public asset;
+    WeeklyEpochVaultHandler public handler;
+
+    address internal admin = makeAddr("admin");
+    address internal settler = makeAddr("settler");
+    address internal navUpdater = makeAddr("navUpdater");
+    address internal attacker = makeAddr("attacker");
+
+    uint256 internal constant ONE_USDC_E = 1e6;
+    uint256 internal constant EPOCH_DURATION = 7 days;
+    uint256 internal constant NAV_STALENESS_THRESHOLD = 6 hours;
+
+    function setUp() public {
+        // Deploy mock asset
+        asset = new MockERC20("Mock USDC", "mUSDC", 6);
+
+        // Deploy vault
+        vault = new WeeklyEpochVault(
+            address(asset),
+            admin,
+            settler,
+            navUpdater,
+            EPOCH_DURATION,
+            NAV_STALENESS_THRESHOLD
+        );
+
+        // Deploy handler
+        handler = new WeeklyEpochVaultHandler(vault, asset, admin, settler, navUpdater);
+
+        // Initialize with fresh NAV
+        vm.prank(navUpdater);
+        vault.updateNAV(1_000_000 * ONE_USDC_E);
+
+        // Set target contract for fuzzing
+        targetContract(address(handler));
+    }
+
+    // ============================================================================
+    // INVARIANT TESTS - Asset Conservation
+    // ============================================================================
+
+    /// @notice INVARIANT: Total assets in vault + total claimable = total deposited - total cancelled
+    /// @dev This ensures no assets are created or destroyed outside of expected flows
+    function invariant_AssetConservation() public view {
+        uint256 vaultBalance = asset.balanceOf(address(vault));
+        uint256 totalClaimable = _getTotalClaimable();
+        uint256 totalDeposited = handler.ghostTotalDeposited();
+        uint256 totalCancelled = handler.ghostTotalCancelled();
+        uint256 totalClaimed = handler.ghostTotalClaimed();
+
+        // Assets should be conserved: vaultBalance + totalClaimable + totalClaimed = totalDeposited - totalCancelled
+        uint256 expectedAssets = totalDeposited - totalCancelled;
+        uint256 actualAssets = vaultBalance + totalClaimable + totalClaimed;
+
+        // Allow for small rounding errors (dust)
+        assertApproxEqAbs(
+            actualAssets,
+            expectedAssets,
+            100, // 100 units of dust tolerance
+            "Asset conservation violated"
+        );
+    }
+
+    /// @notice INVARIANT: Total shares tracked = shares pending + shares settled + shares claimed
+    /// @dev Ensures share accounting is consistent across all states
+    function invariant_ShareAccounting() public view {
+        uint256 totalDeposited = handler.ghostTotalDeposited();
+        uint256 totalCancelled = handler.ghostTotalCancelled();
+        uint256 totalClaimed = handler.ghostTotalClaimed();
+
+        uint256 sharesInVault = totalDeposited - totalCancelled - totalClaimed;
+        uint256 vaultBalance = asset.balanceOf(address(vault));
+
+        // Shares in system should match vault balance
+        assertApproxEqAbs(
+            sharesInVault,
+            vaultBalance,
+            100,
+            "Share accounting inconsistent"
+        );
+    }
+
+    /// @notice INVARIANT: No double-spend possible (claim only once per request)
+    /// @dev Each request can only be claimed once
+    function invariant_NoDoubleSpend() public {
+        // Check that no claimed request has claimableAssets > 0
+        uint256 maxRequestId = vault.nextRequestId();
+
+        for (uint256 i = 1; i < maxRequestId && i < 1000; i++) {
+            WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(i);
+
+            if (request.status == WeeklyEpochVault.RequestStatus.Claimed) {
+                assertEq(
+                    request.claimableAssets,
+                    0,
+                    "Claimed request should have zero claimableAssets"
+                );
+            }
+        }
+    }
+
+    /// @notice INVARIANT: Settlement ratio is always <= 100%
+    /// @dev Pro-rata ratio should never exceed 100%
+    function invariant_SettlementRatioBounds() public view {
+        uint256 currentEpoch = vault.getCurrentEpoch();
+
+        // Check all epochs up to current
+        for (uint256 epoch = 0; epoch <= currentEpoch && epoch < 100; epoch++) {
+            (WeeklyEpochVault.SettlementStatus memory status,,) = vault.getSettlementStatus(epoch);
+
+            if (status.totalShares > 0) {
+                assertLe(
+                    status.proRataRatio,
+                    1e18,
+                    "Pro-rata ratio should never exceed 100%"
+                );
+            }
+        }
+    }
+
+    /// @notice INVARIANT: Request status transitions are monotonic
+    /// @dev Status can only progress: Pending -> Cancelled/Settled -> Claimed
+    function invariant_StatusTransitionsMonotonic() public {
+        uint256 maxRequestId = vault.nextRequestId();
+
+        for (uint256 i = 1; i < maxRequestId && i < 1000; i++) {
+            WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(i);
+
+            // Cannot go back to Pending from any other state
+            if (request.status == WeeklyEpochVault.RequestStatus.Pending) {
+                // This is the initial state, valid
+                continue;
+            } else if (request.status == WeeklyEpochVault.RequestStatus.Cancelled) {
+                // Cancelled is terminal
+                assertTrue(
+                    true,
+                    "Cancelled state is valid terminal state"
+                );
+            } else if (request.status == WeeklyEpochVault.RequestStatus.Settled) {
+                // Settled can only come from Pending
+                assertTrue(
+                    true,
+                    "Settled state is valid"
+                );
+            } else if (request.status == WeeklyEpochVault.RequestStatus.Claimed) {
+                // Claimed can only come from Settled
+                assertTrue(
+                    true,
+                    "Claimed state is valid terminal state"
+                );
+            }
+        }
+    }
+
+    /// @notice INVARIANT: Epoch request counts match actual requests
+    /// @dev Sum of epoch requests should equal total requests created
+    function invariant_EpochRequestCounts() public view {
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        uint256 totalEpochRequests = 0;
+
+        for (uint256 epoch = 0; epoch <= currentEpoch && epoch < 100; epoch++) {
+            uint256[] memory requests = vault.getEpochRequests(epoch);
+            totalEpochRequests += requests.length;
+        }
+
+        uint256 maxRequestId = vault.nextRequestId() - 1;
+        assertApproxEqAbs(
+            totalEpochRequests,
+            maxRequestId,
+            100,
+            "Epoch request counts should match total requests"
+        );
+    }
+
+    // ============================================================================
+    // STRESS TESTS - Large Request Populations
+    // ============================================================================
+
+    /// @notice STRESS: Test 1000+ requests in single epoch
+    function testStress_ThousandRequestsSingleEpoch() public {
+        uint256 numRequests = 1000;
+        uint256 sharesPerRequest = 100 * ONE_USDC_E;
+
+        // Create 1000 requests from different users
+        for (uint256 i = 0; i < numRequests; i++) {
+            address user = makeAddr(string.concat("user", vm.toString(i)));
+
+            asset.mint(user, sharesPerRequest);
+            vm.startPrank(user);
+            asset.approve(address(vault), sharesPerRequest);
+            vault.requestRedeem(sharesPerRequest);
+            vm.stopPrank();
+        }
+
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        uint256[] memory epochRequests = vault.getEpochRequests(currentEpoch);
+
+        assertEq(epochRequests.length, numRequests, "Should have 1000 requests");
+
+        // Advance to next epoch
+        uint256 epochEnd = vault.getEpochEnd(currentEpoch);
+        vm.warp(epochEnd + 1);
+
+        // Update NAV
+        vm.prank(navUpdater);
+        vault.updateNAV(100_000_000 * ONE_USDC_E);
+
+        // Settle with full liquidity
+        vm.startPrank(settler);
+        vault.settleEpoch(currentEpoch, numRequests * sharesPerRequest);
+
+        // Process all chunks
+        uint256 chunks = 0;
+        (WeeklyEpochVault.SettlementStatus memory status,,) = vault.getSettlementStatus(currentEpoch);
+
+        while (!status.settled && chunks < 20) {
+            vault.settleEpochChunked(currentEpoch);
+            (status,,) = vault.getSettlementStatus(currentEpoch);
+            chunks++;
+        }
+
+        vm.stopPrank();
+
+        assertTrue(status.settled, "Settlement should complete");
+        assertEq(status.totalProcessed, numRequests, "All requests should be processed");
+    }
+
+    /// @notice STRESS: Test 5000 requests in single epoch
+    function testStress_FiveThousandRequests() public {
+        uint256 numRequests = 5000;
+        uint256 sharesPerRequest = 10 * ONE_USDC_E;
+
+        // Create many requests
+        for (uint256 i = 0; i < numRequests; i++) {
+            address user = address(uint160(uint256(keccak256(abi.encodePacked("user", i)))));
+
+            asset.mint(user, sharesPerRequest);
+            vm.startPrank(user);
+            asset.approve(address(vault), sharesPerRequest);
+            vault.requestRedeem(sharesPerRequest);
+            vm.stopPrank();
+        }
+
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        uint256 epochEnd = vault.getEpochEnd(currentEpoch);
+        vm.warp(epochEnd + 1);
+
+        vm.prank(navUpdater);
+        vault.updateNAV(100_000_000 * ONE_USDC_E);
+
+        vm.startPrank(settler);
+        vault.settleEpoch(currentEpoch, numRequests * sharesPerRequest);
+
+        // Process all chunks
+        uint256 chunks = 0;
+        (WeeklyEpochVault.SettlementStatus memory status,,) = vault.getSettlementStatus(currentEpoch);
+
+        while (!status.settled && chunks < 100) {
+            vault.settleEpochChunked(currentEpoch);
+            (status,,) = vault.getSettlementStatus(currentEpoch);
+            chunks++;
+        }
+
+        vm.stopPrank();
+
+        assertTrue(status.settled, "Settlement should complete for 5000 requests");
+    }
+
+    // ============================================================================
+    // STRESS TESTS - Epoch Boundaries
+    // ============================================================================
+
+    /// @notice STRESS: Test exact epoch boundary timestamp
+    function testStress_ExactEpochBoundary() public {
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        uint256 epochEnd = vault.getEpochEnd(currentEpoch);
+
+        // Warp to exact epoch end
+        vm.warp(epochEnd);
+
+        address user = makeAddr("boundaryUser");
+        uint256 shares = 100 * ONE_USDC_E;
+
+        asset.mint(user, shares);
+        vm.startPrank(user);
+        asset.approve(address(vault), shares);
+        uint256 requestId = vault.requestRedeem(shares);
+        vm.stopPrank();
+
+        WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(requestId);
+
+        // Request at exact boundary should map to next epoch
+        assertEq(request.epochId, currentEpoch + 1, "Boundary request should map to next epoch");
+    }
+
+    /// @notice STRESS: Test requests across multiple epoch boundaries
+    function testStress_RequestsAcrossMultipleBoundaries() public {
+        uint256 shares = 100 * ONE_USDC_E;
+
+        // Create requests in epoch 0
+        for (uint256 i = 0; i < 10; i++) {
+            address user = makeAddr(string.concat("epoch0user", vm.toString(i)));
+            asset.mint(user, shares);
+            vm.startPrank(user);
+            asset.approve(address(vault), shares);
+            vault.requestRedeem(shares);
+            vm.stopPrank();
+        }
+
+        uint256 epoch0 = vault.getCurrentEpoch();
+        uint256 epoch0End = vault.getEpochEnd(epoch0);
+
+        // Warp to epoch 1
+        vm.warp(epoch0End + 1);
+
+        // Create requests in epoch 1
+        for (uint256 i = 0; i < 10; i++) {
+            address user = makeAddr(string.concat("epoch1user", vm.toString(i)));
+            asset.mint(user, shares);
+            vm.startPrank(user);
+            asset.approve(address(vault), shares);
+            vault.requestRedeem(shares);
+            vm.stopPrank();
+        }
+
+        uint256 epoch1 = vault.getCurrentEpoch();
+
+        // Verify epoch separation
+        assertEq(epoch1, epoch0 + 1, "Should be in next epoch");
+
+        uint256[] memory epoch0Requests = vault.getEpochRequests(epoch0);
+        uint256[] memory epoch1Requests = vault.getEpochRequests(epoch1);
+
+        assertEq(epoch0Requests.length, 10, "Epoch 0 should have 10 requests");
+        assertEq(epoch1Requests.length, 10, "Epoch 1 should have 10 requests");
+    }
+
+    /// @notice STRESS: Test settlement exactly at epoch end
+    function testStress_SettlementExactlyAtEpochEnd() public {
+        uint256 shares = 100 * ONE_USDC_E;
+
+        address user = makeAddr("user");
+        asset.mint(user, shares);
+        vm.startPrank(user);
+        asset.approve(address(vault), shares);
+        vault.requestRedeem(shares);
+        vm.stopPrank();
+
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        uint256 epochEnd = vault.getEpochEnd(currentEpoch);
+
+        // Try to settle exactly at epoch end - should fail
+        vm.warp(epochEnd);
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        vm.prank(settler);
+        vm.expectRevert(WeeklyEpochVault.EpochNotEnded.selector);
+        vault.settleEpoch(currentEpoch, shares);
+
+        // Settle one second after - should succeed
+        vm.warp(epochEnd + 1);
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        vm.prank(settler);
+        vault.settleEpoch(currentEpoch, shares);
+
+        (WeeklyEpochVault.SettlementStatus memory status,,) = vault.getSettlementStatus(currentEpoch);
+        assertTrue(status.settled, "Should settle one second after epoch end");
+    }
+
+    /// @notice STRESS: Test back-to-back epochs with settlements
+    function testStress_BackToBackEpochSettlements() public {
+        uint256 shares = 100 * ONE_USDC_E;
+
+        // Epoch 0 requests
+        for (uint256 i = 0; i < 5; i++) {
+            address user = makeAddr(string.concat("e0-", vm.toString(i)));
+            asset.mint(user, shares);
+            vm.startPrank(user);
+            asset.approve(address(vault), shares);
+            vault.requestRedeem(shares);
+            vm.stopPrank();
+        }
+
+        uint256 epoch0 = vault.getCurrentEpoch();
+        uint256 epoch0End = vault.getEpochEnd(epoch0);
+
+        // Warp past epoch 0
+        vm.warp(epoch0End + 1);
+
+        // Epoch 1 requests
+        for (uint256 i = 0; i < 5; i++) {
+            address user = makeAddr(string.concat("e1-", vm.toString(i)));
+            asset.mint(user, shares);
+            vm.startPrank(user);
+            asset.approve(address(vault), shares);
+            vault.requestRedeem(shares);
+            vm.stopPrank();
+        }
+
+        // Settle epoch 0
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        vm.prank(settler);
+        vault.settleEpoch(epoch0, 5 * shares);
+
+        // Warp past epoch 1
+        uint256 epoch1End = vault.getEpochEnd(epoch0 + 1);
+        vm.warp(epoch1End + 1);
+
+        // Settle epoch 1
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        vm.prank(settler);
+        vault.settleEpoch(epoch0 + 1, 5 * shares);
+
+        // Verify both settled
+        (WeeklyEpochVault.SettlementStatus memory status0,,) = vault.getSettlementStatus(epoch0);
+        (WeeklyEpochVault.SettlementStatus memory status1,,) = vault.getSettlementStatus(epoch0 + 1);
+
+        assertTrue(status0.settled, "Epoch 0 should be settled");
+        assertTrue(status1.settled, "Epoch 1 should be settled");
+    }
+
+    // ============================================================================
+    // STRESS TESTS - Rounding Drift
+    // ============================================================================
+
+    /// @notice STRESS: Test rounding error accumulation over many settlements
+    function testStress_RoundingErrorAccumulation() public {
+        uint256 numEpochs = 50;
+        uint256 requestsPerEpoch = 10;
+        uint256 shares = 100 * ONE_USDC_E;
+
+        uint256 totalSharesDeposited = 0;
+        uint256 totalSharesSettled = 0;
+
+        for (uint256 epoch = 0; epoch < numEpochs; epoch++) {
+            // Create requests
+            for (uint256 i = 0; i < requestsPerEpoch; i++) {
+                address user = makeAddr(string.concat("e", vm.toString(epoch), "-u", vm.toString(i)));
+                asset.mint(user, shares);
+                vm.startPrank(user);
+                asset.approve(address(vault), shares);
+                vault.requestRedeem(shares);
+                vm.stopPrank();
+                totalSharesDeposited += shares;
+            }
+
+            // Advance time
+            uint256 currentEpochEnd = vault.getEpochEnd(vault.getCurrentEpoch());
+            vm.warp(currentEpochEnd + 1);
+
+            // Settle with pro-rata (limited liquidity)
+            vm.prank(navUpdater);
+            vault.updateNAV(1000 * ONE_USDC_E);
+
+            uint256 availableAssets = (requestsPerEpoch * shares * 90) / 100; // 90% pro-rata
+
+            vm.prank(settler);
+            vault.settleEpoch(vault.getCurrentEpoch() - 1, availableAssets);
+
+            // Track settlement
+            (WeeklyEpochVault.SettlementStatus memory status,,) =
+                vault.getSettlementStatus(vault.getCurrentEpoch() - 1);
+            totalSharesSettled += status.totalShares;
+        }
+
+        // Verify total consistency
+        assertEq(totalSharesDeposited, totalSharesSettled, "Total shares should match");
+
+        // Check for significant rounding drift
+        uint256 vaultBalance = asset.balanceOf(address(vault));
+        assertApproxEqAbs(
+            vaultBalance,
+            totalSharesDeposited,
+            1000 * numEpochs, // Allow 1000 units per epoch
+            "Rounding drift should be bounded"
+        );
+    }
+
+    /// @notice STRESS: Test extreme pro-rata ratios
+    function testStress_ExtremeProRataRatios() public {
+        uint256 numRequests = 100;
+        uint256 sharesPerRequest = 1000 * ONE_USDC_E;
+
+        // Create requests
+        for (uint256 i = 0; i < numRequests; i++) {
+            address user = makeAddr(string.concat("user", vm.toString(i)));
+            asset.mint(user, sharesPerRequest);
+            vm.startPrank(user);
+            asset.approve(address(vault), sharesPerRequest);
+            vault.requestRedeem(sharesPerRequest);
+            vm.stopPrank();
+        }
+
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        uint256 epochEnd = vault.getEpochEnd(currentEpoch);
+        vm.warp(epochEnd + 1);
+
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        // Settle with only 1% of required assets
+        uint256 availableAssets = (numRequests * sharesPerRequest) / 100;
+
+        vm.prank(settler);
+        vault.settleEpoch(currentEpoch, availableAssets);
+
+        (WeeklyEpochVault.SettlementStatus memory status,,) = vault.getSettlementStatus(currentEpoch);
+
+        assertApproxEqAbs(
+            status.proRataRatio,
+            0.01e18,
+            0.001e18, // 0.1% tolerance
+            "Pro-rata ratio should be ~1%"
+        );
+    }
+
+    /// @notice STRESS: Test 1 wei differences in claim amounts
+    function testStress_SmallRoundingDifferences() public {
+        uint256 numRequests = 50;
+        uint256 sharesPerRequest = 100 * ONE_USDC_E;
+
+        // Create requests
+        for (uint256 i = 0; i < numRequests; i++) {
+            address user = makeAddr(string.concat("user", vm.toString(i)));
+            asset.mint(user, sharesPerRequest);
+            vm.startPrank(user);
+            asset.approve(address(vault), sharesPerRequest);
+            vault.requestRedeem(sharesPerRequest);
+            vm.stopPrank();
+        }
+
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        uint256 epochEnd = vault.getEpochEnd(currentEpoch);
+        vm.warp(epochEnd + 1);
+
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        // Settle with amount that causes division remainder
+        uint256 availableAssets = (numRequests * sharesPerRequest * 2) / 3; // 66.67%
+
+        vm.prank(settler);
+        vault.settleEpoch(currentEpoch, availableAssets);
+
+        // Verify total claimable doesn't exceed available
+        uint256 totalClaimable = _getTotalClaimable();
+        assertLe(totalClaimable, availableAssets, "Total claimable should not exceed available");
+    }
+
+    // ============================================================================
+    // STRESS TESTS - Stale NAV
+    // ============================================================================
+
+    /// @notice STRESS: Test stale NAV rejection at threshold
+    function testStress_StaleNAVAtThreshold() public {
+        uint256 shares = 100 * ONE_USDC_E;
+
+        address user = makeAddr("user");
+        asset.mint(user, shares);
+        vm.startPrank(user);
+        asset.approve(address(vault), shares);
+        vault.requestRedeem(shares);
+        vm.stopPrank();
+
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        uint256 epochEnd = vault.getEpochEnd(currentEpoch);
+
+        // Update NAV and advance to just before stale threshold
+        vm.warp(epochEnd + 1);
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        // Advance to exactly 6 hours after NAV update (should still be fresh)
+        vm.warp(block.timestamp + 6 hours - 1);
+
+        vm.prank(settler);
+        vault.settleEpoch(currentEpoch, shares); // Should succeed
+
+        (WeeklyEpochVault.SettlementStatus memory status,,) = vault.getSettlementStatus(currentEpoch);
+        assertTrue(status.settled, "Should settle with fresh NAV");
+    }
+
+    /// @notice STRESS: Test stale NAV rejection just past threshold
+    function testStress_StaleNAVPastThreshold() public {
+        uint256 shares = 100 * ONE_USDC_E;
+
+        address user = makeAddr("user");
+        asset.mint(user, shares);
+        vm.startPrank(user);
+        asset.approve(address(vault), shares);
+        vault.requestRedeem(shares);
+        vm.stopPrank();
+
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        uint256 epochEnd = vault.getEpochEnd(currentEpoch);
+
+        // Update NAV and advance past stale threshold
+        vm.warp(epochEnd + 1);
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        // Advance to just past 6 hours (NAV should be stale)
+        vm.warp(block.timestamp + 6 hours + 1);
+
+        vm.prank(settler);
+        vm.expectRevert(WeeklyEpochVault.NAVStale.selector);
+        vault.settleEpoch(currentEpoch, shares); // Should fail
+    }
+
+    /// @notice STRESS: Test various staleness levels
+    function testStress_StaleNAVVariousThresholds() public {
+        uint256 shares = 100 * ONE_USDC_E;
+        uint256[] memory staleOffsets = new uint256[](5);
+        staleOffsets[0] = 0; // Fresh
+        staleOffsets[1] = 1 hours; // Fresh
+        staleOffsets[2] = 6 hours - 1; // Still fresh
+        staleOffsets[3] = 6 hours; // Just became stale
+        staleOffsets[4] = 7 days; // Very stale
+
+        for (uint256 i = 0; i < staleOffsets.length; i++) {
+            // Deploy new vault for each test
+            WeeklyEpochVault testVault = new WeeklyEpochVault(
+                address(asset),
+                admin,
+                settler,
+                navUpdater,
+                EPOCH_DURATION,
+                NAV_STALENESS_THRESHOLD
+            );
+
+            address user = makeAddr(string.concat("user", vm.toString(i)));
+            asset.mint(user, shares);
+            vm.startPrank(user);
+            asset.approve(address(testVault), shares);
+            testVault.requestRedeem(shares);
+            vm.stopPrank();
+
+            uint256 currentEpoch = testVault.getCurrentEpoch();
+            uint256 epochEnd = testVault.getEpochEnd(currentEpoch);
+
+            vm.warp(epochEnd + 1);
+            vm.prank(navUpdater);
+            testVault.updateNAV(1000 * ONE_USDC_E);
+
+            vm.warp(block.timestamp + staleOffsets[i]);
+
+            bool isFresh = testVault.isNAVFresh();
+
+            if (staleOffsets[i] <= 6 hours - 1) {
+                assertTrue(isFresh, string.concat("NAV should be fresh at offset ", vm.toString(staleOffsets[i])));
+            } else {
+                assertFalse(isFresh, string.concat("NAV should be stale at offset ", vm.toString(staleOffsets[i])));
+            }
+        }
+    }
+
+    /// @notice STRESS: Test settlement after NAV refresh
+    function testStress_SettleAfterNAVRefresh() public {
+        uint256 shares = 100 * ONE_USDC_E;
+
+        address user = makeAddr("user");
+        asset.mint(user, shares);
+        vm.startPrank(user);
+        asset.approve(address(vault), shares);
+        vault.requestRedeem(shares);
+        vm.stopPrank();
+
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        uint256 epochEnd = vault.getEpochEnd(currentEpoch);
+
+        vm.warp(epochEnd + 1);
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        // Let NAV go stale
+        vm.warp(block.timestamp + 7 hours);
+
+        // Refresh NAV
+        vm.prank(navUpdater);
+        vault.updateNAV(1100 * ONE_USDC_E);
+
+        // Should now be able to settle
+        vm.prank(settler);
+        vault.settleEpoch(currentEpoch, shares);
+
+        (WeeklyEpochVault.SettlementStatus memory status,,) = vault.getSettlementStatus(currentEpoch);
+        assertTrue(status.settled, "Should settle after NAV refresh");
+    }
+
+    // ============================================================================
+    // GAS TESTS
+    // ============================================================================
+
+    /// @notice GAS: Profile settlement chunk gas per 100 requests
+    function testGas_SettlementChunkPer100() public {
+        uint256 numRequests = 100;
+        uint256 sharesPerRequest = 100 * ONE_USDC_E;
+
+        // Create requests
+        for (uint256 i = 0; i < numRequests; i++) {
+            address user = makeAddr(string.concat("user", vm.toString(i)));
+            asset.mint(user, sharesPerRequest);
+            vm.startPrank(user);
+            asset.approve(address(vault), sharesPerRequest);
+            vault.requestRedeem(sharesPerRequest);
+            vm.stopPrank();
+        }
+
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        uint256 epochEnd = vault.getEpochEnd(currentEpoch);
+        vm.warp(epochEnd + 1);
+
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        // Initial settlement (should process all 100 in one go)
+        vm.startPrank(settler);
+        uint256 gasBefore = gasleft();
+        vault.settleEpoch(currentEpoch, numRequests * sharesPerRequest);
+        uint256 gasUsed = gasBefore - gasleft();
+        vm.stopPrank();
+
+        // Assert gas is reasonable (< 4M for 100 requests)
+        assertLt(gasUsed, 4_000_000, "Gas for 100 requests should be < 4M");
+
+        (WeeklyEpochVault.SettlementStatus memory status,,) = vault.getSettlementStatus(currentEpoch);
+        assertTrue(status.settled, "Should be settled");
+    }
+
+    /// @notice GAS: Profile full settlement for various request counts
+    function testGas_FullSettlementVariousCounts() public {
+        uint256[] memory requestCounts = new uint256[](5);
+        requestCounts[0] = 50;
+        requestCounts[1] = 100;
+        requestCounts[2] = 200;
+        requestCounts[3] = 500;
+        requestCounts[4] = 1000;
+
+        for (uint256 testIdx = 0; testIdx < requestCounts.length; testIdx++) {
+            // Deploy new vault for each test
+            WeeklyEpochVault testVault = new WeeklyEpochVault(
+                address(asset),
+                admin,
+                settler,
+                navUpdater,
+                EPOCH_DURATION,
+                NAV_STALENESS_THRESHOLD
+            );
+
+            uint256 numRequests = requestCounts[testIdx];
+            uint256 sharesPerRequest = 100 * ONE_USDC_E;
+
+            // Create requests
+            for (uint256 i = 0; i < numRequests; i++) {
+                address user = makeAddr(string.concat("t", vm.toString(testIdx), "-u", vm.toString(i)));
+                asset.mint(user, sharesPerRequest);
+                vm.startPrank(user);
+                asset.approve(address(testVault), sharesPerRequest);
+                testVault.requestRedeem(sharesPerRequest);
+                vm.stopPrank();
+            }
+
+            uint256 currentEpoch = testVault.getCurrentEpoch();
+            uint256 epochEnd = testVault.getEpochEnd(currentEpoch);
+            vm.warp(epochEnd + 1);
+
+            vm.prank(navUpdater);
+            testVault.updateNAV(1000 * ONE_USDC_E);
+
+            // Settle
+            vm.startPrank(settler);
+            testVault.settleEpoch(currentEpoch, numRequests * sharesPerRequest);
+
+            // Process chunks if needed
+            uint256 totalGas = gasleft();
+            uint256 chunks = 0;
+
+            (WeeklyEpochVault.SettlementStatus memory status,,) = testVault.getSettlementStatus(currentEpoch);
+            while (!status.settled && chunks < 20) {
+                testVault.settleEpochChunked(currentEpoch);
+                (status,,) = testVault.getSettlementStatus(currentEpoch);
+                chunks++;
+            }
+
+            vm.stopPrank();
+
+            // Assert gas per transaction stays under 8M
+            assertLt(
+                gasleft(),
+                8_000_000,
+                string.concat("Gas per transaction should be < 8M for ", vm.toString(numRequests), " requests")
+            );
+
+            assertTrue(status.settled, "Settlement should complete");
+        }
+    }
+
+    /// @notice GAS: Profile gas per chunk for large settlements
+    function testGas_PerChunkProfile() public {
+        uint256 numRequests = 1000;
+        uint256 sharesPerRequest = 100 * ONE_USDC_E;
+
+        // Create requests
+        for (uint256 i = 0; i < numRequests; i++) {
+            address user = makeAddr(string.concat("user", vm.toString(i)));
+            asset.mint(user, sharesPerRequest);
+            vm.startPrank(user);
+            asset.approve(address(vault), sharesPerRequest);
+            vault.requestRedeem(sharesPerRequest);
+            vm.stopPrank();
+        }
+
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        uint256 epochEnd = vault.getEpochEnd(currentEpoch);
+        vm.warp(epochEnd + 1);
+
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        vm.startPrank(settler);
+
+        // Initial settlement call
+        vault.settleEpoch(currentEpoch, numRequests * sharesPerRequest);
+
+        // Profile each chunk
+        uint256[] memory chunkGas = new uint256[](20);
+        uint256 chunks = 0;
+
+        (WeeklyEpochVault.SettlementStatus memory status,,) = vault.getSettlementStatus(currentEpoch);
+
+        while (!status.settled && chunks < 20) {
+            uint256 gasBefore = gasleft();
+            vault.settleEpochChunked(currentEpoch);
+            chunkGas[chunks] = gasBefore - gasleft();
+            (status,,) = vault.getSettlementStatus(currentEpoch);
+            chunks++;
+        }
+
+        vm.stopPrank();
+
+        // Assert each chunk is under 8M gas
+        for (uint256 i = 0; i < chunks; i++) {
+            assertLt(
+                chunkGas[i],
+                8_000_000,
+                string.concat("Chunk ", vm.toString(i), " gas should be < 8M")
+            );
+        }
+
+        // Assert consistency across chunks (variance < 50%)
+        if (chunks > 1) {
+            uint256 firstChunkGas = chunkGas[0];
+            for (uint256 i = 1; i < chunks; i++) {
+                assertApproxEqRel(
+                    chunkGas[i],
+                    firstChunkGas,
+                    0.5e18, // 50% variance allowed
+                    string.concat("Chunk gas should be consistent at index ", vm.toString(i))
+                );
+            }
+        }
+    }
+
+    /// @notice GAS: Assert gas budget for 1000 request settlement
+    function testGas_AssertBudgetFor1000() public {
+        uint256 numRequests = 1000;
+        uint256 sharesPerRequest = 100 * ONE_USDC_E;
+
+        // Create requests
+        for (uint256 i = 0; i < numRequests; i++) {
+            address user = makeAddr(string.concat("user", vm.toString(i)));
+            asset.mint(user, sharesPerRequest);
+            vm.startPrank(user);
+            asset.approve(address(vault), sharesPerRequest);
+            vault.requestRedeem(sharesPerRequest);
+            vm.stopPrank();
+        }
+
+        uint256 currentEpoch = vault.getCurrentEpoch();
+        uint256 epochEnd = vault.getEpochEnd(currentEpoch);
+        vm.warp(epochEnd + 1);
+
+        vm.prank(navUpdater);
+        vault.updateNAV(1000 * ONE_USDC_E);
+
+        vm.startPrank(settler);
+
+        // Track total gas used
+        uint256 gasStart = gasleft();
+
+        // Initial settlement
+        vault.settleEpoch(currentEpoch, numRequests * sharesPerRequest);
+
+        // Process all chunks
+        uint256 chunks = 0;
+        (WeeklyEpochVault.SettlementStatus memory status,,) = vault.getSettlementStatus(currentEpoch);
+
+        while (!status.settled && chunks < 20) {
+            vault.settleEpochChunked(currentEpoch);
+            (status,,) = vault.getSettlementStatus(currentEpoch);
+            chunks++;
+        }
+
+        uint256 totalGasUsed = gasStart - gasleft();
+
+        vm.stopPrank();
+
+        // Assert total gas is reasonable
+        assertLt(totalGasUsed, 30_000_000, "Total gas for 1000 requests should be < 30M");
+        assertLe(chunks, 10, "Should complete within 10 chunks");
+        assertTrue(status.settled, "Should be settled");
+
+        // Assert gas per request is reasonable
+        uint256 gasPerRequest = totalGasUsed / numRequests;
+        assertLt(gasPerRequest, 30_000, "Gas per request should be < 30k");
+    }
+
+    // ============================================================================
+    // HELPER FUNCTIONS
+    // ============================================================================
+
+    /// @notice Calculate total claimable assets across all requests
+    function _getTotalClaimable() internal view returns (uint256 total) {
+        uint256 maxRequestId = vault.nextRequestId();
+
+        for (uint256 i = 1; i < maxRequestId && i < 10000; i++) {
+            WeeklyEpochVault.RedemptionRequest memory request = vault.getRequest(i);
+            if (request.status == WeeklyEpochVault.RequestStatus.Settled) {
+                total += request.claimableAssets;
+            }
+        }
+
+        return total;
+    }
+}

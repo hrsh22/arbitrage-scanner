@@ -1,0 +1,59 @@
+======================================================================
+VAULT POST-DEPLOY EXECUTION EVIDENCE
+======================================================================
+
+Generated: 2026-02-27T19:12:45.855Z
+Run ID: deploy-2026-02-27T19-12-45-823Z
+Verdict: FAILURE
+
+======================================================================
+CONFIGURATION
+======================================================================
+  vault: 0x066A4678935b78FA4E89e914dBE8F077764F0c74
+  newAdapter: 0x6f167963d0821Da79496EE29Fa3cb62c55A712Ea
+  oldAdapter: 0x29AAe313f2129Fb6bd25f12aaf515d00aa4B3d84
+  rpcUrl: https://polygon-mainnet.g.alchemy.com/v2/XeqbzKzOklvVcN5tsLW5VnSZ5ETutKuc
+  absoluteCap: 340282366920938463463374607431768211455
+  relativeCap: 10000
+  allocator: (not set)
+  dryRun: (not set)
+  confirmDestructive: true
+
+======================================================================
+EXECUTION STEPS
+======================================================================
+
+[1] ⊘ preflight
+    Status: SKIPPED
+    Timestamp: 2026-02-27T19:12:45.855Z
+
+======================================================================
+SUMMARY STATISTICS
+======================================================================
+  Total Steps:    1
+  Successful:     0
+  Failed:         0
+  Skipped:        1
+
+======================================================================
+RECOVERY INSTRUCTIONS
+======================================================================
+  ⚠ Execution did not complete successfully.
+
+
+  To resume execution, run the following command:
+
+  ```bash
+  # Resume from: beginning
+# Run ID: deploy-2026-02-27T19-12-45-823Z
+node vault-post-deploy.js --vault 0x066A4678935b78FA4E89e914dBE8F077764F0c74 --new-adapter 0x6f167963d0821Da79496EE29Fa3cb62c55A712Ea --old-adapter 0x29AAe313f2129Fb6bd25f12aaf515d00aa4B3d84 --rpc-url https://polygon-mainnet.g.alchemy.com/v2/XeqbzKzOklvVcN5tsLW5VnSZ5ETutKuc --absolute-cap 340282366920938463463374607431768211455 --relative-cap 10000 --confirm-destructive
+  ```
+
+  State is preserved in:
+    .vault-post-deploy-state.json
+
+  The script will automatically resume from the failed step.
+
+======================================================================
+END OF EVIDENCE REPORT
+======================================================================

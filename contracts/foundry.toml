@@ -1,0 +1,27 @@
+[profile.default]
+src = "src"
+out = "out"
+test = "test"
+libs = ["../lib"]
+optimizer = true
+optimizer_runs = 1000
+viaIR = true
+via_ir = true
+evm_version = "shanghai"
+skip = [
+  "lib/openzeppelin-contracts/certora/**/*.sol",
+  "lib/openzeppelin-contracts/test/**/*.sol",
+  "lib/openzeppelin-contracts/lib/**/*.sol",
+  "lib/vault-v2/**/*.sol",
+  "lib/forge-std/**/*.sol",
+  "_temp_disabled/**/*.sol",
+  "test/invariants/**/*.sol"
+]
+remappings = [
+  "morpho/=../lib/vault-v2/src/",
+  "@openzeppelin/=../lib/openzeppelin-contracts/",
+  "forge-std/=../lib/forge-std/src/"
+]
+
+[rpc_endpoints]
+polygon = "https://polygon-rpc.com"

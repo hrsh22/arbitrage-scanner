@@ -1,0 +1,1 @@
+ALTER TABLE "epoch_redemption_entitlements" ALTER COLUMN "entitlement_ratio" SET DATA TYPE numeric(38, 18);

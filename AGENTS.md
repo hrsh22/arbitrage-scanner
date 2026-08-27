@@ -18,12 +18,24 @@ This is a **Turborepo monorepo** with the following structure:
 polymarket-mvp/
 ├── apps/
 │   ├── api/          # Express.js backend (trading bot, market scanning, APIs)
+│   ├── vault-api/    # Express.js backend (vault management + custom redemption flow)
+│   ├── vault-web/    # Next.js vault dashboard frontend
 │   └── web/          # Next.js dashboard frontend (shadcn/ui)
+├── contracts/        # Vault smart contracts and deployment scripts (Foundry)
 ├── packages/
 │   ├── ui/           # Shared UI components (shadcn/ui)
 │   ├── eslint-config/
 │   └── typescript-config/
 ```
+
+For all vault-related work, read `VAULT_KNOWLEDGE.md` first.
+
+Vault-specific rules that are easy to get wrong:
+
+- The active custom vault flow uses `FlatBookVaultV2` semantics, not `ClosedBookBatchVault` and not `EpochTrancheVault`.
+- In the active `FlatBookVaultV2` contract version, processed queued deposits auto-mint ERC20 shares during `processDeposits()`; do not show a manual processed-deposit claim step for new deposits.
+- Custom-vault NAV/share pricing must exclude queued deposits and redemption liabilities. Never price custom vaults from raw `totalAssets / totalSupply` when a liability-adjusted source exists.
+- Address normalization matters in vault DB projections. Use case-insensitive/normalized address handling for vault and user address lookups.
 
 ### Key Components
 
@@ -268,16 +280,21 @@ curl http://localhost:8080/bot/status
 
 <!-- This section should be updated after each significant change -->
 
-| Date       | Change                                                                          | Files Affected                                                            |
-| ---------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| 2026-01-01 | Refactored bot config into modular structure with strict validation             | `bot/config/*`, removed `bot/botConfigs.ts`                               |
-| 2025-01-01 | Optimized multi-bot scans: fetch markets once, run all bots in parallel         | `bot/botManager.ts`, `bot/tradingBot.ts`, `cron/runTradingBot.ts`         |
-| 2024-12-31 | Added multi-bot support with BotManager and per-bot configurations              | `bot/botConfigs.ts`, `bot/botManager.ts`, `bot/routes.ts`, `botSchema.ts` |
-| 2024-12-22 | Added cron-friendly endpoints `/bot/scan` and `/bot/check-resolutions`          | `bot/routes.ts`, `bot/tradingBot.ts`, `bot/resolutionChecker.ts`          |
-| 2024-12-22 | Added resolution checker to track position outcomes and calculate USD P/L       | `bot/resolutionChecker.ts`, `clients/polymarketClient.ts`, `index.ts`     |
-| 2024-12-22 | Relaxed 99¢+ time threshold from 3h to 6h                                       | `bot/config.ts`                                                           |
-| 2024-12-22 | Added max investment stats (maxInvestment, maxProfitPercent, maxProfitAbsolute) | `bot/types.ts`, `bot/strategyEngine.ts`                                   |
-| 2024-12-22 | Initial AGENTS.md creation                                                      | `AGENTS.md`                                                               |
+| Date       | Change                                                                                              | Files Affected                                                                                                                                                                                            |
+| ---------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-04-29 | Added helper-enabled FlatBookVaultV2 rollout path for atomic USDC.e deposit/claim UX                | `contracts/src/FlatBookVaultV2.sol`, `contracts/scripts/deployFlatBookVaultV2.js`, `apps/vault-api/src/scripts/*`, `apps/vault-web/*`, `VAULT_KNOWLEDGE.md`                                               |
+| 2026-04-29 | Migrated vault backend collateral config to pUSD/CLOB V2 and generic collateral labeling            | `apps/vault-api/src/config/network.ts`, `apps/vault-api/src/constants.ts`, `apps/vault-api/src/services/*`, `apps/vault-api/src/routes/*`, `apps/vault-api/src/scripts/*`                               |
+| 2026-04-28 | Added vault migration mode to pause new USDC.e deposits while preserving withdrawals/claims/activity | `apps/vault-api/src/config/*`, `apps/vault-api/src/routes/*`, `apps/vault-api/src/services/vaultProvider.ts`, `apps/vault-web/*`                                                                          |
+| 2026-03-23 | Fixed FlatBookVaultV2 processed-deposit flow, liability-aware NAV, and claim UX/documentation       | `apps/vault-api/src/services/navOracle.ts`, `apps/vault-api/src/routes/customVaultRoutes.ts`, `apps/vault-api/src/services/customVaultProvider.ts`, `apps/vault-web/*`, `VAULT_KNOWLEDGE.md`, `AGENTS.md` |
+| 2026-03-12 | Hardened closed-book lifecycle: permissionless state-gated maintenance, no route-driven progression | `contracts/src/ClosedBookBatchVault.sol`, `contracts/test/ClosedBookBatchVault.t.sol`, `apps/vault-api/src/routes/*`, `apps/vault-api/src/services/customVaultProvider.ts`                                |
+| 2026-01-01 | Refactored bot config into modular structure with strict validation                                 | `bot/config/*`, removed `bot/botConfigs.ts`                                                                                                                                                               |
+| 2025-01-01 | Optimized multi-bot scans: fetch markets once, run all bots in parallel                             | `bot/botManager.ts`, `bot/tradingBot.ts`, `cron/runTradingBot.ts`                                                                                                                                         |
+| 2024-12-31 | Added multi-bot support with BotManager and per-bot configurations                                  | `bot/botConfigs.ts`, `bot/botManager.ts`, `bot/routes.ts`, `botSchema.ts`                                                                                                                                 |
+| 2024-12-22 | Added cron-friendly endpoints `/bot/scan` and `/bot/check-resolutions`                              | `bot/routes.ts`, `bot/tradingBot.ts`, `bot/resolutionChecker.ts`                                                                                                                                          |
+| 2024-12-22 | Added resolution checker to track position outcomes and calculate USD P/L                           | `bot/resolutionChecker.ts`, `clients/polymarketClient.ts`, `index.ts`                                                                                                                                     |
+| 2024-12-22 | Relaxed 99¢+ time threshold from 3h to 6h                                                           | `bot/config.ts`                                                                                                                                                                                           |
+| 2024-12-22 | Added max investment stats (maxInvestment, maxProfitPercent, maxProfitAbsolute)                     | `bot/types.ts`, `bot/strategyEngine.ts`                                                                                                                                                                   |
+| 2024-12-22 | Initial AGENTS.md creation                                                                          | `AGENTS.md`                                                                                                                                                                                               |
 
 ---
 
